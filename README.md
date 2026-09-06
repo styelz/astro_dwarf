@@ -23,12 +23,15 @@ browser or webview.
 
 ## Run
 
-```powershell
+```text
 git clone https://github.com/styelz/astro_dwarf.git
 cd astro_dwarf
-python -m pip install -e ".[device]"
-python app.py
+./start.sh          # macOS / Linux
+.\start.bat         # Windows
 ```
+
+On the first run, the script creates a local `.venv` and installs the required
+packages. Later runs skip installation and start the app directly.
 
 Configure each telescope's IP, model and location in Settings.
 The scheduler is deliberately stopped at launch; start it from the Control
