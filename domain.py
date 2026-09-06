@@ -65,7 +65,6 @@ class Device:
     ble_enabled: bool = True
     wifi_ssid: str = ""
     wifi_password: str = ""
-    demo_mode: bool = True
     latitude: float = 0
     longitude: float = 0
     timezone_name: str = "UTC"
@@ -176,6 +175,7 @@ def hardware_from_dict(data: dict[str, Any]) -> HardwareProfile:
 
 def device_from_dict(data: dict[str, Any]) -> Device:
     data = dict(data)
+    data.pop("demo_mode", None)
     data["model"] = DeviceModel(data.get("model", DeviceModel.DWARF_3))
     data["camera"] = Camera(data.get("camera", Camera.TELE))
     data["hardware"] = hardware_from_dict(data.get("hardware", {}))

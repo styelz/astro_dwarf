@@ -20,21 +20,22 @@ device = [
   "websockets>=11.0.3,<12",
   "dwarf_python_api @ git+https://github.com/stevejcl/dwarf_python_api",
 ]
-test = ["pytest>=8.3"]
 build = [
   "Pillow>=11",
   "pyinstaller>=6.15,<7",
 ]
 
 [project.scripts]
-astro-dwarf = "astro_dwarf.app:run"
+astro-dwarf = "app:main"
 
-[tool.setuptools.packages.find]
-include = ["astro_dwarf*"]
-
-[tool.setuptools.package-data]
-astro_dwarf = ["qml/**"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
+[tool.setuptools]
+py-modules = [
+  "app",
+  "device_worker",
+  "domain",
+  "qt_backend",
+  "runtime",
+  "services",
+  "storage",
+  "version",
+]

@@ -18,7 +18,7 @@ from typing import Any, Callable, Protocol
 import requests
 import subprocess
 
-from .domain import (
+from domain import (
     Camera,
     Device,
     HardwareProfile,
@@ -30,8 +30,8 @@ from .domain import (
     Target,
     Workflow,
 )
-from .runtime import ffmpeg_path
-from .storage import SessionStore
+from runtime import ffmpeg_path
+from storage import SessionStore
 
 LOG = logging.getLogger("astro_dwarf")
 PANE_INDEX_RE = re.compile(r"pane\s+(\d+)(?:\s+of\s+(\d+))?", re.I)
@@ -92,15 +92,6 @@ class DurationEngine:
 
 class TelescopeBackend(Protocol):
     def call(self, operation: str, *args: Any, **kwargs: Any) -> Any: ...
-
-
-class DemoBackend:
-    """Deterministic backend used without hardware and by tests."""
-
-    def call(self, operation: str, *args: Any, **kwargs: Any) -> Any:
-        LOG.info("Demo telescope: %s", operation)
-        time.sleep(0.03)
-        return True
 
 
 class DwarfSdkBackend:
@@ -174,7 +165,7 @@ class DwarfSdkBackend:
             self.api = importlib.import_module("dwarf_python_api.lib.dwarf_utils")
         except ImportError as exc:
             raise RuntimeError(
-                "dwarf_python_api is not installed. Use Demo mode or install requirements-device.txt."
+                "dwarf_python_api is not installed. Install with pip install -e \".[device]\"."
             ) from exc
 
     def call(self, operation: str, *args: Any, **kwargs: Any) -> Any:
@@ -315,7 +306,7 @@ class ProcessSdkBackend:
 class DwarfClient:
     def __init__(self, device: Device, backend: TelescopeBackend | None = None):
         self.device = device
-        self.backend = backend or DemoBackend()
+        self.backend = backend or ProcessSdkBackend(device)
         self.connected = False
 
     @classmethod
@@ -420,7 +411,7 @@ class DeviceHub:
         self.schedulers: dict[str, Scheduler] = {}
 
     def register(self, device: Device, store: SessionStore, on_change: Callable[[], None]) -> DwarfClient:
-        client = DwarfClient(device) if device.demo_mode else DwarfClient.real(device)
+        client = DwarfClient.real(device)
         self.clients[device.id] = client
         self.schedulers[device.id] = Scheduler(device, client, store, on_change)
         return client

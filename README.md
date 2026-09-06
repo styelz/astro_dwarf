@@ -25,13 +25,12 @@ browser or webview.
 
 ```powershell
 git clone https://github.com/styelz/astro_dwarf.git
-cd astro_dwarf/astro_dwarf
-python -m pip install -e ".[device,test]"
-python -m astro_dwarf.app
+cd astro_dwarf
+python -m pip install -e ".[device]"
+python -m app
 ```
 
-The app starts with safe Demo mode enabled. Disable Demo mode for a device in
-Settings when its IP, model and location are configured.
+Configure each telescope's IP, model and location in Settings.
 The scheduler is deliberately stopped at launch; start it from the Control
 page only when the telescope and session queue are ready.
 
@@ -99,9 +98,3 @@ history/    immutable completed-run records
 
 Old scheduler JSON can be imported from Settings. Existing applications are
 not modified or imported at runtime.
-
-## Test
-
-```powershell
-pytest
-```

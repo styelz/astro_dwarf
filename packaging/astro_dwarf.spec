@@ -31,7 +31,7 @@ def collect_pyside_qml() -> list[tuple[str, str]]:
 
 
 datas = [
-    (str(ROOT / "astro_dwarf" / "qml"), "astro_dwarf/qml"),
+    (str(ROOT / "qml"), "qml"),
 ]
 datas += collect_pyside_qml()
 datas += collect_data_files(

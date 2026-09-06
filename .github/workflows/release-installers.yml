@@ -298,7 +298,7 @@ jobs:
           git fetch origin main
           git checkout --force -B main origin/main
           python packaging/bump_version.py --set "${VERSION}"
-          git add pyproject.toml astro_dwarf/__init__.py
+          git add pyproject.toml version.py
           if git diff --cached --quiet; then
             echo "Version files already at ${VERSION}"
           else

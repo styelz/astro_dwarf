@@ -15,7 +15,7 @@ def is_frozen() -> bool:
 def package_root() -> Path:
     """Return the directory containing packaged application resources."""
     if is_frozen():
-        return Path(getattr(sys, "_MEIPASS")) / "astro_dwarf"
+        return Path(getattr(sys, "_MEIPASS"))
     return Path(__file__).resolve().parent
 
 
@@ -40,7 +40,7 @@ def configure_qml_import_path() -> None:
 def data_root() -> Path:
     """Return a writable data directory for the current execution mode."""
     if not is_frozen():
-        return package_root().parent / "data"
+        return package_root() / "data"
 
     location = QStandardPaths.writableLocation(
         QStandardPaths.StandardLocation.AppDataLocation
@@ -73,7 +73,7 @@ def worker_command() -> tuple[str, list[str]]:
         if helper.is_file():
             return str(helper), []
         return sys.executable, ["--worker"]
-    return sys.executable, ["-u", "-m", "astro_dwarf.device_worker"]
+    return sys.executable, ["-u", "-m", "device_worker"]
 
 
 def prepare_worker_environment(environment) -> None:

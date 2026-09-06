@@ -20,8 +20,8 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from . import __version__
-from .domain import (
+from version import __version__
+from domain import (
     Camera,
     CameraSettings,
     Device,
@@ -38,7 +38,7 @@ from .domain import (
     session_from_dict,
     to_dict,
 )
-from .services import (
+from services import (
     DurationEngine,
     StellariumClient,
     import_telescopius,
@@ -47,8 +47,8 @@ from .services import (
     pane_sort_key,
     stagger_mosaic_sessions,
 )
-from .runtime import prepare_worker_environment, worker_command
-from .storage import SessionStore
+from runtime import prepare_worker_environment, worker_command
+from storage import SessionStore
 
 
 class TelescopeProcess(QObject):
@@ -256,8 +256,7 @@ class AppBackend(QObject):
         worker.progressReceived.connect(self._session_progress)
         worker.availabilityChanged.connect(self._worker_status_changed)
         self._workers[device.id] = worker
-        if not device.demo_mode:
-            worker.start()
+        worker.start()
         return worker
 
     def _worker_status_changed(self) -> None:
@@ -289,7 +288,7 @@ class AppBackend(QObject):
             data.update({
                 "connected": bool(worker and worker.connected),
                 "busy": bool(worker and worker.busy),
-                "status": "Demo" if device.demo_mode else "Imaging" if worker and worker.busy else "Connected" if worker and worker.connected else "Offline",
+                "status": "Imaging" if worker and worker.busy else "Connected" if worker and worker.connected else "Offline",
             })
             result.append(data)
         return result
@@ -443,9 +442,6 @@ class AppBackend(QObject):
     @Slot(str)
     def startPreview(self, device_id: str) -> None:
         device = self._device_by_id(device_id)
-        if device.demo_mode:
-            self.add_log("demo", "Would open live camera preview", device_id)
-            return
         worker = self._workers.get(device_id)
         if not worker:
             return
@@ -469,10 +465,6 @@ class AppBackend(QObject):
         device = next((item for item in self._devices if item.id == device_id), None)
         if not device:
             return
-        if device.demo_mode:
-            self.add_log("warning", "Demo mode is enabled; disable it in Settings to connect", device_id)
-            self.toast.emit("Demo mode is enabled", "warning")
-            return
         worker = self._workers[device_id]
         self.add_log("info", "Connection requested; UI remains available", device_id)
         worker.connect_device(lambda ok, result: self._connection_done(device_id, ok, result))
@@ -494,9 +486,6 @@ class AppBackend(QObject):
         worker = self._workers.get(device_id)
         if not worker:
             return
-        if self._device_by_id(device_id).demo_mode:
-            self.add_log("demo", f"Would run: {operation.replace('_', ' ')}", device_id)
-            return
         worker.send(operation, callback=lambda ok, result: self.toast.emit(
             operation.replace("_", " ").title() if ok else str(result), "success" if ok else "error"
         ))
@@ -504,17 +493,13 @@ class AppBackend(QObject):
     @Slot(str, float, float)
     def joystick(self, device_id: str, angle: float, speed: float) -> None:
         worker = self._workers.get(device_id)
-        if self._device_by_id(device_id).demo_mode:
-            self.add_log("demo", f"Joystick angle={angle:g} speed={speed:g}", device_id)
-        elif worker:
+        if worker:
             worker.send("joystick", {"args": [angle, speed]})
 
     @Slot(str, int)
     def manualFocus(self, device_id: str, direction: int) -> None:
         worker = self._workers.get(device_id)
-        if self._device_by_id(device_id).demo_mode:
-            self.add_log("demo", "Focus near" if direction else "Focus far", device_id)
-        elif worker:
+        if worker:
             worker.send("manual_focus", {"args": [direction]})
 
     @Slot(str)
@@ -587,9 +572,6 @@ class AppBackend(QObject):
     @Slot(str, str, str)
     def setCameraParam(self, device_id: str, name: str, value: str) -> None:
         device = self._device_by_id(device_id)
-        if device.demo_mode:
-            self.add_log("demo", f"Set {name} = {value}", device_id)
-            return
         worker = self._workers.get(device_id)
         if not worker:
             return
@@ -623,7 +605,6 @@ class AppBackend(QObject):
                 ip_address=values["ip_address"].strip(),
                 camera=Camera(values.get("camera", current.camera)),
                 color=values.get("color", current.color),
-                demo_mode=bool(values.get("demo_mode", current.demo_mode)),
                 latitude=float(values.get("latitude", current.latitude)),
                 longitude=float(values.get("longitude", current.longitude)),
                 timezone_name=values.get("timezone_name", current.timezone_name),
@@ -834,8 +815,6 @@ class AppBackend(QObject):
             if due.tzinfo is None:
                 due = due.astimezone()
             if due > now:
-                continue
-            if device.demo_mode:
                 continue
             self._start_session(worker, session)
 

@@ -8,9 +8,9 @@ from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
-from . import __version__
-from .qt_backend import AppBackend
-from .runtime import configure_qml_import_path, data_root, package_root
+from qt_backend import AppBackend
+from runtime import configure_qml_import_path, data_root, package_root
+from version import __version__
 
 
 def _sync_work_area(window) -> None:
@@ -74,5 +74,25 @@ def run() -> int:
     return application.exec()
 
 
+def _ensure_standard_streams() -> None:
+    # PyInstaller's Windows GUI bootloader intentionally leaves these unset.
+    if sys.stdin is None:
+        sys.stdin = open(os.devnull, "r", encoding="utf-8")
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+
+def main() -> int | None:
+    _ensure_standard_streams()
+    if "--worker" in sys.argv or os.getenv("ASTRO_DWARF_WORKER") == "1":
+        from device_worker import main as worker_main
+
+        worker_main()
+        return None
+    return run()
+
+
 if __name__ == "__main__":
-    raise SystemExit(run())
+    raise SystemExit(main())

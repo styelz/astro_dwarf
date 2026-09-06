@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = ROOT / "pyproject.toml"
-INIT = ROOT / "astro_dwarf" / "__init__.py"
+INIT = ROOT / "version.py"
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 

@@ -546,7 +546,7 @@ ApplicationWindow {
                         }
                         Rectangle {
                             width: 8; height: 8; radius: 4
-                            color: modelData.connected ? root.success : (modelData.demo_mode ? root.warning : "#526077")
+                            color: modelData.connected ? root.success : "#526077"
                         }
                     }
                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: backend.selectDevice(modelData.id) }
@@ -586,7 +586,7 @@ ApplicationWindow {
                                 fillMode: Image.PreserveAspectFit
                             }
                             Text {
-                                text: backend.selectedDevice.connected ? "SCOPE ONLINE" : (backend.selectedDevice.demo_mode ? "DEMO STANDBY" : "LINK DOWN")
+                                text: backend.selectedDevice.connected ? "SCOPE ONLINE" : "LINK DOWN"
                                 color: backend.selectedDevice.connected ? root.success : root.warning
                                 font.pixelSize: 11
                                 font.bold: true
@@ -894,7 +894,7 @@ ApplicationWindow {
                             SplitView.minimumHeight: 80
                             Repeater {
                                 model: [
-                                    {label: "LINK", value: backend.selectedDevice.connected ? "Connected" : (backend.selectedDevice.demo_mode ? "Demo" : "Offline")},
+                                    {label: "LINK", value: backend.selectedDevice.connected ? "Connected" : "Offline"},
                                     {label: "ACTIVITY", value: backend.selectedDevice.busy ? "Imaging" : (root.targetLocked ? "On target" : "Idle")},
                                     {label: "TARGET", value: backend.currentSession.target_name || "None"},
                                     {label: "STEP", value: backend.currentSession.current_step || backend.selectedDevice.status || "—"}
@@ -1373,7 +1373,6 @@ ApplicationWindow {
                     modelField.currentIndex = Math.max(0, ["Dwarf II", "Dwarf 3", "Dwarf Mini"].indexOf(d.model))
                     ipField.text = d.ip_address || ""
                     cameraField.currentIndex = d.camera === "wide" ? 1 : 0
-                    demoField.checked = d.demo_mode === true
                     bleField.checked = d.ble_enabled !== false
                     latField.text = d.latitude
                     lonField.text = d.longitude
@@ -1446,8 +1445,7 @@ ApplicationWindow {
                                 HudField { id: ssidField; Layout.fillWidth: true }
                                 FieldLabel { text: "WIFI PASSWORD" }
                                 HudField { id: wifiField; echoMode: TextInput.Password; Layout.fillWidth: true }
-                                HudCheck { id: demoField; text: "Demo mode"; Layout.columnSpan: 2 }
-                                HudCheck { id: bleField; text: "Bluetooth enabled"; Layout.columnSpan: 1 }
+                                HudCheck { id: bleField; text: "Bluetooth enabled"; Layout.columnSpan: 2 }
                                 RowLayout {
                                     Layout.columnSpan: 1
                                     FieldLabel { text: "NIGHT CUTOFF" }
@@ -1501,7 +1499,7 @@ ApplicationWindow {
                                 onClicked: backend.saveDevice(JSON.stringify({
                                     id: backend.selectedDeviceId, name: nameField.text, model: modelField.currentText,
                                     ip_address: ipField.text, camera: cameraField.currentIndex === 1 ? "wide" : "tele",
-                                    demo_mode: demoField.checked, ble_enabled: bleField.checked,
+                                    ble_enabled: bleField.checked,
                                     latitude: Number(latField.text), longitude: Number(lonField.text),
                                     timezone_name: timezoneField.text, stellarium_url: stellariumField.text,
                                     wifi_ssid: ssidField.text, wifi_password: wifiField.text,
