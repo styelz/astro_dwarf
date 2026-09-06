@@ -1,0 +1,236 @@
+name: Build OS installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: AnimMouse/setup-ffmpeg@v1.2.5
+
+      - name: Set package version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          }
+          "VERSION=$version" >> $env:GITHUB_ENV
+          "ASTRO_DWARF_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Install build dependencies
+        run: python -m pip install -e ".[device,build]"
+
+      - name: Prepare bundled tools and icons
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force vendor | Out-Null
+          Copy-Item (Get-Command ffmpeg).Source vendor\ffmpeg.exe
+          python packaging\build_icons.py
+
+      - name: Build application
+        run: python -m PyInstaller --noconfirm --clean packaging\astro_dwarf.spec
+
+      - name: Smoke test application
+        shell: pwsh
+        run: |
+          $env:ASTRO_DWARF_TEST_EXIT_MS = "1000"
+          $process = Start-Process dist\AstroDwarf\AstroDwarf.exe -PassThru
+          if (-not $process.WaitForExit(20000)) {
+            $process.Kill()
+            throw "Frozen application did not exit after its smoke-test timer."
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "Frozen application exited with code $($process.ExitCode)."
+          }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" packaging\windows\astro-dwarf.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: release/*.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS Apple Silicon
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: AnimMouse/setup-ffmpeg@v1.2.5
+
+      - name: Set package version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "ASTRO_DWARF_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Install build dependencies
+        run: python -m pip install -e ".[device,build]"
+
+      - name: Prepare bundled tools and icons
+        shell: bash
+        run: |
+          mkdir -p vendor
+          cp "$(command -v ffmpeg)" vendor/ffmpeg
+          chmod +x vendor/ffmpeg
+          python packaging/build_icons.py
+
+      - name: Build application
+        run: python -m PyInstaller --noconfirm --clean packaging/astro_dwarf.spec
+
+      - name: Smoke test application
+        shell: bash
+        run: |
+          ASTRO_DWARF_TEST_EXIT_MS=1000 \
+            dist/AstroDwarf.app/Contents/MacOS/AstroDwarf
+
+      - name: Build disk image
+        shell: bash
+        run: |
+          mkdir -p release dmg-root
+          cp -R dist/AstroDwarf.app dmg-root/
+          ln -s /Applications dmg-root/Applications
+          hdiutil create \
+            -volname "Astro Dwarf" \
+            -srcfolder dmg-root \
+            -ov -format UDZO \
+            "release/AstroDwarf-${VERSION}-macos-arm64.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-installer
+          path: release/*.dmg
+          if-no-files-found: error
+
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: AnimMouse/setup-ffmpeg@v1.2.5
+
+      - name: Set package version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "ASTRO_DWARF_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Install system and build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdbus-1-3 libegl1 libfontconfig1 libgl1 libpulse0 \
+            libx11-xcb1 libxcb-cursor0 libxcb1 libxkbcommon0 xvfb
+          python -m pip install -e ".[device,build]"
+
+      - name: Prepare bundled tools and icons
+        shell: bash
+        run: |
+          mkdir -p vendor
+          cp "$(command -v ffmpeg)" vendor/ffmpeg
+          chmod +x vendor/ffmpeg
+          python packaging/build_icons.py
+
+      - name: Build application
+        run: python -m PyInstaller --noconfirm --clean packaging/astro_dwarf.spec
+
+      - name: Smoke test application
+        shell: bash
+        run: |
+          timeout 20s xvfb-run -a env ASTRO_DWARF_TEST_EXIT_MS=1000 \
+            dist/AstroDwarf/AstroDwarf
+
+      - name: Build AppImage
+        shell: bash
+        run: |
+          mkdir -p AppDir/usr/bin release
+          cp -a dist/AstroDwarf/. AppDir/usr/bin/
+          cp packaging/linux/AppRun AppDir/AppRun
+          cp packaging/linux/astro-dwarf.desktop AppDir/AstroDwarf.desktop
+          sed -i 's/^Exec=.*/Exec=AstroDwarf/' AppDir/AstroDwarf.desktop
+          cp packaging/icons/astro-dwarf.png AppDir/astro-dwarf.png
+          chmod +x AppDir/AppRun AppDir/usr/bin/AstroDwarf AppDir/usr/bin/AstroDwarfWorker
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir \
+            "release/AstroDwarf-${VERSION}-linux-x86_64.AppImage"
+
+      - name: Build Debian and RPM packages
+        shell: bash
+        run: |
+          curl -fsSL \
+            https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP" nfpm
+          "$RUNNER_TEMP/nfpm" package \
+            --config packaging/linux/nfpm.yaml \
+            --packager deb \
+            --target "release/AstroDwarf-${VERSION}-linux-amd64.deb"
+          "$RUNNER_TEMP/nfpm" package \
+            --config packaging/linux/nfpm.yaml \
+            --packager rpm \
+            --target "release/AstroDwarf-${VERSION}-linux-x86_64.rpm"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-installers
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release/*

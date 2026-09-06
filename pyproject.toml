@@ -19,6 +19,10 @@ device = [
   "dwarf_python_api @ git+https://github.com/stevejcl/dwarf_python_api",
 ]
 test = ["pytest>=8.3"]
+build = [
+  "Pillow>=11",
+  "pyinstaller>=6.15,<7",
+]
 
 [project.scripts]
 astro-dwarf = "astro_dwarf.app:run"

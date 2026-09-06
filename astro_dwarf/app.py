@@ -3,13 +3,13 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
-from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
 from .qt_backend import AppBackend
+from .runtime import data_root, package_root
 
 
 def _sync_work_area(window) -> None:
@@ -49,12 +49,12 @@ def run() -> int:
     application.setApplicationName("Astro Dwarf")
     application.setOrganizationName("Astro Dwarf")
 
-    package_root = Path(__file__).resolve().parent
-    backend = AppBackend(package_root.parent / "data")
+    resources = package_root()
+    backend = AppBackend(data_root())
     engine = QQmlApplicationEngine()
     engine.warnings.connect(lambda warnings: [print(warning.toString(), file=sys.stderr) for warning in warnings])
     engine.rootContext().setContextProperty("backend", backend)
-    engine.load(QUrl.fromLocalFile(str(package_root / "qml" / "Main.qml")))
+    engine.load(QUrl.fromLocalFile(str(resources / "qml" / "Main.qml")))
 
     if not engine.rootObjects():
         backend.shutdown()

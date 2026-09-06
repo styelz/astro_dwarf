@@ -34,6 +34,38 @@ Settings when its IP, model and location are configured.
 The scheduler is deliberately stopped at launch; start it from the Control
 page only when the telescope and session queue are ready.
 
+## Install
+
+Tagged releases publish unsigned installers on the
+[GitHub Releases page](https://github.com/styelz/astro_dwarf/releases):
+
+- **Windows x64:** download and run `AstroDwarf-Setup-<version>-win64.exe`.
+  Windows SmartScreen may show an unrecognized-app warning; choose **More info**
+  and **Run anyway**.
+- **macOS Apple Silicon:** open the `.dmg`, drag Astro Dwarf to Applications,
+  then right-click the installed app and choose **Open** the first time to
+  approve the unsigned app in Gatekeeper.
+- **Linux x64:** choose the portable `.AppImage`, Debian/Ubuntu `.deb`, or
+  Fedora/RHEL `.rpm`. The package installers place the app under
+  `/opt/astro-dwarf`.
+
+```bash
+# Portable AppImage
+chmod +x AstroDwarf-*-linux-x86_64.AppImage
+./AstroDwarf-*-linux-x86_64.AppImage
+
+# Debian or Ubuntu
+sudo apt install ./AstroDwarf-*-linux-amd64.deb
+
+# Fedora or RHEL
+sudo dnf install ./AstroDwarf-*-linux-x86_64.rpm
+```
+
+The installers include ffmpeg for the Dwarf 3 and Dwarf Mini RTSP live view.
+To build installers without publishing a release, run **Build OS installers**
+from the repository's Actions page and download the workflow artifacts. Pushing
+a tag such as `v0.1.0` builds the same files and creates a GitHub Release.
+
 ## Telescope SDK
 
 Hardware control uses [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api)

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 import threading
 from dataclasses import replace
 from datetime import date, datetime, timezone
@@ -47,6 +46,7 @@ from .services import (
     pane_sort_key,
     stagger_mosaic_sessions,
 )
+from .runtime import prepare_worker_environment, worker_command
 from .storage import SessionStore
 
 
@@ -62,6 +62,7 @@ class TelescopeProcess(QObject):
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("PYTHONUNBUFFERED", "1")
+        prepare_worker_environment(environment)
         self.process.setProcessEnvironment(environment)
         self.process.readyReadStandardOutput.connect(self._read_stdout)
         self.process.readyReadStandardError.connect(self._read_stderr)
@@ -85,7 +86,8 @@ class TelescopeProcess(QObject):
         if self.running:
             return
         self.logReceived.emit("info", f"Starting isolated worker for {self.device.name}")
-        self.process.start(sys.executable, ["-u", "-m", "astro_dwarf.device_worker"])
+        program, arguments = worker_command()
+        self.process.start(program, arguments)
 
     def _process_started(self) -> None:
         self.send("configure", {"device": to_dict(self.device)}, self._configured)

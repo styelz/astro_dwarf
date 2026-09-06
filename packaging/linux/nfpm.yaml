@@ -1,0 +1,22 @@
+name: astro-dwarf
+arch: amd64
+platform: linux
+version: "${VERSION}"
+section: science
+priority: optional
+maintainer: Astro Dwarf
+description: Native multi-device Dwarf telescope control and scheduling
+homepage: https://github.com/styelz/astro_dwarf
+license: Proprietary
+contents:
+  - src: dist/AstroDwarf
+    dst: /opt/astro-dwarf
+    type: tree
+  - src: packaging/linux/astro-dwarf
+    dst: /usr/bin/astro-dwarf
+    file_info:
+      mode: 0755
+  - src: packaging/linux/astro-dwarf.desktop
+    dst: /usr/share/applications/astro-dwarf.desktop
+  - src: packaging/icons/astro-dwarf.png
+    dst: /usr/share/icons/hicolor/1024x1024/apps/astro-dwarf.png
