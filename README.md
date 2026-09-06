@@ -18,7 +18,8 @@ browser or webview.
 - Native right-click session menus
 - JSON persistence, immutable run history, and old `Astro_Sessions` import
 - Typed wrapper for calibration, focus, polar alignment, GOTO, camera, imaging,
-  motors, lights, reboot, and power commands from `dwarf_python_api`
+  motors, lights, reboot, and power commands from
+  [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api)
 
 ## Run
 
@@ -35,10 +36,21 @@ page only when the telescope and session queue are ready.
 
 ## Telescope SDK
 
+Hardware control uses [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api)
+(see [Credits](#credits)). That library talks to Dwarf II, Dwarf 3, and Dwarf Mini
+over the V3 protobuf/WebSocket protocol.
+
 The SDK keeps global device configuration, so the app launches one isolated
 Python process per physical telescope. All SDK calls are asynchronous from the
 Qt UI. Worker stdout, SDK diagnostics and errors are forwarded into the visible
 Live Log panel instead of blocking or disappearing in a terminal.
+
+## Credits
+
+Telescope commands in this app are provided by
+[`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api), created and
+maintained by [JC L. (`stevejcl`)](https://github.com/stevejcl). Thanks to JC
+for making that API available.
 
 ## Storage
 
