@@ -64,6 +64,19 @@ ApplicationWindow {
     property real joySpeed: 1
     readonly property bool targetLocked: backend.selectedDevice.connected && backend.currentSession.status === "running"
     readonly property bool dataPage: currentPage !== 0
+    readonly property bool scopeOnline: !!(backend.selectedDevice && backend.selectedDevice.connected)
+    readonly property bool scopeImaging: !!(backend.selectedDevice && backend.selectedDevice.busy)
+    readonly property bool scopeLinking: !!(backend.selectedDevice && (backend.selectedDevice.connecting || backend.selectedDevice.disconnecting))
+    readonly property string scopePending: String((backend.selectedDevice && backend.selectedDevice.pending_action) || "")
+    readonly property string scopeActivity: String((backend.selectedDevice && backend.selectedDevice.activity) || "")
+    readonly property bool previewFailed: {
+        const status = String(backend.previewStatus || "").toLowerCase()
+        return status.indexOf("fail") >= 0 || status.indexOf("could not") >= 0
+    }
+    readonly property bool previewStarting: backend.previewActive && !backend.previewPlaying && !previewFailed
+    readonly property bool scopeOccupied: scopeImaging || scopePending !== "" || scopeActivity !== "" || previewStarting
+    readonly property bool cameraLiveEnabled: commandEnabled("set_exposure")
+    readonly property bool motionEnabled: commandEnabled("joystick")
 
     function statusColor(status) {
         switch (String(status || "").toLowerCase()) {
@@ -82,8 +95,43 @@ ApplicationWindow {
         default: return "#122033"
         }
     }
+    function commandEnabled(op) {
+        const pending = root.scopePending
+        const activity = root.scopeActivity
+        if (!root.scopeOnline || root.scopeLinking)
+            return false
+        if (pending === op)
+            return false
+        const stopFor = {
+            burst: "burst_stop",
+            burst_start: "burst_stop",
+            record: "record_stop",
+            record_start: "record_stop",
+            timelapse: "timelapse_stop",
+            timelapse_start: "timelapse_stop",
+            calibrate: "stop_calibrate",
+            autofocus: "stop_autofocus",
+            infinity: "stop_autofocus",
+            polar: "stop_polar"
+        }
+        if (op === "stop_all")
+            return true
+        const isStop = op === "stop_goto" || op.indexOf("stop_") === 0 || op.slice(-5) === "_stop"
+        if (isStop) {
+            if (op === stopFor[pending] || op === stopFor[activity])
+                return true
+            return op === "stop_goto" && !root.scopeOccupied
+        }
+        return !root.scopeOccupied
+    }
+
     function requestDeviceAction(operation, label) {
+        if (!root.commandEnabled(operation))
+            return
         if (operation === "reboot" || operation === "power_down") {
+            confirmDialog.kind = "device"
+            confirmDialog.headingText = "CONFIRM COMMAND"
+            confirmDialog.confirmLabel = "CONFIRM"
             confirmDialog.operation = operation
             confirmDialog.summary = "Run " + label + " on " + (backend.selectedDevice.name || "this telescope") + "?"
             confirmDialog.open()
@@ -104,13 +152,22 @@ ApplicationWindow {
         }
     }
 
+    component HiddenBar: ScrollBar {
+        policy: ScrollBar.AlwaysOff
+        interactive: false
+        visible: false
+        implicitWidth: 0
+        implicitHeight: 0
+    }
+
     component HudPanel: Item {
         id: panel
         property alias title: heading.text
+        property alias headerExtra: headerExtraRow.data
         property color fill: "#B3070D16"
         default property alias contents: body.data
         implicitWidth: 240
-        implicitHeight: body.implicitHeight + 24
+        implicitHeight: (headerRow.visible ? headerRow.implicitHeight + 8 : 0) + body.implicitHeight + 24
         clip: true
 
         Rectangle { anchors.fill: parent; color: panel.fill }
@@ -138,18 +195,50 @@ ApplicationWindow {
             onHeightChanged: requestPaint()
         }
         ColumnLayout {
-            id: body
             anchors.fill: parent
             anchors.margins: 12
             spacing: 8
-            Text {
-                id: heading
-                visible: text.length
-                color: root.accent
-                font.pixelSize: 11
-                font.letterSpacing: 1.6
-                font.bold: true
+            RowLayout {
+                id: headerRow
+                visible: heading.text.length || headerExtraRow.children.length
                 Layout.fillWidth: true
+                spacing: 8
+                Text {
+                    id: heading
+                    visible: text.length
+                    color: root.accent
+                    font.pixelSize: 11
+                    font.letterSpacing: 1.6
+                    font.bold: true
+                    Layout.fillWidth: true
+                }
+                Row {
+                    id: headerExtraRow
+                    spacing: 4
+                    Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                }
+            }
+            Flickable {
+                id: panelFlick
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                flickableDirection: Flickable.VerticalFlick
+                contentWidth: width
+                contentHeight: Math.max(height, body.implicitHeight)
+                interactive: contentHeight > height + 1
+                ScrollBar.vertical: HiddenBar {}
+                ScrollBar.horizontal: HiddenBar {}
+                Item {
+                    width: panelFlick.width
+                    height: Math.max(body.implicitHeight, panelFlick.height)
+                    ColumnLayout {
+                        id: body
+                        anchors.fill: parent
+                        spacing: 8
+                    }
+                }
             }
         }
     }
@@ -158,20 +247,39 @@ ApplicationWindow {
         id: hudBtn
         property color buttonColor: root.surfaceHigh
         property color foregroundColor: root.textPrimary
+        property string busyText: ""
+        property bool busy: false
+        property int busyMs: 1400
+        property bool _clickBusy: false
+        readonly property bool isBusy: busy || _clickBusy
+        hoverEnabled: enabled
+        opacity: enabled || isBusy ? 1 : 0.42
         font.pixelSize: 12
         font.letterSpacing: 0.6
         leftPadding: 12
         rightPadding: 12
         implicitHeight: 34
+        Timer {
+            id: clickBusyTimer
+            interval: Math.max(1, hudBtn.busyMs)
+            repeat: false
+            onTriggered: hudBtn._clickBusy = false
+        }
+        onClicked: {
+            if (hudBtn.busyText === "" || hudBtn.busy || hudBtn.busyMs <= 0)
+                return
+            hudBtn._clickBusy = true
+            clickBusyTimer.restart()
+        }
         background: Rectangle {
-            color: !hudBtn.enabled ? "#0A1018" : hudBtn.down ? Qt.darker(hudBtn.buttonColor, 1.2) : hudBtn.hovered ? Qt.lighter(hudBtn.buttonColor, 1.18) : hudBtn.buttonColor
-            border.color: hudBtn.hovered || hudBtn.down ? root.accent : root.outline
+            color: !hudBtn.enabled && !hudBtn.isBusy ? "#070B12" : hudBtn.down || hudBtn.isBusy ? Qt.darker(hudBtn.buttonColor, 1.2) : hudBtn.hovered ? Qt.lighter(hudBtn.buttonColor, 1.18) : hudBtn.buttonColor
+            border.color: !hudBtn.enabled && !hudBtn.isBusy ? "#152838" : hudBtn.hovered || hudBtn.down || hudBtn.isBusy ? root.accent : root.outline
             border.width: 1
             radius: 2
         }
         contentItem: Text {
-            text: hudBtn.text
-            color: hudBtn.enabled ? hudBtn.foregroundColor : root.textSecondary
+            text: (hudBtn.isBusy && hudBtn.busyText !== "") ? hudBtn.busyText : hudBtn.text
+            color: hudBtn.enabled || hudBtn.isBusy ? hudBtn.foregroundColor : root.textSecondary
             font: hudBtn.font
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
@@ -268,22 +376,35 @@ ApplicationWindow {
             restoreSplit(controlCenter, layoutSettings.centerState)
             restoreSplit(controlRight, layoutSettings.rightState)
             restoreSplit(calendarSplit, layoutSettings.calendarState)
+            root.maybeAskLocation()
         }
+    }
+
+    function maybeAskLocation() {
+        const configured = !!backend.selectedDevice.location_configured
+        if (!configured) {
+            if (!locationDialog.visible)
+                locationDialog.open()
+            return
+        }
+        if (locationDialog.visible)
+            locationDialog.close()
     }
 
     component HudField: TextField {
         id: field
-        color: root.textPrimary
+        color: field.enabled ? root.textPrimary : root.textSecondary
         placeholderTextColor: root.textSecondary
         selectedTextColor: "#041018"
         selectionColor: root.accent
+        opacity: field.enabled ? 1 : 0.45
         font.pixelSize: 13
         leftPadding: 10
         rightPadding: 10
         implicitHeight: 34
         background: Rectangle {
-            color: "#0A1524"
-            border.color: field.activeFocus ? root.accent : root.outline
+            color: field.enabled ? "#0A1524" : "#070B12"
+            border.color: !field.enabled ? "#152838" : field.activeFocus ? root.accent : root.outline
             border.width: 1
             radius: 2
         }
@@ -301,9 +422,10 @@ ApplicationWindow {
         palette.buttonText: root.textPrimary
         palette.highlight: "#123C52"
         palette.highlightedText: root.accent
+        opacity: combo.enabled ? 1 : 0.45
         background: Rectangle {
-            color: "#0A1524"
-            border.color: combo.hovered || combo.down ? root.accent : root.outline
+            color: combo.enabled ? "#0A1524" : "#070B12"
+            border.color: !combo.enabled ? "#152838" : combo.hovered || combo.down ? root.accent : root.outline
             border.width: 1
             radius: 2
         }
@@ -311,14 +433,14 @@ ApplicationWindow {
             leftPadding: 10
             rightPadding: 22
             text: combo.displayText
-            color: root.textPrimary
+            color: combo.enabled ? root.textPrimary : root.textSecondary
             font: combo.font
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
         }
         indicator: Text {
             text: "▾"
-            color: root.accent
+            color: combo.enabled ? root.accent : root.textSecondary
             anchors.right: parent.right
             anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
@@ -354,6 +476,189 @@ ApplicationWindow {
                 implicitHeight: Math.min(contentHeight, 240)
                 model: combo.popup.visible ? combo.delegateModel : null
                 currentIndex: combo.highlightedIndex
+            }
+        }
+    }
+
+    component HudSearchCombo: Item {
+        id: searchCombo
+        property var allItems: []
+        property int filterLimit: 120
+        property string selectedName: ""
+        property alias editText: searchField.text
+        property bool listOpen: false
+        property var filtered: []
+        signal itemChosen(var item)
+        implicitHeight: searchField.implicitHeight + (listOpen && filtered.length ? suggestionFrame.height + 3 : 0)
+        implicitWidth: 240
+        Layout.preferredHeight: implicitHeight
+
+        function refreshFilter() {
+            const needle = String(searchField.text || "").toLowerCase().replace(/_/g, " ")
+            const items = searchCombo.allItems || []
+            const ranked = []
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i]
+                const hay = [item.name, item.label, item.comment].join(" ").toLowerCase().replace(/_/g, " ")
+                if (needle && hay.indexOf(needle) < 0)
+                    continue
+                const city = String(item.name).split("/").pop().toLowerCase().replace(/_/g, " ")
+                let score = 2
+                if (!needle)
+                    score = 0
+                else if (city === needle || String(item.name).toLowerCase() === needle)
+                    score = 0
+                else if (city.startsWith(needle) || String(item.name).toLowerCase().replace(/_/g, " ").startsWith(needle))
+                    score = 1
+                ranked.push({score: score, name: item.name, item: item})
+            }
+            if (needle)
+                ranked.sort(function (a, b) { return a.score - b.score || a.name.localeCompare(b.name) })
+            const cap = needle ? searchCombo.filterLimit : ranked.length
+            const out = []
+            for (let i = 0; i < ranked.length && i < cap; i++)
+                out.push(ranked[i].item)
+            searchCombo.filtered = out
+            suggestionView.currentIndex = out.length ? 0 : -1
+        }
+
+        function setFromName(name) {
+            searchCombo.selectedName = name || ""
+            searchCombo.listOpen = false
+            let label = name || ""
+            const items = searchCombo.allItems || []
+            for (let i = 0; i < items.length; i++) {
+                if (items[i].name === name) {
+                    label = items[i].label
+                    break
+                }
+            }
+            searchField.text = label
+        }
+
+        function chooseItem(item) {
+            if (!item)
+                return
+            searchCombo.selectedName = item.name || ""
+            searchCombo.listOpen = false
+            searchField.text = item.label || item.name || ""
+            searchCombo.itemChosen(item)
+        }
+
+        function acceptTyped() {
+            if (listOpen && suggestionView.currentIndex >= 0 && suggestionView.currentIndex < filtered.length) {
+                chooseItem(filtered[suggestionView.currentIndex])
+                return
+            }
+            backend.lookupLocation(searchField.text)
+        }
+
+        HudField {
+            id: searchField
+            width: parent.width
+            placeholderText: "Search city or timezone"
+            rightPadding: 26
+            Keys.priority: Keys.BeforeItem
+            onTextEdited: {
+                searchCombo.selectedName = ""
+                searchCombo.refreshFilter()
+                searchCombo.listOpen = true
+            }
+            onActiveFocusChanged: {
+                if (activeFocus) {
+                    closeTimer.stop()
+                    searchCombo.refreshFilter()
+                    searchCombo.listOpen = true
+                } else {
+                    closeTimer.start()
+                }
+            }
+            Keys.onPressed: function (event) {
+                if (event.key === Qt.Key_Down) {
+                    event.accepted = true
+                    searchCombo.refreshFilter()
+                    searchCombo.listOpen = true
+                    if (suggestionView.currentIndex < filtered.length - 1)
+                        suggestionView.incrementCurrentIndex()
+                } else if (event.key === Qt.Key_Up) {
+                    event.accepted = true
+                    if (suggestionView.currentIndex > 0)
+                        suggestionView.decrementCurrentIndex()
+                } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                    event.accepted = true
+                    searchCombo.acceptTyped()
+                } else if (event.key === Qt.Key_Escape) {
+                    event.accepted = true
+                    searchCombo.listOpen = false
+                }
+            }
+        }
+        Text {
+            text: "▾"
+            color: root.accent
+            z: 2
+            anchors.right: searchField.right
+            anchors.rightMargin: 8
+            anchors.verticalCenter: searchField.verticalCenter
+            MouseArea {
+                anchors.fill: parent
+                anchors.margins: -8
+                onClicked: {
+                    if (searchCombo.listOpen) {
+                        searchCombo.listOpen = false
+                        return
+                    }
+                    searchField.forceActiveFocus()
+                    searchCombo.refreshFilter()
+                    searchCombo.listOpen = true
+                }
+            }
+        }
+        Timer {
+            id: closeTimer
+            interval: 180
+            onTriggered: if (!searchField.activeFocus) searchCombo.listOpen = false
+        }
+        Rectangle {
+            id: suggestionFrame
+            visible: searchCombo.listOpen && searchCombo.filtered.length > 0
+            width: Math.max(parent.width, 360)
+            height: Math.min(Math.max(searchCombo.filtered.length, 1), 8) * 32 + 2
+            y: searchField.height + 3
+            z: 40
+            color: "#02060C"
+            border.color: root.accent
+            ListView {
+                id: suggestionView
+                anchors.fill: parent
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                model: searchCombo.filtered
+                currentIndex: 0
+                ScrollBar.vertical: ScrollBar {}
+                delegate: Rectangle {
+                    width: suggestionView.width
+                    height: 32
+                    readonly property var item: modelData
+                    readonly property int row: index
+                    color: suggestionView.currentIndex === row ? "#123C52" : "#02060C"
+                    Text {
+                        anchors.fill: parent
+                        leftPadding: 10
+                        rightPadding: 10
+                        text: item && (item.label || item.name) || ""
+                        color: suggestionView.currentIndex === row ? root.accent : root.textPrimary
+                        font.pixelSize: 13
+                        verticalAlignment: Text.AlignVCenter
+                        elide: Text.ElideRight
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        onEntered: suggestionView.currentIndex = row
+                        onClicked: searchCombo.chooseItem(item)
+                    }
+                }
             }
         }
     }
@@ -472,6 +777,10 @@ ApplicationWindow {
                 DeviceCombo {}
                 HudButton {
                     text: backend.selectedDevice.connected ? "DISCONNECT" : "CONNECT"
+                    busy: backend.selectedDevice.connecting || backend.selectedDevice.disconnecting
+                    busyText: backend.selectedDevice.connecting ? "CONNECTING…" : "DISCONNECTING…"
+                    busyMs: 0
+                    enabled: !busy
                     buttonColor: backend.selectedDevice.connected ? "#143028" : "#0E3A48"
                     foregroundColor: root.accent
                     onClicked: backend.selectedDevice.connected
@@ -480,11 +789,21 @@ ApplicationWindow {
                 }
                 HudButton {
                     text: backend.schedulerEnabled ? "SCHEDULER ON" : "SCHEDULER OFF"
+                    busyText: "UPDATING…"
                     buttonColor: backend.schedulerEnabled ? "#143028" : root.surfaceHigh
                     foregroundColor: backend.schedulerEnabled ? root.success : root.textPrimary
                     onClicked: backend.setSchedulerEnabled(!backend.schedulerEnabled)
                 }
-                HudButton { text: "STOP ALL"; buttonColor: "#3A1218"; foregroundColor: root.danger; onClicked: backend.stopDevice(backend.selectedDeviceId) }
+                HudButton {
+                    text: "STOP ALL"
+                    busy: backend.selectedDevice.pending_action === "stop_all"
+                    busyText: "STOPPING…"
+                    busyMs: 0
+                    enabled: root.commandEnabled("stop_all")
+                    buttonColor: "#3A1218"
+                    foregroundColor: root.danger
+                    onClicked: backend.stopDevice(backend.selectedDeviceId)
+                }
                 Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -581,6 +900,7 @@ ApplicationWindow {
                             Image {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
+                                Layout.preferredHeight: 0
                                 source: root.asset("hud-radar.png")
                                 fillMode: Image.PreserveAspectFit
                             }
@@ -648,13 +968,30 @@ ApplicationWindow {
                             FieldLabel { text: "FOCUS" }
                             RowLayout {
                                 Layout.fillWidth: true
-                                HudButton { text: "NEAR"; Layout.fillWidth: true; onClicked: backend.manualFocus(backend.selectedDeviceId, 1) }
-                                HudButton { text: "FAR"; Layout.fillWidth: true; onClicked: backend.manualFocus(backend.selectedDeviceId, 0) }
+                                HudButton {
+                                    text: "NEAR"
+                                    Layout.fillWidth: true
+                                    busy: backend.selectedDevice.pending_action === "focus_near"
+                                    busyText: "FOCUSING…"
+                                    busyMs: 0
+                                    enabled: root.commandEnabled("focus_near")
+                                    onClicked: backend.manualFocus(backend.selectedDeviceId, 1)
+                                }
+                                HudButton {
+                                    text: "FAR"
+                                    Layout.fillWidth: true
+                                    busy: backend.selectedDevice.pending_action === "focus_far"
+                                    busyText: "FOCUSING…"
+                                    busyMs: 0
+                                    enabled: root.commandEnabled("focus_far")
+                                    onClicked: backend.manualFocus(backend.selectedDeviceId, 0)
+                                }
                             }
                             FieldLabel { text: "FILTER" }
                             HudCombo {
                                 id: liveFilter
                                 Layout.fillWidth: true
+                                enabled: root.commandEnabled("set_ir")
                                 model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
                                 onActivated: backend.setCameraParam(backend.selectedDeviceId, "ir", currentText)
                             }
@@ -662,6 +999,7 @@ ApplicationWindow {
                             HudCombo {
                                 id: liveCamera
                                 Layout.fillWidth: true
+                                enabled: !root.scopeOccupied && !root.scopeLinking
                                 model: ["Tele", "Wide"]
                                 Component.onCompleted: currentIndex = backend.selectedDevice.camera === "wide" ? 1 : 0
                                 onActivated: backend.setLiveCamera(backend.selectedDeviceId, currentIndex === 1 ? "wide" : "tele")
@@ -676,6 +1014,7 @@ ApplicationWindow {
                                 HudField {
                                     id: liveExposure
                                     Layout.fillWidth: true
+                                    enabled: root.cameraLiveEnabled
                                     placeholderText: "sec"
                                     text: "15"
                                     onEditingFinished: backend.setCameraParam(backend.selectedDeviceId, "exposure", text)
@@ -683,6 +1022,7 @@ ApplicationWindow {
                                 HudField {
                                     id: liveGain
                                     Layout.fillWidth: true
+                                    enabled: root.commandEnabled("set_gain")
                                     placeholderText: "gain"
                                     text: "80"
                                     onEditingFinished: backend.setCameraParam(backend.selectedDeviceId, "gain", text)
@@ -705,7 +1045,28 @@ ApplicationWindow {
                                 id: previewHost
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
+                                Layout.preferredHeight: 0
                                 property string statusText: backend.selectedDevice.connected ? backend.videoUrl : "Connect a telescope to start the stream"
+                                readonly property bool previewFailed: {
+                                    const s = String(backend.previewStatus || "").toLowerCase()
+                                    return s.indexOf("fail") >= 0 || s.indexOf("could not") >= 0
+                                }
+                                readonly property string actionLabel: {
+                                    if (!backend.previewActive || backend.previewPlaying)
+                                        return "STARTING CAMERA…"
+                                    const s = String(backend.previewStatus || "").toLowerCase()
+                                    if (s.indexOf("fail") >= 0 || s.indexOf("could not") >= 0)
+                                        return "PREVIEW FAILED"
+                                    if (s.indexOf("udp") >= 0)
+                                        return "RETRYING UDP…"
+                                    if (s.indexOf("waiting") >= 0)
+                                        return "WAITING FOR STREAM…"
+                                    if (s.indexOf("tcp") >= 0 || s.indexOf("opening") >= 0)
+                                        return "OPENING STREAM…"
+                                    if (s.indexOf("starting") >= 0)
+                                        return "STARTING CAMERA…"
+                                    return "STARTING PREVIEW…"
+                                }
 
                                 function startPreview() {
                                     if (!backend.selectedDevice.connected) {
@@ -713,6 +1074,7 @@ ApplicationWindow {
                                         backend.uiLog("warning", "Preview needs an active telescope connection")
                                         return
                                     }
+                                    statusText = "Starting live camera…"
                                     backend.startPreview(backend.selectedDeviceId)
                                 }
 
@@ -786,6 +1148,10 @@ ApplicationWindow {
                                     HudButton {
                                         anchors.horizontalCenter: parent.horizontalCenter
                                         text: "START PREVIEW"
+                                        busyText: previewHost.actionLabel
+                                        busy: backend.previewActive && !backend.previewPlaying
+                                        busyMs: backend.selectedDevice.connected && !backend.previewActive ? 1800 : 0
+                                        enabled: root.commandEnabled("open_camera") && (!backend.previewActive || backend.previewPlaying || previewHost.previewFailed)
                                         buttonColor: "#0E3A48"
                                         foregroundColor: root.accent
                                         onClicked: previewHost.startPreview()
@@ -802,8 +1168,8 @@ ApplicationWindow {
                                     Row {
                                         anchors.centerIn: parent
                                         spacing: 7
-                                        Rectangle { width: 8; height: 8; radius: 4; color: backend.previewPlaying ? root.danger : "#64748B"; anchors.verticalCenter: parent.verticalCenter }
-                                        Text { text: backend.previewPlaying ? "LIVE" : "STANDBY"; color: root.textPrimary; font.pixelSize: 11; font.bold: true }
+                                        Rectangle { width: 8; height: 8; radius: 4; color: backend.previewPlaying ? root.danger : (backend.previewActive ? root.warning : "#64748B"); anchors.verticalCenter: parent.verticalCenter }
+                                        Text { text: backend.previewPlaying ? "LIVE" : (backend.previewActive ? "STARTING" : "STANDBY"); color: root.textPrimary; font.pixelSize: 11; font.bold: true }
                                     }
                                 }
                                 HudButton {
@@ -812,6 +1178,7 @@ ApplicationWindow {
                                     anchors.margins: 14
                                     visible: backend.previewActive
                                     text: "STOP PREVIEW"
+                                    busyText: "STOPPING…"
                                     onClicked: previewHost.stopPreview()
                                 }
                             }
@@ -845,6 +1212,10 @@ ApplicationWindow {
                                                 rightPadding: 4
                                                 font.pixelSize: 9
                                                 text: modelData[0]
+                                                busyText: modelData[0] + "…"
+                                                busy: backend.selectedDevice.pending_action === modelData[1]
+                                                busyMs: 0
+                                                enabled: root.commandEnabled(modelData[1])
                                                 buttonColor: (modelData[1] === "reboot" || modelData[1] === "power_down") ? "#3A1218" : root.surfaceHigh
                                                 foregroundColor: (modelData[1] === "reboot" || modelData[1] === "power_down") ? root.danger : root.textPrimary
                                                 onClicked: root.requestDeviceAction(modelData[1], modelData[0])
@@ -889,6 +1260,7 @@ ApplicationWindow {
                             Item {
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 118
+                                opacity: root.motionEnabled ? 1 : 0.38
                                 Image { anchors.fill: parent; source: root.asset("hud-dpad.png"); fillMode: Image.PreserveAspectFit }
                                 Grid {
                                     anchors.centerIn: parent
@@ -906,8 +1278,11 @@ ApplicationWindow {
                                             height: 34
                                             MouseArea {
                                                 anchors.fill: parent
+                                                enabled: root.motionEnabled
+                                                cursorShape: root.motionEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                                                 onPressed: modelData[0] < 0 ? backend.deviceAction(backend.selectedDeviceId, "stop_motors") : backend.joystick(backend.selectedDeviceId, modelData[0], root.joySpeed)
                                                 onReleased: backend.deviceAction(backend.selectedDeviceId, "stop_motors")
+                                                onCanceled: backend.deviceAction(backend.selectedDeviceId, "stop_motors")
                                             }
                                         }
                                     }
@@ -915,10 +1290,12 @@ ApplicationWindow {
                             }
                             RowLayout {
                                 Layout.fillWidth: true
+                                opacity: root.motionEnabled ? 1 : 0.42
                                 Text { text: "SPEED"; color: root.textSecondary; font.pixelSize: 10 }
                                 Slider {
                                     id: speedSlider
                                     Layout.fillWidth: true
+                                    enabled: root.motionEnabled
                                     from: 0.2
                                     to: 1
                                     value: 1
@@ -936,11 +1313,15 @@ ApplicationWindow {
                             Item {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
+                                Layout.preferredHeight: 0
                                 ListView {
                                     id: upcomingList
                                     anchors.fill: parent
                                     clip: true
                                     spacing: 4
+                                    boundsBehavior: Flickable.StopAtBounds
+                                    ScrollBar.vertical: HiddenBar {}
+                                    ScrollBar.horizontal: HiddenBar {}
                                     model: backend.upcomingSessions
                                     delegate: Rectangle {
                                         required property var modelData
@@ -967,19 +1348,33 @@ ApplicationWindow {
                             title: "LIVE LOG"
                             SplitView.fillHeight: true
                             SplitView.minimumHeight: 80
-                            ListView {
-                                id: logList
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                clip: true
-                                spacing: 2
-                                model: backend.logs
+                            headerExtra: HudButton {
+                                text: backend.showDebugLogs ? "DEBUG ON" : "DEBUG"
+                                busyText: "UPDATING…"
+                                implicitHeight: 22
+                                implicitWidth: 78
+                                font.pixelSize: 10
+                                buttonColor: backend.showDebugLogs ? "#143028" : root.surfaceHigh
+                                foregroundColor: backend.showDebugLogs ? root.success : root.textSecondary
+                                onClicked: backend.setShowDebugLogs(!backend.showDebugLogs)
+                            }
+                                ListView {
+                                    id: logList
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    Layout.preferredHeight: 0
+                                    clip: true
+                                    spacing: 2
+                                    boundsBehavior: Flickable.StopAtBounds
+                                    ScrollBar.vertical: HiddenBar {}
+                                    ScrollBar.horizontal: HiddenBar {}
+                                    model: backend.logs
                                 onCountChanged: positionViewAtEnd()
                                 delegate: Text {
                                     required property var modelData
                                     width: ListView.view.width
                                     text: modelData.time + "  [" + modelData.device + "]  " + modelData.message
-                                    color: modelData.level === "ERROR" ? root.danger : modelData.level === "SUCCESS" ? root.success : "#B7D4E2"
+                                    color: modelData.level === "ERROR" ? root.danger : modelData.level === "SUCCESS" ? root.success : modelData.level === "WARNING" ? root.warning : modelData.level === "SDK" ? root.textSecondary : "#B7D4E2"
                                     font.family: "Cascadia Mono"
                                     font.pixelSize: 10
                                     wrapMode: Text.Wrap
@@ -1022,7 +1417,7 @@ ApplicationWindow {
                             HudButton { text: "‹"; implicitWidth: 40; onClicked: calendarPage.shownMonth = new Date(calendarPage.shownMonth.getFullYear(), calendarPage.shownMonth.getMonth() - 1, 1) }
                             HudButton { text: "TODAY"; onClicked: { calendarPage.shownMonth = new Date(); calendarPage.selectedDate = new Date() } }
                             HudButton { text: "›"; implicitWidth: 40; onClicked: calendarPage.shownMonth = new Date(calendarPage.shownMonth.getFullYear(), calendarPage.shownMonth.getMonth() + 1, 1) }
-                            HudButton { text: "+ NEW SESSION"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: sessionDialog.openForDate(calendarPage.dateKey(calendarPage.selectedDate)) }
+                            HudButton { text: "+ NEW SESSION"; busyText: "OPENING…"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: sessionDialog.openForDate(calendarPage.dateKey(calendarPage.selectedDate)) }
                         }
                         RowLayout {
                             Layout.fillWidth: true
@@ -1122,10 +1517,14 @@ ApplicationWindow {
                         Item {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
+                            Layout.preferredHeight: 0
                             ListView {
                                 anchors.fill: parent
                                 clip: true
                                 spacing: 6
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: HiddenBar {}
+                                ScrollBar.horizontal: HiddenBar {}
                                 model: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
                                 delegate: Rectangle {
                                     required property var modelData
@@ -1140,8 +1539,8 @@ ApplicationWindow {
                                         Text { text: modelData.start_time + "  " + modelData.target_name; color: root.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                         Text { text: modelData.subtitle + " · " + modelData.duration_text; color: root.textSecondary; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
                                         RowLayout {
-                                            HudButton { text: "EDIT"; implicitHeight: 24; enabled: modelData.status !== "running"; onClicked: sessionDialog.openExisting(modelData) }
-                                            HudButton { text: "RUN"; implicitHeight: 24; enabled: modelData.status !== "running"; onClicked: backend.runNow(modelData.id) }
+                                            HudButton { text: "EDIT"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
+                                            HudButton { text: "RUN"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
                                         }
                                     }
                                 }
@@ -1157,8 +1556,21 @@ ApplicationWindow {
             }
 
             Item {
-                ColumnLayout {
+                Flickable {
+                    id: sessionsFlick
                     anchors.fill: parent
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.VerticalFlick
+                    contentWidth: width
+                    contentHeight: Math.max(height, sessionsColumn.implicitHeight)
+                    interactive: contentHeight > height + 1
+                    ScrollBar.vertical: HiddenBar {}
+                    ScrollBar.horizontal: HiddenBar {}
+                ColumnLayout {
+                    id: sessionsColumn
+                    width: sessionsFlick.width
+                    height: Math.max(implicitHeight, sessionsFlick.height)
                     spacing: 10
                     RowLayout {
                         Layout.fillWidth: true
@@ -1167,9 +1579,9 @@ ApplicationWindow {
                             Text { text: "SESSIONS"; color: root.textPrimary; font.pixelSize: 22; font.letterSpacing: 2 }
                             Text { text: "Templates, scheduled nights, Stellarium and Telescopius import"; color: root.textSecondary }
                         }
-                        HudButton { text: "IMPORT STELLARIUM"; onClicked: backend.importStellarium() }
-                        HudButton { text: "IMPORT TELESCOPIUS"; onClicked: telescopiusDialog.open() }
-                        HudButton { text: "+ MANUAL SESSION"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: sessionDialog.openForDate(Qt.formatDate(new Date(), "yyyy-MM-dd")) }
+                        HudButton { text: "IMPORT STELLARIUM"; busy: backend.uiBusy === "stellarium"; busyText: "IMPORTING…"; busyMs: 0; enabled: backend.uiBusy === ""; onClicked: backend.importStellarium() }
+                        HudButton { text: "IMPORT TELESCOPIUS"; busy: backend.uiBusy === "telescopius"; busyText: backend.uiBusy === "telescopius" ? "IMPORTING…" : "OPENING…"; enabled: backend.uiBusy === ""; onClicked: telescopiusDialog.open() }
+                        HudButton { text: "+ MANUAL SESSION"; busyText: "OPENING…"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: sessionDialog.openForDate(Qt.formatDate(new Date(), "yyyy-MM-dd")) }
                     }
                     TabBar {
                         id: sessionsTabs
@@ -1192,12 +1604,17 @@ ApplicationWindow {
                         currentIndex: sessionsTabs.currentIndex
                         Layout.fillWidth: true
                         Layout.fillHeight: true
+                        Layout.minimumHeight: 280
+                        Layout.preferredHeight: 0
                         Item {
                             EmptyHint { visible: backend.sessions.length === 0; text: "No scheduled sessions yet. Create one or import a target list."; anchors.centerIn: parent }
                             ListView {
                                 anchors.fill: parent
                                 clip: true
                                 spacing: 8
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: HiddenBar {}
+                                ScrollBar.horizontal: HiddenBar {}
                                 model: backend.sessions
                                 delegate: HudPanel {
                                     required property var modelData
@@ -1218,8 +1635,8 @@ ApplicationWindow {
                                             width: 86; height: 24; color: root.statusFill(modelData.status); border.color: root.statusColor(modelData.status)
                                             Text { anchors.centerIn: parent; text: modelData.status.toUpperCase(); color: root.statusColor(modelData.status); font.pixelSize: 9; font.bold: true }
                                         }
-                                        HudButton { text: "EDIT"; enabled: modelData.status !== "running"; onClicked: sessionDialog.openExisting(modelData) }
-                                        HudButton { text: "RUN"; enabled: modelData.status !== "running"; onClicked: backend.runNow(modelData.id) }
+                                        HudButton { text: "EDIT"; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
+                                        HudButton { text: "RUN"; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
                                     }
                                     TapHandler { acceptedButtons: Qt.RightButton; onTapped: scheduledMenu.popup() }
                                     Menu {
@@ -1242,6 +1659,9 @@ ApplicationWindow {
                                 clip: true
                                 cellWidth: 340
                                 cellHeight: 170
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: HiddenBar {}
+                                ScrollBar.horizontal: HiddenBar {}
                                 model: backend.templates
                                 delegate: HudPanel {
                                     required property var modelData
@@ -1259,29 +1679,100 @@ ApplicationWindow {
                                     Text { text: modelData.summary; color: root.textSecondary; Layout.fillWidth: true }
                                     RowLayout {
                                         Layout.fillWidth: true
-                                        HudButton { text: "SCHEDULE"; Layout.fillWidth: true; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: backend.scheduleTemplate(modelData.id) }
-                                        HudButton { text: "DELETE"; onClicked: backend.deleteTemplate(modelData.id) }
+                                        HudButton { text: "SCHEDULE"; Layout.fillWidth: true; busyText: "SCHEDULING…"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: backend.scheduleTemplate(modelData.id) }
+                                        HudButton { text: "DELETE"; busyText: "DELETING…"; onClicked: backend.deleteTemplate(modelData.id) }
                                     }
                                 }
                             }
                         }
                     }
                 }
+                }
             }
 
             Item {
-                ColumnLayout {
+                id: historyPage
+                property string query: ""
+                property int outcomeFilter: 0
+                property int expandedIndex: -1
+                readonly property var filteredHistory: {
+                    const items = backend.history || []
+                    const q = historyPage.query.trim().toLowerCase()
+                    const out = []
+                    for (let i = 0; i < items.length; i++) {
+                        const item = items[i]
+                        if (historyPage.outcomeFilter === 1 && !item.ok)
+                            continue
+                        if (historyPage.outcomeFilter === 2 && item.ok)
+                            continue
+                        if (q) {
+                            const hay = [item.date, item.target_name, item.device_name, item.outcome, item.summary, item.notes].join(" ").toLowerCase()
+                            if (hay.indexOf(q) < 0)
+                                continue
+                        }
+                        out.push(item)
+                    }
+                    return out
+                }
+                readonly property int filteredCount: filteredHistory.length
+                readonly property int filteredFrames: filteredHistory.reduce((sum, item) => sum + (item.frame_count || 0), 0)
+                readonly property int filteredOk: filteredHistory.filter(item => item.ok).length
+                readonly property int filteredSeconds: filteredHistory.reduce((sum, item) => sum + (item.actual_duration_seconds || 0), 0)
+                function formatHours(seconds) {
+                    const hours = Math.max(0, seconds) / 3600
+                    return hours >= 10 ? hours.toFixed(0) + "h" : hours.toFixed(1) + "h"
+                }
+                function resetExpanded() { historyPage.expandedIndex = -1 }
+                onQueryChanged: resetExpanded()
+                onOutcomeFilterChanged: resetExpanded()
+                Connections { target: backend; function onHistoryChanged() { historyPage.resetExpanded() } }
+
+                Flickable {
+                    id: historyFlick
                     anchors.fill: parent
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.VerticalFlick
+                    contentWidth: width
+                    contentHeight: Math.max(height, historyColumn.implicitHeight)
+                    interactive: contentHeight > height + 1
+                    ScrollBar.vertical: HiddenBar {}
+                    ScrollBar.horizontal: HiddenBar {}
+                ColumnLayout {
+                    id: historyColumn
+                    width: historyFlick.width
+                    height: Math.max(implicitHeight, historyFlick.height)
                     spacing: 10
-                    Text { text: "HISTORY"; color: root.textPrimary; font.pixelSize: 22; font.letterSpacing: 2 }
-                    Text { text: "Permanent record of planned and actual telescope work"; color: root.textSecondary }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Text { text: "HISTORY"; color: root.textPrimary; font.pixelSize: 22; font.letterSpacing: 2 }
+                            Text { text: "Click a run for timing, frames and outcome details"; color: root.textSecondary }
+                        }
+                        HudButton {
+                            text: "CLEAR HISTORY"
+                            enabled: backend.history.length > 0
+                            busyText: "CLEARING…"
+                            buttonColor: "#3A1218"
+                            foregroundColor: root.danger
+                            onClicked: {
+                                confirmDialog.kind = "clearHistory"
+                                confirmDialog.headingText = "CLEAR HISTORY"
+                                confirmDialog.confirmLabel = "CLEAR ALL"
+                                confirmDialog.summary = "Delete every recorded run? This cannot be undone."
+                                confirmDialog.open()
+                            }
+                        }
+                    }
                     RowLayout {
                         Layout.fillWidth: true
                         Repeater {
                             model: [
-                                ["SESSIONS", backend.history.length],
-                                ["FRAMES", backend.history.reduce((sum, item) => sum + item.frame_count, 0)],
-                                ["DEVICES", backend.devices.length]
+                                ["SESSIONS", String(historyPage.filteredCount)],
+                                ["FRAMES", String(historyPage.filteredFrames)],
+                                ["SUCCESS", historyPage.filteredCount ? Math.round(100 * historyPage.filteredOk / historyPage.filteredCount) + "%" : "—"],
+                                ["IMAGED", historyPage.formatHours(historyPage.filteredSeconds)]
                             ]
                             delegate: HudPanel {
                                 required property var modelData
@@ -1292,56 +1783,215 @@ ApplicationWindow {
                             }
                         }
                     }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        HudField {
+                            Layout.fillWidth: true
+                            placeholderText: "Search target, device, or outcome"
+                            onTextChanged: historyPage.query = text
+                        }
+                        HudCombo {
+                            Layout.preferredWidth: 160
+                            model: ["All outcomes", "Completed", "Failed"]
+                            currentIndex: historyPage.outcomeFilter
+                            onActivated: historyPage.outcomeFilter = currentIndex
+                        }
+                    }
                     HudPanel {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        EmptyHint { Layout.alignment: Qt.AlignHCenter; visible: backend.history.length === 0; text: "No completed runs yet. History appears after a session finishes." }
+                        Layout.minimumHeight: 240
+                        Layout.preferredHeight: 0
+                        EmptyHint {
+                            Layout.alignment: Qt.AlignHCenter
+                            visible: historyPage.filteredCount === 0
+                            text: backend.history.length === 0
+                                ? "No completed runs yet. History appears after a session finishes."
+                                : "No runs match this search."
+                        }
                         ColumnLayout {
-                            visible: backend.history.length > 0
+                            visible: historyPage.filteredCount > 0
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            RowLayout {
+                            Layout.preferredHeight: 0
+                            spacing: 0
+                            Item {
                                 Layout.fillWidth: true
-                                Repeater {
-                                    model: [
-                                        {label: "DATE", w: 1}, {label: "TARGET", w: 1.4}, {label: "DEVICE", w: 1},
-                                        {label: "PLANNED", w: 0.8}, {label: "ACTUAL", w: 0.8}, {label: "OUTCOME", w: 1.2}
-                                    ]
-                                    Text { required property var modelData; text: modelData.label; color: root.accent; font.pixelSize: 10; font.bold: true; Layout.fillWidth: true; Layout.preferredWidth: 80 * modelData.w }
+                                Layout.preferredHeight: 32
+                                Row {
+                                    anchors.fill: parent
+                                    Text { width: 22; height: parent.height; text: ""; color: root.accent }
+                                    Repeater {
+                                        model: [
+                                            {label: "DATE", w: 0.12}, {label: "TARGET", w: 0.24}, {label: "DEVICE", w: 0.13},
+                                            {label: "FRAMES", w: 0.08}, {label: "PLANNED", w: 0.10}, {label: "ACTUAL", w: 0.10},
+                                            {label: "OUTCOME", w: 0.23}
+                                        ]
+                                        Text {
+                                            required property var modelData
+                                            width: (parent.width - 22) * modelData.w
+                                            height: parent.height
+                                            text: modelData.label
+                                            color: root.accent
+                                            font.pixelSize: 10
+                                            font.bold: true
+                                            verticalAlignment: Text.AlignVCenter
+                                            elide: Text.ElideRight
+                                            leftPadding: 6
+                                        }
+                                    }
                                 }
                             }
                             Rectangle { Layout.fillWidth: true; height: 1; color: root.outline }
                             ListView {
+                                id: historyList
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
+                                Layout.preferredHeight: 0
                                 clip: true
-                                model: backend.history
+                                spacing: 0
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: HiddenBar {}
+                                ScrollBar.horizontal: HiddenBar {}
+                                model: historyPage.filteredHistory
                                 delegate: Rectangle {
+                                    id: historyRow
                                     required property var modelData
                                     required property int index
+                                    readonly property bool expanded: historyPage.expandedIndex === index
                                     width: ListView.view.width
-                                    height: 42
-                                    color: index % 2 ? "#140A1520" : "transparent"
-                                    RowLayout {
-                                        anchors.fill: parent
-                                        Text { text: modelData.date; color: root.textPrimary; Layout.fillWidth: true }
-                                        Text { text: modelData.target_name; color: root.textPrimary; Layout.fillWidth: true; elide: Text.ElideRight }
-                                        Text { text: modelData.device_name; color: root.accent; Layout.fillWidth: true; elide: Text.ElideRight }
-                                        Text { text: modelData.planned_text; color: root.textSecondary; Layout.fillWidth: true }
-                                        Text { text: modelData.actual_text; color: root.textSecondary; Layout.fillWidth: true }
-                                        Text { text: modelData.outcome; color: modelData.outcome === "Completed" ? root.success : root.danger; Layout.fillWidth: true; elide: Text.ElideRight }
+                                    height: rowBody.implicitHeight
+                                    color: expanded ? "#22123C52" : (index % 2 ? "#140A1520" : "transparent")
+                                    border.color: expanded ? root.outline : "transparent"
+                                    Column {
+                                        id: rowBody
+                                        width: parent.width
+                                        Item {
+                                            width: parent.width
+                                            height: 42
+                                            Row {
+                                                anchors.fill: parent
+                                                Text {
+                                                    width: 22
+                                                    height: parent.height
+                                                    text: historyRow.expanded ? "▾" : "▸"
+                                                    color: root.accent
+                                                    font.pixelSize: 10
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                    verticalAlignment: Text.AlignVCenter
+                                                }
+                                                Repeater {
+                                                    model: [
+                                                        {text: historyRow.modelData.date, w: 0.12, color: root.textPrimary},
+                                                        {text: historyRow.modelData.target_name, w: 0.24, color: root.textPrimary},
+                                                        {text: historyRow.modelData.device_name, w: 0.13, color: root.accent},
+                                                        {text: String(historyRow.modelData.frame_count || 0), w: 0.08, color: root.textSecondary},
+                                                        {text: historyRow.modelData.planned_text, w: 0.10, color: root.textSecondary},
+                                                        {text: historyRow.modelData.actual_text, w: 0.10, color: root.textSecondary},
+                                                        {text: historyRow.modelData.outcome, w: 0.23, color: historyRow.modelData.ok ? root.success : root.danger}
+                                                    ]
+                                                    Text {
+                                                        required property var modelData
+                                                        width: (parent.width - 22) * modelData.w
+                                                        height: parent.height
+                                                        text: modelData.text
+                                                        color: modelData.color
+                                                        font.pixelSize: 12
+                                                        elide: Text.ElideRight
+                                                        verticalAlignment: Text.AlignVCenter
+                                                        leftPadding: 6
+                                                        rightPadding: 6
+                                                    }
+                                                }
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: historyPage.expandedIndex = historyRow.expanded ? -1 : historyRow.index
+                                            }
+                                        }
+                                        Item {
+                                            visible: historyRow.expanded
+                                            width: parent.width
+                                            height: visible ? detailCol.implicitHeight + 16 : 0
+                                            ColumnLayout {
+                                                id: detailCol
+                                                width: parent.width - 30
+                                                x: 22
+                                                y: 4
+                                                spacing: 6
+                                                Text {
+                                                    visible: !!(historyRow.modelData.summary)
+                                                    text: historyRow.modelData.summary
+                                                    color: root.textPrimary
+                                                    font.pixelSize: 12
+                                                }
+                                                GridLayout {
+                                                    Layout.fillWidth: true
+                                                    columns: 4
+                                                    columnSpacing: 16
+                                                    rowSpacing: 4
+                                                    Text { text: "SCHEDULED"; color: root.textSecondary; font.pixelSize: 9; font.bold: true }
+                                                    Text { text: "STARTED"; color: root.textSecondary; font.pixelSize: 9; font.bold: true }
+                                                    Text { text: "ENDED"; color: root.textSecondary; font.pixelSize: 9; font.bold: true }
+                                                    Text { text: "VARIANCE"; color: root.textSecondary; font.pixelSize: 9; font.bold: true }
+                                                    Text { text: historyRow.modelData.scheduled_text; color: root.textPrimary; font.pixelSize: 12 }
+                                                    Text { text: historyRow.modelData.started_text; color: root.textPrimary; font.pixelSize: 12 }
+                                                    Text { text: historyRow.modelData.ended_text; color: root.textPrimary; font.pixelSize: 12 }
+                                                    Text {
+                                                        text: historyRow.modelData.delta_text
+                                                        color: Math.abs(historyRow.modelData.delta_seconds || 0) < 1 ? root.success : (historyRow.modelData.delta_seconds > 0 ? root.warning : root.success)
+                                                        font.pixelSize: 12
+                                                    }
+                                                }
+                                                Text {
+                                                    Layout.fillWidth: true
+                                                    text: historyRow.modelData.outcome
+                                                    color: historyRow.modelData.ok ? root.success : root.danger
+                                                    wrapMode: Text.Wrap
+                                                    font.pixelSize: 12
+                                                }
+                                                Text {
+                                                    visible: !!(historyRow.modelData.notes)
+                                                    Layout.fillWidth: true
+                                                    text: historyRow.modelData.notes
+                                                    color: root.textSecondary
+                                                    wrapMode: Text.Wrap
+                                                    font.pixelSize: 11
+                                                }
+                                                RowLayout {
+                                                    HudButton {
+                                                        text: "RUN AGAIN"
+                                                        enabled: !!historyRow.modelData.has_session
+                                                        busyText: "STARTING…"
+                                                        buttonColor: "#0E3A48"
+                                                        foregroundColor: root.accent
+                                                        onClicked: backend.runNow(historyRow.modelData.session_id)
+                                                    }
+                                                    HudButton {
+                                                        text: "REMOVE"
+                                                        busyText: "REMOVING…"
+                                                        onClicked: backend.deleteHistoryRecord(historyRow.modelData.id)
+                                                    }
+                                                    Item { Layout.fillWidth: true }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
+                }
             }
 
             Item {
                 id: settingsPage
+                property string loadedDeviceId: ""
                 function load() {
                     const d = backend.selectedDevice
+                    loadedDeviceId = d.id || ""
                     const hw = d.hardware || {}
                     nameField.text = d.name || ""
                     modelField.currentIndex = Math.max(0, ["Dwarf II", "Dwarf 3", "Dwarf Mini"].indexOf(d.model))
@@ -1350,7 +2000,7 @@ ApplicationWindow {
                     bleField.checked = d.ble_enabled !== false
                     latField.text = d.latitude
                     lonField.text = d.longitude
-                    timezoneField.text = d.timezone_name || "UTC"
+                    timezoneField.setFromName(d.timezone_name || "")
                     stellariumField.text = d.stellarium_url || "http://localhost:8090"
                     ssidField.text = d.wifi_ssid || ""
                     wifiField.text = d.wifi_password || ""
@@ -1366,7 +2016,23 @@ ApplicationWindow {
                     startupField.text = hw.startup_seconds || 8
                 }
                 Component.onCompleted: load()
-                Connections { target: backend; function onSelectedDeviceChanged() { settingsPage.load() } }
+                Connections {
+                    target: backend
+                    function onSelectedDeviceChanged() {
+                        if (settingsPage.loadedDeviceId !== backend.selectedDeviceId)
+                            settingsPage.load()
+                    }
+                }
+
+                function applyLocation(item) {
+                    if (!item)
+                        return
+                    timezoneField.setFromName(item.name)
+                    if (item.latitude !== undefined && item.latitude !== null)
+                        latField.text = Number(item.latitude).toFixed(5)
+                    if (item.longitude !== undefined && item.longitude !== null)
+                        lonField.text = Number(item.longitude).toFixed(5)
+                }
 
                 Flickable {
                     id: settingsFlick
@@ -1375,6 +2041,9 @@ ApplicationWindow {
                     contentHeight: settingsColumn.implicitHeight + 24
                     clip: true
                     boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.VerticalFlick
+                    ScrollBar.vertical: HiddenBar {}
+                    ScrollBar.horizontal: HiddenBar {}
                     Column {
                         id: settingsColumn
                         width: settingsFlick.width
@@ -1388,8 +2057,8 @@ ApplicationWindow {
                                 Text { text: "Astro Dwarf v" + backend.appVersion; color: root.accent; font.pixelSize: 12; font.letterSpacing: 1 }
                             }
                             DeviceCombo {}
-                            HudButton { text: "+ ADD DEVICE"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: backend.addDevice() }
-                            HudButton { text: "REMOVE DEVICE"; buttonColor: "#3A1218"; foregroundColor: root.danger; onClicked: backend.deleteDevice(backend.selectedDeviceId) }
+                            HudButton { text: "+ ADD DEVICE"; busyText: "ADDING…"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: backend.addDevice() }
+                            HudButton { text: "REMOVE DEVICE"; busyText: "REMOVING…"; buttonColor: "#3A1218"; foregroundColor: root.danger; onClicked: backend.deleteDevice(backend.selectedDeviceId) }
                         }
                         HudPanel {
                             title: "DEVICE"
@@ -1407,12 +2076,18 @@ ApplicationWindow {
                                 HudField { id: ipField; Layout.fillWidth: true }
                                 FieldLabel { text: "CAMERA" }
                                 HudCombo { id: cameraField; model: ["Tele", "Wide"]; Layout.fillWidth: true }
+                                FieldLabel { text: "TIMEZONE" }
+                                HudSearchCombo {
+                                    id: timezoneField
+                                    Layout.fillWidth: true
+                                    Layout.columnSpan: 3
+                                    allItems: backend.timezones
+                                    onItemChosen: (item) => settingsPage.applyLocation(item)
+                                }
                                 FieldLabel { text: "LATITUDE" }
                                 HudField { id: latField; Layout.fillWidth: true }
                                 FieldLabel { text: "LONGITUDE" }
                                 HudField { id: lonField; Layout.fillWidth: true }
-                                FieldLabel { text: "TIMEZONE" }
-                                HudField { id: timezoneField; Layout.fillWidth: true }
                                 FieldLabel { text: "STELLARIUM" }
                                 HudField { id: stellariumField; Layout.fillWidth: true }
                                 FieldLabel { text: "WIFI SSID" }
@@ -1468,6 +2143,7 @@ ApplicationWindow {
                             }
                             HudButton {
                                 text: "SAVE DEVICE"
+                                busyText: "SAVING…"
                                 buttonColor: "#0E3A48"
                                 foregroundColor: root.accent
                                 onClicked: backend.saveDevice(JSON.stringify({
@@ -1475,7 +2151,7 @@ ApplicationWindow {
                                     ip_address: ipField.text, camera: cameraField.currentIndex === 1 ? "wide" : "tele",
                                     ble_enabled: bleField.checked,
                                     latitude: Number(latField.text), longitude: Number(lonField.text),
-                                    timezone_name: timezoneField.text, stellarium_url: stellariumField.text,
+                                    timezone_name: timezoneField.selectedName || timezoneField.editText, stellarium_url: stellariumField.text,
                                     wifi_ssid: ssidField.text, wifi_password: wifiField.text,
                                     observing_day_cutoff_hour: cutoffField.value, slew_seconds: Number(slewField.text),
                                     settle_seconds: Number(settleField.text), calibration_seconds: Number(calibrationField.text),
@@ -1494,7 +2170,7 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     Text { text: "Import old Astro_Sessions JSON without modifying the old app."; color: root.textSecondary; wrapMode: Text.Wrap; Layout.fillWidth: true }
                                 }
-                                HudButton { text: "CHOOSE FOLDER…"; onClicked: legacyDialog.open() }
+                                HudButton { text: "CHOOSE FOLDER…"; busyText: "OPENING…"; onClicked: legacyDialog.open() }
                             }
                         }
                     }
@@ -1535,7 +2211,11 @@ ApplicationWindow {
                     font.letterSpacing: 1.4
                     buttonColor: root.currentPage === modelData.idx ? "#0E3A48" : "#0A1524"
                     foregroundColor: root.currentPage === modelData.idx ? root.accent : root.textSecondary
-                    onClicked: root.currentPage = modelData.idx
+                    onClicked: {
+                        root.currentPage = modelData.idx
+                        if (modelData.idx === 4)
+                            settingsPage.load()
+                    }
                 }
             }
         }
@@ -1630,31 +2310,113 @@ ApplicationWindow {
             snackbar.text = message
             snackbar.open()
         }
+        function onLocationLookupReady(item) {
+            if (locationDialog.visible)
+                locationDialog.applyLocation(item)
+            else
+                settingsPage.applyLocation(item)
+        }
+        function onSelectedDeviceChanged() { root.maybeAskLocation() }
+    }
+
+    Dialog {
+        id: locationDialog
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        anchors.centerIn: Overlay.overlay
+        width: 520
+        padding: 18
+        height: Math.min(root.height - 60, locationColumn.implicitHeight + padding * 2)
+        background: Rectangle { color: "#0B1520"; border.color: root.accent }
+        function applyLocation(item) {
+            if (!item)
+                return
+            locationTimezone.setFromName(item.name)
+            if (item.latitude !== undefined && item.latitude !== null)
+                locationLat.text = Number(item.latitude).toFixed(5)
+            if (item.longitude !== undefined && item.longitude !== null)
+                locationLon.text = Number(item.longitude).toFixed(5)
+        }
+        onOpened: {
+            const d = backend.selectedDevice
+            locationTimezone.setFromName(d.timezone_name && d.location_configured ? d.timezone_name : "")
+            locationLat.text = d.location_configured ? d.latitude : ""
+            locationLon.text = d.location_configured ? d.longitude : ""
+        }
+        contentItem: ColumnLayout {
+            id: locationColumn
+            spacing: 12
+            Text { text: "OBSERVING LOCATION"; color: root.accent; font.pixelSize: 16; font.letterSpacing: 1.4 }
+            Text {
+                text: "Choose a timezone or city so Astro Dwarf can set longitude and latitude for this telescope. A location is required before connecting or running sessions."
+                color: root.textPrimary
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+            FieldLabel { text: "TIMEZONE / CITY" }
+            HudSearchCombo {
+                id: locationTimezone
+                Layout.fillWidth: true
+                allItems: backend.timezones
+                onItemChosen: (item) => locationDialog.applyLocation(item)
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+                FieldLabel { text: "LAT" }
+                HudField { id: locationLat; Layout.fillWidth: true; readOnly: true }
+                FieldLabel { text: "LON" }
+                HudField { id: locationLon; Layout.fillWidth: true; readOnly: true }
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                HudButton {
+                    text: "SAVE LOCATION"
+                    enabled: locationTimezone.selectedName.length > 0 || locationTimezone.editText.length > 0
+                    busyText: "SAVING…"
+                    buttonColor: "#0E3A48"
+                    foregroundColor: root.accent
+                    onClicked: backend.saveObservingLocation(JSON.stringify({
+                        id: backend.selectedDeviceId,
+                        timezone_name: locationTimezone.selectedName || locationTimezone.editText,
+                        latitude: Number(locationLat.text),
+                        longitude: Number(locationLon.text)
+                    }))
+                }
+            }
+        }
     }
 
     Dialog {
         id: confirmDialog
         property string operation: ""
         property string summary: ""
+        property string kind: "device"
+        property string headingText: "CONFIRM COMMAND"
+        property string confirmLabel: "CONFIRM"
         modal: true
         anchors.centerIn: Overlay.overlay
         width: 420
-        height: 160
+        height: 176
         padding: 16
         background: Rectangle { color: "#0B1520"; border.color: root.danger }
         contentItem: ColumnLayout {
             spacing: 12
-            Text { text: "CONFIRM COMMAND"; color: root.danger; font.pixelSize: 16; font.letterSpacing: 1.4 }
+            Text { text: confirmDialog.headingText; color: root.danger; font.pixelSize: 16; font.letterSpacing: 1.4 }
             Text { text: confirmDialog.summary; color: root.textPrimary; wrapMode: Text.Wrap; Layout.fillWidth: true }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
                 HudButton { text: "CANCEL"; onClicked: confirmDialog.close() }
                 HudButton {
-                    text: "CONFIRM"
+                    text: confirmDialog.confirmLabel
+                    busyText: "WORKING…"
                     buttonColor: "#3A1218"
                     foregroundColor: root.danger
                     onClicked: {
-                        backend.deviceAction(backend.selectedDeviceId, confirmDialog.operation)
+                        if (confirmDialog.kind === "clearHistory")
+                            backend.clearHistory()
+                        else
+                            backend.deviceAction(backend.selectedDeviceId, confirmDialog.operation)
                         confirmDialog.close()
                     }
                 }
@@ -1809,6 +2571,7 @@ ApplicationWindow {
                 HudButton { text: "CANCEL"; onClicked: sessionDialog.close() }
                 HudButton {
                     text: "SAVE SESSION"
+                    busyText: "SAVING…"
                     buttonColor: "#0E3A48"
                     foregroundColor: root.accent
                     onClicked: {

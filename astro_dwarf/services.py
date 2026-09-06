@@ -524,6 +524,8 @@ class Scheduler:
                 actual_duration_seconds=(ended - started).total_seconds(),
                 frame_count=session.camera.frame_count,
                 outcome=outcome,
+                summary=f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s",
+                notes=session.notes,
             )
         )
         self.after_run(session)

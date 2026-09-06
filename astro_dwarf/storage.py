@@ -68,6 +68,13 @@ class JsonRepository(Generic[T]):
             return True
         return False
 
+    def clear(self) -> None:
+        for path in self.folder.glob("*.json"):
+            try:
+                path.unlink()
+            except OSError:
+                continue
+
 
 class SessionStore:
     VALID_TRANSITIONS = {

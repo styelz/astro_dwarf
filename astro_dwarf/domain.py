@@ -68,6 +68,7 @@ class Device:
     latitude: float = 0
     longitude: float = 0
     timezone_name: str = "UTC"
+    location_configured: bool = False
     stellarium_url: str = "http://localhost:8090"
     observing_day_cutoff_hour: int = 12
 
@@ -163,6 +164,8 @@ class HistoryRecord:
     outcome: str
     id: str = field(default_factory=new_id)
     recorded_at: str = field(default_factory=utc_now)
+    summary: str = ""
+    notes: str = ""
 
 
 def to_dict(value: Any) -> dict[str, Any]:
@@ -176,10 +179,21 @@ def hardware_from_dict(data: dict[str, Any]) -> HardwareProfile:
 def device_from_dict(data: dict[str, Any]) -> Device:
     data = dict(data)
     data.pop("demo_mode", None)
+    configured = data.pop("location_configured", None)
     data["model"] = DeviceModel(data.get("model", DeviceModel.DWARF_3))
     data["camera"] = Camera(data.get("camera", Camera.TELE))
     data["hardware"] = hardware_from_dict(data.get("hardware", {}))
-    return Device(**data)
+    if configured is None:
+        timezone_name = str(data.get("timezone_name") or "UTC")
+        latitude = float(data.get("latitude") or 0)
+        longitude = float(data.get("longitude") or 0)
+        data["location_configured"] = not (
+            timezone_name in {"", "UTC"} and abs(latitude) < 1e-9 and abs(longitude) < 1e-9
+        )
+    else:
+        data["location_configured"] = bool(configured)
+    allowed = set(Device.__dataclass_fields__)
+    return Device(**{key: value for key, value in data.items() if key in allowed})
 
 
 def target_from_dict(data: dict[str, Any]) -> Target:
@@ -214,4 +228,5 @@ def session_from_dict(data: dict[str, Any]) -> Session:
 
 
 def history_from_dict(data: dict[str, Any]) -> HistoryRecord:
-    return HistoryRecord(**data)
+    allowed = set(HistoryRecord.__dataclass_fields__)
+    return HistoryRecord(**{key: value for key, value in data.items() if key in allowed})

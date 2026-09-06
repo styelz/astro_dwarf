@@ -51,6 +51,7 @@ from .services import (
     pane_sort_key,
     stagger_mosaic_sessions,
 )
+from .location import match_timezone, resolve_location, timezone_locations
 from .runtime import prepare_worker_environment, worker_command
 from .storage import SessionStore
 from .stream_preview import LiveImageProvider, StreamPlayer, port_is_open, stream_port
@@ -214,19 +215,43 @@ class TelescopeProcess(QObject):
             pass
 
 
+_ACTIVITY_START = {
+    "burst_start": "burst",
+    "record_start": "record",
+    "timelapse_start": "timelapse",
+    "polar": "polar",
+    "calibrate": "calibrate",
+    "autofocus": "autofocus",
+    "infinity": "autofocus",
+}
+_ACTIVITY_STOP = {
+    "burst_stop": "burst",
+    "record_stop": "record",
+    "timelapse_stop": "timelapse",
+    "stop_polar": "polar",
+    "stop_calibrate": "calibrate",
+    "stop_autofocus": "autofocus",
+}
+_ACTIVITY_CLEAR = {"stop_all", "reboot", "power_down", "go_live"}
+_ACTIVITY_TRANSIENT = {"calibrate", "autofocus"}
+
+
 class AppBackend(QObject):
     devicesChanged = Signal()
     sessionsChanged = Signal()
     templatesChanged = Signal()
     historyChanged = Signal()
     logsChanged = Signal()
+    showDebugLogsChanged = Signal()
     selectedDeviceChanged = Signal()
     statusChanged = Signal()
     schedulerEnabledChanged = Signal()
     clockChanged = Signal()
     sessionProgressChanged = Signal()
     toast = Signal(str, str)
+    locationLookupReady = Signal("QVariantMap")
     _asyncResult = Signal(str, object)
+    uiBusyChanged = Signal()
     previewActiveChanged = Signal()
     previewPlayingChanged = Signal()
     previewStatusChanged = Signal()
@@ -243,10 +268,16 @@ class AppBackend(QObject):
             self._devices = [self.store.seed_device()]
         self._selected_device_id = self._devices[0].id
         self._logs: list[dict[str, str]] = []
+        self._show_debug_logs = False
         self._workers: dict[str, TelescopeProcess] = {}
         self._active_sessions: dict[str, str] = {}
         self._scheduler_enabled = False
         self._clock_text = datetime.now().strftime("%H:%M:%S")
+        self._connecting_ids: set[str] = set()
+        self._disconnecting_ids: set[str] = set()
+        self._pending_actions: dict[str, str] = {}
+        self._device_activity: dict[str, str] = {}
+        self._ui_busy = ""
         self._asyncResult.connect(self._handle_async_result)
         for device in self._devices:
             self._create_worker(device)
@@ -289,9 +320,72 @@ class AppBackend(QObject):
         return worker
 
     def _worker_status_changed(self) -> None:
+        for device_id, worker in self._workers.items():
+            if worker.connected:
+                continue
+            self._pending_actions.pop(device_id, None)
+            self._device_activity.pop(device_id, None)
+        self._notify_devices()
+
+    def _notify_devices(self) -> None:
         self.devicesChanged.emit()
         self.selectedDeviceChanged.emit()
         self.statusChanged.emit()
+
+    def _set_activity(self, device_id: str, activity: str) -> None:
+        current = self._device_activity.get(device_id, "")
+        if activity:
+            if current == activity:
+                return
+            self._device_activity[device_id] = activity
+        elif current:
+            self._device_activity.pop(device_id, None)
+        else:
+            return
+        self._notify_devices()
+
+    def _begin_activity(self, device_id: str, operation: str) -> None:
+        if operation in _ACTIVITY_CLEAR:
+            self._set_activity(device_id, "")
+            return
+        mode = _ACTIVITY_START.get(operation)
+        if mode:
+            self._set_activity(device_id, mode)
+
+    def _complete_activity(self, device_id: str, operation: str, ok: bool) -> None:
+        if operation in _ACTIVITY_CLEAR:
+            self._set_activity(device_id, "")
+            return
+        expected = _ACTIVITY_STOP.get(operation)
+        if expected:
+            if ok and self._device_activity.get(device_id) == expected:
+                self._set_activity(device_id, "")
+            return
+        mode = _ACTIVITY_START.get(operation)
+        if mode and (not ok or mode in _ACTIVITY_TRANSIENT) and self._device_activity.get(device_id) == mode:
+            self._set_activity(device_id, "")
+
+    def _set_pending_action(self, device_id: str, action: str) -> None:
+        current = self._pending_actions.get(device_id, "")
+        if action:
+            if current == action:
+                return
+            self._pending_actions[device_id] = action
+        elif current:
+            self._pending_actions.pop(device_id, None)
+        else:
+            return
+        self._notify_devices()
+
+    def _with_pending(self, device_id: str, action: str, callback: Callable[[bool, Any], None] | None = None) -> Callable[[bool, Any], None]:
+        self._set_pending_action(device_id, action)
+
+        def done(ok: bool, result: Any) -> None:
+            self._set_pending_action(device_id, "")
+            if callback:
+                callback(ok, result)
+
+        return done
 
     def add_log(self, level: str, message: str, device_id: str = "") -> None:
         device = next((d.name for d in self._devices if d.id == device_id), "System")
@@ -308,16 +402,36 @@ class AppBackend(QObject):
     def appVersion(self) -> str:
         return __version__
 
+    @Property("QVariantList", constant=True)
+    def timezones(self) -> list[dict[str, Any]]:
+        return list(timezone_locations())
+
     @Property("QVariantList", notify=devicesChanged)
     def devices(self) -> list[dict[str, Any]]:
         result = []
         for device in self._devices:
             worker = self._workers.get(device.id)
             data = to_dict(device)
+            connecting = device.id in self._connecting_ids
+            disconnecting = device.id in self._disconnecting_ids
+            if connecting:
+                status = "Connecting"
+            elif disconnecting:
+                status = "Disconnecting"
+            elif worker and worker.busy:
+                status = "Imaging"
+            elif worker and worker.connected:
+                status = "Connected"
+            else:
+                status = "Offline"
             data.update({
                 "connected": bool(worker and worker.connected),
                 "busy": bool(worker and worker.busy),
-                "status": "Imaging" if worker and worker.busy else "Connected" if worker and worker.connected else "Offline",
+                "connecting": connecting,
+                "disconnecting": disconnecting,
+                "pending_action": self._pending_actions.get(device.id, ""),
+                "activity": self._device_activity.get(device.id, ""),
+                "status": status,
             })
             result.append(data)
         return result
@@ -397,19 +511,54 @@ class AppBackend(QObject):
     @Property("QVariantList", notify=historyChanged)
     def history(self) -> list[dict[str, Any]]:
         device_names = {device.id: device.name for device in self._devices}
+        device_colors = {device.id: device.color for device in self._devices}
         result = []
         for record in sorted(self.store.history.all(), key=lambda item: item.recorded_at, reverse=True):
+            session = self.store.sessions.get(record.session_id)
             data = to_dict(record)
             data["device_name"] = device_names.get(record.device_id, "Unknown")
+            data["device_color"] = device_colors.get(record.device_id, "#4DE8FF")
             data["date"] = record.scheduled_start[:10]
             data["planned_text"] = self._duration_text(record.planned_duration_seconds)
             data["actual_text"] = self._duration_text(record.actual_duration_seconds)
+            data["ok"] = str(record.outcome).strip().lower() == "completed"
+            data["scheduled_text"] = self._stamp_text(record.scheduled_start)
+            data["started_text"] = self._stamp_text(record.actual_started_at)
+            data["ended_text"] = self._stamp_text(record.actual_ended_at)
+            data["has_session"] = session is not None
+            if not data.get("summary") and session:
+                data["summary"] = f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s"
+            if not data.get("notes") and session:
+                data["notes"] = session.notes
+            delta = record.actual_duration_seconds - record.planned_duration_seconds
+            data["delta_seconds"] = delta
+            if abs(delta) < 1:
+                data["delta_text"] = "On plan"
+            elif delta > 0:
+                data["delta_text"] = self._duration_text(delta) + " over"
+            else:
+                data["delta_text"] = self._duration_text(-delta) + " under"
             result.append(data)
         return result
 
+    @Property(bool, notify=showDebugLogsChanged)
+    def showDebugLogs(self) -> bool:
+        return self._show_debug_logs
+
+    @Slot(bool)
+    def setShowDebugLogs(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._show_debug_logs == enabled:
+            return
+        self._show_debug_logs = enabled
+        self.showDebugLogsChanged.emit()
+        self.logsChanged.emit()
+
     @Property("QVariantList", notify=logsChanged)
     def logs(self) -> list[dict[str, str]]:
-        return list(self._logs)
+        if self._show_debug_logs:
+            return list(self._logs)
+        return [entry for entry in self._logs if entry.get("level") != "SDK"]
 
     @Property("QVariantMap", notify=sessionsChanged)
     def currentSession(self) -> dict[str, Any]:
@@ -494,9 +643,6 @@ class AppBackend(QObject):
     def startPreview(self, device_id: str) -> None:
         device = self._device_by_id(device_id)
         worker = self._workers.get(device_id)
-        if device.demo_mode:
-            self.add_log("demo", "Would open live camera preview", device_id)
-            return
         if not worker or not worker.connected:
             self.add_log("warning", "Preview needs an active telescope connection", device_id)
             return
@@ -609,53 +755,95 @@ class AppBackend(QObject):
             self.selectedDeviceChanged.emit()
             self.sessionsChanged.emit()
 
+    @Property(str, notify=uiBusyChanged)
+    def uiBusy(self) -> str:
+        return self._ui_busy
+
+    def _set_ui_busy(self, operation: str) -> None:
+        if self._ui_busy == operation:
+            return
+        self._ui_busy = operation
+        self.uiBusyChanged.emit()
+
     @Slot(str)
     def connectDevice(self, device_id: str) -> None:
         device = next((item for item in self._devices if item.id == device_id), None)
-        if not device:
+        if not device or device_id in self._connecting_ids:
+            return
+        if not device.location_configured:
+            self.toast.emit("Choose an observing location before connecting the telescope", "warning")
             return
         worker = self._workers[device_id]
+        self._connecting_ids.add(device_id)
+        self._notify_devices()
         self.add_log("info", "Connection requested; UI remains available", device_id)
         worker.connect_device(lambda ok, result: self._connection_done(device_id, ok, result))
 
     def _connection_done(self, device_id: str, ok: bool, result: Any) -> None:
+        self._connecting_ids.discard(device_id)
         self.add_log("success" if ok else "error", "Connected" if ok else f"Connection failed: {result}", device_id)
         self.toast.emit("Telescope connected" if ok else f"Connection failed: {result}", "success" if ok else "error")
-        self.devicesChanged.emit()
-        self.statusChanged.emit()
+        self._notify_devices()
 
     @Slot(str)
     def disconnectDevice(self, device_id: str) -> None:
         worker = self._workers.get(device_id)
-        if worker:
-            worker.disconnect_device(lambda ok, result: self.add_log("info" if ok else "error", "Disconnected" if ok else str(result), device_id))
+        if not worker or device_id in self._disconnecting_ids:
+            return
+        self._disconnecting_ids.add(device_id)
+        self._notify_devices()
+
+        def done(ok: bool, result: Any) -> None:
+            self._disconnecting_ids.discard(device_id)
+            self._set_activity(device_id, "")
+            self.add_log("info" if ok else "error", "Disconnected" if ok else str(result), device_id)
+            self._notify_devices()
+
+        worker.disconnect_device(done)
 
     @Slot(str, str)
     def deviceAction(self, device_id: str, operation: str) -> None:
         worker = self._workers.get(device_id)
-        if not worker:
+        if not worker or not worker.connected:
             return
-        worker.send(operation, callback=lambda ok, result: self.toast.emit(
-            operation.replace("_", " ").title() if ok else str(result), "success" if ok else "error"
-        ))
+        self._begin_activity(device_id, operation)
+
+        def done(ok: bool, result: Any) -> None:
+            self._complete_activity(device_id, operation, ok)
+            self.toast.emit(
+                operation.replace("_", " ").title() if ok else str(result), "success" if ok else "error"
+            )
+
+        worker.send(operation, callback=self._with_pending(device_id, operation, done))
 
     @Slot(str, float, float)
     def joystick(self, device_id: str, angle: float, speed: float) -> None:
         worker = self._workers.get(device_id)
-        if worker:
+        if worker and worker.connected:
             worker.send("joystick", {"args": [angle, speed]})
 
     @Slot(str, int)
     def manualFocus(self, device_id: str, direction: int) -> None:
         worker = self._workers.get(device_id)
-        if worker:
-            worker.send("manual_focus", {"args": [direction]})
+        if not worker or not worker.connected:
+            return
+        action = "focus_near" if direction else "focus_far"
+        worker.send("manual_focus", {"args": [direction]}, self._with_pending(device_id, action))
 
     @Slot(str)
     def stopDevice(self, device_id: str) -> None:
         worker = self._workers.get(device_id)
-        if worker:
-            worker.stop_all()
+        if not worker or not worker.connected:
+            return
+        self._begin_activity(device_id, "stop_all")
+
+        def done(ok: bool, result: Any) -> None:
+            self._complete_activity(device_id, "stop_all", ok)
+            self.add_log(
+                "warning" if ok else "error", "Stop commands sent" if ok else str(result), device_id
+            )
+
+        worker.send("stop_all", callback=self._with_pending(device_id, "stop_all", done))
 
     @Slot()
     def addDevice(self) -> None:
@@ -679,6 +867,8 @@ class AppBackend(QObject):
         self.store.devices.delete(device_id)
         self._devices = [item for item in self._devices if item.id != device_id]
         self._active_sessions.pop(device_id, None)
+        self._pending_actions.pop(device_id, None)
+        self._device_activity.pop(device_id, None)
         if self._selected_device_id == device_id:
             self._selected_device_id = self._devices[0].id
         self.devicesChanged.emit()
@@ -722,7 +912,7 @@ class AppBackend(QObject):
     def setCameraParam(self, device_id: str, name: str, value: str) -> None:
         device = self._device_by_id(device_id)
         worker = self._workers.get(device_id)
-        if not worker:
+        if not worker or not worker.connected:
             return
         camera = device.camera.value if hasattr(device.camera, "value") else str(device.camera)
         model_id = {DeviceModel.DWARF_II: "2", DeviceModel.DWARF_3: "3", DeviceModel.DWARF_MINI: "5"}.get(device.model, "3")
@@ -738,6 +928,28 @@ class AppBackend(QObject):
             f"{name.title()} set" if ok else str(result), "success" if ok else "error"
         ))
 
+    def _resolved_location(self, timezone_name: Any, latitude: Any, longitude: Any) -> tuple[str, float, float]:
+        name = str(timezone_name or "").strip()
+        try:
+            lat = float(latitude)
+        except (TypeError, ValueError):
+            lat = 0.0
+        try:
+            lon = float(longitude)
+        except (TypeError, ValueError):
+            lon = 0.0
+        if lat != lat:
+            lat = 0.0
+        if lon != lon:
+            lon = 0.0
+        matched = match_timezone(name)
+        if matched:
+            name = matched["name"]
+            if abs(lat) < 1e-9 and abs(lon) < 1e-9 and matched["name"] not in {"UTC", "Etc/UTC"}:
+                lat = float(matched["latitude"])
+                lon = float(matched["longitude"])
+        return name, lat, lon
+
     @Slot(str)
     def saveDevice(self, payload: str) -> None:
         try:
@@ -747,6 +959,11 @@ class AppBackend(QObject):
                 key: float(values.get(key, getattr(current.hardware, key)))
                 for key in current.hardware.__dataclass_fields__
             })
+            timezone_name, latitude, longitude = self._resolved_location(
+                values.get("timezone_name", current.timezone_name),
+                values.get("latitude", current.latitude),
+                values.get("longitude", current.longitude),
+            )
             updated = replace(
                 current,
                 name=values["name"].strip(),
@@ -754,9 +971,10 @@ class AppBackend(QObject):
                 ip_address=values["ip_address"].strip(),
                 camera=Camera(values.get("camera", current.camera)),
                 color=values.get("color", current.color),
-                latitude=float(values.get("latitude", current.latitude)),
-                longitude=float(values.get("longitude", current.longitude)),
-                timezone_name=values.get("timezone_name", current.timezone_name),
+                latitude=latitude,
+                longitude=longitude,
+                timezone_name=timezone_name,
+                location_configured=True,
                 stellarium_url=values.get("stellarium_url", current.stellarium_url),
                 wifi_ssid=values.get("wifi_ssid", current.wifi_ssid),
                 wifi_password=values.get("wifi_password", current.wifi_password),
@@ -774,6 +992,56 @@ class AppBackend(QObject):
             self.toast.emit("Device saved", "success")
         except Exception as exc:
             self.toast.emit(f"Could not save device: {exc}", "error")
+
+    @Slot(str)
+    def saveObservingLocation(self, payload: str) -> None:
+        try:
+            values = json.loads(payload)
+            current = self._device_by_id(values.get("id") or self._selected_device_id)
+            timezone_name, latitude, longitude = self._resolved_location(
+                values.get("timezone_name"),
+                values.get("latitude"),
+                values.get("longitude"),
+            )
+            if not timezone_name:
+                raise ValueError("A timezone is required")
+            if abs(latitude) < 1e-9 and abs(longitude) < 1e-9 and timezone_name not in {"UTC", "Etc/UTC"}:
+                raise ValueError("Choose a timezone from the list, or press Enter to look up a city")
+            updated = replace(
+                current,
+                latitude=latitude,
+                longitude=longitude,
+                timezone_name=timezone_name,
+                location_configured=True,
+            )
+            self.store.devices.save(updated)
+            self._devices = [updated if item.id == updated.id else item for item in self._devices]
+            self._create_worker(updated)
+            self.devicesChanged.emit()
+            self.selectedDeviceChanged.emit()
+            self.toast.emit("Observing location saved", "success")
+        except Exception as exc:
+            self.toast.emit(f"Could not save location: {exc}", "error")
+
+    @Slot(str)
+    def lookupLocation(self, query: str) -> None:
+        text = query.strip()
+        if not text:
+            self.toast.emit("Enter a city or timezone to search", "warning")
+            return
+
+        def work() -> None:
+            try:
+                result = resolve_location(text)
+            except Exception as exc:
+                self._asyncResult.emit("locationLookup", (False, str(exc)))
+                return
+            if not result:
+                self._asyncResult.emit("locationLookup", (False, f"No location match for '{text}'"))
+                return
+            self._asyncResult.emit("locationLookup", (True, result))
+
+        threading.Thread(target=work, daemon=True).start()
 
     @Slot(str)
     def saveSession(self, payload: str) -> None:
@@ -852,6 +1120,17 @@ class AppBackend(QObject):
         self.store.sessions.delete(session_id)
         self.sessionsChanged.emit()
 
+    @Slot()
+    def clearHistory(self) -> None:
+        self.store.history.clear()
+        self.historyChanged.emit()
+        self.toast.emit("History cleared", "success")
+
+    @Slot(str)
+    def deleteHistoryRecord(self, record_id: str) -> None:
+        if self.store.history.delete(record_id):
+            self.historyChanged.emit()
+
     @Slot(str)
     def duplicateSession(self, session_id: str) -> None:
         source = self.store.sessions.get(session_id)
@@ -924,6 +1203,11 @@ class AppBackend(QObject):
         self.toast.emit(f"Imported {count}; skipped {failed}", "success" if count else "warning")
 
     def _run_async(self, operation: str, function: Callable[[], Any]) -> None:
+        if self._ui_busy:
+            self.toast.emit("Another import is still running", "warning")
+            return
+        self._set_ui_busy(operation)
+
         def run() -> None:
             try:
                 self._asyncResult.emit(operation, (True, function()))
@@ -935,6 +1219,13 @@ class AppBackend(QObject):
     @Slot(str, object)
     def _handle_async_result(self, operation: str, result: tuple[bool, Any]) -> None:
         ok, value = result
+        if operation == "locationLookup":
+            if not ok:
+                self.toast.emit(str(value), "warning")
+                return
+            self.locationLookupReady.emit(value)
+            return
+        self._set_ui_busy("")
         if not ok:
             self.toast.emit(f"{operation.title()}: {value}", "error")
             return
@@ -953,7 +1244,7 @@ class AppBackend(QObject):
             return
         now = datetime.now().astimezone()
         for device in self._devices:
-            if device.id in self._active_sessions:
+            if device.id in self._active_sessions or not device.location_configured:
                 continue
             worker = self._workers[device.id]
             sessions = self.store.upcoming(device.id)
@@ -976,6 +1267,7 @@ class AppBackend(QObject):
             current_step="Starting worker",
         )
         self._active_sessions[session.device_id] = session.id
+        self._set_activity(session.device_id, "")
         self.sessionsChanged.emit()
         worker.run_session(session, lambda ok, result: self._session_finished(session.id, ok, result))
 
@@ -1018,6 +1310,8 @@ class AppBackend(QObject):
             actual_duration_seconds=(ended - started).total_seconds(),
             frame_count=final.camera.frame_count,
             outcome=outcome,
+            summary=f"{final.camera.frame_count} × {final.camera.exposure_seconds:g}s",
+            notes=final.notes,
         ))
         self.sessionsChanged.emit()
         self.historyChanged.emit()
@@ -1059,6 +1353,13 @@ class AppBackend(QObject):
         hours, remainder = divmod(max(0, int(seconds)), 3600)
         minutes, secs = divmod(remainder, 60)
         return f"{hours}:{minutes:02d}:{secs:02d}"
+
+    @staticmethod
+    def _stamp_text(value: str | None) -> str:
+        if not value:
+            return "—"
+        text = str(value).replace("T", " ")
+        return text[:16] if len(text) >= 16 else text
 
     @staticmethod
     def _local_path(raw_path: str) -> Path:
