@@ -66,6 +66,10 @@ ApplicationWindow {
         default: return root.textPrimary
         }
     }
+    function canReset(status) {
+        const value = String(status || "").toLowerCase()
+        return value === "error" || value === "skipped" || value === "done"
+    }
     function statusFill(status) {
         switch (String(status || "").toLowerCase()) {
         case "running": return "#123C52"
@@ -385,6 +389,12 @@ ApplicationWindow {
             glyph: "\uE769"
             enabled: sessionContextMenu.sessionStatus === "planned"
             onTriggered: backend.skipSession(sessionContextMenu.sessionId)
+        }
+        HudMenuItem {
+            text: "Reset"
+            glyph: "\uE72C"
+            enabled: root.canReset(sessionContextMenu.sessionStatus)
+            onTriggered: backend.resetSession(sessionContextMenu.sessionId)
         }
         HudMenuItem {
             text: "Duplicate"
@@ -1974,6 +1984,7 @@ ApplicationWindow {
                                         Text { text: modelData.subtitle + " · " + modelData.duration_text; color: root.textSecondary; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
                                         RowLayout {
                                             HudButton { text: "EDIT"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
+                                            HudButton { text: "RESET"; implicitHeight: 24; visible: root.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
                                             HudButton { text: "RUN"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
                                         }
                                     }
@@ -2078,6 +2089,7 @@ ApplicationWindow {
                                             Text { anchors.centerIn: parent; text: modelData.status.toUpperCase(); color: root.statusColor(modelData.status); font.pixelSize: 9; font.bold: true }
                                         }
                                         HudButton { text: "EDIT"; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
+                                        HudButton { text: "RESET"; visible: root.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
                                         HudButton { text: "RUN"; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
                                     }
                                     TapHandler { acceptedButtons: Qt.RightButton; onTapped: scheduledMenu.popup() }
@@ -2116,6 +2128,7 @@ ApplicationWindow {
                                     Text { text: modelData.summary; color: root.textSecondary; Layout.fillWidth: true }
                                     RowLayout {
                                         Layout.fillWidth: true
+                                        HudButton { text: "EDIT"; busyText: "OPENING…"; onClicked: sessionDialog.openTemplate(templateCard.modelData) }
                                         HudButton { text: "SCHEDULE"; Layout.fillWidth: true; busyText: "SCHEDULING…"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: backend.scheduleTemplate(modelData.id) }
                                         HudButton { text: "DELETE"; busyText: "DELETING…"; onClicked: backend.deleteTemplate(modelData.id) }
                                     }
@@ -2125,6 +2138,11 @@ ApplicationWindow {
                                     }
                                     HudMenu {
                                         id: templateMenu
+                                        HudMenuItem {
+                                            text: "Edit"
+                                            glyph: "\uE70F"
+                                            onTriggered: sessionDialog.openTemplate(templateCard.modelData)
+                                        }
                                         HudMenuItem {
                                             text: "Schedule"
                                             glyph: "\uE768"
@@ -2890,10 +2908,55 @@ ApplicationWindow {
         width: Math.min(root.width - 80, 900)
         height: Math.min(root.height - 80, 720)
         property string editingId: ""
+        property bool editingTemplate: false
         padding: 0
 
+        function fillForm(data) {
+            sessionName.text = data.pane_name || data.name || ""
+            targetName.text = (data.target && data.target.name) ? data.target.name : (data.target_name || "")
+            const kind = data.target ? data.target.kind : "equatorial"
+            targetType.currentIndex = Math.max(0, ["equatorial", "solar", "none"].indexOf(kind))
+            ra.text = data.target && data.target.ra_hours != null ? data.target.ra_hours : ""
+            dec.text = data.target && data.target.dec_degrees != null ? data.target.dec_degrees : ""
+            exposure.text = data.camera.exposure_seconds
+            gain.text = data.camera.gain
+            frames.text = data.camera.frame_count
+            camera.currentIndex = data.camera.camera === "wide" ? 1 : 0
+            binning.currentIndex = Math.max(0, ["1", "2"].indexOf(String(data.camera.binning)))
+            const ir = data.camera.ir_filter || "VIS Filter"
+            irFilter.currentIndex = Math.max(0, ["VIS Filter", "Astro Filter", "Duo-Band Filter", "VIS"].indexOf(ir) % 3)
+            rows.text = data.mosaic.rows
+            columns.text = data.mosaic.columns
+            rotation.text = data.mosaic.rotation_degrees
+            hScale.text = data.mosaic.horizontal_scale
+            vScale.text = data.mosaic.vertical_scale
+            waitBefore.text = data.workflow.wait_before_seconds
+            waitAfter.text = data.workflow.wait_after_seconds
+            notes.text = data.notes || ""
+            calibrate.checked = data.workflow.calibrate
+            autofocus.checked = data.workflow.autofocus
+            infiniteFocus.checked = data.workflow.infinite_focus
+            polar.checked = data.workflow.polar_align
+            doGoto.checked = data.workflow.goto
+            saveTemplate.checked = false
+        }
+        function formPayload() {
+            return {
+                id: sessionDialog.editingId, name: sessionName.text, target: targetName.text,
+                target_kind: targetType.currentText, ra: ra.text, dec: dec.text,
+                scheduled_start: startTime.text, device_id: backend.selectedDeviceId,
+                camera: camera.currentIndex === 1 ? "wide" : "tele", exposure: Number(exposure.text),
+                gain: Number(gain.text), frame_count: Number(frames.text), binning: Number(binning.currentText),
+                ir_filter: irFilter.currentText, rows: Number(rows.text), columns: Number(columns.text),
+                rotation: Number(rotation.text), horizontal_scale: Number(hScale.text), vertical_scale: Number(vScale.text),
+                wait_before: Number(waitBefore.text), wait_after: Number(waitAfter.text), notes: notes.text,
+                calibrate: calibrate.checked, autofocus: autofocus.checked, infinite_focus: infiniteFocus.checked,
+                polar_align: polar.checked, goto: doGoto.checked, save_template: saveTemplate.checked
+            }
+        }
         function openForDate(day) {
             editingId = ""
+            editingTemplate = false
             sessionName.text = ""
             targetName.text = ""
             targetType.currentIndex = 0
@@ -2924,34 +2987,16 @@ ApplicationWindow {
         }
         function openExisting(data) {
             editingId = data.id
-            sessionName.text = data.name
-            targetName.text = data.target_name
-            const kind = data.target ? data.target.kind : "equatorial"
-            targetType.currentIndex = Math.max(0, ["equatorial", "solar", "none"].indexOf(kind))
-            ra.text = data.target && data.target.ra_hours != null ? data.target.ra_hours : ""
-            dec.text = data.target && data.target.dec_degrees != null ? data.target.dec_degrees : ""
+            editingTemplate = false
+            fillForm(data)
             startTime.text = String(data.scheduled_start).substring(0, 16)
-            exposure.text = data.camera.exposure_seconds
-            gain.text = data.camera.gain
-            frames.text = data.camera.frame_count
-            camera.currentIndex = data.camera.camera === "wide" ? 1 : 0
-            binning.currentIndex = Math.max(0, ["1", "2"].indexOf(String(data.camera.binning)))
-            const ir = data.camera.ir_filter || "VIS Filter"
-            irFilter.currentIndex = Math.max(0, ["VIS Filter", "Astro Filter", "Duo-Band Filter", "VIS"].indexOf(ir) % 3)
-            rows.text = data.mosaic.rows
-            columns.text = data.mosaic.columns
-            rotation.text = data.mosaic.rotation_degrees
-            hScale.text = data.mosaic.horizontal_scale
-            vScale.text = data.mosaic.vertical_scale
-            waitBefore.text = data.workflow.wait_before_seconds
-            waitAfter.text = data.workflow.wait_after_seconds
-            notes.text = data.notes || ""
-            calibrate.checked = data.workflow.calibrate
-            autofocus.checked = data.workflow.autofocus
-            infiniteFocus.checked = data.workflow.infinite_focus
-            polar.checked = data.workflow.polar_align
-            doGoto.checked = data.workflow.goto
-            saveTemplate.checked = false
+            open()
+        }
+        function openTemplate(data) {
+            editingId = data.id
+            editingTemplate = true
+            fillForm(data)
+            startTime.text = ""
             open()
         }
 
@@ -2962,7 +3007,7 @@ ApplicationWindow {
             spacing: 10
             RowLayout {
                 Layout.fillWidth: true
-                Text { text: sessionDialog.editingId ? "EDIT SESSION" : "NEW SESSION"; color: root.accent; font.pixelSize: 20; font.letterSpacing: 2; Layout.fillWidth: true }
+                Text { text: sessionDialog.editingTemplate ? "EDIT TEMPLATE" : (sessionDialog.editingId ? "EDIT SESSION" : "NEW SESSION"); color: root.accent; font.pixelSize: 20; font.letterSpacing: 2; Layout.fillWidth: true }
                 HudButton { text: "×"; implicitWidth: 40; onClicked: sessionDialog.close() }
             }
             GridLayout {
@@ -2978,8 +3023,8 @@ ApplicationWindow {
                 FieldLabel { text: "RA HOURS" }
                 HudField { id: ra; Layout.fillWidth: true }
                 HudField { id: dec; placeholderText: "Dec degrees"; Layout.fillWidth: true }
-                FieldLabel { text: "START" }
-                HudField { id: startTime; Layout.fillWidth: true; Layout.columnSpan: 2 }
+                FieldLabel { text: "START"; visible: !sessionDialog.editingTemplate }
+                HudField { id: startTime; Layout.fillWidth: true; Layout.columnSpan: 2; visible: !sessionDialog.editingTemplate }
                 FieldLabel { text: "CAMERA" }
                 HudCombo { id: camera; model: ["Tele", "Wide"]; Layout.fillWidth: true }
                 HudCombo { id: irFilter; model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]; Layout.fillWidth: true }
@@ -3010,30 +3055,23 @@ ApplicationWindow {
                 HudCheck { id: infiniteFocus; text: "Infinity focus" }
                 HudCheck { id: polar; text: "Polar / EQ" }
                 HudCheck { id: doGoto; text: "GOTO" }
-                HudCheck { id: saveTemplate; text: "Save template" }
+                HudCheck { id: saveTemplate; text: "Save template"; visible: !sessionDialog.editingTemplate }
             }
             Item { Layout.fillHeight: true }
             RowLayout {
                 Layout.alignment: Qt.AlignRight
                 HudButton { text: "CANCEL"; onClicked: sessionDialog.close() }
                 HudButton {
-                    text: "SAVE SESSION"
+                    text: sessionDialog.editingTemplate ? "SAVE TEMPLATE" : "SAVE SESSION"
                     busyText: "SAVING…"
                     buttonColor: "#0E3A48"
                     foregroundColor: root.accent
                     onClicked: {
-                        backend.saveSession(JSON.stringify({
-                            id: sessionDialog.editingId, name: sessionName.text, target: targetName.text,
-                            target_kind: targetType.currentText, ra: ra.text, dec: dec.text,
-                            scheduled_start: startTime.text, device_id: backend.selectedDeviceId,
-                            camera: camera.currentIndex === 1 ? "wide" : "tele", exposure: Number(exposure.text),
-                            gain: Number(gain.text), frame_count: Number(frames.text), binning: Number(binning.currentText),
-                            ir_filter: irFilter.currentText, rows: Number(rows.text), columns: Number(columns.text),
-                            rotation: Number(rotation.text), horizontal_scale: Number(hScale.text), vertical_scale: Number(vScale.text),
-                            wait_before: Number(waitBefore.text), wait_after: Number(waitAfter.text), notes: notes.text,
-                            calibrate: calibrate.checked, autofocus: autofocus.checked, infinite_focus: infiniteFocus.checked,
-                            polar_align: polar.checked, goto: doGoto.checked, save_template: saveTemplate.checked
-                        }))
+                        const payload = JSON.stringify(sessionDialog.formPayload())
+                        if (sessionDialog.editingTemplate)
+                            backend.saveTemplate(payload)
+                        else
+                            backend.saveSession(payload)
                         sessionDialog.close()
                     }
                 }

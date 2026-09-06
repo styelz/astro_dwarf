@@ -487,6 +487,7 @@ class AppBackend(QObject):
         data["group_id"] = group_id
         data["is_group"] = grouped
         data["pane_count"] = len(members)
+        data["pane_name"] = first.name
         data["name"] = title
         data["target_name"] = mosaic_group_title(first.target.name, group_id) if grouped else first.target.name
         data["member_ids"] = [item.id for item in sorted(members, key=lambda item: pane_sort_key(item.name))]
@@ -955,6 +956,27 @@ class AppBackend(QObject):
         self.store.transition(session_id, SessionStatus.SKIPPED, current_step="Skipped")
         self.sessionsChanged.emit()
 
+    @Slot(str)
+    def resetSession(self, session_id: str) -> None:
+        session = self.store.sessions.get(session_id)
+        if not session:
+            return
+        if session.status == SessionStatus.RUNNING:
+            self.toast.emit("Stop the running session first", "warning")
+            return
+        if session.status == SessionStatus.PLANNED:
+            self.toast.emit("This session is already planned", "info")
+            return
+        self._save_session(replace(
+            session,
+            status=SessionStatus.PLANNED,
+            current_step="Waiting",
+            actual_started_at=None,
+            actual_ended_at=None,
+            outcome="",
+        ))
+        self.toast.emit("Session reset", "success")
+
     @Slot(str, str)
     def setLiveCamera(self, device_id: str, camera: str) -> None:
         current = self._device_by_id(device_id)
@@ -1104,6 +1126,43 @@ class AppBackend(QObject):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _fields_from_payload(self, values: dict[str, Any], existing_mosaic: Mosaic | None = None) -> tuple[Target, CameraSettings, Workflow, Mosaic]:
+        target_kind = TargetKind(values.get("target_kind", "equatorial"))
+        return (
+            Target(
+                name=values["target"],
+                kind=target_kind,
+                ra_hours=float(values["ra"]) if values.get("ra") and target_kind == TargetKind.EQUATORIAL else None,
+                dec_degrees=float(values["dec"]) if values.get("dec") and target_kind == TargetKind.EQUATORIAL else None,
+                solar_name=values["target"] if target_kind == TargetKind.SOLAR else None,
+            ),
+            CameraSettings(
+                camera=Camera(values.get("camera", "tele")),
+                exposure_seconds=float(values.get("exposure", 15)),
+                gain=int(values.get("gain", 80)),
+                frame_count=int(values.get("frame_count", 120)),
+                binning=int(values.get("binning", 1)),
+                ir_filter=values.get("ir_filter", "VIS"),
+            ),
+            Workflow(
+                calibrate=bool(values.get("calibrate", True)),
+                autofocus=bool(values.get("autofocus", True)),
+                infinite_focus=bool(values.get("infinite_focus", False)),
+                polar_align=bool(values.get("polar_align", False)),
+                goto=bool(values.get("goto", True)),
+                wait_before_seconds=float(values.get("wait_before", 0)),
+                wait_after_seconds=float(values.get("wait_after", 10)),
+            ),
+            Mosaic(
+                rows=int(values.get("rows", 1)),
+                columns=int(values.get("columns", 1)),
+                rotation_degrees=float(values.get("rotation", 0)),
+                horizontal_scale=int(values.get("horizontal_scale", 150)),
+                vertical_scale=int(values.get("vertical_scale", 150)),
+                group_id=existing_mosaic.group_id if existing_mosaic else None,
+            ),
+        )
+
     @Slot(str)
     def saveSession(self, payload: str) -> None:
         try:
@@ -1111,45 +1170,26 @@ class AppBackend(QObject):
             existing = self.store.sessions.get(values.get("id", "")) if values.get("id") else None
             if existing and existing.status == SessionStatus.RUNNING:
                 raise ValueError("A running session cannot be edited")
-            target_kind = TargetKind(values.get("target_kind", "equatorial"))
+            target, camera, workflow, mosaic = self._fields_from_payload(
+                values, existing.mosaic if existing else None
+            )
+            resetting = existing is not None and existing.status != SessionStatus.PLANNED
             session = Session(
                 id=existing.id if existing else uuid4().hex,
                 name=values.get("name") or values["target"],
-                target=Target(
-                    name=values["target"],
-                    kind=target_kind,
-                    ra_hours=float(values["ra"]) if values.get("ra") and target_kind == TargetKind.EQUATORIAL else None,
-                    dec_degrees=float(values["dec"]) if values.get("dec") and target_kind == TargetKind.EQUATORIAL else None,
-                    solar_name=values["target"] if target_kind == TargetKind.SOLAR else None,
-                ),
+                target=target,
                 device_id=values["device_id"],
                 scheduled_start=datetime.fromisoformat(values["scheduled_start"]).isoformat(timespec="minutes"),
-                camera=CameraSettings(
-                    camera=Camera(values.get("camera", "tele")),
-                    exposure_seconds=float(values.get("exposure", 15)),
-                    gain=int(values.get("gain", 80)),
-                    frame_count=int(values.get("frame_count", 120)),
-                    binning=int(values.get("binning", 1)),
-                    ir_filter=values.get("ir_filter", "VIS"),
-                ),
-                workflow=Workflow(
-                    calibrate=bool(values.get("calibrate", True)),
-                    autofocus=bool(values.get("autofocus", True)),
-                    infinite_focus=bool(values.get("infinite_focus", False)),
-                    polar_align=bool(values.get("polar_align", False)),
-                    goto=bool(values.get("goto", True)),
-                    wait_before_seconds=float(values.get("wait_before", 0)),
-                    wait_after_seconds=float(values.get("wait_after", 10)),
-                ),
-                mosaic=Mosaic(
-                    rows=int(values.get("rows", 1)),
-                    columns=int(values.get("columns", 1)),
-                    rotation_degrees=float(values.get("rotation", 0)),
-                    horizontal_scale=int(values.get("horizontal_scale", 150)),
-                    vertical_scale=int(values.get("vertical_scale", 150)),
-                ),
+                camera=camera,
+                workflow=workflow,
+                mosaic=mosaic,
                 notes=values.get("notes", existing.notes if existing else ""),
-                status=existing.status if existing else SessionStatus.PLANNED,
+                status=SessionStatus.PLANNED,
+                current_step="Waiting" if (existing is None or resetting) else existing.current_step,
+                actual_started_at=None,
+                actual_ended_at=None,
+                outcome="",
+                template_id=existing.template_id if existing else None,
                 created_at=existing.created_at if existing else datetime.now(timezone.utc).isoformat(),
             )
             self._save_session(session)
@@ -1165,6 +1205,45 @@ class AppBackend(QObject):
             self.toast.emit("Session saved", "success")
         except Exception as exc:
             self.toast.emit(f"Could not save session: {exc}", "error")
+
+    @Slot(str)
+    def saveTemplate(self, payload: str) -> None:
+        try:
+            values = json.loads(payload)
+            existing = self.store.templates.get(values.get("id", "")) if values.get("id") else None
+            target, camera, workflow, mosaic = self._fields_from_payload(
+                values, existing.mosaic if existing else None
+            )
+            name = values.get("name") or values["target"]
+            notes = values.get("notes", existing.notes if existing else "")
+            if existing:
+                self.store.templates.save(replace(
+                    existing,
+                    name=name,
+                    target=target,
+                    camera=camera,
+                    workflow=workflow,
+                    mosaic=mosaic,
+                    notes=notes,
+                ))
+                group_id = existing.mosaic.group_id
+                if group_id:
+                    for item in self.store.templates.all():
+                        if item.id != existing.id and item.mosaic.group_id == group_id:
+                            self.store.templates.save(replace(item, camera=camera, workflow=workflow))
+            else:
+                self.store.templates.save(SessionTemplate(
+                    name=name,
+                    target=target,
+                    camera=camera,
+                    workflow=workflow,
+                    mosaic=mosaic,
+                    notes=notes,
+                ))
+            self.templatesChanged.emit()
+            self.toast.emit("Template saved", "success")
+        except Exception as exc:
+            self.toast.emit(f"Could not save template: {exc}", "error")
 
     def _save_session(self, session: Session) -> None:
         device = self._device_by_id(session.device_id)
@@ -1212,7 +1291,15 @@ class AppBackend(QObject):
             self.toast.emit("This session is already running", "warning")
             return
         if session:
-            self._save_session(replace(session, scheduled_start=datetime.now().isoformat(timespec="minutes"), status=SessionStatus.PLANNED))
+            self._save_session(replace(
+                session,
+                scheduled_start=datetime.now().isoformat(timespec="minutes"),
+                status=SessionStatus.PLANNED,
+                current_step="Waiting",
+                actual_started_at=None,
+                actual_ended_at=None,
+                outcome="",
+            ))
             QTimer.singleShot(0, self._scheduler_tick)
 
     @Slot(str, str)
