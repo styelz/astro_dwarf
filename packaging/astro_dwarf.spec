@@ -7,7 +7,10 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files
 
 ROOT = Path(SPECPATH).parent
 ICON_DIR = ROOT / "packaging" / "icons"
-VERSION = os.environ.get("ASTRO_DWARF_VERSION", "0.1.0")
+VERSION = os.environ.get(
+    "ASTRO_DWARF_VERSION",
+    (ROOT / "VERSION").read_text(encoding="utf-8").strip(),
+)
 # UPX regularly breaks Qt plugins on macOS and Linux.
 USE_UPX = sys.platform == "win32"
 
@@ -31,6 +34,7 @@ def collect_pyside_qml() -> list[tuple[str, str]]:
 
 
 datas = [
+    (str(ROOT / "VERSION"), "."),
     (str(ROOT / "astro_dwarf" / "qml"), "qml"),
 ]
 datas += collect_pyside_qml()

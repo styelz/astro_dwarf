@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astro-dwarf"
-version = "1.0.6"
+dynamic = ["version"]
 description = "Native multi-device Dwarf telescope control and scheduling"
 requires-python = ">=3.11"
 dependencies = [
@@ -31,6 +31,9 @@ astro-dwarf = "app:main"
 [tool.setuptools]
 py-modules = ["app"]
 packages = ["astro_dwarf"]
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
 
 [tool.setuptools.package-data]
 astro_dwarf = ["qml/**/*"]

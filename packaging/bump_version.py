@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import argparse
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-PYPROJECT = ROOT / "pyproject.toml"
-INIT = ROOT / "astro_dwarf" / "version.py"
+VERSION_FILE = ROOT / "VERSION"
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 
@@ -25,34 +22,11 @@ def format_version(parts: tuple[int, int, int]) -> str:
 
 
 def read_file_version() -> str:
-    match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', PYPROJECT.read_text(encoding="utf-8"))
-    if not match:
-        raise ValueError("Could not find version in pyproject.toml")
-    return match.group(1)
-
-
-def git_tag_versions() -> list[tuple[int, int, int]]:
-    try:
-        output = subprocess.check_output(
-            ["git", "tag", "--list", "v*"],
-            cwd=ROOT,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return []
-    versions = []
-    for line in output.splitlines():
-        try:
-            versions.append(parse_version(line))
-        except ValueError:
-            continue
-    return versions
+    return format_version(parse_version(VERSION_FILE.read_text(encoding="utf-8")))
 
 
 def current_version() -> str:
-    versions = [parse_version(read_file_version()), *git_tag_versions()]
-    return format_version(max(versions))
+    return read_file_version()
 
 
 def bump_version(version: str, part: str) -> str:
@@ -69,16 +43,7 @@ def bump_version(version: str, part: str) -> str:
 def write_version(version: str) -> None:
     parse_version(version)
     if read_file_version() != version:
-        pyproject = PYPROJECT.read_text(encoding="utf-8")
-        updated = re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{version}"', pyproject, count=1)
-        if updated == pyproject:
-            raise ValueError("Could not update pyproject.toml version")
-        PYPROJECT.write_text(updated, encoding="utf-8")
-    INIT.write_text(
-        '"""Astro Dwarf native multi-telescope controller."""\n\n'
-        f'__version__ = "{version}"\n',
-        encoding="utf-8",
-    )
+        VERSION_FILE.write_text(f"{version}\n", encoding="utf-8")
 
 
 def main() -> int:

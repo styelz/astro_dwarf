@@ -39,12 +39,14 @@ page only when the telescope and session queue are ready.
 
 ## Install
 
-Successful installer builds automatically increment the patch version, bake it
-into the app, and publish unsigned installers on the
+The version number is stored in the root `VERSION` file. Change that one file
+and push it to `main` to build unsigned installers and publish them on the
 [GitHub Releases page](https://github.com/styelz/astro_dwarf/releases).
-That happens on every push to `main`, or when you run **Build OS installers**
-from Actions (choose patch, minor, or major). The version is shown in the
-title bar and Settings.
+Other pushes to `main` do not start a release build. You can also run
+**Build OS installers** from Actions and enter a version number; the successful
+workflow writes that number back to `VERSION`. Leave the input blank to rebuild
+the version already in the file. The version is shown in the title bar and
+Settings.
 
 - **Windows x64:** download and run `AstroDwarf-Setup-<version>-win64.exe`.
   The installer is per-user and writes to `%LOCALAPPDATA%\Astro Dwarf`, so it

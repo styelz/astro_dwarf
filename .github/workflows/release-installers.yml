@@ -3,15 +3,14 @@ name: Build OS installers
 on:
   workflow_dispatch:
     inputs:
-      bump:
-        description: Version increment
-        type: choice
-        options: [patch, minor, major]
-        default: patch
+      version:
+        description: Version to release (for example, 1.1.0); leave blank to rebuild VERSION
+        type: string
+        required: false
   push:
     branches: [main]
-    tags:
-      - "v*"
+    paths:
+      - VERSION
 
 concurrency:
   group: installer-release
@@ -22,13 +21,13 @@ permissions:
 
 jobs:
   version:
-    name: Next version
+    name: Resolve version
     if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip ci]')
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
-      bump: ${{ steps.resolve.outputs.bump }}
+      release: ${{ steps.resolve.outputs.release }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,23 +38,30 @@ jobs:
       - name: Resolve version
         id: resolve
         env:
-          BUMP: ${{ github.event.inputs.bump || 'patch' }}
+          INPUT_VERSION: ${{ github.event.inputs.version || '' }}
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION="$(python packaging/bump_version.py --set "${GITHUB_REF_NAME#v}" --print-only)"
-            BUMP="none"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_VERSION}" ]]; then
+            VERSION="$(python packaging/bump_version.py --set "${INPUT_VERSION}" --print-only)"
           else
-            VERSION="$(python packaging/bump_version.py --bump "${BUMP}" --print-only)"
+            VERSION="$(python packaging/bump_version.py --print-only)"
+          fi
+          TAG="v${VERSION}"
+          RELEASE=true
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]] && \
+             git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists; skipping duplicate automatic release"
+            RELEASE=false
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "bump=${BUMP}" >> "$GITHUB_OUTPUT"
-          echo "Release version ${VERSION} (${BUMP})"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
+          echo "Release version ${VERSION}: ${RELEASE}"
 
   windows:
     name: Windows x64
     needs: version
+    if: needs.version.outputs.release == 'true'
     runs-on: windows-2025
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -113,6 +119,7 @@ jobs:
   macos:
     name: macOS Apple Silicon
     needs: version
+    if: needs.version.outputs.release == 'true'
     runs-on: macos-15
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -179,6 +186,7 @@ jobs:
   linux:
     name: Linux x64
     needs: version
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-22.04
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -273,6 +281,7 @@ jobs:
   release:
     name: Publish GitHub release
     needs: [version, windows, macos, linux]
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-24.04
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -290,7 +299,6 @@ jobs:
           merge-multiple: true
 
       - name: Record version and tag
-        if: needs.version.outputs.bump != 'none'
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -298,9 +306,9 @@ jobs:
           git fetch origin main
           git checkout --force -B main origin/main
           python packaging/bump_version.py --set "${VERSION}"
-          git add pyproject.toml astro_dwarf/version.py
+          git add VERSION
           if git diff --cached --quiet; then
-            echo "Version files already at ${VERSION}"
+            echo "VERSION is already ${VERSION}"
           else
             git commit -m "Release ${TAG} [skip ci]"
             git push origin HEAD:main
