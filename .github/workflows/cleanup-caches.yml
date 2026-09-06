@@ -1,0 +1,102 @@
+name: Cleanup Actions caches
+
+on:
+  schedule:
+    # Weekly, well after GitHub's unused-cache eviction window is no help
+    # because restore-keys keep touching old entries.
+    - cron: "17 6 * * 0"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Caches to delete
+        type: choice
+        options:
+          - keep-newest
+          - all
+        default: keep-newest
+  workflow_run:
+    workflows: [Build OS installers]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    name: Prune caches
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete stale Actions caches
+        uses: actions/github-script@v7
+        env:
+          MODE: ${{ github.event.inputs.mode || 'keep-newest' }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const mode = process.env.MODE || "keep-newest";
+
+            function family(cache) {
+              const key = cache.key || "";
+              if (key.startsWith("setup-python-")) {
+                if (key.includes("Windows")) return "setup-python-Windows";
+                if (key.includes("macOS")) return "setup-python-macOS";
+                return "setup-python-Linux";
+              }
+              if (/^FFmpeg/i.test(key)) {
+                if (/Windows/i.test(key)) return "ffmpeg-Windows";
+                if (/macOS/i.test(key)) return "ffmpeg-macOS";
+                return "ffmpeg-Linux";
+              }
+              return key.replace(/-[0-9a-f]{8,}$/i, "") || key;
+            }
+
+            function accessedAt(cache) {
+              return new Date(cache.last_accessed_at || cache.created_at).getTime();
+            }
+
+            const caches = await github.paginate(
+              github.rest.actions.getActionsCacheList,
+              { owner, repo, per_page: 100 }
+            );
+
+            let toDelete = [];
+            if (mode === "all") {
+              toDelete = caches;
+            } else {
+              const groups = new Map();
+              for (const cache of caches) {
+                const name = family(cache);
+                const list = groups.get(name) || [];
+                list.push(cache);
+                groups.set(name, list);
+              }
+              for (const list of groups.values()) {
+                list.sort((a, b) => accessedAt(b) - accessedAt(a));
+                toDelete.push(...list.slice(1));
+              }
+            }
+
+            let deleted = 0;
+            let bytes = 0;
+            for (const cache of toDelete) {
+              try {
+                await github.rest.actions.deleteActionsCacheById({
+                  owner,
+                  repo,
+                  cache_id: cache.id,
+                });
+                deleted += 1;
+                bytes += cache.size_in_bytes || 0;
+                core.info(
+                  `Deleted ${cache.id} ${(cache.size_in_bytes / 1024 / 1024).toFixed(1)} MB ${cache.key}`
+                );
+              } catch (error) {
+                core.warning(`Could not delete ${cache.id} (${cache.key}): ${error.message}`);
+              }
+            }
+
+            core.info(
+              `mode=${mode} scanned=${caches.length} deleted=${deleted} kept=${caches.length - deleted} freed=${(bytes / 1024 / 1024).toFixed(1)} MB`
+            );
