@@ -36,8 +36,12 @@ page only when the telescope and session queue are ready.
 
 ## Install
 
-Tagged releases publish unsigned installers on the
-[GitHub Releases page](https://github.com/styelz/astro_dwarf/releases):
+Successful installer builds automatically increment the patch version, bake it
+into the app, and publish unsigned installers on the
+[GitHub Releases page](https://github.com/styelz/astro_dwarf/releases).
+That happens on every push to `main`, or when you run **Build OS installers**
+from Actions (choose patch, minor, or major). The version is shown in the
+title bar and Settings.
 
 - **Windows x64:** download and run `AstroDwarf-Setup-<version>-win64.exe`.
   Windows SmartScreen may show an unrecognized-app warning; choose **More info**
@@ -62,9 +66,6 @@ sudo dnf install ./AstroDwarf-*-linux-x86_64.rpm
 ```
 
 The installers include ffmpeg for the Dwarf 3 and Dwarf Mini RTSP live view.
-To build installers without publishing a release, run **Build OS installers**
-from the repository's Actions page and download the workflow artifacts. Pushing
-a tag such as `v0.1.0` builds the same files and creates a GitHub Release.
 
 ## Telescope SDK
 

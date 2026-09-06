@@ -2,18 +2,64 @@ name: Build OS installers
 
 on:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Version increment
+        type: choice
+        options: [patch, minor, major]
+        default: patch
   push:
     branches: [main]
     tags:
       - "v*"
 
+concurrency:
+  group: installer-release
+  cancel-in-progress: false
+
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  version:
+    name: Next version
+    if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip ci]')
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      bump: ${{ steps.resolve.outputs.bump }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Resolve version
+        id: resolve
+        env:
+          BUMP: ${{ github.event.inputs.bump || 'patch' }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="$(python packaging/bump_version.py --set "${GITHUB_REF_NAME#v}" --print-only)"
+            BUMP="none"
+          else
+            VERSION="$(python packaging/bump_version.py --bump "${BUMP}" --print-only)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "bump=${BUMP}" >> "$GITHUB_OUTPUT"
+          echo "Release version ${VERSION} (${BUMP})"
+
   windows:
     name: Windows x64
+    needs: version
     runs-on: windows-2025
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ASTRO_DWARF_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,16 +68,8 @@ jobs:
           cache: pip
       - uses: AnimMouse/setup-ffmpeg@v1.2.5
 
-      - name: Set package version
-        shell: pwsh
-        run: |
-          if ($env:GITHUB_REF_TYPE -eq "tag") {
-            $version = $env:GITHUB_REF_NAME -replace '^v', ''
-          } else {
-            $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
-          }
-          "VERSION=$version" >> $env:GITHUB_ENV
-          "ASTRO_DWARF_VERSION=$version" >> $env:GITHUB_ENV
+      - name: Apply release version
+        run: python packaging/bump_version.py --set ${{ env.VERSION }}
 
       - name: Install build dependencies
         run: python -m pip install -e ".[device,build]"
@@ -71,7 +109,11 @@ jobs:
 
   macos:
     name: macOS Apple Silicon
+    needs: version
     runs-on: macos-15
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ASTRO_DWARF_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -80,16 +122,8 @@ jobs:
           cache: pip
       - uses: AnimMouse/setup-ffmpeg@v1.2.5
 
-      - name: Set package version
-        shell: bash
-        run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
-          fi
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "ASTRO_DWARF_VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: Apply release version
+        run: python packaging/bump_version.py --set ${{ env.VERSION }}
 
       - name: Install build dependencies
         run: python -m pip install -e ".[device,build]"
@@ -112,12 +146,10 @@ jobs:
           QT_DEBUG_PLUGINS: "1"
         run: |
           set -euo pipefail
-          ls -la dist
           APP="dist/AstroDwarf.app/Contents/MacOS/AstroDwarf"
           if [[ ! -x "$APP" ]]; then
             APP="dist/AstroDwarf/AstroDwarf"
           fi
-          ls -la "$(dirname "$APP")"
           ASTRO_DWARF_TEST_EXIT_MS=3000 "$APP"
 
       - name: Build disk image
@@ -140,7 +172,11 @@ jobs:
 
   linux:
     name: Linux x64
+    needs: version
     runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ASTRO_DWARF_VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -149,16 +185,8 @@ jobs:
           cache: pip
       - uses: AnimMouse/setup-ffmpeg@v1.2.5
 
-      - name: Set package version
-        shell: bash
-        run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            VERSION="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
-          fi
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "ASTRO_DWARF_VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: Apply release version
+        run: python packaging/bump_version.py --set ${{ env.VERSION }}
 
       - name: Install system and build dependencies
         shell: bash
@@ -191,7 +219,6 @@ jobs:
           QT_DEBUG_PLUGINS: "1"
         run: |
           set -euo pipefail
-          ls -la dist/AstroDwarf
           timeout 30s env ASTRO_DWARF_TEST_EXIT_MS=3000 dist/AstroDwarf/AstroDwarf
 
       - name: Build AppImage
@@ -236,17 +263,44 @@ jobs:
 
   release:
     name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, macos, linux]
+    needs: [version, windows, macos, linux]
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: actions/download-artifact@v4
         with:
           path: release
           merge-multiple: true
+
+      - name: Record version and tag
+        if: needs.version.outputs.bump != 'none'
+        run: |
+          set -euo pipefail
+          python packaging/bump_version.py --set "${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml astro_dwarf/__init__.py
+          if git diff --cached --quiet; then
+            echo "Version files already at ${VERSION}"
+          else
+            git commit -m "Release ${TAG} [skip ci]"
+            git push origin HEAD:main
+          fi
+          git tag "${TAG}"
+          git push origin "${TAG}"
+
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
+          name: Astro Dwarf ${{ env.VERSION }}
           generate_release_notes: true
           files: release/*
+          fail_on_unmatched_files: true

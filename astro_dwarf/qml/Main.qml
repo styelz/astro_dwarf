@@ -13,7 +13,7 @@ ApplicationWindow {
     minimumWidth: 1180
     minimumHeight: 760
     visible: true
-    title: "Astro Dwarf"
+    title: "Astro Dwarf v" + backend.appVersion
     color: "#05080F"
     font.family: "Segoe UI"
     flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowSystemMenuHint
@@ -461,7 +461,7 @@ ApplicationWindow {
                     Column {
                         id: brand
                         Text { text: "ASTRO DWARF"; color: root.accent; font.pixelSize: 16; font.letterSpacing: 3; font.bold: true }
-                        Text { text: "OBSERVATORY COMMAND"; color: root.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4 }
+                        Text { text: "OBSERVATORY COMMAND  ·  v" + backend.appVersion; color: root.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4 }
                     }
                     MouseArea {
                         anchors.fill: parent
@@ -1412,6 +1412,7 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 Text { text: "SETTINGS"; color: root.textPrimary; font.pixelSize: 22; font.letterSpacing: 2 }
                                 Text { text: "Independent connection, camera, Wi‑Fi and timing profiles"; color: root.textSecondary; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                                Text { text: "Astro Dwarf v" + backend.appVersion; color: root.accent; font.pixelSize: 12; font.letterSpacing: 1 }
                             }
                             DeviceCombo {}
                             HudButton { text: "+ ADD DEVICE"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: backend.addDevice() }

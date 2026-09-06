@@ -20,6 +20,7 @@ from PySide6.QtCore import (
     Slot,
 )
 
+from . import __version__
 from .domain import (
     Camera,
     CameraSettings,
@@ -274,6 +275,10 @@ class AppBackend(QObject):
         })
         del self._logs[:-500]
         self.logsChanged.emit()
+
+    @Property(str, constant=True)
+    def appVersion(self) -> str:
+        return __version__
 
     @Property("QVariantList", notify=devicesChanged)
     def devices(self) -> list[dict[str, Any]]:

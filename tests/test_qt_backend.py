@@ -5,9 +5,17 @@ from dataclasses import replace
 import pytest
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
+from astro_dwarf import __version__
 from astro_dwarf.domain import CameraSettings, Device, Mosaic, Session, SessionStatus, SessionTemplate, Target
 from astro_dwarf.qt_backend import AppBackend
 from astro_dwarf.storage import SessionStore
+
+
+def test_app_backend_exposes_package_version(tmp_path):
+    application = QCoreApplication.instance() or QCoreApplication([])
+    backend = AppBackend(tmp_path)
+    assert backend.appVersion == __version__
+    application.processEvents()
 
 
 @pytest.mark.skipif(

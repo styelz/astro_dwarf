@@ -8,6 +8,7 @@ from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
+from . import __version__
 from .qt_backend import AppBackend
 from .runtime import configure_qml_import_path, data_root, package_root
 
@@ -48,6 +49,7 @@ def run() -> int:
     configure_qml_import_path()
     application = QGuiApplication(sys.argv)
     application.setApplicationName("Astro Dwarf")
+    application.setApplicationVersion(__version__)
     application.setOrganizationName("Astro Dwarf")
 
     resources = package_root()
