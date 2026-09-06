@@ -19,6 +19,24 @@ def package_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def configure_qml_import_path() -> None:
+    """Register both Windows and POSIX PySide6 QML layouts in frozen builds."""
+    if not is_frozen():
+        return
+    meipass = Path(getattr(sys, "_MEIPASS"))
+    candidates = [
+        meipass / "PySide6" / "qml",
+        meipass / "PySide6" / "Qt" / "qml",
+    ]
+    existing = [str(path) for path in candidates if path.is_dir()]
+    if not existing:
+        return
+    current = [part for part in os.environ.get("QML2_IMPORT_PATH", "").split(os.pathsep) if part]
+    os.environ["QML2_IMPORT_PATH"] = os.pathsep.join(
+        existing + [part for part in current if part not in existing]
+    )
+
+
 def data_root() -> Path:
     """Return a writable data directory for the current execution mode."""
     if not is_frozen():

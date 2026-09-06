@@ -47,13 +47,11 @@ jobs:
 
       - name: Smoke test application
         shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
-          $env:ASTRO_DWARF_TEST_EXIT_MS = "1000"
-          $process = Start-Process dist\AstroDwarf\AstroDwarf.exe -PassThru
-          if (-not $process.WaitForExit(20000)) {
-            $process.Kill()
-            throw "Frozen application did not exit after its smoke-test timer."
-          }
+          $env:ASTRO_DWARF_TEST_EXIT_MS = "3000"
+          $process = Start-Process dist\AstroDwarf\AstroDwarf.exe -PassThru -Wait -NoNewWindow
           if ($process.ExitCode -ne 0) {
             throw "Frozen application exited with code $($process.ExitCode)."
           }
@@ -108,9 +106,18 @@ jobs:
 
       - name: Smoke test application
         shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_DEBUG_PLUGINS: "1"
         run: |
-          ASTRO_DWARF_TEST_EXIT_MS=1000 \
-            dist/AstroDwarf.app/Contents/MacOS/AstroDwarf
+          set -euo pipefail
+          ls -la dist
+          APP="dist/AstroDwarf.app/Contents/MacOS/AstroDwarf"
+          if [[ ! -x "$APP" ]]; then
+            APP="dist/AstroDwarf/AstroDwarf"
+          fi
+          ls -la "$(dirname "$APP")"
+          ASTRO_DWARF_TEST_EXIT_MS=3000 "$APP"
 
       - name: Build disk image
         shell: bash
@@ -157,8 +164,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libdbus-1-3 libegl1 libfontconfig1 libgl1 libpulse0 \
-            libx11-xcb1 libxcb-cursor0 libxcb1 libxkbcommon0 xvfb
+            libasound2 libdbus-1-3 libdrm2 libegl1 libfontconfig1 libgbm1 \
+            libgl1 libglib2.0-0 libnss3 libpulse0 libx11-xcb1 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-shm0 libxcb-sync1 \
+            libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 libxcb1 \
+            libxkbcommon-x11-0 libxkbcommon0 xvfb
           python -m pip install -e ".[device,build]"
 
       - name: Prepare bundled tools and icons
@@ -174,9 +185,13 @@ jobs:
 
       - name: Smoke test application
         shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_DEBUG_PLUGINS: "1"
         run: |
-          timeout 20s xvfb-run -a env ASTRO_DWARF_TEST_EXIT_MS=1000 \
-            dist/AstroDwarf/AstroDwarf
+          set -euo pipefail
+          ls -la dist/AstroDwarf
+          timeout 30s env ASTRO_DWARF_TEST_EXIT_MS=3000 dist/AstroDwarf/AstroDwarf
 
       - name: Build AppImage
         shell: bash

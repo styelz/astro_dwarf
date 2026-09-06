@@ -9,7 +9,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
 from .qt_backend import AppBackend
-from .runtime import data_root, package_root
+from .runtime import configure_qml_import_path, data_root, package_root
 
 
 def _sync_work_area(window) -> None:
@@ -45,6 +45,7 @@ def run() -> int:
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
     os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
     os.environ["QML_DISABLE_DISK_CACHE"] = "1"
+    configure_qml_import_path()
     application = QGuiApplication(sys.argv)
     application.setApplicationName("Astro Dwarf")
     application.setOrganizationName("Astro Dwarf")

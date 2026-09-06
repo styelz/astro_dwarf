@@ -33,6 +33,10 @@ def main() -> None:
         ICON_DIR / "astro-dwarf.ico",
         sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
+    try:
+        icon.save(ICON_DIR / "astro-dwarf.icns")
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

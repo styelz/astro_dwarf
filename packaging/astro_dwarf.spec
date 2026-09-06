@@ -8,10 +8,32 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files
 ROOT = Path(SPECPATH).parent
 ICON_DIR = ROOT / "packaging" / "icons"
 VERSION = os.environ.get("ASTRO_DWARF_VERSION", "0.1.0")
+# UPX regularly breaks Qt plugins on macOS and Linux.
+USE_UPX = sys.platform == "win32"
+
+
+def collect_pyside_qml() -> list[tuple[str, str]]:
+    """Copy QML modules into the layout PyInstaller's PySide6 runtime hook expects."""
+    import PySide6
+
+    base = Path(PySide6.__file__).resolve().parent
+    modules = ("QtCore", "QtMultimedia", "QtQml", "QtQuick")
+    collected: list[tuple[str, str]] = []
+    for src_root, dest_root in (
+        (base / "qml", "PySide6/qml"),
+        (base / "Qt" / "qml", "PySide6/Qt/qml"),
+    ):
+        for module in modules:
+            src = src_root / module
+            if src.is_dir():
+                collected.append((str(src), f"{dest_root}/{module}"))
+    return collected
+
 
 datas = [
     (str(ROOT / "astro_dwarf" / "qml"), "astro_dwarf/qml"),
 ]
+datas += collect_pyside_qml()
 datas += collect_data_files(
     "PySide6",
     includes=[
@@ -19,6 +41,10 @@ datas += collect_data_files(
         "qml/QtMultimedia/**",
         "qml/QtQml/**",
         "qml/QtQuick/**",
+        "Qt/qml/QtCore/**",
+        "Qt/qml/QtMultimedia/**",
+        "Qt/qml/QtQml/**",
+        "Qt/qml/QtQuick/**",
     ],
 )
 
@@ -56,7 +82,12 @@ analysis = Analysis(
 )
 pyz = PYZ(analysis.pure)
 
-icon = str(ICON_DIR / "astro-dwarf.ico") if sys.platform == "win32" else str(ICON_DIR / "astro-dwarf.png")
+if sys.platform == "win32":
+    icon = str(ICON_DIR / "astro-dwarf.ico")
+elif sys.platform == "darwin" and (ICON_DIR / "astro-dwarf.icns").is_file():
+    icon = str(ICON_DIR / "astro-dwarf.icns")
+else:
+    icon = str(ICON_DIR / "astro-dwarf.png")
 
 application = EXE(
     pyz,
@@ -67,7 +98,7 @@ application = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=USE_UPX,
     console=False,
     icon=icon,
 )
@@ -83,7 +114,7 @@ worker = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=USE_UPX,
     console=True,
     icon=icon,
 )
@@ -94,7 +125,7 @@ collection = COLLECT(
     analysis.binaries,
     analysis.datas,
     strip=False,
-    upx=True,
+    upx=USE_UPX,
     name="AstroDwarf",
 )
 
