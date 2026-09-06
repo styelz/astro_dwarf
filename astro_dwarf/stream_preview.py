@@ -101,7 +101,9 @@ class StreamPlayer(QObject):
         program, arguments = command[0], command[1:]
         process = QProcess(self)
         process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
-        if sys.platform == "win32":
+        if sys.platform == "win32" and hasattr(
+            process, "setCreateProcessArgumentsModifier"
+        ):
             process.setCreateProcessArgumentsModifier(
                 lambda args: args.setCreateFlags(int(args.createFlags()) | CREATE_NO_WINDOW)
             )

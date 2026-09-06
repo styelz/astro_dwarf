@@ -141,6 +141,21 @@ ApplicationWindow {
     }
 
     function asset(name) { return Qt.resolvedUrl("assets/" + name) }
+    function goToPage(idx) {
+        if (idx === root.currentPage) {
+            if (idx === 4 && !settingsPage.isDirty())
+                settingsPage.load()
+            return
+        }
+        if (root.currentPage === 4 && settingsPage.isDirty()) {
+            settingsLeaveDialog.pendingPage = idx
+            settingsLeaveDialog.open()
+            return
+        }
+        root.currentPage = idx
+        if (idx === 4)
+            settingsPage.load()
+    }
     function syncCombo(combo) {
         if (!combo || combo.count === 0)
             return
@@ -2497,6 +2512,28 @@ ApplicationWindow {
             Item {
                 id: settingsPage
                 property string loadedDeviceId: ""
+                property string loadedSnapshot: ""
+                function currentPayload() {
+                    return {
+                        id: backend.selectedDeviceId, name: nameField.text, model: modelField.currentText,
+                        ip_address: ipField.text, camera: cameraField.currentIndex === 1 ? "wide" : "tele",
+                        ble_enabled: bleField.checked,
+                        latitude: Number(latField.text), longitude: Number(lonField.text),
+                        timezone_name: timezoneField.selectedName || timezoneField.editText, stellarium_url: stellariumField.text,
+                        wifi_ssid: ssidField.text, wifi_password: wifiField.text,
+                        ble_password: blePasswordField.text,
+                        observing_day_cutoff_hour: cutoffField.value, slew_seconds: Number(slewField.text),
+                        settle_seconds: Number(settleField.text), calibration_seconds: Number(calibrationField.text),
+                        autofocus_seconds: Number(autofocusField.text), infinite_focus_seconds: Number(infinityField.text),
+                        polar_seconds: Number(polarField.text), readout_seconds: Number(readoutField.text),
+                        pane_slew_seconds: Number(paneField.text), startup_seconds: Number(startupField.text)
+                    }
+                }
+                function isDirty() { return JSON.stringify(currentPayload()) !== loadedSnapshot }
+                function saveCurrent() {
+                    backend.saveDevice(JSON.stringify(currentPayload()))
+                    loadedSnapshot = JSON.stringify(currentPayload())
+                }
                 function load() {
                     const d = backend.selectedDevice
                     loadedDeviceId = d.id || ""
@@ -2523,6 +2560,7 @@ ApplicationWindow {
                     readoutField.text = hw.readout_seconds || 1.2
                     paneField.text = hw.pane_slew_seconds || 12
                     startupField.text = hw.startup_seconds || 8
+                    loadedSnapshot = JSON.stringify(currentPayload())
                 }
                 Component.onCompleted: load()
                 Connections {
@@ -2664,20 +2702,7 @@ ApplicationWindow {
                                 busyText: "SAVING…"
                                 buttonColor: "#0E3A48"
                                 foregroundColor: root.accent
-                                onClicked: backend.saveDevice(JSON.stringify({
-                                    id: backend.selectedDeviceId, name: nameField.text, model: modelField.currentText,
-                                    ip_address: ipField.text, camera: cameraField.currentIndex === 1 ? "wide" : "tele",
-                                    ble_enabled: bleField.checked,
-                                    latitude: Number(latField.text), longitude: Number(lonField.text),
-                                    timezone_name: timezoneField.selectedName || timezoneField.editText, stellarium_url: stellariumField.text,
-                                    wifi_ssid: ssidField.text, wifi_password: wifiField.text,
-                                    ble_password: blePasswordField.text,
-                                    observing_day_cutoff_hour: cutoffField.value, slew_seconds: Number(slewField.text),
-                                    settle_seconds: Number(settleField.text), calibration_seconds: Number(calibrationField.text),
-                                    autofocus_seconds: Number(autofocusField.text), infinite_focus_seconds: Number(infinityField.text),
-                                    polar_seconds: Number(polarField.text), readout_seconds: Number(readoutField.text),
-                                    pane_slew_seconds: Number(paneField.text), startup_seconds: Number(startupField.text)
-                                }))
+                                onClicked: settingsPage.saveCurrent()
                             }
                         }
                         HudPanel {
@@ -2730,11 +2755,7 @@ ApplicationWindow {
                     font.letterSpacing: 1.4
                     buttonColor: root.currentPage === modelData.idx ? "#0E3A48" : "#0A1524"
                     foregroundColor: root.currentPage === modelData.idx ? root.accent : root.textSecondary
-                    onClicked: {
-                        root.currentPage = modelData.idx
-                        if (modelData.idx === 4)
-                            settingsPage.load()
-                    }
+                    onClicked: root.goToPage(modelData.idx)
                 }
             }
         }
@@ -2847,6 +2868,48 @@ ApplicationWindow {
                         latitude: Number(locationLat.text),
                         longitude: Number(locationLon.text)
                     }))
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: settingsLeaveDialog
+        property int pendingPage: -1
+        modal: true
+        anchors.centerIn: Overlay.overlay
+        width: 480
+        height: 176
+        padding: 16
+        background: Rectangle { color: "#0B1520"; border.color: root.warning }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Text { text: "UNSAVED SETTINGS"; color: root.warning; font.pixelSize: 16; font.letterSpacing: 1.4 }
+            Text { text: "Save your device settings before leaving this page?"; color: root.textPrimary; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                HudButton { text: "CANCEL"; onClicked: settingsLeaveDialog.close() }
+                HudButton {
+                    text: "DISCARD"
+                    buttonColor: "#3A1218"
+                    foregroundColor: root.danger
+                    onClicked: {
+                        const idx = settingsLeaveDialog.pendingPage
+                        settingsLeaveDialog.close()
+                        settingsPage.load()
+                        root.currentPage = idx
+                    }
+                }
+                HudButton {
+                    text: "SAVE"
+                    buttonColor: "#0E3A48"
+                    foregroundColor: root.accent
+                    onClicked: {
+                        const idx = settingsLeaveDialog.pendingPage
+                        settingsPage.saveCurrent()
+                        settingsLeaveDialog.close()
+                        root.currentPage = idx
+                    }
                 }
             }
         }

@@ -92,7 +92,7 @@ def collect_package(name: str) -> None:
     hiddenimports.extend(pkg_hiddenimports)
 
 
-for package in ("dwarf_python_api", "websockets", "google.protobuf", "filelock", "bleak", "tzdata"):
+for package in ("dwarf_python_api", "dwarf_ble_connect", "websockets", "google.protobuf", "filelock", "bleak", "tzdata"):
     collect_package(package)
 
 analysis = Analysis(

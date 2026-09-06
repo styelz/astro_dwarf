@@ -3,41 +3,66 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine
 
 from .qt_backend import AppBackend
-from .runtime import configure_qml_import_path, data_root, package_root
+from .runtime import configure_qml_import_path, data_root, is_frozen, package_root
 from .version import __version__
 
+_DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+_DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19
+_DWMWA_BORDER_COLOR = 34
+_DWMWA_CAPTION_COLOR = 35
+_DWMWA_TEXT_COLOR = 36
 
-def _sync_work_area(window) -> None:
-    screen = window.screen() or QGuiApplication.primaryScreen()
-    if screen is None:
-        return
-    geo = screen.availableGeometry()
-    window.setProperty("workX", int(geo.x()))
-    window.setProperty("workY", int(geo.y()))
-    window.setProperty("workW", int(geo.width()))
-    window.setProperty("workH", int(geo.height()))
+
+def _colorref(hex_color: str) -> ctypes.c_int:
+    value = hex_color.removeprefix("#")
+    red, green, blue = int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+    return ctypes.c_int(red | (green << 8) | (blue << 16))
+
+
+def _app_icon(resources: Path) -> QIcon:
+    candidates = [
+        resources / "qml" / "assets" / "astro-dwarf.png",
+        Path(__file__).resolve().parent.parent / "packaging" / "icons" / "astro-dwarf.ico",
+        Path(__file__).resolve().parent.parent / "packaging" / "icons" / "astro-dwarf.png",
+    ]
+    if is_frozen():
+        candidates.extend(
+            [
+                Path(sys.executable),
+                Path(getattr(sys, "_MEIPASS", "")) / "astro-dwarf.png",
+            ]
+        )
+    for candidate in candidates:
+        if candidate.is_file():
+            icon = QIcon(str(candidate))
+            if not icon.isNull():
+                return icon
+    return QIcon()
 
 
 def _apply_windows_frame(window) -> None:
-    """Match leftover DWM caption/border pixels to the dark HUD chrome."""
+    """Color the native caption to match the HUD chrome."""
     if sys.platform != "win32":
         return
     try:
         hwnd = int(window.winId())
         dwm = ctypes.windll.dwmapi
         dark = ctypes.c_int(1)
-        for attribute in (20, 19):
+        for attribute in (_DWMWA_USE_IMMERSIVE_DARK_MODE, _DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1):
             dwm.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(dark), ctypes.sizeof(dark))
-        caption = ctypes.c_int(0x000F0805)
-        border = ctypes.c_int(0x00826E3F)
-        dwm.DwmSetWindowAttribute(hwnd, 35, ctypes.byref(caption), ctypes.sizeof(caption))
-        dwm.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(border), ctypes.sizeof(border))
+        caption = _colorref("#0B1520")
+        border = _colorref("#3F6E82")
+        text = _colorref("#4DE8FF")
+        dwm.DwmSetWindowAttribute(hwnd, _DWMWA_CAPTION_COLOR, ctypes.byref(caption), ctypes.sizeof(caption))
+        dwm.DwmSetWindowAttribute(hwnd, _DWMWA_BORDER_COLOR, ctypes.byref(border), ctypes.sizeof(border))
+        dwm.DwmSetWindowAttribute(hwnd, _DWMWA_TEXT_COLOR, ctypes.byref(text), ctypes.sizeof(text))
     except Exception:
         pass
 
@@ -52,6 +77,9 @@ def run() -> int:
     application.setOrganizationName("Astro Dwarf")
 
     resources = package_root()
+    icon = _app_icon(resources)
+    if not icon.isNull():
+        application.setWindowIcon(icon)
     backend = AppBackend(data_root())
     engine = QQmlApplicationEngine()
     engine.warnings.connect(lambda warnings: [print(warning.toString(), file=sys.stderr) for warning in warnings])
@@ -63,9 +91,8 @@ def run() -> int:
         backend.shutdown()
         return 1
     window = engine.rootObjects()[0]
-    _sync_work_area(window)
-    if hasattr(window, "screenChanged"):
-        window.screenChanged.connect(lambda *_args: _sync_work_area(window))
+    if not icon.isNull() and hasattr(window, "setIcon"):
+        window.setIcon(icon)
     _apply_windows_frame(window)
     application.aboutToQuit.connect(backend.shutdown)
     test_exit_ms = int(os.getenv("ASTRO_DWARF_TEST_EXIT_MS", "0"))
