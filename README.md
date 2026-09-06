@@ -27,7 +27,7 @@ browser or webview.
 git clone https://github.com/styelz/astro_dwarf.git
 cd astro_dwarf
 python -m pip install -e ".[device]"
-python -m app
+python app.py
 ```
 
 Configure each telescope's IP, model and location in Settings.
@@ -89,7 +89,7 @@ for making that API available.
 
 ## Storage
 
-Runtime data is under `data/`:
+Application code lives in `astro_dwarf/`. Runtime data is under `data/`:
 
 ```text
 devices/    per-telescope and timing profiles

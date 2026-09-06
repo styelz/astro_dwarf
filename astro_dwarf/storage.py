@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Generic, Iterable, TypeVar
 
-from domain import (
+from .domain import (
     Device,
     HistoryRecord,
     Session,
@@ -154,7 +154,7 @@ class SessionStore:
                 goto = raw.get("goto_manual", {})
                 camera = raw.get("setup_camera", {})
                 start = f"{meta['date']}T{meta['time'][:5]}"
-                from domain import CameraSettings, Target, Workflow
+                from .domain import CameraSettings, Target, Workflow
 
                 session = Session(
                     name=meta.get("description") or goto.get("target") or path.stem,

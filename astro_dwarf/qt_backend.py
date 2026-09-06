@@ -24,8 +24,8 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from version import __version__
-from domain import (
+from .version import __version__
+from .domain import (
     Camera,
     CameraSettings,
     Device,
@@ -42,7 +42,7 @@ from domain import (
     session_from_dict,
     to_dict,
 )
-from services import (
+from .services import (
     DurationEngine,
     StellariumClient,
     import_telescopius,
@@ -51,9 +51,9 @@ from services import (
     pane_sort_key,
     stagger_mosaic_sessions,
 )
-from runtime import prepare_worker_environment, worker_command
-from storage import SessionStore
-from stream_preview import LiveImageProvider, StreamPlayer, port_is_open, stream_port
+from .runtime import prepare_worker_environment, worker_command
+from .storage import SessionStore
+from .stream_preview import LiveImageProvider, StreamPlayer, port_is_open, stream_port
 
 
 class TelescopeProcess(QObject):

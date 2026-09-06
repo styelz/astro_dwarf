@@ -29,14 +29,8 @@ build = [
 astro-dwarf = "app:main"
 
 [tool.setuptools]
-py-modules = [
-  "app",
-  "device_worker",
-  "domain",
-  "qt_backend",
-  "runtime",
-  "services",
-  "storage",
-  "stream_preview",
-  "version",
-]
+py-modules = ["app"]
+packages = ["astro_dwarf"]
+
+[tool.setuptools.package-data]
+astro_dwarf = ["qml/**/*"]

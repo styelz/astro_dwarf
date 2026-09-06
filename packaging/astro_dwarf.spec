@@ -31,7 +31,7 @@ def collect_pyside_qml() -> list[tuple[str, str]]:
 
 
 datas = [
-    (str(ROOT / "qml"), "qml"),
+    (str(ROOT / "astro_dwarf" / "qml"), "qml"),
 ]
 datas += collect_pyside_qml()
 datas += collect_data_files(
@@ -55,6 +55,17 @@ for filename in ("ffmpeg.exe", "ffmpeg"):
         binaries.append((str(candidate), "."))
 
 hiddenimports = [
+    "app",
+    "astro_dwarf",
+    "astro_dwarf.app",
+    "astro_dwarf.device_worker",
+    "astro_dwarf.domain",
+    "astro_dwarf.qt_backend",
+    "astro_dwarf.runtime",
+    "astro_dwarf.services",
+    "astro_dwarf.storage",
+    "astro_dwarf.stream_preview",
+    "astro_dwarf.version",
     "PySide6.QtMultimedia",
     "PySide6.QtOpenGL",
     "PySide6.QtQml",
