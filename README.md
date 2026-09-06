@@ -24,7 +24,8 @@ browser or webview.
 ## Run
 
 ```powershell
-cd astro_dwarf
+git clone https://github.com/styelz/astro_dwarf.git
+cd astro_dwarf/astro_dwarf
 python -m pip install -e ".[device,test]"
 python -m astro_dwarf.app
 ```
