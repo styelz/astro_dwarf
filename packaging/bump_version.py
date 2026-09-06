@@ -68,11 +68,12 @@ def bump_version(version: str, part: str) -> str:
 
 def write_version(version: str) -> None:
     parse_version(version)
-    pyproject = PYPROJECT.read_text(encoding="utf-8")
-    updated = re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{version}"', pyproject, count=1)
-    if updated == pyproject:
-        raise ValueError("Could not update pyproject.toml version")
-    PYPROJECT.write_text(updated, encoding="utf-8")
+    if read_file_version() != version:
+        pyproject = PYPROJECT.read_text(encoding="utf-8")
+        updated = re.sub(r'(?m)^version\s*=\s*"[^"]+"', f'version = "{version}"', pyproject, count=1)
+        if updated == pyproject:
+            raise ValueError("Could not update pyproject.toml version")
+        PYPROJECT.write_text(updated, encoding="utf-8")
     INIT.write_text(
         '"""Astro Dwarf native multi-telescope controller."""\n\n'
         f'__version__ = "{version}"\n',

@@ -284,9 +284,11 @@ jobs:
         if: needs.version.outputs.bump != 'none'
         run: |
           set -euo pipefail
-          python packaging/bump_version.py --set "${VERSION}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout --force -B main origin/main
+          python packaging/bump_version.py --set "${VERSION}"
           git add pyproject.toml astro_dwarf/__init__.py
           if git diff --cached --quiet; then
             echo "Version files already at ${VERSION}"
@@ -294,8 +296,12 @@ jobs:
             git commit -m "Release ${TAG} [skip ci]"
             git push origin HEAD:main
           fi
-          git tag "${TAG}"
-          git push origin "${TAG}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}"; then
+            echo "Tag ${TAG} already exists on origin"
+          else
+            git tag "${TAG}"
+            git push origin "${TAG}"
+          fi
 
       - uses: softprops/action-gh-release@v2
         with:
