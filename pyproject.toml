@@ -37,5 +37,6 @@ py-modules = [
   "runtime",
   "services",
   "storage",
+  "stream_preview",
   "version",
 ]

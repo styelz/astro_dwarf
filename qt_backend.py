@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from PySide6.QtCore import (
@@ -14,6 +16,8 @@ from PySide6.QtCore import (
     QProcess,
     QProcessEnvironment,
     QObject,
+    Qt,
+    QThread,
     QTimer,
     QUrl,
     Signal,
@@ -49,6 +53,7 @@ from services import (
 )
 from runtime import prepare_worker_environment, worker_command
 from storage import SessionStore
+from stream_preview import LiveImageProvider, StreamPlayer, port_is_open, stream_port
 
 
 class TelescopeProcess(QObject):
@@ -222,6 +227,13 @@ class AppBackend(QObject):
     sessionProgressChanged = Signal()
     toast = Signal(str, str)
     _asyncResult = Signal(str, object)
+    previewActiveChanged = Signal()
+    previewPlayingChanged = Signal()
+    previewStatusChanged = Signal()
+    previewGenerationChanged = Signal()
+    _openPreviewStream = Signal(str)
+    _closePreviewStream = Signal()
+    _previewReady = Signal(int, str)
 
     def __init__(self, data_root: Path, parent: QObject | None = None):
         super().__init__(parent)
@@ -246,6 +258,23 @@ class AppBackend(QObject):
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self._tick)
         self.timer.start()
+        self.live_images = LiveImageProvider()
+        self._preview_token = 0
+        self._preview_active = False
+        self._preview_playing = False
+        self._preview_status = ""
+        self._preview_generation = 0
+        self._last_preview_ui = 0.0
+        self._preview_thread = QThread(self)
+        self._stream_player = StreamPlayer()
+        self._stream_player.moveToThread(self._preview_thread)
+        self._stream_player.frameReady.connect(self._on_preview_frame)
+        self._stream_player.failed.connect(self._on_preview_failed)
+        self._stream_player.statusChanged.connect(self._on_preview_status)
+        self._openPreviewStream.connect(self._stream_player.openStream, Qt.QueuedConnection)
+        self._closePreviewStream.connect(self._stream_player.closeStream, Qt.QueuedConnection)
+        self._previewReady.connect(self._open_ready_stream)
+        self._preview_thread.start()
 
     def _create_worker(self, device: Device) -> TelescopeProcess:
         old = self._workers.pop(device.id, None)
@@ -439,15 +468,135 @@ class AppBackend(QObject):
             return f"rtsp://{device.ip_address}/{'ch1' if device.camera == Camera.WIDE else 'ch0'}/stream0"
         return f"http://{device.ip_address}:8092/{'secondstream' if device.camera == Camera.WIDE else 'mainstream'}"
 
+    @Property(bool, notify=previewActiveChanged)
+    def previewActive(self) -> bool:
+        return self._preview_active
+
+    @Property(bool, notify=previewPlayingChanged)
+    def previewPlaying(self) -> bool:
+        return self._preview_playing
+
+    @Property(str, notify=previewStatusChanged)
+    def previewStatus(self) -> str:
+        return self._preview_status
+
+    @Property(int, notify=previewGenerationChanged)
+    def previewGeneration(self) -> int:
+        return self._preview_generation
+
+    def _set_preview_status(self, text: str) -> None:
+        if self._preview_status == text:
+            return
+        self._preview_status = text
+        self.previewStatusChanged.emit()
+
     @Slot(str)
     def startPreview(self, device_id: str) -> None:
         device = self._device_by_id(device_id)
         worker = self._workers.get(device_id)
-        if not worker:
+        if device.demo_mode:
+            self.add_log("demo", "Would open live camera preview", device_id)
             return
+        if not worker or not worker.connected:
+            self.add_log("warning", "Preview needs an active telescope connection", device_id)
+            return
+        self.stopPreview()
+        self._preview_token += 1
+        token = self._preview_token
+        self._preview_active = True
+        self._preview_playing = False
+        self.live_images.clear()
+        self._set_preview_status("Starting live camera…")
+        self.previewActiveChanged.emit()
+        self.previewPlayingChanged.emit()
         camera_op = "open_wide_camera" if device.camera == Camera.WIDE else "open_camera"
-        worker.send("go_live")
-        worker.send(camera_op)
+        url = self.videoUrl
+        host = urlparse(url).hostname or device.ip_address
+        port = stream_port(url)
+
+        def after_camera(ok: bool, result: Any) -> None:
+            if token != self._preview_token:
+                return
+            if not ok:
+                self.add_log("error", f"Could not open camera: {result}", device_id)
+                self._set_preview_status("Camera failed to open")
+                return
+            self.add_log("info", f"Opening {url} in the background", device_id)
+            self._set_preview_status("Waiting for stream " + url)
+            threading.Thread(
+                target=self._wait_for_stream,
+                args=(token, url, host, port),
+                daemon=True,
+                name="preview-wait",
+            ).start()
+
+        def after_photo(_ok: bool, _result: Any) -> None:
+            if token != self._preview_token:
+                return
+            worker.send(camera_op, callback=after_camera)
+
+        def after_live(ok: bool, result: Any) -> None:
+            if token != self._preview_token:
+                return
+            if not ok:
+                self.add_log("warning", f"GO LIVE: {result}", device_id)
+            worker.send("photo_mode", callback=after_photo)
+
+        worker.send("go_live", callback=after_live)
+
+    def _wait_for_stream(self, token: int, url: str, host: str, port: int) -> None:
+        deadline = time.monotonic() + 12
+        while token == self._preview_token and time.monotonic() < deadline:
+            if port_is_open(host, port, timeout=0.8):
+                break
+            time.sleep(0.35)
+        if token != self._preview_token:
+            return
+        self._previewReady.emit(token, url)
+
+    def _open_ready_stream(self, token: int, url: str) -> None:
+        if token != self._preview_token:
+            return
+        self._openPreviewStream.emit(url)
+
+    @Slot()
+    def stopPreview(self) -> None:
+        self._preview_token += 1
+        if self._preview_active or self._preview_playing:
+            self._closePreviewStream.emit()
+        self._preview_active = False
+        self._preview_playing = False
+        self.live_images.clear()
+        self._set_preview_status("")
+        self.previewActiveChanged.emit()
+        self.previewPlayingChanged.emit()
+        self.previewGenerationChanged.emit()
+
+    def _on_preview_frame(self, image) -> None:
+        if not self._preview_active:
+            return
+        self.live_images.update(image)
+        now = time.monotonic()
+        if self._preview_playing and now - self._last_preview_ui < 0.05:
+            return
+        self._last_preview_ui = now
+        self._preview_generation += 1
+        if not self._preview_playing:
+            self._preview_playing = True
+            self._set_preview_status(self.videoUrl)
+            self.previewPlayingChanged.emit()
+        self.previewGenerationChanged.emit()
+
+    def _on_preview_failed(self, message: str) -> None:
+        text = message or "Video preview failed"
+        if "Could not open file" in text or not text.strip():
+            text = f"Could not open {self.videoUrl}. The control link is up, but the camera stream is not reachable yet."
+        self.add_log("error", text)
+        self._set_preview_status(text)
+
+    def _on_preview_status(self, message: str) -> None:
+        if self._preview_active:
+            self._set_preview_status(message)
 
     @Slot(str, str)
     def uiLog(self, level: str, message: str) -> None:
@@ -874,6 +1023,9 @@ class AppBackend(QObject):
         self.historyChanged.emit()
 
     def shutdown(self) -> None:
+        self.stopPreview()
+        self._preview_thread.quit()
+        self._preview_thread.wait(2000)
         for worker in self._workers.values():
             worker.shutdown()
 

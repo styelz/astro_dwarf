@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
-import QtMultimedia
 import QtQuick.Window
 import QtCore
 
@@ -714,58 +713,33 @@ ApplicationWindow {
                                         backend.uiLog("warning", "Preview needs an active telescope connection")
                                         return
                                     }
-                                    statusText = "Opening live camera…"
                                     backend.startPreview(backend.selectedDeviceId)
-                                    const url = backend.videoUrl
-                                    player.stop()
-                                    player.source = url
-                                    statusText = "Connecting  " + url
-                                    previewStartTimer.restart()
                                 }
 
                                 function stopPreview() {
-                                    previewStartTimer.stop()
-                                    player.stop()
+                                    backend.stopPreview()
                                     statusText = backend.selectedDevice.connected ? backend.videoUrl : "Connect a telescope to start the stream"
                                 }
 
-                                Timer {
-                                    id: previewStartTimer
-                                    interval: 350
-                                    onTriggered: player.play()
-                                }
                                 Connections {
                                     target: backend
                                     function onSelectedDeviceChanged() { previewHost.stopPreview() }
+                                    function onPreviewStatusChanged() {
+                                        if (backend.previewStatus)
+                                            previewHost.statusText = backend.previewStatus
+                                    }
                                 }
 
-                                MediaPlayer {
-                                    id: player
-                                    videoOutput: videoOutput
-                                    audioOutput: AudioOutput { muted: true }
-                                    onPlaybackStateChanged: {
-                                        if (playbackState === MediaPlayer.PlayingState)
-                                            previewHost.statusText = backend.videoUrl
-                                    }
-                                    onErrorOccurred: function(error, errorString) {
-                                        previewHost.statusText = errorString || "Preview failed"
-                                        backend.uiLog("error", errorString || "Video preview failed")
-                                    }
-                                    onMediaStatusChanged: {
-                                        if (mediaStatus === MediaPlayer.Loading)
-                                            previewHost.statusText = "Loading stream…"
-                                        else if (mediaStatus === MediaPlayer.InvalidMedia)
-                                            previewHost.statusText = "Stream not available at " + backend.videoUrl
-                                    }
-                                }
-                                VideoOutput {
-                                    id: videoOutput
+                                Image {
                                     anchors.fill: parent
-                                    fillMode: VideoOutput.PreserveAspectFit
+                                    visible: backend.previewPlaying
+                                    cache: false
+                                    fillMode: Image.PreserveAspectFit
+                                    source: backend.previewPlaying ? ("image://live/frame/" + backend.previewGeneration) : ""
                                 }
                                 Image {
                                     anchors.fill: parent
-                                    visible: player.playbackState !== MediaPlayer.PlayingState
+                                    visible: !backend.previewPlaying
                                     source: root.asset("hud-telescope.png")
                                     fillMode: Image.PreserveAspectFit
                                     opacity: 0.18
@@ -799,7 +773,7 @@ ApplicationWindow {
                                 Column {
                                     anchors.centerIn: parent
                                     spacing: 8
-                                    visible: player.playbackState !== MediaPlayer.PlayingState
+                                    visible: !backend.previewPlaying
                                     Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: root.textPrimary; font.pixelSize: 16; font.letterSpacing: 3; font.bold: true }
                                     Text {
                                         anchors.horizontalCenter: parent.horizontalCenter
@@ -824,19 +798,19 @@ ApplicationWindow {
                                     width: 96
                                     height: 28
                                     color: "#C0101520"
-                                    border.color: player.playbackState === MediaPlayer.PlayingState ? root.success : root.outline
+                                    border.color: backend.previewPlaying ? root.success : root.outline
                                     Row {
                                         anchors.centerIn: parent
                                         spacing: 7
-                                        Rectangle { width: 8; height: 8; radius: 4; color: player.playbackState === MediaPlayer.PlayingState ? root.danger : "#64748B"; anchors.verticalCenter: parent.verticalCenter }
-                                        Text { text: player.playbackState === MediaPlayer.PlayingState ? "LIVE" : "STANDBY"; color: root.textPrimary; font.pixelSize: 11; font.bold: true }
+                                        Rectangle { width: 8; height: 8; radius: 4; color: backend.previewPlaying ? root.danger : "#64748B"; anchors.verticalCenter: parent.verticalCenter }
+                                        Text { text: backend.previewPlaying ? "LIVE" : "STANDBY"; color: root.textPrimary; font.pixelSize: 11; font.bold: true }
                                     }
                                 }
                                 HudButton {
                                     anchors.right: parent.right
                                     anchors.top: parent.top
                                     anchors.margins: 14
-                                    visible: player.playbackState === MediaPlayer.PlayingState
+                                    visible: backend.previewActive
                                     text: "STOP PREVIEW"
                                     onClicked: previewHost.stopPreview()
                                 }

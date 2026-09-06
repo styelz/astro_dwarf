@@ -593,7 +593,17 @@ class VideoService:
         try:
             if self.url.startswith("rtsp://"):
                 self._process = subprocess.Popen(
-                    [ffmpeg_path(), "-loglevel", "error", "-rtsp_transport", "tcp", "-i", self.url, "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5", "-"],
+                    [
+                        ffmpeg_path(),
+                        "-loglevel", "error",
+                        "-rtsp_transport", "udp",
+                        "-stimeout", "3000000",
+                        "-i", self.url,
+                        "-f", "image2pipe",
+                        "-vcodec", "mjpeg",
+                        "-q:v", "5",
+                        "-",
+                    ],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

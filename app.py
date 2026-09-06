@@ -45,6 +45,7 @@ def _apply_windows_frame(window) -> None:
 def run() -> int:
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
     os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
+    os.environ.setdefault("QT_FFMPEG_RTSP_TRANSPORT", "udp")
     os.environ["QML_DISABLE_DISK_CACHE"] = "1"
     configure_qml_import_path()
     application = QGuiApplication(sys.argv)
@@ -57,6 +58,7 @@ def run() -> int:
     engine = QQmlApplicationEngine()
     engine.warnings.connect(lambda warnings: [print(warning.toString(), file=sys.stderr) for warning in warnings])
     engine.rootContext().setContextProperty("backend", backend)
+    engine.addImageProvider("live", backend.live_images)
     engine.load(QUrl.fromLocalFile(str(resources / "qml" / "Main.qml")))
 
     if not engine.rootObjects():
