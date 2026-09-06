@@ -3,6 +3,7 @@ name: Build OS installers
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags:
       - "v*"
 
