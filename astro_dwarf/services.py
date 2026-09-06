@@ -30,7 +30,7 @@ from .domain import (
     Target,
     Workflow,
 )
-from .runtime import ffmpeg_path
+from .runtime import ffmpeg_mjpeg_command
 from .storage import SessionStore
 
 LOG = logging.getLogger("astro_dwarf")
@@ -592,23 +592,22 @@ class VideoService:
     def _run(self) -> None:
         try:
             if self.url.startswith("rtsp://"):
-                self._process = subprocess.Popen(
-                    [
-                        ffmpeg_path(),
-                        "-loglevel", "error",
-                        "-rtsp_transport", "udp",
-                        "-stimeout", "3000000",
-                        "-i", self.url,
-                        "-f", "image2pipe",
-                        "-vcodec", "mjpeg",
-                        "-q:v", "5",
-                        "-",
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-                self._read_jpegs(self._process.stdout)
+                last_error = None
+                for transport in ("tcp", "udp"):
+                    if self._stop.is_set():
+                        return
+                    self._process = subprocess.Popen(
+                        ffmpeg_mjpeg_command(self.url, transport),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                    self._read_jpegs(self._process.stdout)
+                    if self._stop.is_set():
+                        return
+                    last_error = f"ffmpeg {transport} failed"
+                if last_error:
+                    LOG.warning("%s video unavailable: %s", self.device.name, last_error)
             else:
                 with requests.get(self.url, stream=True, timeout=(3, 10)) as response:
                     response.raise_for_status()

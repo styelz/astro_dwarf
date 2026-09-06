@@ -66,6 +66,41 @@ def ffmpeg_path() -> str:
     return shutil.which(executable) or executable
 
 
+def ffmpeg_mjpeg_command(url: str, rtsp_transport: str | None = None) -> list[str]:
+    """Decode a live MJPEG/RTSP URL to a JPEG pipe using software ffmpeg.
+
+    Hardware decode is disabled on purpose: NVIDIA Instant Replay / overlay
+    hooks CUDA and D3D11 video paths, and Qt's media plugin was tripping them.
+    Dwarf RTSP also behaves like VLC when forced to TCP first.
+    """
+    command = [
+        ffmpeg_path(),
+        "-hide_banner",
+        "-loglevel", "error",
+        "-an",
+        "-fflags", "+nobuffer+discardcorrupt",
+        "-flags", "low_delay",
+        "-probesize", "512k",
+        "-analyzeduration", "500000",
+    ]
+    if rtsp_transport:
+        command.extend(["-rtsp_transport", rtsp_transport])
+    command.extend(
+        [
+            "-i",
+            url,
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "mjpeg",
+            "-q:v",
+            "5",
+            "-",
+        ]
+    )
+    return command
+
+
 def worker_command() -> tuple[str, list[str]]:
     if is_frozen():
         suffix = ".exe" if sys.platform == "win32" else ""
