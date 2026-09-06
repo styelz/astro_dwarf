@@ -19,6 +19,17 @@ def test_app_backend_exposes_package_version(tmp_path):
 
 
 @pytest.mark.skipif(
+    importlib.util.find_spec("dwarf_python_api") is None
+    or importlib.util.find_spec("websockets") is None,
+    reason="optional telescope SDK is not installed",
+)
+def test_telescope_sdk_imports_websocket_client():
+    from dwarf_python_api.lib import dwarf_utils
+
+    assert callable(getattr(dwarf_utils, "connect_socket", None))
+
+
+@pytest.mark.skipif(
     importlib.util.find_spec("dwarf_python_api") is None,
     reason="optional telescope SDK is not installed",
 )

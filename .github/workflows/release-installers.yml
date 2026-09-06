@@ -74,6 +74,9 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install -e ".[device,build]"
 
+      - name: Verify telescope SDK imports
+        run: python -c "import websockets.client; from dwarf_python_api.lib import dwarf_utils"
+
       - name: Prepare bundled tools and icons
         shell: pwsh
         run: |
@@ -127,6 +130,9 @@ jobs:
 
       - name: Install build dependencies
         run: python -m pip install -e ".[device,build]"
+
+      - name: Verify telescope SDK imports
+        run: python -c "import websockets.client; from dwarf_python_api.lib import dwarf_utils"
 
       - name: Prepare bundled tools and icons
         shell: bash
@@ -200,6 +206,9 @@ jobs:
             libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 libxcb1 \
             libxkbcommon-x11-0 libxkbcommon0 xvfb
           python -m pip install -e ".[device,build]"
+
+      - name: Verify telescope SDK imports
+        run: python -c "import websockets.client; from dwarf_python_api.lib import dwarf_utils"
 
       - name: Prepare bundled tools and icons
         shell: bash

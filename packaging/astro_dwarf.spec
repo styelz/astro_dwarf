@@ -61,12 +61,22 @@ hiddenimports = [
     "PySide6.QtQuick",
     "PySide6.QtQuickControls2",
     "PySide6.QtSvg",
+    "filelock",
+    "google.protobuf",
+    "websockets",
+    "websockets.client",
 ]
 
-sdk_datas, sdk_binaries, sdk_hiddenimports = collect_all("dwarf_python_api")
-datas += sdk_datas
-binaries += sdk_binaries
-hiddenimports += sdk_hiddenimports
+
+def collect_package(name: str) -> None:
+    pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(name)
+    datas.extend(pkg_datas)
+    binaries.extend(pkg_binaries)
+    hiddenimports.extend(pkg_hiddenimports)
+
+
+for package in ("dwarf_python_api", "websockets", "google.protobuf", "filelock", "bleak"):
+    collect_package(package)
 
 analysis = Analysis(
     [str(ROOT / "packaging" / "entrypoint.py")],
