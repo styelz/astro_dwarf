@@ -44,8 +44,10 @@ from Actions (choose patch, minor, or major). The version is shown in the
 title bar and Settings.
 
 - **Windows x64:** download and run `AstroDwarf-Setup-<version>-win64.exe`.
-  Windows SmartScreen may show an unrecognized-app warning; choose **More info**
-  and **Run anyway**.
+  The installer is per-user and writes to `%LOCALAPPDATA%\Astro Dwarf`, so it
+  does not need administrator permission. Windows SmartScreen may show an
+  unrecognized-app warning; choose **More info** and **Run anyway**. If an older
+  copy was installed under Program Files, uninstall that first.
 - **macOS Apple Silicon:** open the `.dmg`, drag Astro Dwarf to Applications,
   then right-click the installed app and choose **Open** the first time to
   approve the unsigned app in Gatekeeper.
