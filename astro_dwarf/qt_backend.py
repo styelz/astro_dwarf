@@ -23,6 +23,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
+from PySide6.QtGui import QGuiApplication
 
 from .version import __version__
 from .domain import (
@@ -277,6 +278,8 @@ class AppBackend(QObject):
         self._disconnecting_ids: set[str] = set()
         self._pending_actions: dict[str, str] = {}
         self._device_activity: dict[str, str] = {}
+        self._joystick_inflight: set[str] = set()
+        self._joystick_pending: dict[str, tuple[float, float]] = {}
         self._ui_busy = ""
         self._asyncResult.connect(self._handle_async_result)
         for device in self._devices:
@@ -676,8 +679,16 @@ class AppBackend(QObject):
                 name="preview-wait",
             ).start()
 
-        def after_photo(_ok: bool, _result: Any) -> None:
+        def after_photo(ok: bool, result: Any) -> None:
             if token != self._preview_token:
+                return
+            if not ok:
+                after_camera(False, result)
+                return
+            if device.model in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
+                # V3 photo mode already initializes both RTSP cameras. The
+                # legacy tele open command can hang after wide was opened.
+                after_camera(True, result)
                 return
             worker.send(camera_op, callback=after_camera)
 
@@ -779,8 +790,22 @@ class AppBackend(QObject):
         self.add_log("info", "Connection requested; UI remains available", device_id)
         worker.connect_device(lambda ok, result: self._connection_done(device_id, ok, result))
 
+    def _persist_discovered_ip(self, device_id: str, ip_address: str) -> None:
+        current = self._device_by_id(device_id)
+        if not current or not ip_address or current.ip_address == ip_address:
+            return
+        updated = replace(current, ip_address=ip_address)
+        self.store.devices.save(updated)
+        self._devices = [updated if item.id == updated.id else item for item in self._devices]
+        worker = self._workers.get(device_id)
+        if worker:
+            worker.device = updated
+        self.add_log("info", f"Saved Bluetooth IP {ip_address}", device_id)
+
     def _connection_done(self, device_id: str, ok: bool, result: Any) -> None:
         self._connecting_ids.discard(device_id)
+        if ok and isinstance(result, dict) and result.get("ip_address"):
+            self._persist_discovered_ip(device_id, str(result["ip_address"]))
         self.add_log("success" if ok else "error", "Connected" if ok else f"Connection failed: {result}", device_id)
         self.toast.emit("Telescope connected" if ok else f"Connection failed: {result}", "success" if ok else "error")
         self._notify_devices()
@@ -819,8 +844,34 @@ class AppBackend(QObject):
     @Slot(str, float, float)
     def joystick(self, device_id: str, angle: float, speed: float) -> None:
         worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            return
+        vector = (float(angle), max(0.0, min(1.0, float(speed))))
+        if device_id in self._joystick_inflight:
+            self._joystick_pending[device_id] = vector
+            return
+        self._send_joystick(device_id, vector)
+
+    def _send_joystick(self, device_id: str, vector: tuple[float, float]) -> None:
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            return
+        self._joystick_inflight.add(device_id)
+
+        def done(_ok: bool, _result: Any) -> None:
+            self._joystick_inflight.discard(device_id)
+            pending = self._joystick_pending.pop(device_id, None)
+            if pending is not None:
+                self._send_joystick(device_id, pending)
+
+        worker.send("joystick", {"args": list(vector)}, done)
+
+    @Slot(str)
+    def stopMotors(self, device_id: str) -> None:
+        self._joystick_pending.pop(device_id, None)
+        worker = self._workers.get(device_id)
         if worker and worker.connected:
-            worker.send("joystick", {"args": [angle, speed]})
+            worker.send("stop_motors")
 
     @Slot(str, int)
     def manualFocus(self, device_id: str, direction: int) -> None:
@@ -844,6 +895,11 @@ class AppBackend(QObject):
             )
 
         worker.send("stop_all", callback=self._with_pending(device_id, "stop_all", done))
+
+    @Slot(str)
+    def copyText(self, text: str) -> None:
+        QGuiApplication.clipboard().setText(text)
+        self.toast.emit("Copied to clipboard", "success")
 
     @Slot()
     def addDevice(self) -> None:
@@ -902,6 +958,10 @@ class AppBackend(QObject):
     @Slot(str, str)
     def setLiveCamera(self, device_id: str, camera: str) -> None:
         current = self._device_by_id(device_id)
+        if current.camera == Camera(camera):
+            return
+        if device_id == self._selected_device_id and self._preview_active:
+            self.stopPreview()
         updated = replace(current, camera=Camera(camera))
         self.store.devices.save(updated)
         self._devices = [updated if item.id == updated.id else item for item in self._devices]
@@ -978,6 +1038,7 @@ class AppBackend(QObject):
                 stellarium_url=values.get("stellarium_url", current.stellarium_url),
                 wifi_ssid=values.get("wifi_ssid", current.wifi_ssid),
                 wifi_password=values.get("wifi_password", current.wifi_password),
+                ble_password=str(values.get("ble_password", current.ble_password) or "DWARF_12345678"),
                 ble_enabled=bool(values.get("ble_enabled", current.ble_enabled)),
                 observing_day_cutoff_hour=int(values.get("observing_day_cutoff_hour", current.observing_day_cutoff_hour)),
                 hardware=hardware,

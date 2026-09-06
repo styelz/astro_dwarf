@@ -6,11 +6,13 @@ all SDK output and tracebacks use stderr so the Qt log panel can display them.
 from __future__ import annotations
 
 import contextlib
+import asyncio
 import json
 import os
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import queue
 from pathlib import Path
@@ -31,6 +33,20 @@ def emit(payload: dict[str, Any]) -> None:
 
 def log(message: str, level: str = "info") -> None:
     emit({"event": "log", "level": level, "message": message})
+
+
+def send_without_response(message: Any, command: int, module_id: int) -> bool:
+    """Send commands whose V3 firmware does not return a request response."""
+    socket_globals = _api.connect_socket.__globals__
+    client = socket_globals.get("client_instance")
+    if not client:
+        return False
+    future = asyncio.run_coroutine_threadsafe(
+        socket_globals["send_socket"](message, command, 0, module_id),
+        client.task.get_loop(),
+    )
+    future.result(timeout=5)
+    return True
 
 
 FUNCTIONS = {
@@ -116,6 +132,7 @@ def configure(device: dict[str, Any]) -> bool:
                 f"TIMEZONE = {device.get('timezone_name', 'UTC')}",
                 f"BLE_STA_SSID = {device.get('wifi_ssid', '')}",
                 f"BLE_STA_PWD = {device.get('wifi_password', '')}",
+                f"BLE_PSD = {device.get('ble_password') or 'DWARF_12345678'}",
             ]
         ),
         encoding="utf-8",
@@ -132,12 +149,58 @@ def configure(device: dict[str, Any]) -> bool:
 def sdk_call(operation: str, *args: Any) -> Any:
     if _api is None:
         raise RuntimeError("Telescope worker is not configured")
+    if operation in ("joystick", "stop_motors"):
+        from dwarf_python_api.proto import motor_control_pb2
+
+        if operation == "joystick":
+            message = motor_control_pb2.ReqMotorServiceJoystick()
+            message.vector_angle = float(args[0])
+            message.vector_length = float(args[1])
+            return send_without_response(message, 14006, 6)
+        return send_without_response(motor_control_pb2.ReqMotorServiceJoystickStop(), 14008, 6)
     if operation == "manual_focus":
         from dwarf_python_api.proto import focus_pb2
 
         message = focus_pb2.ReqManualSingleStepFocus()
         message.direction = int(args[0])
-        return _api.connect_socket(message, 15001, 0, 8)
+        return send_without_response(message, 15001, 8)
+    capture_messages = {
+        "burst_start": ("ReqBurstPhoto", 10003),
+        "burst_stop": ("ReqStopBurstPhoto", 10004),
+        "record_start": ("ReqStartRecord", 10005),
+        "record_stop": ("ReqStopRecord", 10006),
+        "timelapse_start": ("ReqStartTimeLapse", 10033),
+        "timelapse_stop": ("ReqStopTimeLapse", 10034),
+    }
+    if operation in capture_messages:
+        from dwarf_python_api.proto import camera_pb2
+
+        message_name, command = capture_messages[operation]
+        return send_without_response(getattr(camera_pb2, message_name)(), command, 1)
+    if _device.get("model") in ("Dwarf 3", "Dwarf Mini"):
+        if operation in ("calibrate", "stop_calibrate", "polar", "stop_polar"):
+            from dwarf_python_api.proto import astro_pb2
+
+            astro_messages = {
+                "calibrate": ("ReqStartCalibration", 11000),
+                "stop_calibrate": ("ReqStopCalibration", 11001),
+                "polar": ("ReqStartEqSolving", 11018),
+                "stop_polar": ("ReqStopEqSolving", 11019),
+            }
+            message_name, command = astro_messages[operation]
+            message = getattr(astro_pb2, message_name)()
+            if operation == "polar":
+                message.lon = float(_device.get("longitude", 0))
+                message.lat = float(_device.get("latitude", 0))
+            return send_without_response(message, command, 3)
+        if operation in ("autofocus", "stop_autofocus"):
+            from dwarf_python_api.proto import focus_pb2
+
+            if operation == "autofocus":
+                message = focus_pb2.ReqAstroAutoFocus()
+                message.mode = int(args[0]) if args else 0
+                return send_without_response(message, 15004, 8)
+            return send_without_response(focus_pb2.ReqStopAstroAutoFocus(), 15005, 8)
     function_name = FUNCTIONS.get(operation)
     function = getattr(_api, function_name, None) if function_name else None
     if function is None:
@@ -149,7 +212,118 @@ def sdk_call(operation: str, *args: Any) -> Any:
     return result
 
 
-def connect() -> bool:
+_BLE_NAME_PREFIXES = {
+    "Dwarf II": ("DWARF2", "DWARFII"),
+    "Dwarf 3": ("DWARF3",),
+    "Dwarf Mini": ("DWARF_MINI", "DWARFMINI"),
+}
+
+
+def _patch_bleak_for_dwarf_sdk() -> None:
+    """dwarf_ble_connect still uses Bleak 0.x methods removed in Bleak 3."""
+    import functools
+
+    from bleak import BleakClient
+
+    if not hasattr(BleakClient, "set_disconnected_callback"):
+        def set_disconnected_callback(self, callback=None, **_kwargs):
+            backend = getattr(self, "_backend", None)
+            if backend is None:
+                return
+            backend._disconnected_callback = (
+                None if callback is None else functools.partial(callback, self)
+            )
+
+        BleakClient.set_disconnected_callback = set_disconnected_callback
+
+    if not hasattr(BleakClient, "get_services"):
+        async def get_services(self, **_kwargs):
+            return self.services
+
+        BleakClient.get_services = get_services
+
+
+def _run_async(factory):
+    result: dict[str, Any] = {}
+
+    def target() -> None:
+        try:
+            from bleak.backends.winrt.util import allow_sta
+
+            allow_sta()
+        except Exception:
+            pass
+        try:
+            _patch_bleak_for_dwarf_sdk()
+        except Exception:
+            pass
+        try:
+            result["value"] = asyncio.run(factory())
+        except RuntimeError as exc:
+            if "Event loop is closed" not in str(exc):
+                result["error"] = exc
+                return
+            loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(loop)
+                result["value"] = loop.run_until_complete(factory())
+            except Exception as retry_exc:
+                result["error"] = retry_exc
+            finally:
+                loop.close()
+        except Exception as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=target, name="dwarf-ble", daemon=True)
+    thread.start()
+    thread.join(timeout=90)
+    if thread.is_alive():
+        raise TimeoutError("Bluetooth operation timed out")
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
+def _write_config_ip(ip: str, dwarf_id: Any = None) -> None:
+    path = Path("config.py")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    updated = []
+    for line in lines:
+        if line.startswith("DWARF_IP "):
+            updated.append(f'DWARF_IP = "{ip}"')
+        elif dwarf_id is not None and line.startswith("DWARF_ID "):
+            updated.append(f'DWARF_ID = "{dwarf_id}"')
+        else:
+            updated.append(line)
+    path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    _device["ip_address"] = ip
+
+
+def _ble_name_key(name: str) -> str:
+    return (name or "").replace(" ", "").replace("-", "_").upper()
+
+
+def _pick_ble_device(devices: list[Any], model: str) -> Any:
+    prefixes = _BLE_NAME_PREFIXES.get(model, ())
+    matches = [
+        device
+        for device in devices
+        if any(_ble_name_key(device.name).startswith(prefix) for prefix in prefixes)
+    ]
+    chosen = (matches or devices)[0]
+    if len(matches or devices) > 1:
+        log(f"Several Dwarf Bluetooth devices found; using {chosen.name}")
+    return chosen
+
+
+def _safe_disconnect() -> None:
+    try:
+        sdk_call("disconnect")
+    except Exception:
+        pass
+
+
+def _handshake() -> bool:
     if sdk_call("time") is False:
         return False
     for operation in ("host_master", "device_state", "location"):
@@ -158,6 +332,84 @@ def connect() -> bool:
         except NotImplementedError as exc:
             log(str(exc), "warning")
     return True
+
+
+def provision_bluetooth() -> str:
+    try:
+        from dwarf_ble_connect.lib.dwarf_lib_ble import connect_to_bluetooth_device, discover_dwarf_devices
+    except ImportError as exc:
+        raise RuntimeError("Bluetooth support is not available in this install") from exc
+
+    ssid = str(_device.get("wifi_ssid") or "")
+    password = str(_device.get("wifi_password") or "")
+    ble_password = str(_device.get("ble_password") or "DWARF_12345678")
+    if ssid:
+        log(f"Scanning Bluetooth to join {ssid}…")
+    else:
+        log("Scanning Bluetooth for a nearby Dwarf…")
+
+    with contextlib.redirect_stdout(sys.stderr):
+        found = _run_async(discover_dwarf_devices)
+    devices = (found or {}).get("dwarf_devices") or []
+    if found and found.get("error"):
+        raise RuntimeError(f"Bluetooth scan failed: {found['error']}")
+    if not devices:
+        raise RuntimeError("No Dwarf found over Bluetooth. Power it on and keep it near this computer.")
+
+    names = ", ".join(device.name or device.address for device in devices)
+    log(f"Bluetooth found: {names}")
+    dwarf = _pick_ble_device(devices, str(_device.get("model") or ""))
+    log(f"Connecting to {dwarf.name} over Bluetooth…")
+
+    state: dict[str, Any] = {}
+    with contextlib.redirect_stdout(sys.stderr):
+        for attempt in range(3):
+            state = _run_async(
+                lambda: connect_to_bluetooth_device(dwarf, ble_password, ssid, password)
+            )
+            if state.get("is_connected") and state.get("ip_address"):
+                break
+            if state.get("error") not in {"Init Pending.. ", "Pending.. "}:
+                break
+            log("Bluetooth still settling, retrying…")
+
+    if not (state.get("is_connected") and state.get("ip_address")):
+        error = str(state.get("error") or "")
+        if "get Config: -1" in error:
+            raise RuntimeError(
+                "Bluetooth password rejected. Set it under Settings (factory default is DWARF_12345678)."
+            )
+        raise RuntimeError(error or "Bluetooth connected but did not return an IP address")
+
+    ip = str(state["ip_address"])
+    _write_config_ip(ip, state.get("device_dwarf_id"))
+    log(f"Bluetooth assigned IP {ip}")
+    return ip
+
+
+def connect() -> bool | dict[str, str]:
+    ip = str(_device.get("ip_address") or "").strip()
+    ble_enabled = bool(_device.get("ble_enabled"))
+    if ip:
+        log(f"Connecting to {ip}…")
+        if _handshake():
+            return {"ip_address": ip}
+        log("IP connection failed" + (", trying Bluetooth…" if ble_enabled else ""), "warning")
+        _safe_disconnect()
+    elif not ble_enabled:
+        raise RuntimeError("Set a telescope IP, or enable Bluetooth and try again")
+
+    if not ble_enabled:
+        return False
+
+    discovered = provision_bluetooth()
+    for attempt in range(1, 6):
+        if _handshake():
+            return {"ip_address": discovered}
+        log(f"Waiting for the telescope at {discovered} ({attempt}/5)…")
+        time.sleep(3)
+        _safe_disconnect()
+    raise RuntimeError(f"Bluetooth found {discovered}, but the control link did not come up")
 
 
 def run_session(session: dict[str, Any]) -> bool:
@@ -236,8 +488,19 @@ def dispatch(message: dict[str, Any]) -> Any:
         return run_session(message["session"])
     if command == "stop_all":
         return stop_all()
+    if command in {"calibrate", "autofocus", "infinity", "polar"}:
+        if sdk_call("astro_mode") is False:
+            return False
     if command == "infinity":
         return sdk_call("autofocus", True)
+    capture_techniques = {
+        "burst_start": 3,
+        "record_start": 4,
+        "timelapse_start": 5,
+    }
+    if command in capture_techniques:
+        if sdk_call("shooting_mode", 1, capture_techniques[command]) is False:
+            return False
     return sdk_call(command, *message.get("args", []))
 
 
@@ -248,6 +511,30 @@ def execute(message: dict[str, Any]) -> None:
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)
         emit({"event": "response", "id": request_id, "ok": False, "error": str(exc)})
+
+
+def enqueue_command(message: dict[str, Any]) -> None:
+    """Keep only the newest queued joystick vector before a move or stop."""
+    command = message.get("command")
+    superseded: list[dict[str, Any]] = []
+    if command in ("joystick", "stop_motors"):
+        with _commands.mutex:
+            retained = []
+            for queued in _commands.queue:
+                if queued.get("command") == "joystick":
+                    superseded.append(queued)
+                else:
+                    retained.append(queued)
+            _commands.queue.clear()
+            _commands.queue.extend(retained)
+    for queued in superseded:
+        emit({
+            "event": "response",
+            "id": queued.get("id"),
+            "ok": True,
+            "result": "superseded",
+        })
+    _commands.put(message)
 
 
 def main() -> None:
@@ -267,7 +554,7 @@ def main() -> None:
         if message.get("command") == "stop_all":
             threading.Thread(target=execute, args=(message,), daemon=True).start()
         else:
-            _commands.put(message)
+            enqueue_command(message)
 
 
 if __name__ == "__main__":

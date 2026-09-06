@@ -63,6 +63,7 @@ class Device:
     color: str = "#6C8CFF"
     hardware: HardwareProfile = field(default_factory=HardwareProfile)
     ble_enabled: bool = True
+    ble_password: str = "DWARF_12345678"
     wifi_ssid: str = ""
     wifi_password: str = ""
     latitude: float = 0

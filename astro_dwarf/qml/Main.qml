@@ -12,17 +12,11 @@ ApplicationWindow {
     minimumWidth: 1180
     minimumHeight: 760
     visible: true
-    title: "Astro Dwarf v" + backend.appVersion
+    title: "ASTRO DWARF"
     color: "#05080F"
     font.family: "Segoe UI"
-    flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowSystemMenuHint
-    property bool customMaximized: false
-    property rect restoreGeometry
-    property int workX: 0
-    property int workY: 0
-    property int workW: 0
-    property int workH: 0
-    readonly property bool windowMaximized: customMaximized || visibility === Window.Maximized
+    flags: Qt.Window | Qt.WindowTitleHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint | Qt.WindowSystemMenuHint
+    readonly property bool windowMaximized: visibility === Window.Maximized
 
     function dragWindow() {
         if (!root.windowMaximized)
@@ -30,25 +24,10 @@ ApplicationWindow {
     }
 
     function toggleMaximized() {
-        if (root.visibility === Window.Maximized) {
+        if (root.windowMaximized)
             root.showNormal()
-            root.customMaximized = false
-            return
-        }
-        if (root.customMaximized) {
-            root.customMaximized = false
-            root.x = root.restoreGeometry.x
-            root.y = root.restoreGeometry.y
-            root.width = root.restoreGeometry.width
-            root.height = root.restoreGeometry.height
-            return
-        }
-        root.restoreGeometry = Qt.rect(root.x, root.y, root.width, root.height)
-        root.customMaximized = true
-        root.x = root.workW ? root.workX : shell.workX
-        root.y = root.workW ? root.workY : shell.workY
-        root.width = root.workW ? root.workW : shell.workW
-        root.height = root.workW ? root.workH : shell.workH
+        else
+            root.showMaximized()
     }
 
     property color surface: "#0B1520"
@@ -138,6 +117,23 @@ ApplicationWindow {
             return
         }
         backend.deviceAction(backend.selectedDeviceId, operation)
+    }
+
+    function targetCoordinates(item) {
+        const target = item && item.target ? item.target : null
+        if (!target || target.ra_hours === undefined || target.ra_hours === null
+                || target.dec_degrees === undefined || target.dec_degrees === null)
+            return ""
+        return "RA " + Number(target.ra_hours).toFixed(3) + "h  DEC "
+            + Number(target.dec_degrees).toFixed(3) + "°"
+    }
+
+    function logLine(item) {
+        return item ? item.time + "  [" + item.device + "]  " + item.message : ""
+    }
+
+    function allLogText() {
+        return (backend.logs || []).map(item => root.logLine(item)).join("\n")
     }
 
     function asset(name) { return Qt.resolvedUrl("assets/" + name) }
@@ -287,43 +283,135 @@ ApplicationWindow {
         }
     }
 
-    component ChromeButton: Item {
-        id: chrome
-        property string glyph: ""
-        property bool danger: false
-        signal clicked()
-        implicitWidth: 36
-        implicitHeight: 28
-        Rectangle {
-            anchors.fill: parent
-            color: area.containsMouse ? (chrome.danger ? "#C8A01828" : "#3312E8FF") : "transparent"
-            border.color: area.containsMouse ? (chrome.danger ? root.danger : root.accent) : root.outline
+    component HudMenu: Menu {
+        id: hudMenu
+        popupType: Popup.Item
+        implicitWidth: 232
+        padding: 6
+        topPadding: 6
+        bottomPadding: 6
+        leftPadding: 6
+        rightPadding: 6
+        overlap: 2
+        background: Rectangle {
+            color: root.surfaceHigh
+            border.color: root.outline
             border.width: 1
-            radius: 2
-        }
-        Text {
-            anchors.centerIn: parent
-            text: chrome.glyph
-            color: chrome.danger && area.containsMouse ? root.danger : (area.containsMouse ? root.accent : root.textSecondary)
-            font.pixelSize: 13
-            font.bold: true
-        }
-        MouseArea {
-            id: area
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: chrome.clicked()
+            radius: 8
         }
     }
 
-    component EdgeResize: MouseArea {
-        required property int edges
-        required property int cursor
-        cursorShape: cursor
-        visible: !root.windowMaximized
-        hoverEnabled: true
-        onPressed: root.startSystemResize(edges)
+    component HudMenuItem: MenuItem {
+        id: hudMenuItem
+        property string glyph: ""
+        property string trailingText: ""
+        property bool destructive: false
+        implicitWidth: 220
+        implicitHeight: 34
+        leftPadding: 8
+        rightPadding: 10
+        topPadding: 0
+        bottomPadding: 0
+        opacity: enabled ? 1 : 0.4
+        font.pixelSize: 13
+        background: Rectangle {
+            color: hudMenuItem.highlighted || hudMenuItem.down ? "#123C52" : "transparent"
+            radius: 4
+        }
+        contentItem: RowLayout {
+            spacing: 10
+            Text {
+                Layout.preferredWidth: 18
+                text: hudMenuItem.glyph
+                color: hudMenuItem.destructive ? root.danger : root.textSecondary
+                font.family: "Segoe MDL2 Assets"
+                font.pixelSize: 14
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            Text {
+                Layout.fillWidth: true
+                text: hudMenuItem.text
+                color: hudMenuItem.destructive ? root.danger : root.textPrimary
+                font: hudMenuItem.font
+                elide: Text.ElideRight
+                verticalAlignment: Text.AlignVCenter
+            }
+            Text {
+                visible: text.length > 0
+                text: hudMenuItem.trailingText
+                color: root.textSecondary
+                font.pixelSize: 11
+                elide: Text.ElideMiddle
+                Layout.maximumWidth: 92
+                verticalAlignment: Text.AlignVCenter
+            }
+        }
+    }
+
+    component HudMenuSeparator: MenuSeparator {
+        implicitHeight: 9
+        contentItem: Rectangle {
+            implicitHeight: 1
+            color: root.outline
+        }
+        leftPadding: 8
+        rightPadding: 8
+        topPadding: 4
+        bottomPadding: 4
+    }
+
+    component SessionContextMenu: HudMenu {
+        id: sessionContextMenu
+        property var sessionData: ({})
+        readonly property string sessionId: String((sessionData && sessionData.id) || "")
+        readonly property string sessionStatus: String((sessionData && sessionData.status) || "")
+        readonly property string coordinates: root.targetCoordinates(sessionData)
+
+        HudMenuItem {
+            text: "Edit"
+            glyph: "\uE70F"
+            enabled: sessionContextMenu.sessionStatus !== "running"
+            onTriggered: sessionDialog.openExisting(sessionContextMenu.sessionData)
+        }
+        HudMenuItem {
+            text: "Run now"
+            glyph: "\uE768"
+            enabled: sessionContextMenu.sessionStatus !== "running"
+            onTriggered: backend.runNow(sessionContextMenu.sessionId)
+        }
+        HudMenuItem {
+            text: "Skip"
+            glyph: "\uE769"
+            enabled: sessionContextMenu.sessionStatus === "planned"
+            onTriggered: backend.skipSession(sessionContextMenu.sessionId)
+        }
+        HudMenuItem {
+            text: "Duplicate"
+            glyph: "\uE8C8"
+            onTriggered: backend.duplicateSession(sessionContextMenu.sessionId)
+        }
+        HudMenuSeparator {}
+        HudMenuItem {
+            text: "Copy target name"
+            glyph: "\uE8C8"
+            enabled: !!(sessionContextMenu.sessionData && sessionContextMenu.sessionData.target_name)
+            onTriggered: backend.copyText(String(sessionContextMenu.sessionData.target_name))
+        }
+        HudMenuItem {
+            text: "Copy RA / Dec"
+            glyph: "\uE8C8"
+            enabled: sessionContextMenu.coordinates !== ""
+            onTriggered: backend.copyText(sessionContextMenu.coordinates)
+        }
+        HudMenuSeparator {}
+        HudMenuItem {
+            text: "Delete"
+            glyph: "\uE74D"
+            destructive: true
+            enabled: sessionContextMenu.sessionStatus !== "running"
+            onTriggered: backend.deleteSession(sessionContextMenu.sessionId)
+        }
     }
 
     component HudSplitView: SplitView {
@@ -489,34 +577,74 @@ ApplicationWindow {
         property bool listOpen: false
         property var filtered: []
         signal itemChosen(var item)
-        implicitHeight: searchField.implicitHeight + (listOpen && filtered.length ? suggestionFrame.height + 3 : 0)
+        implicitHeight: 34
         implicitWidth: 240
-        Layout.preferredHeight: implicitHeight
+
+        function copyAllItems() {
+            const items = searchCombo.allItems || []
+            const out = []
+            for (let i = 0; i < items.length; i++)
+                out.push(items[i])
+            return out
+        }
+
+        function indexOfCurrent(items) {
+            const name = searchCombo.selectedName
+            const text = String(searchField.text || "")
+            for (let i = 0; i < items.length; i++) {
+                if ((name && items[i].name === name) || items[i].name === text || items[i].label === text)
+                    return i
+            }
+            return items.length ? 0 : -1
+        }
+
+        function revealCurrent() {
+            const idx = suggestionView.currentIndex
+            if (idx < 0)
+                return
+            suggestionView.positionViewAtIndex(idx, ListView.Center)
+        }
+
+        function openFullList() {
+            const items = copyAllItems()
+            const idx = searchCombo.indexOfCurrent(items)
+            searchCombo.filtered = items
+            searchCombo.listOpen = true
+            Qt.callLater(function () {
+                suggestionView.currentIndex = idx
+                searchCombo.revealCurrent()
+                if (searchCombo.selectedName)
+                    searchField.selectAll()
+            })
+        }
 
         function refreshFilter() {
             const needle = String(searchField.text || "").toLowerCase().replace(/_/g, " ")
+            if (!needle) {
+                const items = copyAllItems()
+                searchCombo.filtered = items
+                suggestionView.currentIndex = searchCombo.indexOfCurrent(items)
+                Qt.callLater(searchCombo.revealCurrent)
+                return
+            }
             const items = searchCombo.allItems || []
             const ranked = []
             for (let i = 0; i < items.length; i++) {
                 const item = items[i]
                 const hay = [item.name, item.label, item.comment].join(" ").toLowerCase().replace(/_/g, " ")
-                if (needle && hay.indexOf(needle) < 0)
+                if (hay.indexOf(needle) < 0)
                     continue
                 const city = String(item.name).split("/").pop().toLowerCase().replace(/_/g, " ")
                 let score = 2
-                if (!needle)
-                    score = 0
-                else if (city === needle || String(item.name).toLowerCase() === needle)
+                if (city === needle || String(item.name).toLowerCase() === needle)
                     score = 0
                 else if (city.startsWith(needle) || String(item.name).toLowerCase().replace(/_/g, " ").startsWith(needle))
                     score = 1
                 ranked.push({score: score, name: item.name, item: item})
             }
-            if (needle)
-                ranked.sort(function (a, b) { return a.score - b.score || a.name.localeCompare(b.name) })
-            const cap = needle ? searchCombo.filterLimit : ranked.length
+            ranked.sort(function (a, b) { return a.score - b.score || a.name.localeCompare(b.name) })
             const out = []
-            for (let i = 0; i < ranked.length && i < cap; i++)
+            for (let i = 0; i < ranked.length && i < searchCombo.filterLimit; i++)
                 out.push(ranked[i].item)
             searchCombo.filtered = out
             suggestionView.currentIndex = out.length ? 0 : -1
@@ -553,9 +681,19 @@ ApplicationWindow {
             backend.lookupLocation(searchField.text)
         }
 
+        onListOpenChanged: {
+            if (listOpen) {
+                if (!suggestionPopup.opened)
+                    suggestionPopup.open()
+            } else if (suggestionPopup.opened) {
+                suggestionPopup.close()
+            }
+        }
+
         HudField {
             id: searchField
             width: parent.width
+            height: parent.height
             placeholderText: "Search city or timezone"
             rightPadding: 26
             Keys.priority: Keys.BeforeItem
@@ -565,30 +703,39 @@ ApplicationWindow {
                 searchCombo.listOpen = true
             }
             onActiveFocusChanged: {
-                if (activeFocus) {
-                    closeTimer.stop()
-                    searchCombo.refreshFilter()
-                    searchCombo.listOpen = true
-                } else {
-                    closeTimer.start()
+                if (activeFocus && !searchCombo.listOpen)
+                    searchCombo.openFullList()
+            }
+            MouseArea {
+                anchors.fill: parent
+                anchors.rightMargin: 26
+                propagateComposedEvents: true
+                onPressed: function (mouse) {
+                    if (!searchCombo.listOpen)
+                        searchCombo.openFullList()
+                    mouse.accepted = false
                 }
             }
             Keys.onPressed: function (event) {
                 if (event.key === Qt.Key_Down) {
                     event.accepted = true
-                    searchCombo.refreshFilter()
-                    searchCombo.listOpen = true
-                    if (suggestionView.currentIndex < filtered.length - 1)
+                    if (!searchCombo.listOpen)
+                        searchCombo.openFullList()
+                    else if (suggestionView.currentIndex < filtered.length - 1)
                         suggestionView.incrementCurrentIndex()
                 } else if (event.key === Qt.Key_Up) {
                     event.accepted = true
-                    if (suggestionView.currentIndex > 0)
+                    if (!searchCombo.listOpen)
+                        searchCombo.openFullList()
+                    else if (suggestionView.currentIndex > 0)
                         suggestionView.decrementCurrentIndex()
                 } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                     event.accepted = true
                     searchCombo.acceptTyped()
                 } else if (event.key === Qt.Key_Escape) {
                     event.accepted = true
+                    searchCombo.listOpen = false
+                } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
                     searchCombo.listOpen = false
                 }
             }
@@ -609,55 +756,72 @@ ApplicationWindow {
                         return
                     }
                     searchField.forceActiveFocus()
-                    searchCombo.refreshFilter()
-                    searchCombo.listOpen = true
+                    searchCombo.openFullList()
                 }
             }
         }
-        Timer {
-            id: closeTimer
-            interval: 180
-            onTriggered: if (!searchField.activeFocus) searchCombo.listOpen = false
-        }
-        Rectangle {
-            id: suggestionFrame
-            visible: searchCombo.listOpen && searchCombo.filtered.length > 0
-            width: Math.max(parent.width, 360)
-            height: Math.min(Math.max(searchCombo.filtered.length, 1), 8) * 32 + 2
+        Popup {
+            id: suggestionPopup
             y: searchField.height + 3
-            z: 40
-            color: "#02060C"
-            border.color: root.accent
-            ListView {
-                id: suggestionView
-                anchors.fill: parent
-                clip: true
-                boundsBehavior: Flickable.StopAtBounds
-                model: searchCombo.filtered
-                currentIndex: 0
-                ScrollBar.vertical: ScrollBar {}
-                delegate: Rectangle {
-                    width: suggestionView.width
-                    height: 32
-                    readonly property var item: modelData
-                    readonly property int row: index
-                    color: suggestionView.currentIndex === row ? "#123C52" : "#02060C"
-                    Text {
-                        anchors.fill: parent
-                        leftPadding: 10
-                        rightPadding: 10
-                        text: item && (item.label || item.name) || ""
-                        color: suggestionView.currentIndex === row ? root.accent : root.textPrimary
-                        font.pixelSize: 13
-                        verticalAlignment: Text.AlignVCenter
-                        elide: Text.ElideRight
+            width: Math.max(searchCombo.width, 360)
+            height: Math.min(Math.max(searchCombo.filtered.length, 1), 10) * 32 + 2
+            padding: 1
+            modal: false
+            focus: false
+            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+            palette.window: "#02060C"
+            palette.windowText: root.textPrimary
+            palette.base: "#02060C"
+            palette.text: root.textPrimary
+            background: Rectangle { color: "#02060C"; border.color: root.accent }
+            onOpened: searchCombo.listOpen = true
+            onClosed: searchCombo.listOpen = false
+            contentItem: Item {
+                ListView {
+                    id: suggestionView
+                    anchors.fill: parent
+                    clip: true
+                    visible: searchCombo.filtered.length > 0
+                    boundsBehavior: Flickable.StopAtBounds
+                    model: searchCombo.filtered
+                    currentIndex: 0
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                    onCurrentIndexChanged: {
+                        if (currentIndex >= 0)
+                            positionViewAtIndex(currentIndex, ListView.Contain)
                     }
-                    MouseArea {
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        onEntered: suggestionView.currentIndex = row
-                        onClicked: searchCombo.chooseItem(item)
+                    delegate: Rectangle {
+                        width: suggestionView.width
+                        height: 32
+                        readonly property var item: modelData
+                        readonly property int row: index
+                        color: suggestionView.currentIndex === row ? "#123C52" : "#02060C"
+                        Text {
+                            anchors.fill: parent
+                            leftPadding: 10
+                            rightPadding: 10
+                            text: item && (item.label || item.name) || ""
+                            color: suggestionView.currentIndex === row ? root.accent : root.textPrimary
+                            font.pixelSize: 13
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideRight
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            onEntered: suggestionView.currentIndex = row
+                            onClicked: searchCombo.chooseItem(item)
+                        }
                     }
+                }
+                Text {
+                    anchors.fill: parent
+                    visible: searchCombo.filtered.length === 0
+                    leftPadding: 10
+                    text: "No matches"
+                    color: root.textSecondary
+                    font.pixelSize: 13
+                    verticalAlignment: Text.AlignVCenter
                 }
             }
         }
@@ -718,10 +882,6 @@ ApplicationWindow {
     Item {
         id: shell
         anchors.fill: parent
-        readonly property int workX: Screen.virtualX
-        readonly property int workY: Screen.virtualY
-        readonly property int workW: Screen.desktopAvailableWidth
-        readonly property int workH: Screen.desktopAvailableHeight
         Image {
             anchors.fill: parent
             source: root.asset("hud-background.png")
@@ -742,18 +902,6 @@ ApplicationWindow {
             Layout.fillHeight: false
             color: "#C0050A12"
             border.color: root.outline
-            MouseArea {
-                id: topResize
-                z: 4
-                height: 5
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.rightMargin: 128
-                anchors.top: parent.top
-                cursorShape: Qt.SizeVerCursor
-                visible: !root.windowMaximized
-                onPressed: root.startSystemResize(Qt.TopEdge)
-            }
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 16
@@ -818,16 +966,6 @@ ApplicationWindow {
                     Text { text: (backend.selectedDevice.name || "No device") + " · " + (backend.selectedDevice.model || ""); color: root.textSecondary; font.pixelSize: 10; horizontalAlignment: Text.AlignRight; width: 160; elide: Text.ElideRight }
                 }
                 Text { text: backend.clockText; color: root.accent; font.pixelSize: 22; font.family: "Cascadia Mono"; font.letterSpacing: 1 }
-                Rectangle { width: 1; Layout.fillHeight: true; Layout.topMargin: 12; Layout.bottomMargin: 12; color: root.outline }
-                Row {
-                    id: windowControls
-                    z: 5
-                    spacing: 6
-                    Layout.alignment: Qt.AlignVCenter
-                    ChromeButton { glyph: "–"; onClicked: root.showMinimized() }
-                    ChromeButton { glyph: root.windowMaximized ? "❐" : "□"; onClicked: root.toggleMaximized() }
-                    ChromeButton { glyph: "✕"; danger: true; onClicked: root.close() }
-                }
             }
         }
 
@@ -845,6 +983,7 @@ ApplicationWindow {
             clip: true
             model: backend.devices
             delegate: HudPanel {
+                id: deviceCard
                 required property var modelData
                 width: 210
                 height: 56
@@ -867,7 +1006,55 @@ ApplicationWindow {
                             color: modelData.connected ? root.success : "#526077"
                         }
                     }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: backend.selectDevice(modelData.id) }
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: backend.selectDevice(deviceCard.modelData.id)
+                    }
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        onTapped: deviceMenu.popup()
+                    }
+                    HudMenu {
+                        id: deviceMenu
+                        HudMenuItem {
+                            text: deviceCard.modelData.connected ? "Disconnect" : "Connect"
+                            glyph: deviceCard.modelData.connected ? "\uE8CD" : "\uE774"
+                            enabled: !deviceCard.modelData.connecting && !deviceCard.modelData.disconnecting
+                            onTriggered: {
+                                backend.selectDevice(deviceCard.modelData.id)
+                                if (deviceCard.modelData.connected)
+                                    backend.disconnectDevice(deviceCard.modelData.id)
+                                else
+                                    backend.connectDevice(deviceCard.modelData.id)
+                            }
+                        }
+                        HudMenuItem {
+                            text: "Open settings"
+                            glyph: "\uE713"
+                            onTriggered: {
+                                backend.selectDevice(deviceCard.modelData.id)
+                                root.currentPage = 4
+                            }
+                        }
+                        HudMenuSeparator {}
+                        HudMenuItem {
+                            text: "Copy IP address"
+                            glyph: "\uE8C8"
+                            trailingText: String(deviceCard.modelData.ip_address || "")
+                            enabled: trailingText !== ""
+                            onTriggered: backend.copyText(trailingText)
+                        }
+                        HudMenuSeparator {}
+                        HudMenuItem {
+                            text: "Remove device"
+                            glyph: "\uE74D"
+                            destructive: true
+                            visible: backend.devices.length > 1
+                            onTriggered: backend.deleteDevice(deviceCard.modelData.id)
+                        }
+                    }
                 }
             }
         }
@@ -914,6 +1101,7 @@ ApplicationWindow {
                         }
 
                         HudPanel {
+                            id: targetPanel
                             title: "TARGET"
                             SplitView.preferredHeight: 148
                             SplitView.minimumHeight: 88
@@ -943,6 +1131,41 @@ ApplicationWindow {
                                 value: backend.sessionProgress
                                 background: Rectangle { implicitHeight: 8; color: "#0A1524"; border.color: root.outline }
                                 contentItem: Rectangle { width: sessionBar.visualPosition * parent.width; height: parent.height; color: root.accent }
+                            }
+                            TapHandler {
+                                acceptedButtons: Qt.RightButton
+                                enabled: !!backend.currentSession.id
+                                onTapped: targetMenu.popup()
+                            }
+                            HudMenu {
+                                id: targetMenu
+                                readonly property string coordinates: root.targetCoordinates(backend.currentSession)
+                                HudMenuItem {
+                                    text: "Edit session"
+                                    glyph: "\uE70F"
+                                    enabled: backend.currentSession.status !== "running"
+                                    onTriggered: sessionDialog.openExisting(backend.currentSession)
+                                }
+                                HudMenuItem {
+                                    text: "Copy target name"
+                                    glyph: "\uE8C8"
+                                    onTriggered: backend.copyText(String(backend.currentSession.target_name || ""))
+                                }
+                                HudMenuItem {
+                                    text: "Copy RA / Dec"
+                                    glyph: "\uE8C8"
+                                    enabled: targetMenu.coordinates !== ""
+                                    onTriggered: backend.copyText(targetMenu.coordinates)
+                                }
+                                HudMenuSeparator {}
+                                HudMenuItem {
+                                    text: "Stop all"
+                                    glyph: "\uE71A"
+                                    destructive: true
+                                    enabled: backend.currentSession.status === "running"
+                                        && root.commandEnabled("stop_all")
+                                    onTriggered: backend.stopDevice(backend.selectedDeviceId)
+                                }
                             }
                         }
 
@@ -1046,6 +1269,7 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 Layout.preferredHeight: 0
+                                property string previewDeviceId: backend.selectedDeviceId
                                 property string statusText: backend.selectedDevice.connected ? backend.videoUrl : "Connect a telescope to start the stream"
                                 readonly property bool previewFailed: {
                                     const s = String(backend.previewStatus || "").toLowerCase()
@@ -1083,12 +1307,85 @@ ApplicationWindow {
                                     statusText = backend.selectedDevice.connected ? backend.videoUrl : "Connect a telescope to start the stream"
                                 }
 
+                                property bool chromeVisible: true
+                                property bool chromeHold: false
+                                readonly property bool chromeShown: !backend.previewPlaying || chromeVisible
+
+                                function revealChrome() {
+                                    chromeVisible = true
+                                    if (!chromeHold)
+                                        chromeIdleTimer.restart()
+                                }
+
+                                function leaveChrome() {
+                                    if (chromeHold)
+                                        return
+                                    chromeVisible = false
+                                    chromeIdleTimer.stop()
+                                }
+
+                                function beginChromeHold() {
+                                    chromeVisible = true
+                                    chromeHold = true
+                                    chromeIdleTimer.stop()
+                                    chromeHoldTimer.restart()
+                                }
+
+                                function clearChromeHold() {
+                                    chromeHold = false
+                                    chromeVisible = true
+                                    chromeHoldTimer.stop()
+                                    chromeIdleTimer.stop()
+                                }
+
+                                Timer {
+                                    id: chromeHoldTimer
+                                    interval: 5000
+                                    repeat: false
+                                    onTriggered: {
+                                        previewHost.chromeHold = false
+                                        if (!previewHover.hovered)
+                                            previewHost.chromeVisible = false
+                                        else
+                                            chromeIdleTimer.restart()
+                                    }
+                                }
+                                Timer {
+                                    id: chromeIdleTimer
+                                    interval: 3000
+                                    repeat: false
+                                    onTriggered: previewHost.chromeVisible = false
+                                }
+
+                                HoverHandler {
+                                    id: previewHover
+                                    enabled: backend.previewPlaying
+                                    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                                    onPointChanged: previewHost.revealChrome()
+                                    onHoveredChanged: {
+                                        if (!hovered)
+                                            previewHost.leaveChrome()
+                                    }
+                                }
+
                                 Connections {
                                     target: backend
-                                    function onSelectedDeviceChanged() { previewHost.stopPreview() }
+                                    function onSelectedDeviceChanged() {
+                                        const deviceId = backend.selectedDeviceId
+                                        if (deviceId === previewHost.previewDeviceId)
+                                            return
+                                        previewHost.previewDeviceId = deviceId
+                                        previewHost.stopPreview()
+                                    }
                                     function onPreviewStatusChanged() {
                                         if (backend.previewStatus)
                                             previewHost.statusText = backend.previewStatus
+                                    }
+                                    function onPreviewPlayingChanged() {
+                                        if (backend.previewPlaying)
+                                            previewHost.beginChromeHold()
+                                        else
+                                            previewHost.clearChromeHold()
                                     }
                                 }
 
@@ -1108,7 +1405,7 @@ ApplicationWindow {
                                 }
                                 Canvas {
                                     anchors.fill: parent
-                                    opacity: 0.9
+                                    opacity: previewHost.chromeShown ? 0.9 : 0
                                     onPaint: {
                                         const ctx = getContext("2d")
                                         ctx.reset()
@@ -1163,6 +1460,7 @@ ApplicationWindow {
                                     anchors.margins: 14
                                     width: 96
                                     height: 28
+                                    visible: previewHost.chromeShown
                                     color: "#C0101520"
                                     border.color: backend.previewPlaying ? root.success : root.outline
                                     Row {
@@ -1176,10 +1474,35 @@ ApplicationWindow {
                                     anchors.right: parent.right
                                     anchors.top: parent.top
                                     anchors.margins: 14
-                                    visible: backend.previewActive
+                                    visible: backend.previewActive && previewHost.chromeShown
                                     text: "STOP PREVIEW"
                                     busyText: "STOPPING…"
                                     onClicked: previewHost.stopPreview()
+                                }
+                                TapHandler {
+                                    acceptedButtons: Qt.RightButton
+                                    onTapped: previewMenu.popup()
+                                }
+                                HudMenu {
+                                    id: previewMenu
+                                    HudMenuItem {
+                                        text: backend.previewActive ? "Stop preview" : "Start preview"
+                                        glyph: backend.previewActive ? "\uE71A" : "\uE768"
+                                        enabled: backend.previewActive
+                                            || root.commandEnabled("open_camera")
+                                        onTriggered: {
+                                            if (backend.previewActive)
+                                                previewHost.stopPreview()
+                                            else
+                                                previewHost.startPreview()
+                                        }
+                                    }
+                                    HudMenuItem {
+                                        text: "Copy stream URL"
+                                        glyph: "\uE8C8"
+                                        enabled: backend.selectedDevice.connected && backend.videoUrl !== ""
+                                        onTriggered: backend.copyText(backend.videoUrl)
+                                    }
                                 }
                             }
                         }
@@ -1261,29 +1584,104 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 118
                                 opacity: root.motionEnabled ? 1 : 0.38
-                                Image { anchors.fill: parent; source: root.asset("hud-dpad.png"); fillMode: Image.PreserveAspectFit }
-                                Grid {
+                                Item {
+                                    id: analogPad
                                     anchors.centerIn: parent
-                                    columns: 3
-                                    spacing: 6
-                                    Repeater {
-                                        model: [
-                                            [135, "↖"], [90, "↑"], [45, "↗"],
-                                            [180, "←"], [-1, "■"], [0, "→"],
-                                            [225, "↙"], [270, "↓"], [315, "↘"]
-                                        ]
-                                        delegate: Item {
-                                            required property var modelData
-                                            width: 34
-                                            height: 34
-                                            MouseArea {
-                                                anchors.fill: parent
-                                                enabled: root.motionEnabled
-                                                cursorShape: root.motionEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                                onPressed: modelData[0] < 0 ? backend.deviceAction(backend.selectedDeviceId, "stop_motors") : backend.joystick(backend.selectedDeviceId, modelData[0], root.joySpeed)
-                                                onReleased: backend.deviceAction(backend.selectedDeviceId, "stop_motors")
-                                                onCanceled: backend.deviceAction(backend.selectedDeviceId, "stop_motors")
-                                            }
+                                    width: 108
+                                    height: 108
+                                    property real stickDx: 0
+                                    property real stickDy: 0
+                                    property bool moving: false
+                                    readonly property real maxThrow: width / 2 - 15
+                                    readonly property real deadzone: 0.15
+
+                                    function updateStick(px, py) {
+                                        let dx = px - width / 2
+                                        let dy = py - height / 2
+                                        const distance = Math.sqrt(dx * dx + dy * dy)
+                                        const limited = Math.min(distance, maxThrow)
+                                        const scale = distance > 0 ? limited / distance : 0
+                                        stickDx = dx * scale
+                                        stickDy = dy * scale
+                                        const amount = maxThrow > 0 ? limited / maxThrow : 0
+                                        if (amount <= deadzone) {
+                                            if (moving)
+                                                backend.stopMotors(backend.selectedDeviceId)
+                                            moving = false
+                                            return
+                                        }
+                                        let angle = Math.atan2(-dy, dx) * 180 / Math.PI
+                                        if (angle < 0)
+                                            angle += 360
+                                        moving = true
+                                        backend.joystick(backend.selectedDeviceId, angle, amount * root.joySpeed)
+                                    }
+
+                                    function releaseStick() {
+                                        stickDx = 0
+                                        stickDy = 0
+                                        moving = false
+                                        backend.stopMotors(backend.selectedDeviceId)
+                                    }
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: width / 2
+                                        color: "#B30A1524"
+                                        border.color: root.border
+                                        border.width: 2
+                                    }
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: 2
+                                        height: parent.height - 18
+                                        color: "#34597A"
+                                        opacity: 0.45
+                                    }
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: parent.width - 18
+                                        height: 2
+                                        color: "#34597A"
+                                        opacity: 0.45
+                                    }
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: analogPad.maxThrow * 2 * analogPad.deadzone
+                                        height: width
+                                        radius: width / 2
+                                        color: "#162B40"
+                                        border.color: "#34597A"
+                                    }
+                                    Rectangle {
+                                        id: analogKnob
+                                        x: parent.width / 2 - width / 2 + analogPad.stickDx
+                                        y: parent.height / 2 - height / 2 + analogPad.stickDy
+                                        width: 28
+                                        height: 28
+                                        radius: width / 2
+                                        color: analogPad.moving ? root.accent : "#8CB7D9"
+                                        border.color: "#D8F4FF"
+                                        border.width: 2
+                                        Behavior on x { NumberAnimation { duration: stickArea.pressed ? 0 : 90 } }
+                                        Behavior on y { NumberAnimation { duration: stickArea.pressed ? 0 : 90 } }
+                                    }
+                                    MouseArea {
+                                        id: stickArea
+                                        anchors.fill: parent
+                                        enabled: root.motionEnabled
+                                        preventStealing: true
+                                        cursorShape: root.motionEnabled ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
+                                        onPressed: mouse => analogPad.updateStick(mouse.x, mouse.y)
+                                        onPositionChanged: mouse => {
+                                            if (pressed)
+                                                analogPad.updateStick(mouse.x, mouse.y)
+                                        }
+                                        onReleased: analogPad.releaseStick()
+                                        onCanceled: analogPad.releaseStick()
+                                        onEnabledChanged: {
+                                            if (!enabled && analogPad.moving)
+                                                analogPad.releaseStick()
                                         }
                                     }
                                 }
@@ -1324,6 +1722,7 @@ ApplicationWindow {
                                     ScrollBar.horizontal: HiddenBar {}
                                     model: backend.upcomingSessions
                                     delegate: Rectangle {
+                                        id: upcomingRow
                                         required property var modelData
                                         width: ListView.view.width
                                         height: 36
@@ -1337,6 +1736,14 @@ ApplicationWindow {
                                                 Text { text: modelData.target_name; color: root.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                                 Text { text: modelData.start_time + " · " + modelData.duration_text; color: root.textSecondary; font.pixelSize: 10 }
                                             }
+                                        }
+                                        TapHandler {
+                                            acceptedButtons: Qt.RightButton
+                                            onTapped: upcomingMenu.popup()
+                                        }
+                                        SessionContextMenu {
+                                            id: upcomingMenu
+                                            sessionData: upcomingRow.modelData
                                         }
                                     }
                                 }
@@ -1371,13 +1778,32 @@ ApplicationWindow {
                                     model: backend.logs
                                 onCountChanged: positionViewAtEnd()
                                 delegate: Text {
+                                    id: logEntry
                                     required property var modelData
                                     width: ListView.view.width
-                                    text: modelData.time + "  [" + modelData.device + "]  " + modelData.message
+                                    text: root.logLine(modelData)
                                     color: modelData.level === "ERROR" ? root.danger : modelData.level === "SUCCESS" ? root.success : modelData.level === "WARNING" ? root.warning : modelData.level === "SDK" ? root.textSecondary : "#B7D4E2"
                                     font.family: "Cascadia Mono"
                                     font.pixelSize: 10
                                     wrapMode: Text.Wrap
+                                    TapHandler {
+                                        acceptedButtons: Qt.RightButton
+                                        onTapped: logMenu.popup()
+                                    }
+                                    HudMenu {
+                                        id: logMenu
+                                        HudMenuItem {
+                                            text: "Copy line"
+                                            glyph: "\uE8C8"
+                                            onTriggered: backend.copyText(root.logLine(logEntry.modelData))
+                                        }
+                                        HudMenuItem {
+                                            text: "Copy all"
+                                            glyph: "\uE8C8"
+                                            enabled: backend.logs.length > 0
+                                            onTriggered: backend.copyText(root.allLogText())
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1469,17 +1895,9 @@ ApplicationWindow {
                                                 Drag.hotSpot.y: height / 2
                                                 DragHandler { id: dragHandler }
                                                 TapHandler { acceptedButtons: Qt.RightButton; onTapped: sessionMenu.open() }
-                                                Menu {
+                                                SessionContextMenu {
                                                     id: sessionMenu
-                                                    palette.window: "#0B1520"
-                                                    palette.windowText: root.textPrimary
-                                                    palette.highlightedText: root.accent
-                                                    MenuItem { text: "Edit"; enabled: sessionChip.modelData.status !== "running"; onTriggered: sessionDialog.openExisting(sessionChip.modelData) }
-                                                    MenuItem { text: "Run now"; enabled: sessionChip.modelData.status !== "running"; onTriggered: backend.runNow(sessionChip.sessionId) }
-                                                    MenuItem { text: "Skip"; enabled: sessionChip.modelData.status === "planned"; onTriggered: backend.skipSession(sessionChip.sessionId) }
-                                                    MenuItem { text: "Duplicate"; onTriggered: backend.duplicateSession(sessionChip.sessionId) }
-                                                    MenuSeparator {}
-                                                    MenuItem { text: "Delete"; enabled: sessionChip.modelData.status !== "running"; onTriggered: backend.deleteSession(sessionChip.sessionId) }
+                                                    sessionData: sessionChip.modelData
                                                 }
                                             }
                                         }
@@ -1496,6 +1914,21 @@ ApplicationWindow {
                                         }
                                     }
                                     TapHandler { onTapped: calendarPage.selectedDate = dayCell.cellDate }
+                                    TapHandler {
+                                        acceptedButtons: Qt.RightButton
+                                        onTapped: dayMenu.popup()
+                                    }
+                                    HudMenu {
+                                        id: dayMenu
+                                        HudMenuItem {
+                                            text: "New session on this date"
+                                            glyph: "\uE710"
+                                            onTriggered: {
+                                                calendarPage.selectedDate = dayCell.cellDate
+                                                sessionDialog.openForDate(dayCell.key)
+                                            }
+                                        }
+                                    }
                                     DropArea {
                                         id: dropArea
                                         anchors.fill: parent
@@ -1527,6 +1960,7 @@ ApplicationWindow {
                                 ScrollBar.horizontal: HiddenBar {}
                                 model: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
                                 delegate: Rectangle {
+                                    id: daySessionRow
                                     required property var modelData
                                     width: ListView.view.width
                                     height: 64
@@ -1542,6 +1976,14 @@ ApplicationWindow {
                                             HudButton { text: "EDIT"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
                                             HudButton { text: "RUN"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
                                         }
+                                    }
+                                    TapHandler {
+                                        acceptedButtons: Qt.RightButton
+                                        onTapped: daySessionMenu.popup()
+                                    }
+                                    SessionContextMenu {
+                                        id: daySessionMenu
+                                        sessionData: daySessionRow.modelData
                                     }
                                 }
                             }
@@ -1639,15 +2081,9 @@ ApplicationWindow {
                                         HudButton { text: "RUN"; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
                                     }
                                     TapHandler { acceptedButtons: Qt.RightButton; onTapped: scheduledMenu.popup() }
-                                    Menu {
+                                    SessionContextMenu {
                                         id: scheduledMenu
-                                        palette.window: "#0B1520"
-                                        palette.windowText: root.textPrimary
-                                        MenuItem { text: "Edit"; enabled: modelData.status !== "running"; onTriggered: sessionDialog.openExisting(modelData) }
-                                        MenuItem { text: "Run now"; enabled: modelData.status !== "running"; onTriggered: backend.runNow(modelData.id) }
-                                        MenuItem { text: "Skip"; enabled: modelData.status === "planned"; onTriggered: backend.skipSession(modelData.id) }
-                                        MenuItem { text: "Duplicate"; onTriggered: backend.duplicateSession(modelData.id) }
-                                        MenuItem { text: "Delete"; enabled: modelData.status !== "running"; onTriggered: backend.deleteSession(modelData.id) }
+                                        sessionData: modelData
                                     }
                                 }
                             }
@@ -1664,6 +2100,7 @@ ApplicationWindow {
                                 ScrollBar.horizontal: HiddenBar {}
                                 model: backend.templates
                                 delegate: HudPanel {
+                                    id: templateCard
                                     required property var modelData
                                     width: 324
                                     height: 156
@@ -1681,6 +2118,25 @@ ApplicationWindow {
                                         Layout.fillWidth: true
                                         HudButton { text: "SCHEDULE"; Layout.fillWidth: true; busyText: "SCHEDULING…"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: backend.scheduleTemplate(modelData.id) }
                                         HudButton { text: "DELETE"; busyText: "DELETING…"; onClicked: backend.deleteTemplate(modelData.id) }
+                                    }
+                                    TapHandler {
+                                        acceptedButtons: Qt.RightButton
+                                        onTapped: templateMenu.popup()
+                                    }
+                                    HudMenu {
+                                        id: templateMenu
+                                        HudMenuItem {
+                                            text: "Schedule"
+                                            glyph: "\uE768"
+                                            onTriggered: backend.scheduleTemplate(templateCard.modelData.id)
+                                        }
+                                        HudMenuSeparator {}
+                                        HudMenuItem {
+                                            text: "Delete"
+                                            glyph: "\uE74D"
+                                            destructive: true
+                                            onTriggered: backend.deleteTemplate(templateCard.modelData.id)
+                                        }
                                     }
                                 }
                             }
@@ -1906,8 +2362,42 @@ ApplicationWindow {
                                             }
                                             MouseArea {
                                                 anchors.fill: parent
+                                                acceptedButtons: Qt.LeftButton
                                                 cursorShape: Qt.PointingHandCursor
                                                 onClicked: historyPage.expandedIndex = historyRow.expanded ? -1 : historyRow.index
+                                            }
+                                            TapHandler {
+                                                acceptedButtons: Qt.RightButton
+                                                onTapped: historyMenu.popup()
+                                            }
+                                            HudMenu {
+                                                id: historyMenu
+                                                HudMenuItem {
+                                                    text: "Run again"
+                                                    glyph: "\uE768"
+                                                    enabled: !!historyRow.modelData.has_session
+                                                    onTriggered: backend.runNow(historyRow.modelData.session_id)
+                                                }
+                                                HudMenuSeparator {}
+                                                HudMenuItem {
+                                                    text: "Copy target name"
+                                                    glyph: "\uE8C8"
+                                                    enabled: !!historyRow.modelData.target_name
+                                                    onTriggered: backend.copyText(String(historyRow.modelData.target_name))
+                                                }
+                                                HudMenuItem {
+                                                    text: "Copy outcome"
+                                                    glyph: "\uE8C8"
+                                                    enabled: !!historyRow.modelData.outcome
+                                                    onTriggered: backend.copyText(String(historyRow.modelData.outcome))
+                                                }
+                                                HudMenuSeparator {}
+                                                HudMenuItem {
+                                                    text: "Remove"
+                                                    glyph: "\uE74D"
+                                                    destructive: true
+                                                    onTriggered: backend.deleteHistoryRecord(historyRow.modelData.id)
+                                                }
                                             }
                                         }
                                         Item {
@@ -2004,6 +2494,7 @@ ApplicationWindow {
                     stellariumField.text = d.stellarium_url || "http://localhost:8090"
                     ssidField.text = d.wifi_ssid || ""
                     wifiField.text = d.wifi_password || ""
+                    blePasswordField.text = d.ble_password || "DWARF_12345678"
                     cutoffField.value = d.observing_day_cutoff_hour || 12
                     slewField.text = hw.slew_seconds || 20
                     settleField.text = hw.settle_seconds || 10
@@ -2021,6 +2512,8 @@ ApplicationWindow {
                     function onSelectedDeviceChanged() {
                         if (settingsPage.loadedDeviceId !== backend.selectedDeviceId)
                             settingsPage.load()
+                        else if (!ipField.text && backend.selectedDevice.ip_address)
+                            ipField.text = backend.selectedDevice.ip_address
                     }
                 }
 
@@ -2080,7 +2573,6 @@ ApplicationWindow {
                                 HudSearchCombo {
                                     id: timezoneField
                                     Layout.fillWidth: true
-                                    Layout.columnSpan: 3
                                     allItems: backend.timezones
                                     onItemChosen: (item) => settingsPage.applyLocation(item)
                                 }
@@ -2094,7 +2586,15 @@ ApplicationWindow {
                                 HudField { id: ssidField; Layout.fillWidth: true }
                                 FieldLabel { text: "WIFI PASSWORD" }
                                 HudField { id: wifiField; echoMode: TextInput.Password; Layout.fillWidth: true }
-                                HudCheck { id: bleField; text: "Bluetooth enabled"; Layout.columnSpan: 2 }
+                                FieldLabel { text: "BLUETOOTH PASSWORD" }
+                                HudField { id: blePasswordField; echoMode: TextInput.Password; Layout.fillWidth: true }
+                                Item { Layout.fillWidth: true }
+                                Item { Layout.fillWidth: true }
+                                HudCheck {
+                                    id: bleField
+                                    text: "Find over Bluetooth if IP is empty or unreachable"
+                                    Layout.columnSpan: 4
+                                }
                                 RowLayout {
                                     Layout.columnSpan: 1
                                     FieldLabel { text: "NIGHT CUTOFF" }
@@ -2153,6 +2653,7 @@ ApplicationWindow {
                                     latitude: Number(latField.text), longitude: Number(lonField.text),
                                     timezone_name: timezoneField.selectedName || timezoneField.editText, stellarium_url: stellariumField.text,
                                     wifi_ssid: ssidField.text, wifi_password: wifiField.text,
+                                    ble_password: blePasswordField.text,
                                     observing_day_cutoff_hour: cutoffField.value, slew_seconds: Number(slewField.text),
                                     settle_seconds: Number(settleField.text), calibration_seconds: Number(calibrationField.text),
                                     autofocus_seconds: Number(autofocusField.text), infinite_focus_seconds: Number(infinityField.text),
@@ -2221,60 +2722,6 @@ ApplicationWindow {
         }
         }
 
-        EdgeResize {
-            edges: Qt.LeftEdge
-            cursor: Qt.SizeHorCursor
-            width: 6
-            anchors.left: parent.left
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            anchors.topMargin: 6
-            anchors.bottomMargin: 6
-        }
-        EdgeResize {
-            edges: Qt.RightEdge
-            cursor: Qt.SizeHorCursor
-            width: 6
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            anchors.topMargin: 64
-            anchors.bottomMargin: 6
-        }
-        EdgeResize {
-            edges: Qt.BottomEdge
-            cursor: Qt.SizeVerCursor
-            height: 6
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            anchors.leftMargin: 6
-            anchors.rightMargin: 6
-        }
-        EdgeResize {
-            edges: Qt.LeftEdge | Qt.TopEdge
-            cursor: Qt.SizeFDiagCursor
-            width: 8
-            height: 8
-            anchors.left: parent.left
-            anchors.top: parent.top
-        }
-        EdgeResize {
-            edges: Qt.LeftEdge | Qt.BottomEdge
-            cursor: Qt.SizeBDiagCursor
-            width: 8
-            height: 8
-            anchors.left: parent.left
-            anchors.bottom: parent.bottom
-        }
-        EdgeResize {
-            edges: Qt.RightEdge | Qt.BottomEdge
-            cursor: Qt.SizeFDiagCursor
-            width: 8
-            height: 8
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-        }
         Rectangle {
             anchors.fill: parent
             enabled: false

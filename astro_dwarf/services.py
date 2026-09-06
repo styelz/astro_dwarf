@@ -207,6 +207,7 @@ def _sdk_process(requests_queue, results_queue, device: Device) -> None:
                     f"TIMEZONE = {device.timezone_name}",
                     f"BLE_STA_SSID = {device.wifi_ssid}",
                     f"BLE_STA_PWD = {device.wifi_password}",
+                    f"BLE_PSD = {device.ble_password or 'DWARF_12345678'}",
                 ]
             ),
             encoding="utf-8",
