@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import contextlib
 import asyncio
+import html
 import json
 import os
+import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -17,6 +20,8 @@ import traceback
 import queue
 from pathlib import Path
 from typing import Any
+
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 _write_lock = threading.Lock()
 _api = None
@@ -327,6 +332,118 @@ def _station_credentials(ssid: str, password: str) -> tuple[str, str]:
     return ssid, password
 
 
+def _run_netsh(*args: str) -> str:
+    completed = subprocess.run(
+        ["netsh", *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=_NO_WINDOW,
+    )
+    return f"{completed.stdout or ''}{completed.stderr or ''}"
+
+
+def _visible_wifi_ssids() -> list[str]:
+    names: list[str] = []
+    for line in _run_netsh("wlan", "show", "networks").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("SSID") and ":" in stripped:
+            name = stripped.split(":", 1)[1].strip()
+            if name:
+                names.append(name)
+    return names
+
+
+def _hotspot_password() -> str:
+    return str(_device.get("wifi_password") or _device.get("ble_password") or "DWARF_12345678")
+
+
+def _host_reachable(host: str, port: int = 8092, timeout: float = 1.5) -> bool:
+    try:
+        socket.create_connection((host, port), timeout).close()
+        return True
+    except OSError:
+        return False
+
+
+def _choose_hotspot_ssid(preferred: str) -> str:
+    visible = _visible_wifi_ssids()
+    candidates: list[str] = []
+    for name in (preferred, str(_device.get("_ble_ssid") or ""), str(_device.get("wifi_ssid") or "")):
+        if name and name not in candidates:
+            candidates.append(name)
+    for name in visible:
+        if _is_dwarf_hotspot(name) and name not in candidates:
+            candidates.append(name)
+    for name in candidates:
+        if name in visible:
+            return name
+    raise RuntimeError(
+        "No Dwarf hotspot is visible on this computer's Wi-Fi. "
+        "Power the telescope on and keep it close."
+    )
+
+
+def _join_dwarf_hotspot(preferred_ssid: str, control_ip: str) -> None:
+    if _host_reachable(control_ip):
+        return
+    if sys.platform != "win32":
+        raise RuntimeError("Automatic hotspot join is only available on Windows.")
+    ssid = _choose_hotspot_ssid(preferred_ssid)
+    password = _hotspot_password()
+    log(f"Joining telescope hotspot {ssid}…")
+    profile = f"""<?xml version="1.0"?>
+<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+    <name>{html.escape(ssid)}</name>
+    <SSIDConfig>
+        <SSID>
+            <name>{html.escape(ssid)}</name>
+        </SSID>
+    </SSIDConfig>
+    <connectionType>ESS</connectionType>
+    <connectionMode>manual</connectionMode>
+    <MSM>
+        <security>
+            <authEncryption>
+                <authentication>WPA2PSK</authentication>
+                <encryption>AES</encryption>
+                <useOneX>false</useOneX>
+            </authEncryption>
+            <sharedKey>
+                <keyType>passPhrase</keyType>
+                <protected>false</protected>
+                <keyMaterial>{html.escape(password)}</keyMaterial>
+            </sharedKey>
+        </security>
+    </MSM>
+</WLANProfile>
+"""
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "dwarf-hotspot.xml"
+        path.write_text(profile, encoding="utf-8")
+        added = _run_netsh("wlan", "add", "profile", f"filename={path}", "user=current")
+        if "error" in added.lower() and "added" not in added.lower() and "updated" not in added.lower():
+            raise RuntimeError(f"Could not save the hotspot profile: {added.strip() or 'netsh failed'}")
+        connected = _run_netsh("wlan", "connect", f"name={ssid}", f"ssid={ssid}")
+        if "error" in connected.lower() and "success" not in connected.lower():
+            raise RuntimeError(f"Could not join {ssid}: {connected.strip() or 'netsh failed'}")
+    for _ in range(20):
+        if _host_reachable(control_ip):
+            log(f"Reached the telescope at {control_ip}")
+            return
+        time.sleep(1)
+    raise RuntimeError(
+        f"This computer joined {ssid}, but {control_ip} is still unreachable."
+    )
+
+
+def _ensure_hotspot_link(ip: str) -> None:
+    if ip != "192.168.88.1" and not _is_dwarf_hotspot(str(_device.get("_ble_ssid") or "")):
+        return
+    _join_dwarf_hotspot(str(_device.get("_ble_ssid") or ""), ip or "192.168.88.1")
+
+
 def _set_wifi_ap_message(ble_password: str) -> bytes:
     import dwarf_python_api.proto.ble_pb2 as ble
     from dwarf_ble_connect.lib.dwarf_protocol_ble import create_packet_ble
@@ -513,6 +630,8 @@ def connect() -> bool | dict[str, str]:
     ble_enabled = bool(_device.get("ble_enabled"))
     if ip:
         log(f"Connecting to {ip}…")
+        if ip == "192.168.88.1" and not _host_reachable(ip):
+            _ensure_hotspot_link(ip)
         if _handshake():
             return {"ip_address": ip}
         log("IP connection failed" + (", trying Bluetooth…" if ble_enabled else ""), "warning")
@@ -524,6 +643,7 @@ def connect() -> bool | dict[str, str]:
         return False
 
     discovered = provision_bluetooth()
+    _ensure_hotspot_link(discovered)
     for attempt in range(1, 6):
         if _handshake():
             return {"ip_address": discovered}
@@ -535,9 +655,7 @@ def connect() -> bool | dict[str, str]:
     if discovered == "192.168.88.1" or _is_dwarf_hotspot(hotspot) or mode == "ap":
         name = hotspot or "the Dwarf hotspot"
         raise RuntimeError(
-            f"The telescope hotspot {name} is on at {discovered}. "
-            "Join that Wi-Fi on this computer, then connect again. "
-            "Bluetooth only starts the hotspot; control uses Wi-Fi."
+            f"The telescope hotspot {name} is on at {discovered}, but this computer still cannot reach it."
         )
     if mode == "sta":
         raise RuntimeError(

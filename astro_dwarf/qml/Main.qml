@@ -2667,7 +2667,7 @@ ApplicationWindow {
                             title: "CONNECTION"
                             width: parent.width
                             Text {
-                                text: "Bluetooth only finds the telescope and sets its Wi‑Fi. Commands and the live stream always use Wi‑Fi, so this computer must be on the same network afterward."
+                                text: "Bluetooth finds the telescope and sets its Wi‑Fi. In AP mode this app then joins the Dwarf hotspot on this computer. Commands and the live stream always use that Wi‑Fi link."
                                 color: root.textSecondary
                                 wrapMode: Text.Wrap
                                 Layout.fillWidth: true
@@ -2687,10 +2687,10 @@ ApplicationWindow {
                                     wrapMode: Text.Wrap
                                     color: root.textSecondary
                                     text: wifiModeField.currentIndex === 1
-                                        ? "AP: the telescope broadcasts its own hotspot (for example DWARF3_1). Join that Wi‑Fi on this computer. The IP is usually 192.168.88.1. The hotspot name and password are set on the device."
+                                        ? "AP: the telescope broadcasts a hotspot such as DWARF3_1. This app joins it using the hotspot password (Bluetooth password if you leave hotspot password empty). The IP is usually 192.168.88.1."
                                         : wifiModeField.currentIndex === 2
                                             ? "STA: Bluetooth tells the telescope to join your home or public router. Enter that router's name and password. This computer must already be on the same Wi-Fi."
-                                            : "Auto: keep the mode already set on the telescope. Bluetooth reads its current IP and does not switch AP or STA."
+                                            : "Auto: keep the mode already set on the telescope. If it is on its hotspot, this app joins that Wi-Fi automatically."
                                 }
                                 FieldLabel { text: "ROUTER WIFI NAME"; visible: wifiModeField.currentIndex === 2 }
                                 HudField {
@@ -2699,12 +2699,13 @@ ApplicationWindow {
                                     visible: wifiModeField.currentIndex === 2
                                     placeholderText: "Router name, not DWARF3_…"
                                 }
-                                FieldLabel { text: "ROUTER WIFI PASSWORD"; visible: wifiModeField.currentIndex === 2 }
+                                FieldLabel { text: wifiModeField.currentIndex === 1 ? "HOTSPOT PASSWORD" : "ROUTER WIFI PASSWORD"; visible: wifiModeField.currentIndex !== 0 }
                                 HudField {
                                     id: wifiField
                                     echoMode: TextInput.Password
                                     Layout.fillWidth: true
-                                    visible: wifiModeField.currentIndex === 2
+                                    visible: wifiModeField.currentIndex !== 0
+                                    placeholderText: wifiModeField.currentIndex === 1 ? "Leave empty to use the Bluetooth password" : ""
                                 }
                                 FieldLabel { text: "BLUETOOTH PASSWORD" }
                                 HudField {
