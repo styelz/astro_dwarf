@@ -138,6 +138,95 @@ ApplicationWindow {
         sessionDragActive = false
         sessionDragData = ({})
     }
+    function startSessionDrag(item, pos) {
+        sessionDragProxy.startDrag(item, pos)
+    }
+    function moveSessionDrag(pos) {
+        sessionDragProxy.moveDrag(pos)
+    }
+    function finishSessionDrag() {
+        sessionDragProxy.finishDrag()
+    }
+    function cancelSessionDrag() {
+        sessionDragProxy.cancelDrag()
+    }
+    function dragSessionId(drop) {
+        return String((sessionDragData && sessionDragData.id) || (drop && drop.source && drop.source.sessionId) || "")
+    }
+    function listRowAt(list, index) {
+        if (!list || index < 0 || index >= list.count)
+            return null
+        const row = list.itemAtIndex(index)
+        if (row && row.modelData)
+            return row.modelData
+        const model = list.model
+        if (model && model[index])
+            return model[index]
+        return null
+    }
+    function reorderFromInsert(list, insertIndex, source) {
+        if (!list || !source || !source.id || insertIndex < 0)
+            return
+        if (String(source.status || "").toLowerCase() !== "planned")
+            return
+        const count = list.count
+        let from = -1
+        for (let i = 0; i < count; i++) {
+            const row = root.listRowAt(list, i)
+            if (row && String(row.id) === String(source.id)) {
+                from = i
+                break
+            }
+        }
+        if (from >= 0 && (insertIndex === from || insertIndex === from + 1))
+            return
+        let beforeId = ""
+        for (let i = Math.max(0, insertIndex); i < count; i++) {
+            const target = root.listRowAt(list, i)
+            if (!target || String(target.id) === String(source.id))
+                continue
+            if (String(target.device_id) !== String(source.device_id))
+                continue
+            if (String(target.status || "").toLowerCase() !== "planned")
+                continue
+            beforeId = String(target.id)
+            break
+        }
+        backend.reorderPlanned(String(source.id), beforeId)
+    }
+    function dropAreaShown(item) {
+        for (let node = item; node; node = node.parent) {
+            if (node.visible === false)
+                return false
+        }
+        return !!(item && item.width > 0 && item.height > 0)
+    }
+    function listDropTarget(pos) {
+        const areas = [upcomingInsert, daySessionInsert, scheduledInsert]
+        for (let i = 0; i < areas.length; i++) {
+            const area = areas[i]
+            if (!root.dropAreaShown(area))
+                continue
+            const local = area.mapFromItem(root.contentItem, pos.x, pos.y)
+            if (local.x < 0 || local.y < 0 || local.x > area.width || local.y > area.height)
+                continue
+            return { list: area.targetList, index: area.indexAtY(local.y) }
+        }
+        return null
+    }
+    function completeSessionDrag(pos) {
+        root.moveSessionDrag(pos)
+        const source = sessionDragData
+        const target = root.listDropTarget(pos)
+        if (target) {
+            sessionDragProxy.cancelDrag()
+            Qt.callLater(function() {
+                root.reorderFromInsert(target.list, target.index, source)
+            })
+            return
+        }
+        sessionDragProxy.finishDrag()
+    }
     function dragLabel(item) {
         if (!item || !item.id)
             return ""
@@ -406,20 +495,71 @@ ApplicationWindow {
             const pos = mapToItem(root.contentItem, mouse.x, mouse.y)
             if (!dragging) {
                 dragging = true
-                sessionDragProxy.startDrag(dragItem, pos)
+                root.startSessionDrag(dragItem, pos)
             } else {
-                sessionDragProxy.moveDrag(pos)
+                root.moveSessionDrag(pos)
             }
         }
-        onReleased: {
-            if (dragging)
-                sessionDragProxy.finishDrag()
+        onReleased: mouse => {
+            if (dragging) {
+                const pos = mapToItem(root.contentItem, mouse.x, mouse.y)
+                root.completeSessionDrag(pos)
+            }
             dragging = false
         }
         onCanceled: {
             if (dragging)
-                sessionDragProxy.cancelDrag()
+                root.cancelSessionDrag()
             dragging = false
+        }
+    }
+
+    component SessionInsertDrop: DropArea {
+        id: insertDrop
+        required property var targetList
+        required property real rowHeight
+        keys: ["session"]
+        readonly property int insertIndex: {
+            if (!root.sessionDragActive || !insertDrop.targetList)
+                return -1
+            const pos = insertDrop.mapFromItem(root.contentItem, root.sessionDragPos.x, root.sessionDragPos.y)
+            if (pos.x < 0 || pos.y < 0 || pos.x > insertDrop.width || pos.y > insertDrop.height)
+                return -1
+            return insertDrop.indexAtY(pos.y)
+        }
+        readonly property real insertLineY: {
+            const list = insertDrop.targetList
+            if (!list)
+                return -999
+            return insertDrop.insertIndex * (insertDrop.rowHeight + list.spacing) - list.contentY - 1
+        }
+
+        function indexAtY(y) {
+            const list = insertDrop.targetList
+            if (!list)
+                return 0
+            const stride = Math.max(1, insertDrop.rowHeight + list.spacing)
+            let idx = Math.round((y + list.contentY) / stride)
+            if (idx < 0)
+                return 0
+            if (idx > list.count)
+                return list.count
+            return idx
+        }
+
+        onDropped: drop => {
+            drop.accept()
+            root.reorderFromInsert(insertDrop.targetList, insertDrop.insertIndex, root.sessionDragData)
+        }
+
+        Rectangle {
+            z: 1000
+            enabled: false
+            width: parent.width
+            height: 2
+            color: root.accent
+            visible: insertDrop.insertIndex >= 0 && insertDrop.insertLineY >= -2 && insertDrop.insertLineY <= insertDrop.height
+            y: insertDrop.insertLineY
         }
     }
 
@@ -1242,90 +1382,139 @@ ApplicationWindow {
             }
         }
 
-        ListView {
+        Rectangle {
+            id: deviceRail
+            readonly property bool shown: backend.devices.length > 1
             Layout.fillWidth: true
-            Layout.preferredHeight: backend.devices.length > 1 ? 64 : 0
-            Layout.maximumHeight: backend.devices.length > 1 ? 64 : 0
+            Layout.preferredHeight: shown ? 30 : 0
+            Layout.maximumHeight: shown ? 30 : 0
             Layout.fillHeight: false
-            Layout.leftMargin: 12
-            Layout.rightMargin: 12
-            Layout.topMargin: backend.devices.length > 1 ? 8 : 0
-            visible: backend.devices.length > 1
-            orientation: ListView.Horizontal
-            spacing: 8
-            clip: true
-            model: backend.devices
-            delegate: HudPanel {
-                id: deviceCard
-                required property var modelData
-                width: 210
-                height: 56
-                fill: modelData.id === backend.selectedDeviceId ? "#C0123C52" : "#99070D16"
-                Item {
+            visible: shown
+            color: "#80050A12"
+            Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: root.outline }
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                spacing: 12
+                Text {
+                    text: "DEVICES"
+                    color: root.textSecondary
+                    font.pixelSize: 9
+                    font.bold: true
+                    font.letterSpacing: 1.6
+                }
+                Rectangle { width: 1; Layout.preferredHeight: 14; color: root.outline }
+                ListView {
+                    id: deviceChips
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    RowLayout {
-                        anchors.fill: parent
-                        spacing: 8
-                        Rectangle { width: 4; Layout.fillHeight: true; color: modelData.color }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 1
-                            Text { text: modelData.name; color: root.textPrimary; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
-                            Text { text: modelData.model + "  ·  " + modelData.status; color: root.textSecondary; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
+                    orientation: ListView.Horizontal
+                    spacing: 4
+                    clip: true
+                    model: backend.devices
+                    delegate: Item {
+                        id: deviceCard
+                        required property var modelData
+                        readonly property bool selected: modelData.id === backend.selectedDeviceId
+                        width: chipRow.implicitWidth + 24
+                        height: deviceChips.height
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.topMargin: 3
+                            anchors.bottomMargin: 3
+                            radius: 3
+                            color: deviceCard.selected ? "#A0123C52" : (chipHover.hovered ? "#500E2030" : "transparent")
+                            Behavior on color { ColorAnimation { duration: 120 } }
                         }
                         Rectangle {
-                            width: 8; height: 8; radius: 4
-                            color: modelData.connected ? root.success : "#526077"
+                            anchors.bottom: parent.bottom
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            height: 2
+                            width: deviceCard.selected ? parent.width - 16 : 0
+                            color: root.accent
+                            Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                         }
-                    }
-                    MouseArea {
-                        anchors.fill: parent
-                        acceptedButtons: Qt.LeftButton
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: backend.selectDevice(deviceCard.modelData.id)
-                    }
-                    TapHandler {
-                        acceptedButtons: Qt.RightButton
-                        onTapped: deviceMenu.popup()
-                    }
-                    HudMenu {
-                        id: deviceMenu
-                        HudMenuItem {
-                            text: deviceCard.modelData.connected ? "Disconnect" : "Connect"
-                            glyph: deviceCard.modelData.connected ? "\uE8CD" : "\uE774"
-                            enabled: !deviceCard.modelData.connecting && !deviceCard.modelData.disconnecting
-                            onTriggered: {
-                                backend.selectDevice(deviceCard.modelData.id)
-                                if (deviceCard.modelData.connected)
-                                    backend.disconnectDevice(deviceCard.modelData.id)
-                                else
-                                    backend.connectDevice(deviceCard.modelData.id)
+                        RowLayout {
+                            id: chipRow
+                            anchors.centerIn: parent
+                            spacing: 7
+                            Rectangle { width: 8; height: 8; radius: 4; color: deviceCard.modelData.color }
+                            Text {
+                                text: deviceCard.modelData.name
+                                color: deviceCard.selected ? root.textPrimary : root.textSecondary
+                                font.pixelSize: 11
+                                font.bold: deviceCard.selected
+                            }
+                            Text {
+                                text: deviceCard.modelData.model
+                                color: root.textSecondary
+                                font.pixelSize: 9
+                                opacity: 0.8
+                            }
+                            Rectangle {
+                                width: 6; height: 6; radius: 3
+                                color: deviceCard.modelData.connected ? root.success : "#526077"
+                                border.color: deviceCard.modelData.connected ? "#D8FFFF" : "transparent"
+                                border.width: deviceCard.modelData.connected ? 1 : 0
+                                SequentialAnimation on opacity {
+                                    running: deviceCard.modelData.connecting || deviceCard.modelData.disconnecting
+                                    loops: Animation.Infinite
+                                    NumberAnimation { from: 1; to: 0.25; duration: 500 }
+                                    NumberAnimation { from: 0.25; to: 1; duration: 500 }
+                                }
                             }
                         }
-                        HudMenuItem {
-                            text: "Open settings"
-                            glyph: "\uE713"
-                            onTriggered: {
-                                backend.selectDevice(deviceCard.modelData.id)
-                                root.currentPage = 4
+                        ToolTip.visible: chipHover.hovered && !deviceMenu.visible
+                        ToolTip.delay: 600
+                        ToolTip.text: deviceCard.modelData.status + (deviceCard.modelData.ip_address ? "  ·  " + deviceCard.modelData.ip_address : "")
+                        HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler {
+                            acceptedButtons: Qt.LeftButton
+                            onTapped: backend.selectDevice(deviceCard.modelData.id)
+                        }
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            onTapped: deviceMenu.popup()
+                        }
+                        HudMenu {
+                            id: deviceMenu
+                            HudMenuItem {
+                                text: deviceCard.modelData.connected ? "Disconnect" : "Connect"
+                                glyph: deviceCard.modelData.connected ? "\uE8CD" : "\uE774"
+                                enabled: !deviceCard.modelData.connecting && !deviceCard.modelData.disconnecting
+                                onTriggered: {
+                                    backend.selectDevice(deviceCard.modelData.id)
+                                    if (deviceCard.modelData.connected)
+                                        backend.disconnectDevice(deviceCard.modelData.id)
+                                    else
+                                        backend.connectDevice(deviceCard.modelData.id)
+                                }
                             }
-                        }
-                        HudMenuSeparator {}
-                        HudMenuItem {
-                            text: "Copy IP address"
-                            glyph: "\uE8C8"
-                            trailingText: String(deviceCard.modelData.ip_address || "")
-                            enabled: trailingText !== ""
-                            onTriggered: backend.copyText(trailingText)
-                        }
-                        HudMenuSeparator {}
-                        HudMenuItem {
-                            text: "Remove device"
-                            glyph: "\uE74D"
-                            destructive: true
-                            visible: backend.devices.length > 1
-                            onTriggered: backend.deleteDevice(deviceCard.modelData.id)
+                            HudMenuItem {
+                                text: "Open settings"
+                                glyph: "\uE713"
+                                onTriggered: {
+                                    backend.selectDevice(deviceCard.modelData.id)
+                                    root.currentPage = 4
+                                }
+                            }
+                            HudMenuSeparator {}
+                            HudMenuItem {
+                                text: "Copy IP address"
+                                glyph: "\uE8C8"
+                                trailingText: String(deviceCard.modelData.ip_address || "")
+                                enabled: trailingText !== ""
+                                onTriggered: backend.copyText(trailingText)
+                            }
+                            HudMenuSeparator {}
+                            HudMenuItem {
+                                text: "Remove device"
+                                glyph: "\uE74D"
+                                destructive: true
+                                visible: backend.devices.length > 1
+                                onTriggered: backend.deleteDevice(deviceCard.modelData.id)
+                            }
                         }
                     }
                 }
@@ -1769,7 +1958,14 @@ ApplicationWindow {
                                 Image {
                                     anchors.fill: parent
                                     visible: !backend.previewPlaying
-                                    source: root.asset("hud-telescope.png")
+                                    source: {
+                                        const model = String((backend.selectedDevice && backend.selectedDevice.model) || "")
+                                        if (model === "Dwarf II")
+                                            return root.asset("hud-dwarf-ii.png")
+                                        if (model === "Dwarf Mini")
+                                            return root.asset("hud-dwarf-mini.png")
+                                        return root.asset("hud-dwarf-3.png")
+                                    }
                                     fillMode: Image.PreserveAspectFit
                                     opacity: 0.18
                                 }
@@ -2172,77 +2368,63 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 Layout.preferredHeight: 0
-                                ListView {
-                                    id: upcomingList
+                                SessionInsertDrop {
+                                    id: upcomingInsert
                                     anchors.fill: parent
-                                    clip: true
-                                    spacing: 4
-                                    boundsBehavior: Flickable.StopAtBounds
-                                    ScrollBar.vertical: HiddenBar {}
-                                    ScrollBar.horizontal: HiddenBar {}
-                                    model: backend.upcomingSessions
-                                    delegate: Rectangle {
-                                        id: upcomingRow
-                                        required property var modelData
-                                        width: ListView.view.width
-                                        height: 44
-                                        color: upcomingDrop.containsDrag ? "#163B4D" : "#122033"
-                                        border.color: upcomingDrop.containsDrag ? root.accent : root.outline
-                                        DropArea {
-                                            id: upcomingDrop
-                                            anchors.fill: parent
-                                            keys: ["session"]
-                                            onDropped: drop => {
-                                                const source = root.sessionDragData
-                                                if (source && source.device_id === upcomingRow.modelData.device_id)
-                                                    backend.reorderPlanned(String(source.id || ""), upcomingRow.modelData.id)
-                                            }
-                                        }
-                                        RowLayout {
-                                            anchors.fill: parent
-                                            anchors.margins: 6
-                                            Text { text: "⋮⋮"; color: root.accent; font.pixelSize: 15 }
-                                            ColumnLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 0
-                                                Text { text: modelData.target_name; color: root.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
-                                                Text {
-                                                    readonly property bool due: {
-                                                        backend.clockText
-                                                        return new Date(modelData.scheduled_start).getTime() <= Date.now()
+                                    targetList: upcomingList
+                                    rowHeight: 44
+                                    ListView {
+                                        id: upcomingList
+                                        anchors.fill: parent
+                                        clip: true
+                                        spacing: 4
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        ScrollBar.vertical: HiddenBar {}
+                                        ScrollBar.horizontal: HiddenBar {}
+                                        model: backend.upcomingSessions
+                                        delegate: Rectangle {
+                                            id: upcomingRow
+                                            required property var modelData
+                                            width: ListView.view.width
+                                            height: 44
+                                            color: "#122033"
+                                            border.color: root.outline
+                                            opacity: root.sessionDragActive && root.sessionDragData.id === modelData.id ? 0.35 : 1
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 6
+                                                Text { text: "⋮⋮"; color: root.accent; font.pixelSize: 15 }
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 0
+                                                    Text { text: modelData.target_name; color: root.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                    Text {
+                                                        readonly property bool due: {
+                                                            backend.clockText
+                                                            return new Date(modelData.scheduled_start).getTime() <= Date.now()
+                                                        }
+                                                        text: {
+                                                            backend.clockText
+                                                            const seconds = Math.floor((new Date(modelData.scheduled_start).getTime() - Date.now()) / 1000)
+                                                            return modelData.start_time + " · " + modelData.duration_text + (seconds > 0 ? " · T−" + root.durationLabel(seconds) : " · DUE")
+                                                        }
+                                                        color: due ? root.warning : root.textSecondary; font.pixelSize: 9
                                                     }
-                                                    text: {
-                                                        backend.clockText
-                                                        const seconds = Math.floor((new Date(modelData.scheduled_start).getTime() - Date.now()) / 1000)
-                                                        return modelData.start_time + " · " + modelData.duration_text + (seconds > 0 ? " · T−" + root.durationLabel(seconds) : " · DUE")
-                                                    }
-                                                    color: due ? root.warning : root.textSecondary; font.pixelSize: 9
                                                 }
                                             }
+                                            SessionDragArea {
+                                                anchors.fill: parent
+                                                dragItem: upcomingRow.modelData
+                                            }
+                                            TapHandler {
+                                                acceptedButtons: Qt.RightButton
+                                                onTapped: upcomingMenu.popup()
+                                            }
+                                            SessionContextMenu {
+                                                id: upcomingMenu
+                                                sessionData: upcomingRow.modelData
+                                            }
                                         }
-                                        SessionDragArea {
-                                            anchors.left: parent.left
-                                            anchors.top: parent.top
-                                            anchors.bottom: parent.bottom
-                                            width: 34
-                                            dragItem: upcomingRow.modelData
-                                        }
-                                        TapHandler {
-                                            acceptedButtons: Qt.RightButton
-                                            onTapped: upcomingMenu.popup()
-                                        }
-                                        SessionContextMenu {
-                                            id: upcomingMenu
-                                            sessionData: upcomingRow.modelData
-                                        }
-                                    }
-                                    footer: DropArea {
-                                        width: upcomingList.width
-                                        height: 28
-                                        keys: ["session"]
-                                        Rectangle { anchors.fill: parent; color: parent.containsDrag ? "#163B4D" : "transparent"; border.color: parent.containsDrag ? root.accent : "transparent" }
-                                        Text { anchors.centerIn: parent; text: "DROP TO MOVE TO END"; visible: parent.containsDrag; color: root.accent; font.pixelSize: 9 }
-                                        onDropped: drop => backend.reorderPlanned(String((drop.source && drop.source.sessionId) || ""), "")
                                     }
                                 }
                                 EmptyHint { anchors.centerIn: parent; visible: backend.upcomingSessions.length === 0; text: "No upcoming sessions" }
@@ -2448,7 +2630,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         keys: ["session"]
                                         onDropped: drop => {
-                                            const sid = String((drop.source && drop.source.sessionId) || "")
+                                            const sid = root.dragSessionId(drop)
                                             if (!sid)
                                                 return
                                             backend.moveSessionDate(sid, dayCell.key)
@@ -2537,7 +2719,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         keys: ["session"]
                                         onDropped: drop => {
-                                            const sid = String((drop.source && drop.source.sessionId) || "")
+                                            const sid = root.dragSessionId(drop)
                                             if (sid)
                                                 backend.moveSessionStart(sid, calendarPage.timelineDate(drop.y / nightTimeline.hourHeight * 60))
                                         }
@@ -2628,49 +2810,56 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             Layout.preferredHeight: 0
-                            ListView {
+                            SessionInsertDrop {
+                                id: daySessionInsert
                                 anchors.fill: parent
-                                clip: true
-                                spacing: 6
-                                boundsBehavior: Flickable.StopAtBounds
-                                ScrollBar.vertical: HiddenBar {}
-                                ScrollBar.horizontal: HiddenBar {}
-                                model: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
-                                delegate: Rectangle {
-                                    id: daySessionRow
-                                    required property var modelData
-                                    property string sessionId: modelData.id
-                                    width: ListView.view.width
-                                    height: 64
-                                    color: "#122033"
-                                    border.color: root.statusColor(modelData.status)
-                                    opacity: root.sessionDragActive && root.sessionDragData.id === sessionId ? 0.35 : 1
-                                    ColumnLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: 8
-                                        spacing: 2
-                                        Text { text: modelData.start_time + "  " + modelData.target_name; color: root.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
-                                        Text { text: modelData.subtitle + " · " + modelData.duration_text; color: root.textSecondary; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
-                                        RowLayout {
-                                            HudButton { text: "EDIT"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
-                                            HudButton { text: "RESET"; implicitHeight: 24; visible: root.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
-                                            HudButton { text: "RUN"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
+                                targetList: daySessionList
+                                rowHeight: 64
+                                ListView {
+                                    id: daySessionList
+                                    anchors.fill: parent
+                                    clip: true
+                                    spacing: 6
+                                    boundsBehavior: Flickable.StopAtBounds
+                                    ScrollBar.vertical: HiddenBar {}
+                                    ScrollBar.horizontal: HiddenBar {}
+                                    model: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+                                    delegate: Rectangle {
+                                        id: daySessionRow
+                                        required property var modelData
+                                        property string sessionId: modelData.id
+                                        width: ListView.view.width
+                                        height: 64
+                                        color: "#122033"
+                                        border.color: root.statusColor(modelData.status)
+                                        opacity: root.sessionDragActive && root.sessionDragData.id === sessionId ? 0.35 : 1
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 8
+                                            spacing: 2
+                                            Text { text: modelData.start_time + "  " + modelData.target_name; color: root.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                            Text { text: modelData.subtitle + " · " + modelData.duration_text; color: root.textSecondary; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
+                                            RowLayout {
+                                                HudButton { text: "EDIT"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
+                                                HudButton { text: "RESET"; implicitHeight: 24; visible: root.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
+                                                HudButton { text: "RUN"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
+                                            }
                                         }
-                                    }
-                                    SessionDragArea {
-                                        anchors.left: parent.left
-                                        anchors.right: parent.right
-                                        anchors.top: parent.top
-                                        height: 36
-                                        dragItem: daySessionRow.modelData
-                                    }
-                                    TapHandler {
-                                        acceptedButtons: Qt.RightButton
-                                        onTapped: daySessionMenu.popup()
-                                    }
-                                    SessionContextMenu {
-                                        id: daySessionMenu
-                                        sessionData: daySessionRow.modelData
+                                        SessionDragArea {
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.top: parent.top
+                                            height: 36
+                                            dragItem: daySessionRow.modelData
+                                        }
+                                        TapHandler {
+                                            acceptedButtons: Qt.RightButton
+                                            onTapped: daySessionMenu.popup()
+                                        }
+                                        SessionContextMenu {
+                                            id: daySessionMenu
+                                            sessionData: daySessionRow.modelData
+                                        }
                                     }
                                 }
                             }
@@ -2737,72 +2926,61 @@ ApplicationWindow {
                         Layout.preferredHeight: 0
                         Item {
                             EmptyHint { visible: backend.sessions.length === 0; text: "No scheduled sessions yet. Create one or import a target list."; anchors.centerIn: parent }
-                            ListView {
+                            SessionInsertDrop {
+                                id: scheduledInsert
                                 anchors.fill: parent
-                                clip: true
-                                spacing: 8
-                                boundsBehavior: Flickable.StopAtBounds
-                                ScrollBar.vertical: HiddenBar {}
-                                ScrollBar.horizontal: HiddenBar {}
-                                model: backend.sessions
-                                delegate: HudPanel {
-                                    id: scheduledRow
-                                    required property var modelData
-                                    width: ListView.view.width
-                                    height: 84
-                                    fill: scheduledDrop.containsDrag ? "#C0163B4D" : "#B3070D16"
-                                    overlay: [
-                                        DropArea {
-                                            id: scheduledDrop
-                                            anchors.fill: parent
-                                            keys: ["session"]
-                                            onDropped: drop => {
-                                                const source = root.sessionDragData
-                                                if (source && source.device_id === scheduledRow.modelData.device_id)
-                                                    backend.reorderPlanned(String(source.id || ""), scheduledRow.modelData.id)
+                                targetList: scheduledList
+                                rowHeight: 84
+                                ListView {
+                                    id: scheduledList
+                                    anchors.fill: parent
+                                    clip: true
+                                    spacing: 8
+                                    boundsBehavior: Flickable.StopAtBounds
+                                    ScrollBar.vertical: HiddenBar {}
+                                    ScrollBar.horizontal: HiddenBar {}
+                                    model: backend.sessions
+                                    delegate: HudPanel {
+                                        id: scheduledRow
+                                        required property var modelData
+                                        width: ListView.view.width
+                                        height: 84
+                                        opacity: root.sessionDragActive && root.sessionDragData.id === modelData.id ? 0.35 : 1
+                                        overlay: [
+                                            SessionDragArea {
+                                                anchors.left: parent.left
+                                                anchors.top: parent.top
+                                                anchors.bottom: parent.bottom
+                                                width: 56
+                                                dragItem: scheduledRow.modelData
                                             }
-                                        },
-                                        SessionDragArea {
-                                            anchors.left: parent.left
-                                            anchors.top: parent.top
-                                            anchors.bottom: parent.bottom
-                                            width: 42
-                                            dragItem: scheduledRow.modelData
+                                        ]
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            Rectangle { width: 4; Layout.fillHeight: true; color: modelData.device_color || root.accent }
+                                            Text { text: "⋮⋮"; color: root.accent; font.pixelSize: 16 }
+                                            ColumnLayout {
+                                                Layout.preferredWidth: 280
+                                                Text { text: modelData.target_name; color: root.textPrimary; font.pixelSize: 16; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                Text { text: modelData.subtitle; color: root.textSecondary; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true; visible: modelData.subtitle !== modelData.target_name }
+                                            }
+                                            Text { text: modelData.start_date + "  " + modelData.start_time; color: root.textPrimary; Layout.preferredWidth: 150 }
+                                            Text { text: modelData.device_name; color: root.accent; Layout.preferredWidth: 120; elide: Text.ElideRight }
+                                            Text { text: modelData.duration_text; color: root.textSecondary; Layout.preferredWidth: 80 }
+                                            Rectangle {
+                                                width: 86; height: 24; color: root.statusFill(modelData.status); border.color: root.statusColor(modelData.status)
+                                                Text { anchors.centerIn: parent; text: modelData.status.toUpperCase(); color: root.statusColor(modelData.status); font.pixelSize: 9; font.bold: true }
+                                            }
+                                            HudButton { text: "EDIT"; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
+                                            HudButton { text: "RESET"; visible: root.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
+                                            HudButton { text: "RUN"; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
                                         }
-                                    ]
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        Rectangle { width: 4; Layout.fillHeight: true; color: modelData.device_color || root.accent }
-                                        Text { text: "⋮⋮"; color: root.accent; font.pixelSize: 16 }
-                                        ColumnLayout {
-                                            Layout.preferredWidth: 280
-                                            Text { text: modelData.target_name; color: root.textPrimary; font.pixelSize: 16; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
-                                            Text { text: modelData.subtitle; color: root.textSecondary; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true; visible: modelData.subtitle !== modelData.target_name }
+                                        TapHandler { acceptedButtons: Qt.RightButton; onTapped: scheduledMenu.popup() }
+                                        SessionContextMenu {
+                                            id: scheduledMenu
+                                            sessionData: modelData
                                         }
-                                        Text { text: modelData.start_date + "  " + modelData.start_time; color: root.textPrimary; Layout.preferredWidth: 150 }
-                                        Text { text: modelData.device_name; color: root.accent; Layout.preferredWidth: 120; elide: Text.ElideRight }
-                                        Text { text: modelData.duration_text; color: root.textSecondary; Layout.preferredWidth: 80 }
-                                        Rectangle {
-                                            width: 86; height: 24; color: root.statusFill(modelData.status); border.color: root.statusColor(modelData.status)
-                                            Text { anchors.centerIn: parent; text: modelData.status.toUpperCase(); color: root.statusColor(modelData.status); font.pixelSize: 9; font.bold: true }
-                                        }
-                                        HudButton { text: "EDIT"; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
-                                        HudButton { text: "RESET"; visible: root.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
-                                        HudButton { text: "RUN"; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
                                     }
-                                    TapHandler { acceptedButtons: Qt.RightButton; onTapped: scheduledMenu.popup() }
-                                    SessionContextMenu {
-                                        id: scheduledMenu
-                                        sessionData: modelData
-                                    }
-                                }
-                                footer: DropArea {
-                                    width: parent ? parent.width : 0
-                                    height: 36
-                                    keys: ["session"]
-                                    Rectangle { anchors.fill: parent; color: parent.containsDrag ? "#163B4D" : "transparent"; border.color: parent.containsDrag ? root.accent : "transparent" }
-                                    Text { anchors.centerIn: parent; text: "DROP TO MOVE TO END"; visible: parent.containsDrag; color: root.accent; font.pixelSize: 9 }
-                                    onDropped: drop => backend.reorderPlanned(String((drop.source && drop.source.sessionId) || ""), "")
                                 }
                             }
                         }
@@ -3499,54 +3677,53 @@ ApplicationWindow {
         }
     }
 
-    Item {
+    Rectangle {
         id: sessionDragProxy
         parent: root.contentItem
-        width: 1
-        height: 1
-        visible: false
+        visible: root.sessionDragActive
+        enabled: false
         z: 4000
+        width: 196
+        height: 30
+        radius: 2
         property string sessionId: ""
+        color: root.statusFill(root.sessionDragData.status || "")
+        border.color: root.statusColor(root.sessionDragData.status || "")
+        border.width: 2
+        opacity: 0.92
         Drag.keys: ["session"]
-        Drag.hotSpot.x: 0
-        Drag.hotSpot.y: 0
+        Drag.hotSpot.x: width / 2
+        Drag.hotSpot.y: height / 2
+        Drag.proposedAction: Qt.MoveAction
+        Drag.supportedActions: Qt.MoveAction
         function startDrag(item, pos) {
-            sessionId = item.id
-            x = pos.x
-            y = pos.y
-            Drag.active = true
+            sessionId = item.id || ""
+            x = pos.x - width / 2
+            y = pos.y - height / 2
             root.beginSessionDrag(item, pos)
+            Drag.active = true
         }
         function moveDrag(pos) {
-            x = pos.x
-            y = pos.y
+            x = pos.x - width / 2
+            y = pos.y - height / 2
             root.updateSessionDrag(pos)
         }
         function finishDrag() {
+            root.sessionDragActive = false
             if (Drag.active)
                 Drag.drop()
+            Drag.active = false
             root.endSessionDrag()
             sessionId = ""
         }
         function cancelDrag() {
+            root.sessionDragActive = false
             if (Drag.active)
                 Drag.cancel()
+            Drag.active = false
             root.endSessionDrag()
             sessionId = ""
         }
-    }
-
-    Rectangle {
-        parent: root.contentItem
-        visible: root.sessionDragActive
-        z: 4001
-        width: 190
-        height: 28
-        x: root.sessionDragPos.x - width / 2
-        y: root.sessionDragPos.y - height / 2
-        color: root.statusFill(root.sessionDragData.status || "")
-        border.color: root.statusColor(root.sessionDragData.status || "")
-        border.width: 2
         Text {
             anchors.fill: parent
             anchors.margins: 5

@@ -1539,8 +1539,8 @@ class AppBackend(QObject):
         session = self.store.sessions.get(session_id)
         if not session or session.status != SessionStatus.PLANNED:
             return
-        moving = self._session_group(session)
-        moving_ids = {item.id for item in moving}
+        moving = [session]
+        moving_ids = {session.id}
         before = self.store.sessions.get(before_session_id) if before_session_id else None
         if before and (before.device_id != session.device_id or before.status != SessionStatus.PLANNED):
             return
