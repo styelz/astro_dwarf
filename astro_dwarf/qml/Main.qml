@@ -7,10 +7,10 @@ import QtCore
 
 ApplicationWindow {
     id: root
-    width: 1480
-    height: 920
-    minimumWidth: 1180
-    minimumHeight: 760
+    width: Math.min(1480, Screen.desktopAvailableWidth - 24)
+    height: Math.min(920, Screen.desktopAvailableHeight - 48)
+    minimumWidth: 1040
+    minimumHeight: 620
     visible: true
     title: "ASTRO DWARF"
     color: "#05080F"
@@ -179,6 +179,14 @@ ApplicationWindow {
     }
 
     function asset(name) { return Qt.resolvedUrl("assets/" + name) }
+    function deviceLabel() {
+        const dev = backend.selectedDevice || {}
+        const name = String(dev.name || "No device")
+        const model = String(dev.model || "")
+        if (model === "" || model.toLowerCase() === name.toLowerCase())
+            return name
+        return name + "  ·  " + model
+    }
     function goToPage(idx) {
         if (idx === root.currentPage) {
             if (idx === 4 && !settingsPage.isDirty())
@@ -217,10 +225,11 @@ ApplicationWindow {
         id: panel
         property alias title: heading.text
         property alias headerExtra: headerExtraRow.data
+        property alias overlay: overlayHost.data
         property color fill: "#B3070D16"
         default property alias contents: body.data
         implicitWidth: 240
-        implicitHeight: (headerRow.visible ? headerRow.implicitHeight + 8 : 0) + body.implicitHeight + 24
+        implicitHeight: (headerRow.visible ? headerRow.implicitHeight + 17 : 0) + body.implicitHeight + 24
         clip: true
 
         Rectangle { anchors.fill: parent; color: panel.fill }
@@ -242,6 +251,16 @@ ApplicationWindow {
                 ctx.lineTo(1.5, h - n)
                 ctx.lineTo(1.5, n)
                 ctx.closePath()
+                ctx.stroke()
+                // accent corner ticks
+                ctx.strokeStyle = "#CC4DE8FF"
+                ctx.lineWidth = 2
+                const t = 14
+                ctx.beginPath()
+                ctx.moveTo(n, 1.5); ctx.lineTo(n + t, 1.5)
+                ctx.moveTo(1.5, n); ctx.lineTo(1.5, n + t)
+                ctx.moveTo(w - n, h - 1.5); ctx.lineTo(w - n - t, h - 1.5)
+                ctx.moveTo(w - 1.5, h - n); ctx.lineTo(w - 1.5, h - n - t)
                 ctx.stroke()
             }
             onWidthChanged: requestPaint()
@@ -271,6 +290,18 @@ ApplicationWindow {
                     Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                 }
             }
+            Rectangle {
+                visible: headerRow.visible
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                implicitHeight: 1
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                    GradientStop { position: 0.0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.6) }
+                    GradientStop { position: 0.55; color: "#331E4A63" }
+                    GradientStop { position: 1.0; color: "transparent" }
+                }
+            }
             Flickable {
                 id: panelFlick
                 Layout.fillWidth: true
@@ -293,6 +324,11 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+        Item {
+            id: overlayHost
+            anchors.fill: parent
+            z: 5
         }
     }
 
@@ -412,7 +448,7 @@ ApplicationWindow {
         }
         contentItem: RowLayout {
             spacing: 7
-            Text { text: commandPad.glyph; color: commandPad.destructive ? root.danger : commandPad.activeState ? root.success : root.accent; font.pixelSize: 18; Layout.preferredWidth: 22; horizontalAlignment: Text.AlignHCenter }
+            Text { text: commandPad.glyph; color: commandPad.destructive ? root.danger : commandPad.activeState ? root.success : root.accent; font.pixelSize: Math.round(Math.min(26, Math.max(16, commandPad.height * 0.32))); Layout.preferredWidth: font.pixelSize + 6; horizontalAlignment: Text.AlignHCenter }
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 0
                 Text { text: commandPad.text; color: commandPad.enabled ? root.textPrimary : root.textSecondary; font.pixelSize: 10; font.bold: true; font.letterSpacing: 0.7; elide: Text.ElideRight; Layout.fillWidth: true }
@@ -581,6 +617,7 @@ ApplicationWindow {
         property var centerState
         property var rightState
         property var calendarState
+        property bool navBarOnTop: false
     }
 
     function restoreSplit(view, state) {
@@ -1023,6 +1060,46 @@ ApplicationWindow {
         horizontalAlignment: Text.AlignHCenter
     }
 
+    component PageNavBar: RowLayout {
+        Layout.fillWidth: true
+        Layout.preferredHeight: 48
+        Layout.maximumHeight: 48
+        Layout.fillHeight: false
+        Layout.leftMargin: 10
+        Layout.rightMargin: 10
+        spacing: 8
+        Repeater {
+            model: [
+                {label: "CONTROL", idx: 0},
+                {label: "CALENDAR", idx: 1},
+                {label: "SESSIONS", idx: 2},
+                {label: "HISTORY", idx: 3},
+                {label: "SETTINGS", idx: 4}
+            ]
+            delegate: HudButton {
+                required property var modelData
+                Layout.fillWidth: true
+                Layout.preferredHeight: 40
+                Layout.fillHeight: false
+                text: modelData.label
+                font.pixelSize: 12
+                font.letterSpacing: 1.4
+                buttonColor: root.currentPage === modelData.idx ? "#0E3A48" : "#0A1524"
+                foregroundColor: root.currentPage === modelData.idx ? root.accent : root.textSecondary
+                onClicked: root.goToPage(modelData.idx)
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 1
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    height: 2
+                    width: root.currentPage === parent.modelData.idx ? parent.width - 24 : 0
+                    color: root.accent
+                    Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                }
+            }
+        }
+    }
+
     Item {
         id: shell
         anchors.fill: parent
@@ -1046,6 +1123,19 @@ ApplicationWindow {
             Layout.fillHeight: false
             color: "#C0050A12"
             border.color: root.outline
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: 2
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                    GradientStop { position: 0.0; color: "transparent" }
+                    GradientStop { position: 0.15; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.7) }
+                    GradientStop { position: 0.85; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.7) }
+                    GradientStop { position: 1.0; color: "transparent" }
+                }
+            }
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 16
@@ -1120,6 +1210,25 @@ ApplicationWindow {
                                 width: 7; height: 7; radius: 4
                                 color: modelData.on ? modelData.color : "#263746"
                                 border.color: modelData.on ? "#D8FFFF" : root.outline
+                                Rectangle {
+                                    anchors.centerIn: parent
+                                    width: 7; height: 7; radius: 4
+                                    color: "transparent"
+                                    border.color: modelData.color
+                                    visible: modelData.on
+                                    SequentialAnimation on scale {
+                                        running: modelData.on
+                                        loops: Animation.Infinite
+                                        NumberAnimation { from: 1; to: 2.2; duration: 1200; easing.type: Easing.OutQuad }
+                                        PauseAnimation { duration: 600 }
+                                    }
+                                    SequentialAnimation on opacity {
+                                        running: modelData.on
+                                        loops: Animation.Infinite
+                                        NumberAnimation { from: 0.8; to: 0; duration: 1200 }
+                                        PauseAnimation { duration: 600 }
+                                    }
+                                }
                             }
                             Text { text: modelData.label; color: modelData.on ? root.textPrimary : root.textSecondary; font.pixelSize: 8; font.bold: true }
                         }
@@ -1127,7 +1236,7 @@ ApplicationWindow {
                 }
                 Column {
                     Text { text: backend.selectedDevice.status || "OFFLINE"; color: backend.selectedDevice.connected ? root.success : root.textSecondary; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignRight; width: 160 }
-                    Text { text: (backend.selectedDevice.name || "No device") + " · " + (backend.selectedDevice.model || ""); color: root.textSecondary; font.pixelSize: 10; horizontalAlignment: Text.AlignRight; width: 160; elide: Text.ElideRight }
+                    Text { text: root.deviceLabel(); color: root.textSecondary; font.pixelSize: 10; horizontalAlignment: Text.AlignRight; width: 160; elide: Text.ElideRight }
                 }
                 Text { text: backend.clockText; color: root.accent; font.pixelSize: 22; font.family: "Cascadia Mono"; font.letterSpacing: 1 }
             }
@@ -1223,6 +1332,11 @@ ApplicationWindow {
             }
         }
 
+        PageNavBar {
+            visible: layoutSettings.navBarOnTop
+            Layout.topMargin: 8
+        }
+
         StackLayout {
             id: pages
             currentIndex: root.currentPage
@@ -1246,15 +1360,15 @@ ApplicationWindow {
 
                         HudPanel {
                             title: "SYSTEM STATUS"
-                            SplitView.preferredHeight: 260
-                            SplitView.minimumHeight: 150
+                            SplitView.preferredHeight: 240
+                            SplitView.minimumHeight: 120
                             RowLayout {
                                 Layout.fillWidth: true
                                 Rectangle { width: 10; height: 10; radius: 5; color: backend.selectedDevice.connected ? root.success : root.danger; border.color: backend.selectedDevice.connected ? "#C8FFE9" : "#FFD0D5" }
                                 ColumnLayout {
                                     Layout.fillWidth: true; spacing: 0
                                     Text { text: String(backend.selectedDevice.status || "OFFLINE").toUpperCase(); color: backend.selectedDevice.connected ? root.success : root.warning; font.pixelSize: 15; font.bold: true; font.letterSpacing: 1.4 }
-                                    Text { text: (backend.selectedDevice.name || "No device") + "  ·  " + (backend.selectedDevice.model || ""); color: root.textSecondary; font.pixelSize: 9 }
+                                    Text { text: root.deviceLabel(); color: root.textSecondary; font.pixelSize: 9 }
                                 }
                             }
                             Repeater {
@@ -1270,8 +1384,10 @@ ApplicationWindow {
                                 delegate: RowLayout {
                                     required property var modelData
                                     Layout.fillWidth: true
-                                    Text { text: modelData.label; color: root.textSecondary; font.pixelSize: 9; font.bold: true; Layout.preferredWidth: 72 }
-                                    Text { text: modelData.value; color: root.textPrimary; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
+                                    spacing: 6
+                                    Text { text: modelData.label; color: root.textSecondary; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8; Layout.preferredWidth: 72 }
+                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#1A3A50"; opacity: 0.7 }
+                                    Text { text: modelData.value; color: root.textPrimary; font.pixelSize: 10; font.family: "Cascadia Mono"; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; Layout.maximumWidth: 150 }
                                 }
                             }
                             Rectangle { Layout.fillWidth: true; height: 1; color: root.outline; visible: backend.selectedDevice.telemetry_rows && backend.selectedDevice.telemetry_rows.length > 0 }
@@ -1298,8 +1414,8 @@ ApplicationWindow {
                         HudPanel {
                             id: targetPanel
                             title: "TARGET"
-                            SplitView.preferredHeight: 148
-                            SplitView.minimumHeight: 88
+                            SplitView.preferredHeight: 140
+                            SplitView.minimumHeight: 80
                             Text {
                                 text: backend.currentSession.target_name || (backend.selectedDevice.connected ? "No active lock" : "No telescope link")
                                 color: root.textPrimary
@@ -1317,15 +1433,48 @@ ApplicationWindow {
                                 font.pixelSize: 11
                             }
                             Text { text: backend.currentSession.current_step || (backend.selectedDevice.connected ? "Telescope ready" : "Connect to acquire a lock"); color: root.textSecondary; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                            Text { text: backend.currentSession.duration_text ? "PLANNED  " + backend.currentSession.duration_text : "WAITING FOR SCHEDULE"; color: root.accent; font.pixelSize: 11 }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text { text: backend.currentSession.duration_text ? "PLANNED  " + backend.currentSession.duration_text : "WAITING FOR SCHEDULE"; color: root.accent; font.pixelSize: 11; font.letterSpacing: 0.8; Layout.fillWidth: true; elide: Text.ElideRight }
+                                Text { visible: !!backend.currentSession.id; text: Math.round(backend.sessionProgress * 100) + "%"; color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono" }
+                            }
                             ProgressBar {
                                 id: sessionBar
                                 Layout.fillWidth: true
                                 from: 0
                                 to: 1
                                 value: backend.sessionProgress
+                                readonly property bool idle: !backend.currentSession.id
                                 background: Rectangle { implicitHeight: 8; color: "#0A1524"; border.color: root.outline }
-                                contentItem: Rectangle { width: sessionBar.visualPosition * parent.width; height: parent.height; color: root.accent }
+                                contentItem: Item {
+                                    implicitHeight: 8
+                                    clip: true
+                                    Rectangle {
+                                        visible: !sessionBar.idle
+                                        width: sessionBar.visualPosition * parent.width
+                                        height: parent.height
+                                        color: root.accent
+                                    }
+                                    Rectangle {
+                                        id: idleSweep
+                                        visible: sessionBar.idle && controlPage.visible
+                                        width: 46
+                                        height: parent.height
+                                        opacity: 0.55
+                                        gradient: Gradient {
+                                            orientation: Gradient.Horizontal
+                                            GradientStop { position: 0.0; color: "transparent" }
+                                            GradientStop { position: 0.5; color: root.accent }
+                                            GradientStop { position: 1.0; color: "transparent" }
+                                        }
+                                        SequentialAnimation on x {
+                                            running: idleSweep.visible
+                                            loops: Animation.Infinite
+                                            NumberAnimation { from: -idleSweep.width; to: sessionBar.width; duration: 2600; easing.type: Easing.InOutSine }
+                                            PauseAnimation { duration: 900 }
+                                        }
+                                    }
+                                }
                             }
                             TapHandler {
                                 acceptedButtons: Qt.RightButton
@@ -1368,21 +1517,43 @@ ApplicationWindow {
                             SplitView.preferredHeight: 48
                             SplitView.minimumHeight: 40
                             SplitView.maximumHeight: 64
+                            id: linkBanner
+                            readonly property color tone: root.targetLocked ? root.success : (backend.selectedDevice.connected ? root.accent : root.danger)
                             color: root.targetLocked ? "#C0143C28" : (backend.selectedDevice.connected ? "#C0123C52" : "#C03A1218")
-                            border.color: root.targetLocked ? root.success : (backend.selectedDevice.connected ? root.accent : root.danger)
-                            Text {
+                            border.color: tone
+                            Rectangle {
+                                id: bannerGlow
+                                anchors.fill: parent
+                                anchors.margins: 3
+                                color: "transparent"
+                                border.color: linkBanner.tone
+                                border.width: 1
+                                opacity: 0.25
+                                SequentialAnimation on opacity {
+                                    running: controlPage.visible && !root.targetLocked
+                                    loops: Animation.Infinite
+                                    NumberAnimation { to: 0.05; duration: 1400; easing.type: Easing.InOutSine }
+                                    NumberAnimation { to: 0.45; duration: 1400; easing.type: Easing.InOutSine }
+                                }
+                            }
+                            Row {
                                 anchors.centerIn: parent
-                                text: root.targetLocked ? "TARGET LOCKED" : (backend.selectedDevice.connected ? "NO TARGET LOCK" : "LINK DOWN")
-                                color: root.targetLocked ? root.success : (backend.selectedDevice.connected ? root.accent : root.danger)
-                                font.bold: true
-                                font.letterSpacing: 2
+                                spacing: 10
+                                Rectangle { width: 6; height: 6; radius: 3; color: linkBanner.tone; anchors.verticalCenter: parent.verticalCenter }
+                                Text {
+                                    text: root.targetLocked ? "TARGET LOCKED" : (backend.selectedDevice.connected ? "NO TARGET LOCK" : "LINK DOWN")
+                                    color: linkBanner.tone
+                                    font.bold: true
+                                    font.letterSpacing: 2
+                                }
+                                Rectangle { width: 6; height: 6; radius: 3; color: linkBanner.tone; anchors.verticalCenter: parent.verticalCenter }
                             }
                         }
 
                         HudPanel {
                             title: "CAMERA"
                             SplitView.fillHeight: true
-                            SplitView.minimumHeight: 140
+                            SplitView.minimumHeight: 120
                             FieldLabel { text: "FOCUS" }
                             RowLayout {
                                 Layout.fillWidth: true
@@ -1461,7 +1632,7 @@ ApplicationWindow {
 
                         HudPanel {
                             SplitView.fillHeight: true
-                            SplitView.minimumHeight: 180
+                            SplitView.minimumHeight: 150
                             fill: "#E005070B"
                             Item {
                                 id: previewHost
@@ -1603,12 +1774,67 @@ ApplicationWindow {
                                     opacity: 0.18
                                 }
                                 Canvas {
+                                    // faint scanline grid
                                     anchors.fill: parent
-                                    opacity: previewHost.chromeShown ? 0.9 : 0
+                                    visible: opacity > 0
+                                    opacity: !backend.previewPlaying ? 0.22 : (previewHost.chromeShown ? 0.10 : 0)
+                                    Behavior on opacity { NumberAnimation { duration: 220 } }
                                     onPaint: {
                                         const ctx = getContext("2d")
                                         ctx.reset()
-                                        const cx = width / 2, cy = height / 2, m = 18
+                                        ctx.strokeStyle = "#4DE8FF"
+                                        ctx.lineWidth = 1
+                                        ctx.globalAlpha = 0.35
+                                        for (let y = 0.5; y < height; y += 4) {
+                                            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke()
+                                        }
+                                        ctx.globalAlpha = 0.5
+                                        const step = 48
+                                        for (let x = (width / 2) % step + 0.5; x < width; x += step) {
+                                            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke()
+                                        }
+                                        for (let y = (height / 2) % step + 0.5; y < height; y += step) {
+                                            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke()
+                                        }
+                                    }
+                                    onWidthChanged: requestPaint()
+                                    onHeightChanged: requestPaint()
+                                }
+                                Rectangle {
+                                    // readout strip
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    anchors.margins: 14
+                                    height: 24
+                                    visible: previewHost.chromeShown
+                                    color: "#B0070D16"
+                                    border.color: root.outline
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 10
+                                        anchors.rightMargin: 10
+                                        spacing: 14
+                                        Text { text: (backend.selectedDevice.camera === "wide" ? "WIDE" : "TELE"); color: root.accent; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1 }
+                                        Text { text: "EXP " + liveExposure.text + "s"; color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono" }
+                                        Text { text: "GAIN " + liveGain.text; color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono" }
+                                        Text { visible: backend.selectedDevice.camera !== "wide"; text: liveFilter.currentText.toUpperCase(); color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono"; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        Item { Layout.fillWidth: true; visible: backend.selectedDevice.camera === "wide" }
+                                        Text { text: backend.selectedDevice.ip_address || "—"; color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono" }
+                                        Text { text: backend.clockText; color: root.accent; font.pixelSize: 10; font.family: "Cascadia Mono" }
+                                    }
+                                }
+                                Canvas {
+                                    anchors.fill: parent
+                                    opacity: previewHost.chromeShown ? 0.9 : 0
+                                    readonly property bool reticle: backend.previewPlaying
+                                    onReticleChanged: requestPaint()
+                                    onPaint: {
+                                        const ctx = getContext("2d")
+                                        ctx.reset()
+                                        if (!reticle)
+                                            return
+                                        const cx = width / 2, cy = height / 2
                                         ctx.strokeStyle = "#88E8FFFF"
                                         ctx.lineWidth = 1.2
                                         ctx.beginPath()
@@ -1618,12 +1844,6 @@ ApplicationWindow {
                                         ctx.moveTo(cx, cy + 16); ctx.lineTo(cx, cy + 80)
                                         ctx.stroke()
                                         ctx.beginPath(); ctx.arc(cx, cy, 52, 0, Math.PI * 2); ctx.stroke()
-                                        ctx.beginPath()
-                                        ctx.moveTo(m, m + 24); ctx.lineTo(m, m); ctx.lineTo(m + 24, m)
-                                        ctx.moveTo(width - m - 24, m); ctx.lineTo(width - m, m); ctx.lineTo(width - m, m + 24)
-                                        ctx.moveTo(m, height - m - 24); ctx.lineTo(m, height - m); ctx.lineTo(m + 24, height - m)
-                                        ctx.moveTo(width - m - 24, height - m); ctx.lineTo(width - m, height - m); ctx.lineTo(width - m, height - m - 24)
-                                        ctx.stroke()
                                     }
                                     onWidthChanged: requestPaint()
                                     onHeightChanged: requestPaint()
@@ -1709,12 +1929,23 @@ ApplicationWindow {
                         HudPanel {
                             title: "COMMANDS"
                             SplitView.preferredHeight: 244
-                            SplitView.minimumHeight: 176
+                            SplitView.minimumHeight: 140
                             GridLayout {
+                                id: commandGrid
                                 Layout.fillWidth: true
-                                columns: 4
-                                columnSpacing: 6
-                                rowSpacing: 6
+                                Layout.fillHeight: true
+                                readonly property int padCount: 12
+                                // pick the widest column count that still divides the pads into full rows
+                                columns: {
+                                    const fit = Math.max(2, Math.floor((width + columnSpacing) / (150 + columnSpacing)))
+                                    const options = [6, 4, 3, 2]
+                                    for (let i = 0; i < options.length; i++)
+                                        if (options[i] <= fit)
+                                            return options[i]
+                                    return 2
+                                }
+                                columnSpacing: 8
+                                rowSpacing: 8
                                 Repeater {
                                 model: [
                                     {label: "CALIBRATE", glyph: "◎", start: "calibrate", stop: "stop_calibrate", state: "calibrate", detail: "ALIGN"},
@@ -1737,6 +1968,9 @@ ApplicationWindow {
                                         : modelData.state !== "" && root.scopeActivity === modelData.state
                                     readonly property string effectiveOperation: activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
                                     Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    Layout.minimumHeight: 44
+                                    Layout.preferredHeight: 58
                                     text: modelData.label
                                     glyph: modelData.glyph
                                     detail: activeForState ? "ACTIVE · STOP" : modelData.detail
@@ -1781,10 +2015,10 @@ ApplicationWindow {
                         HudPanel {
                             title: "MOTION"
                             SplitView.preferredHeight: 188
-                            SplitView.minimumHeight: 150
+                            SplitView.minimumHeight: 136
                             Item {
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: 118
+                                Layout.preferredHeight: 128
                                 opacity: root.motionEnabled ? 1 : 0.38
                                 Item {
                                     id: analogPad
@@ -1832,6 +2066,30 @@ ApplicationWindow {
                                         color: "#B30A1524"
                                         border.color: root.outline
                                         border.width: 2
+                                    }
+                                    Canvas {
+                                        // bearing ticks around the ring
+                                        anchors.fill: parent
+                                        anchors.margins: -10
+                                        onPaint: {
+                                            const ctx = getContext("2d")
+                                            ctx.reset()
+                                            const cx = width / 2, cy = height / 2
+                                            const rOuter = width / 2 - 1
+                                            for (let i = 0; i < 36; i++) {
+                                                const major = i % 9 === 0
+                                                const a = i * Math.PI * 2 / 36
+                                                const len = major ? 8 : 4
+                                                ctx.strokeStyle = major ? "#4DE8FF" : "#34597A"
+                                                ctx.lineWidth = major ? 2 : 1
+                                                ctx.beginPath()
+                                                ctx.moveTo(cx + Math.cos(a) * (rOuter - len), cy + Math.sin(a) * (rOuter - len))
+                                                ctx.lineTo(cx + Math.cos(a) * rOuter, cy + Math.sin(a) * rOuter)
+                                                ctx.stroke()
+                                            }
+                                        }
+                                        onWidthChanged: requestPaint()
+                                        onHeightChanged: requestPaint()
                                     }
                                     Rectangle {
                                         anchors.centerIn: parent
@@ -1949,12 +2207,16 @@ ApplicationWindow {
                                                 spacing: 0
                                                 Text { text: modelData.target_name; color: root.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                                 Text {
+                                                    readonly property bool due: {
+                                                        backend.clockText
+                                                        return new Date(modelData.scheduled_start).getTime() <= Date.now()
+                                                    }
                                                     text: {
                                                         backend.clockText
                                                         const seconds = Math.floor((new Date(modelData.scheduled_start).getTime() - Date.now()) / 1000)
                                                         return modelData.start_time + " · " + modelData.duration_text + (seconds > 0 ? " · T−" + root.durationLabel(seconds) : " · DUE")
                                                     }
-                                                    color: root.textSecondary; font.pixelSize: 9
+                                                    color: due ? root.warning : root.textSecondary; font.pixelSize: 9
                                                 }
                                             }
                                         }
@@ -2012,21 +2274,37 @@ ApplicationWindow {
                                 ScrollBar.horizontal: HiddenBar {}
                                 model: backend.logModel
                                 onCountChanged: positionViewAtEnd()
-                                delegate: Text {
+                                delegate: Item {
+                                    id: logRow
                                     required property string time
                                     required property string level
                                     required property string device
                                     required property string message
+                                    readonly property color tone: level === "ERROR" ? root.danger : level === "SUCCESS" ? root.success : level === "WARNING" ? root.warning : level === "SDK" ? root.textSecondary : "#B7D4E2"
+                                    readonly property string lineText: time + "  [" + device + "]  " + message
                                     width: ListView.view.width
-                                    text: time + "  [" + device + "]  " + message
-                                    color: level === "ERROR" ? root.danger : level === "SUCCESS" ? root.success : level === "WARNING" ? root.warning : level === "SDK" ? root.textSecondary : "#B7D4E2"
-                                    font.family: "Cascadia Mono"
-                                    font.pixelSize: 10
-                                    wrapMode: Text.Wrap
+                                    height: logText.implicitHeight + 2
+                                    Rectangle {
+                                        x: 0; y: 1
+                                        width: 2
+                                        height: parent.height - 2
+                                        color: logRow.level === "ERROR" || logRow.level === "SUCCESS" || logRow.level === "WARNING" ? logRow.tone : "#1E4A63"
+                                    }
+                                    Text {
+                                        id: logText
+                                        x: 8
+                                        y: 1
+                                        width: parent.width - 8
+                                        text: logRow.lineText
+                                        color: logRow.tone
+                                        font.family: "Cascadia Mono"
+                                        font.pixelSize: 10
+                                        wrapMode: Text.Wrap
+                                    }
                                     TapHandler {
                                         acceptedButtons: Qt.RightButton
                                         onTapped: {
-                                            logMenu.lineText = text
+                                            logMenu.lineText = logRow.lineText
                                             logMenu.popup()
                                         }
                                     }
@@ -2473,16 +2751,25 @@ ApplicationWindow {
                                     width: ListView.view.width
                                     height: 84
                                     fill: scheduledDrop.containsDrag ? "#C0163B4D" : "#B3070D16"
-                                    DropArea {
-                                        id: scheduledDrop
-                                        anchors.fill: parent
-                                        keys: ["session"]
-                                        onDropped: drop => {
-                                            const source = root.sessionDragData
-                                            if (source && source.device_id === scheduledRow.modelData.device_id)
-                                                backend.reorderPlanned(String(source.id || ""), scheduledRow.modelData.id)
+                                    overlay: [
+                                        DropArea {
+                                            id: scheduledDrop
+                                            anchors.fill: parent
+                                            keys: ["session"]
+                                            onDropped: drop => {
+                                                const source = root.sessionDragData
+                                                if (source && source.device_id === scheduledRow.modelData.device_id)
+                                                    backend.reorderPlanned(String(source.id || ""), scheduledRow.modelData.id)
+                                            }
+                                        },
+                                        SessionDragArea {
+                                            anchors.left: parent.left
+                                            anchors.top: parent.top
+                                            anchors.bottom: parent.bottom
+                                            width: 42
+                                            dragItem: scheduledRow.modelData
                                         }
-                                    }
+                                    ]
                                     RowLayout {
                                         Layout.fillWidth: true
                                         Rectangle { width: 4; Layout.fillHeight: true; color: modelData.device_color || root.accent }
@@ -2502,13 +2789,6 @@ ApplicationWindow {
                                         HudButton { text: "EDIT"; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
                                         HudButton { text: "RESET"; visible: root.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
                                         HudButton { text: "RUN"; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
-                                    }
-                                    SessionDragArea {
-                                        anchors.left: parent.left
-                                        anchors.top: parent.top
-                                        anchors.bottom: parent.bottom
-                                        width: 42
-                                        dragItem: scheduledRow.modelData
                                     }
                                     TapHandler { acceptedButtons: Qt.RightButton; onTapped: scheduledMenu.popup() }
                                     SessionContextMenu {
@@ -3023,6 +3303,31 @@ ApplicationWindow {
                             HudButton { text: "REMOVE DEVICE"; busyText: "REMOVING…"; buttonColor: "#3A1218"; foregroundColor: root.danger; onClicked: backend.deleteDevice(backend.selectedDeviceId) }
                         }
                         HudPanel {
+                            title: "INTERFACE"
+                            width: parent.width
+                            GridLayout {
+                                Layout.fillWidth: true
+                                columns: 4
+                                columnSpacing: 10
+                                rowSpacing: 8
+                                FieldLabel { text: "NAV BUTTONS" }
+                                HudCombo {
+                                    Layout.fillWidth: true
+                                    model: ["Bottom", "Top (below header)"]
+                                    currentIndex: layoutSettings.navBarOnTop ? 1 : 0
+                                    onActivated: layoutSettings.navBarOnTop = currentIndex === 1
+                                }
+                                Item { Layout.fillWidth: true }
+                                Item { Layout.fillWidth: true }
+                            }
+                            Text {
+                                text: "Applies immediately. Choose whether the page buttons and icon sit under the header or at the bottom of the window."
+                                color: root.textSecondary
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                        }
+                        HudPanel {
                             title: "DEVICE"
                             width: parent.width
                             GridLayout {
@@ -3178,42 +3483,9 @@ ApplicationWindow {
             }
         }
 
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 48
-            Layout.maximumHeight: 48
-            Layout.fillHeight: false
-            Layout.leftMargin: 10
-            Layout.rightMargin: 10
+        PageNavBar {
+            visible: !layoutSettings.navBarOnTop
             Layout.bottomMargin: 8
-            spacing: 8
-            Item {
-                Layout.preferredWidth: 36
-                Layout.preferredHeight: 36
-                Layout.fillHeight: false
-                Image { anchors.fill: parent; source: root.asset("hud-joystick.png"); fillMode: Image.PreserveAspectFit }
-            }
-            Repeater {
-                model: [
-                    {label: "CONTROL", idx: 0},
-                    {label: "CALENDAR", idx: 1},
-                    {label: "SESSIONS", idx: 2},
-                    {label: "HISTORY", idx: 3},
-                    {label: "SETTINGS", idx: 4}
-                ]
-                delegate: HudButton {
-                    required property var modelData
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 40
-                    Layout.fillHeight: false
-                    text: modelData.label
-                    font.pixelSize: 12
-                    font.letterSpacing: 1.4
-                    buttonColor: root.currentPage === modelData.idx ? "#0E3A48" : "#0A1524"
-                    foregroundColor: root.currentPage === modelData.idx ? root.accent : root.textSecondary
-                    onClicked: root.goToPage(modelData.idx)
-                }
-            }
         }
         }
 
