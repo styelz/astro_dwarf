@@ -1769,7 +1769,8 @@ ApplicationWindow {
                     busy: backend.selectedDevice.pending_action === "stop_all"
                     busyText: "STOPPING…"
                     busyMs: 0
-                    enabled: root.commandEnabled("stop_all")
+                    // A running session must always be stoppable, even while the link is still coming up.
+                    enabled: root.commandEnabled("stop_all") || (root.scopeImaging && root.scopePending !== "stop_all")
                     buttonColor: "#3A1218"
                     foregroundColor: root.danger
                     onClicked: backend.stopDevice(backend.selectedDeviceId)
@@ -2123,15 +2124,16 @@ ApplicationWindow {
                                     {label: "PREVIEW", value: backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped", tone: backend.previewPlaying ? root.danger : backend.previewActive ? root.warning : root.textSecondary},
                                     {label: "SESSION", value: backend.currentSession.current_step || "No active session", tone: backend.currentSession.id ? root.accent : root.textSecondary},
                                     {label: "REMAINING", value: backend.currentSession.id ? root.durationLabel(Number(backend.currentSession.planned_duration_seconds || 0) * (1 - backend.sessionProgress)) : "—", tone: root.textPrimary},
-                                    {label: "SITE", value: (backend.selectedDevice.timezone_name || "UTC") + "  " + Number(backend.selectedDevice.latitude || 0).toFixed(2) + "°, " + Number(backend.selectedDevice.longitude || 0).toFixed(2) + "°", tone: root.textPrimary}
+                                    {label: "TIMEZONE", value: backend.selectedDevice.timezone_name || "UTC", tone: root.textPrimary},
+                                    {label: "LAT / LON", value: Number(backend.selectedDevice.latitude || 0).toFixed(2) + "°, " + Number(backend.selectedDevice.longitude || 0).toFixed(2) + "°", tone: root.textPrimary}
                                 ]
                                 delegate: RowLayout {
                                     required property var modelData
                                     Layout.fillWidth: true
                                     spacing: 6
                                     Text { text: modelData.label; color: root.textSecondary; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8; Layout.preferredWidth: 72 }
-                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#1A3A50"; opacity: 0.7 }
-                                    Text { text: modelData.value; color: modelData.tone; font.pixelSize: 10; font.family: "Cascadia Mono"; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; Layout.maximumWidth: 150 }
+                                    Rectangle { Layout.fillWidth: true; Layout.minimumWidth: 12; Layout.preferredHeight: 1; color: "#1A3A50"; opacity: 0.7 }
+                                    Text { text: modelData.value; color: modelData.tone; font.pixelSize: 10; font.family: "Cascadia Mono"; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; Layout.fillWidth: true; Layout.maximumWidth: implicitWidth }
                                 }
                             }
                         }

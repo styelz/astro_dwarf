@@ -48,6 +48,13 @@ CMD_NOTIFY_CMOS_TEMPERATURE = 15292
 CMD_GLOBAL_TASK_GET_DEVICE_STATE_INFO = 16405
 
 TYPE_NOTIFICATION = 2
+_RESPONSE_TYPES = (1, 3)  # WsPacket.type: 0 request, 1 reply, 2 notification, 3 response
+
+CMD_ASTRO_START_CALIBRATION = 11000
+CMD_ASTRO_START_EQ_SOLVING = 11018
+CMD_FOCUS_START_ASTRO_AUTO_FOCUS = 15004
+# Long-running commands whose reply only arrives once the operation ends.
+_TRACKED_RESPONSES = {CMD_ASTRO_START_CALIBRATION, CMD_ASTRO_START_EQ_SOLVING, CMD_FOCUS_START_ASTRO_AUTO_FOCUS}
 
 OPERATION_STATES = {0: "idle", 1: "running", 2: "stopping", 3: "stopped"}
 ASTRO_STATES = {0: "idle", 1: "running", 2: "stopping", 3: "stopped", 4: "solving"}
@@ -137,6 +144,8 @@ class TelemetryTap:
         self._base = None
         self._installed = False
         self._status_signature: dict[str, Any] = {}
+        self._astro = None
+        self._responses: dict[int, tuple[int, float]] = {}
 
     # ------------------------------------------------------------------ setup
     def install(self, websockets_utils: Any) -> bool:
@@ -150,6 +159,12 @@ class TelemetryTap:
             return False
         self._base = base_pb2
         self._notify = notify_pb2
+        try:
+            import dwarf_python_api.proto.astro_pb2 as astro_pb2
+
+            self._astro = astro_pb2
+        except Exception:
+            self._astro = None
         try:
             real_base = websockets_utils.base__pb2
 
@@ -183,6 +198,15 @@ class TelemetryTap:
             self._state.clear()
             self._pending.clear()
             self._status_signature.clear()
+            self._responses.clear()
+
+    def response_after(self, cmd: int, since: float) -> int | None:
+        """Return the reply code for ``cmd`` received after monotonic time ``since``."""
+        with self._lock:
+            item = self._responses.get(cmd)
+        if item is None or item[1] < since:
+            return None
+        return item[0]
 
     def update(self, changes: dict[str, Any], force: bool = False) -> None:
         if not changes:
@@ -235,6 +259,8 @@ class TelemetryTap:
 
     def on_packet(self, cmd: int, kind: int, data: bytes) -> None:
         """Decode one incoming packet into telemetry changes (never raises)."""
+        if kind in _RESPONSE_TYPES and cmd in _TRACKED_RESPONSES:
+            self._record_response(cmd, data)
         try:
             changes = self._decode(cmd, kind, data)
         except Exception:
@@ -247,6 +273,21 @@ class TelemetryTap:
                 CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING,
                 CMD_NOTIFY_POWER_OFF,
             ))
+
+    def _record_response(self, cmd: int, data: bytes) -> None:
+        try:
+            if cmd == CMD_ASTRO_START_EQ_SOLVING and self._astro is not None:
+                message = self._astro.ResStartEqSolving()
+            elif self._base is not None:
+                message = self._base.ComResponse()
+            else:
+                return
+            message.ParseFromString(data)
+            code = int(message.code)
+        except Exception:
+            return
+        with self._lock:
+            self._responses[cmd] = (code, time.monotonic())
 
     def _decode(self, cmd: int, kind: int, data: bytes) -> dict[str, Any]:
         if self._notify is None or self._base is None:

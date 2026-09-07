@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import contextlib
 import asyncio
+import heapq
 import html
+import itertools
 import json
 import os
 import socket
@@ -30,8 +32,18 @@ _api = None
 _tap: TelemetryTap | None = None
 _device: dict[str, Any] = {}
 _stop = threading.Event()
-_commands: queue.Queue[dict[str, Any]] = queue.Queue()
+# (priority, sequence, message): urgent commands (stop/disconnect) jump the queue.
+_commands: queue.PriorityQueue[tuple[int, int, dict[str, Any]]] = queue.PriorityQueue()
+_command_sequence = itertools.count()
+_PRIORITY_URGENT = 0
+_PRIORITY_NORMAL = 1
 _connected = threading.Event()
+_session_active = threading.Event()
+_session_phase: str | None = None
+_stop_phase: str | None = None
+_in_flight: str | None = None
+_interrupt_pending = False
+_INTERRUPT_MARKER = "astro-dwarf-interrupt"
 _QUIET_OPERATIONS = {"device_state", "stack_status"}
 _STATE_REFRESH_SECONDS = 30.0
 _STATUS_POLL_SECONDS = 2.0
@@ -61,13 +73,102 @@ def _client_status() -> Any:
 
 def _queued_internal(command: str) -> bool:
     with _commands.mutex:
-        return any(item.get("internal") and item.get("command") == command for item in _commands.queue)
+        return any(
+            item.get("internal") and item.get("command") == command
+            for _priority, _sequence, item in _commands.queue
+        )
+
+
+def _put_command(message: dict[str, Any], priority: int = _PRIORITY_NORMAL) -> None:
+    _commands.put((priority, next(_command_sequence), message))
 
 
 def request_state_refresh() -> None:
     """Queue a full device-state read behind the current SDK command."""
     if _connected.is_set() and not _queued_internal("device_state"):
-        _commands.put({"command": "device_state", "internal": True})
+        _put_command({"command": "device_state", "internal": True})
+
+
+def _sdk_socket() -> tuple[Any, Any]:
+    """Return the SDK's live websocket client and its event loop (or Nones)."""
+    try:
+        from dwarf_python_api.lib import websockets_utils
+
+        client = getattr(websockets_utils, "client_instance", None)
+        loop = getattr(websockets_utils, "event_loop", None)
+        if client is None or loop is None or loop.is_closed():
+            return None, None
+        return client, loop
+    except Exception:
+        return None, None
+
+
+def _interrupt_sdk_wait(reason: str) -> bool:
+    """Wake the SDK call blocked on the result queue so it returns False.
+
+    The SDK waits on ``client_instance.result_queue`` for the device reply;
+    pushing a warning result makes ``send_socket_message`` return immediately.
+    """
+    global _interrupt_pending
+    client, loop = _sdk_socket()
+    if client is None:
+        return False
+    try:
+        from dwarf_python_api.lib import websockets_utils
+
+        payload = {
+            "result": websockets_utils.Dwarf_Result.WARNING,
+            "message": _INTERRUPT_MARKER,
+            "code": websockets_utils.ERROR_INTERRUPTED,
+            "reason": reason,
+        }
+        loop.call_soon_threadsafe(client.result_queue.put_nowait, payload)
+        _interrupt_pending = True
+        return True
+    except Exception:
+        return False
+
+
+def _drain_interrupts() -> None:
+    """Remove stale interrupt markers so they cannot fail the next SDK command."""
+    global _interrupt_pending
+    if not _interrupt_pending:
+        return
+    _interrupt_pending = False
+    client, loop = _sdk_socket()
+    if client is None:
+        return
+
+    async def drain() -> None:
+        kept = []
+        while True:
+            try:
+                item = client.result_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if not (isinstance(item, dict) and item.get("message") == _INTERRUPT_MARKER):
+                kept.append(item)
+        for item in kept:
+            client.result_queue.put_nowait(item)
+
+    try:
+        asyncio.run_coroutine_threadsafe(drain(), loop).result(timeout=2)
+    except Exception:
+        pass
+
+
+def request_stop(reason: str = "Session stopped") -> None:
+    """Abort the running session from the reader thread without touching the SDK.
+
+    Sets the stop flag (checked between steps) and wakes any SDK call that is
+    waiting for a device reply. The actual stop commands run afterwards on the
+    command thread so they never race the interrupted call.
+    """
+    global _stop_phase
+    _stop_phase = _session_phase
+    _stop.set()
+    if _in_flight is not None:
+        _interrupt_sdk_wait(reason)
 
 
 def _telemetry_loop() -> None:
@@ -283,9 +384,19 @@ def sdk_call(operation: str, *args: Any) -> Any:
     label = operation.replace("_", " ").title()
     # Periodic state refreshes are plumbing; keep them out of the main log.
     call_level = "debug" if operation in _QUIET_OPERATIONS else "sdk"
-    log(f"{label}…", call_level)
-    with contextlib.redirect_stdout(sys.stderr):
-        result = function(*args)
+    global _in_flight
+    _drain_interrupts()
+    _in_flight = operation
+    try:
+        # Publish _in_flight before reading _stop; request_stop() does the
+        # reverse, so a stop can never slip between the check and the call.
+        if _session_active.is_set() and _stop.is_set():
+            raise InterruptedError("Session stopped")
+        log(f"{label}…", call_level)
+        with contextlib.redirect_stdout(sys.stderr):
+            result = function(*args)
+    finally:
+        _in_flight = None
     log(f"{label}: {result}", call_level)
     return result
 
@@ -680,6 +791,8 @@ def _handshake() -> dict[str, Any] | None:
         except NotImplementedError as exc:
             log(str(exc), "warning")
     _connected.set()
+    # Sessions connect on their own; tell the UI so STOP/DISCONNECT stay usable.
+    emit({"event": "connected", "ip_address": str(_device.get("ip_address") or "")})
     if _tap is None:
         return {}
     status = _client_status()
@@ -783,16 +896,93 @@ def connect() -> bool | dict[str, Any]:
     )
 
 
+def _error_name(code: int) -> str:
+    try:
+        from dwarf_python_api.lib.websockets_utils import getErrorCodeValueName
+
+        name = str(getErrorCodeValueName(code) or "").strip()
+        if name and name != str(code):
+            return f"{name} ({code})"
+    except Exception:
+        pass
+    return f"code {code}"
+
+
+# Fire-and-forget V3 commands: (reply command id, telemetry state key, done-on-reply, timeout s)
+_V3_OPERATION_WAITS: dict[str, tuple[int, str | None, bool, float]] = {
+    "autofocus": (15004, None, True, 180.0),
+    "calibrate": (11000, "calibration_state", False, 600.0),
+    "polar": (11018, "eq_state", True, 600.0),
+}
+_NON_FATAL_REPLIES = {11000: {-11500}}  # plate solving retry during calibration
+
+
+def _await_operation(name: str, operation: str, since: float) -> None:
+    """Block until a fire-and-forget V3 operation finishes, fails or times out.
+
+    Dwarf 3 / Mini start calibration, autofocus and polar alignment without a
+    synchronous reply, so the session has to watch telemetry: the device sends
+    the reply for the start command when the operation ends, and calibration
+    also reports its state as a notification.
+    """
+    if _tap is None:
+        return
+    reply_cmd, state_key, done_on_reply, timeout = _V3_OPERATION_WAITS[operation]
+    busy_states = {"running", "solving", "stopping"}
+    seen_running = False
+    log(f"{name} started; waiting for the telescope to finish…")
+    while True:
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        code = _tap.response_after(reply_cmd, since)
+        if code is not None and code != 0 and code not in _NON_FATAL_REPLIES.get(reply_cmd, set()):
+            raise RuntimeError(f"{name} failed: {_error_name(code)}")
+        if code == 0 and done_on_reply:
+            return
+        state = _tap.snapshot().get(state_key) if state_key else None
+        if state in busy_states:
+            seen_running = True
+        elif seen_running and state in ("idle", "stopped"):
+            return
+        elapsed = time.monotonic() - since
+        if elapsed > timeout:
+            raise RuntimeError(f"{name} timed out after {int(timeout)} s")
+        if state_key and not seen_running and code is None and elapsed > 30:
+            raise RuntimeError(f"{name} did not start")
+        time.sleep(0.5)
+
+
 def run_session(session: dict[str, Any]) -> bool:
+    global _session_phase
     _stop.clear()
+    _session_active.set()
+    _session_phase = None
+    v3_model = _device.get("model") in ("Dwarf 3", "Dwarf Mini")
 
     def step(name: str, operation: str | None = None, *args: Any) -> None:
+        global _session_phase
         if _stop.is_set():
             raise InterruptedError("Session stopped")
         emit({"event": "progress", "session_id": session["id"], "step": name})
-        if operation and sdk_call(operation, *args) is False:
+        if not operation:
+            return
+        _session_phase = operation
+        started = time.monotonic()
+        if sdk_call(operation, *args) is False:
+            if _stop.is_set():
+                raise InterruptedError("Session stopped")
             raise RuntimeError(f"{name} failed")
+        if v3_model and operation in _V3_OPERATION_WAITS:
+            _await_operation(name, operation, started)
 
+    try:
+        return _run_session_steps(session, step)
+    finally:
+        _session_active.clear()
+        _session_phase = None
+
+
+def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     target = session["target"]
     camera = session["camera"]
     workflow = session["workflow"]
@@ -800,6 +990,8 @@ def run_session(session: dict[str, Any]) -> bool:
     model_id = {"Dwarf II": "2", "Dwarf 3": "3", "Dwarf Mini": "5"}.get(_device.get("model"), "3")
 
     if not connect():
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
         raise RuntimeError("Could not connect to telescope")
     step("Closing previous capture", "go_live")
     if target.get("kind") == "solar":
@@ -840,17 +1032,83 @@ def run_session(session: dict[str, Any]) -> bool:
     return True
 
 
+# Used for a manual STOP ALL when telemetry shows nothing running. stop_wide is
+# deliberately absent: the Dwarf 3 never answers it unless a wide capture is
+# active, which stalls the SDK for its full 150 s timeout.
+_FALLBACK_STOPS = ("stop_astro", "stop_goto", "stop_calibrate", "stop_autofocus", "stop_polar")
+_STOP_COMMAND_TIMEOUT = 6.0
+
+
+def _stop_targets() -> list[str]:
+    """Pick the stop commands that match what the telescope is actually doing."""
+    phase = _stop_phase
+    snapshot = _tap.snapshot() if _tap is not None else {}
+    capturing = bool(snapshot.get("capture_active"))
+    wide_capture = capturing and snapshot.get("capture_camera") == "wide"
+    busy = {"running", "solving", "stopping"}
+    operations: list[str] = []
+    if phase in ("astro", "wait_astro", "mosaic", "set_mosaic_count") or (capturing and not wide_capture):
+        operations.append("stop_astro")
+    if phase in ("wide_astro", "wait_wide") or wide_capture:
+        operations.append("stop_wide")
+    if phase in ("goto", "goto_solar") or snapshot.get("goto_state") in busy:
+        operations.append("stop_goto")
+    if phase == "calibrate" or snapshot.get("calibration_state") in busy:
+        operations.append("stop_calibrate")
+    if phase == "autofocus" or snapshot.get("autofocus_state") == "running":
+        operations.append("stop_autofocus")
+    if phase == "polar" or snapshot.get("eq_state") in busy:
+        operations.append("stop_polar")
+    if not operations and phase is None:
+        operations.extend(_FALLBACK_STOPS)
+    operations.append("stop_motors")
+    return operations
+
+
+def _sdk_call_bounded(operation: str, seconds: float) -> Any:
+    """Run one SDK command but wake it up if the device never answers."""
+    timer = threading.Timer(
+        seconds,
+        lambda: _in_flight == operation and _interrupt_sdk_wait(f"{operation} timed out"),
+    )
+    timer.daemon = True
+    timer.start()
+    try:
+        return sdk_call(operation)
+    finally:
+        timer.cancel()
+
+
 def stop_all() -> bool:
+    """Send the stop commands. Runs on the command thread after the interrupted step unwinds."""
+    global _stop_phase
     _stop.set()
-    for operation in ("stop_astro", "stop_wide", "stop_goto", "stop_calibrate", "stop_autofocus", "stop_motors"):
+    operations = _stop_targets()
+    _stop_phase = None
+    for operation in operations:
         try:
-            sdk_call(operation)
-        except Exception:
-            pass
+            _sdk_call_bounded(operation, _STOP_COMMAND_TIMEOUT)
+        except Exception as exc:
+            log(f"{operation.replace('_', ' ').title()} skipped: {exc}", "debug")
+    if _connected.is_set():
+        request_state_refresh()
     return True
 
 
 _REFRESH_AFTER = {"lights_on", "lights_off", "indicator_on", "indicator_off", "go_live", "photo_mode", "astro_mode", "shooting_mode", "set_ir", "set_binning"}
+_ASTRO_SHOOTING_MODE = 2
+
+
+def _ensure_astro_mode() -> Any:
+    """Enter astro mode unless the telescope already reports it.
+
+    The Dwarf 3 does not answer SWITCH SHOOTING MODE when the requested mode is
+    already active, which leaves the SDK waiting for its full 150 s timeout.
+    """
+    if _tap is not None and _tap.snapshot().get("shooting_mode") == _ASTRO_SHOOTING_MODE:
+        log("Already in astro mode", "debug")
+        return True
+    return sdk_call("astro_mode")
 
 
 def dispatch(message: dict[str, Any]) -> Any:
@@ -878,8 +1136,13 @@ def dispatch(message: dict[str, Any]) -> Any:
         _mark_disconnected()
         return sdk_call(command)
     if command in {"calibrate", "autofocus", "infinity", "polar"}:
-        if sdk_call("astro_mode") is False:
+        if _ensure_astro_mode() is False:
             return False
+    if command == "astro_mode":
+        result = _ensure_astro_mode()
+        if result is not False:
+            request_state_refresh()
+        return result
     if command == "infinity":
         result = sdk_call("autofocus", True)
     else:
@@ -908,24 +1171,27 @@ def execute(message: dict[str, Any]) -> None:
         if internal:
             log(f"Background {message.get('command')} failed: {exc}", "debug")
             return
-        traceback.print_exc(file=sys.stderr)
+        # Step failures and stops are expected outcomes; only dump real crashes.
+        if not isinstance(exc, (RuntimeError, InterruptedError, NotImplementedError, TimeoutError)):
+            traceback.print_exc(file=sys.stderr)
         emit({"event": "response", "id": request_id, "ok": False, "error": str(exc)})
 
 
-def enqueue_command(message: dict[str, Any]) -> None:
-    """Keep only the newest queued joystick vector before a move or stop."""
+def enqueue_command(message: dict[str, Any], priority: int = _PRIORITY_NORMAL) -> None:
+    """Queue a command; keep only the newest joystick vector before a move or stop."""
     command = message.get("command")
     superseded: list[dict[str, Any]] = []
     if command in ("joystick", "stop_motors"):
         with _commands.mutex:
             retained = []
-            for queued in _commands.queue:
-                if queued.get("command") == "joystick":
-                    superseded.append(queued)
+            for item in _commands.queue:
+                if item[2].get("command") == "joystick":
+                    superseded.append(item[2])
                 else:
-                    retained.append(queued)
+                    retained.append(item)
             _commands.queue.clear()
             _commands.queue.extend(retained)
+            heapq.heapify(_commands.queue)
     for queued in superseded:
         emit({
             "event": "response",
@@ -933,13 +1199,17 @@ def enqueue_command(message: dict[str, Any]) -> None:
             "ok": True,
             "result": "superseded",
         })
-    _commands.put(message)
+    _put_command(message, priority)
+
+
+_URGENT_COMMANDS = {"stop_all", "disconnect", "reboot", "power_down"}
 
 
 def main() -> None:
     def command_loop() -> None:
         while True:
-            execute(_commands.get())
+            _priority, _sequence, message = _commands.get()
+            execute(message)
 
     threading.Thread(target=command_loop, daemon=True).start()
     for raw in sys.stdin:
@@ -948,10 +1218,14 @@ def main() -> None:
         except json.JSONDecodeError:
             log(f"Invalid worker message: {raw!r}", "error")
             continue
-        # Preserve SDK command order. Stop is the sole intentional concurrent
-        # operation so it can interrupt a blocking capture wait.
-        if message.get("command") == "stop_all":
-            threading.Thread(target=execute, args=(message,), daemon=True).start()
+        command = message.get("command")
+        if command in _URGENT_COMMANDS:
+            # The SDK is not thread-safe, so stop/disconnect never run alongside
+            # another SDK call. Instead they wake the blocked call (which then
+            # fails fast) and jump ahead of everything else in the queue.
+            if command == "stop_all" or _session_active.is_set() or _in_flight is not None:
+                request_stop("Session stopped" if command == "stop_all" else "Telescope disconnected")
+            enqueue_command(message, _PRIORITY_URGENT)
         else:
             enqueue_command(message)
 

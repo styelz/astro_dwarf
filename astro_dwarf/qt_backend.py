@@ -198,6 +198,10 @@ class TelescopeProcess(QObject):
                     self.telemetryReceived.emit(data)
             elif event == "progress":
                 self.progressReceived.emit(message["session_id"], message["step"])
+            elif event == "connected":
+                if not self.connected:
+                    self.connected = True
+                    self.availabilityChanged.emit()
             elif event == "response":
                 try:
                     request_id = int(message.get("id") or 0)
@@ -478,6 +482,7 @@ class AppBackend(QObject):
         self._show_debug_logs = False
         self._workers: dict[str, TelescopeProcess] = {}
         self._active_sessions: dict[str, str] = {}
+        self._stop_requested: set[str] = set()
         self._scheduler_enabled = False
         self._clock_text = datetime.now().strftime("%H:%M:%S")
         self._connecting_ids: set[str] = set()
@@ -1148,12 +1153,36 @@ class AppBackend(QObject):
             self._toast("Connection failed", "error", str(result))
         self._notify_devices()
 
+    def _abort_active_session(self, device_id: str, reason: str) -> bool:
+        """Flag the running session as user-stopped and disarm the scheduler.
+
+        Returns True when a session was running. The worker aborts the session
+        itself once it receives the stop/disconnect command.
+        """
+        session_id = self._active_sessions.get(device_id)
+        if not session_id:
+            return False
+        self._stop_requested.add(session_id)
+        session = self.store.sessions.get(session_id)
+        name = session.target.name if session else "session"
+        self.add_log("warning", f"Stopping session · {name} ({reason})", device_id)
+        if self._scheduler_enabled:
+            self._scheduler_enabled = False
+            self.schedulerEnabledChanged.emit()
+            self.add_log("warning", f"Scheduler disarmed by {reason}; re-arm it to continue the queue")
+            self._toast("Scheduler disarmed", "warning", "Re-arm it from Control to resume the session queue")
+        return True
+
     @Slot(str)
     def disconnectDevice(self, device_id: str) -> None:
         worker = self._workers.get(device_id)
         if not worker or device_id in self._disconnecting_ids:
             return
         self._disconnecting_ids.add(device_id)
+        if self._abort_active_session(device_id, "Disconnect"):
+            # Stop what the telescope is doing before dropping the link. Both
+            # commands jump the worker queue ahead of the interrupted session.
+            worker.send("stop_all")
         self._notify_devices()
 
         def done(ok: bool, result: Any) -> None:
@@ -1235,8 +1264,9 @@ class AppBackend(QObject):
     @Slot(str)
     def stopDevice(self, device_id: str) -> None:
         worker = self._workers.get(device_id)
-        if not worker or not worker.connected:
+        if not worker or not (worker.connected or worker.busy):
             return
+        self._abort_active_session(device_id, "STOP ALL")
         self._begin_activity(device_id, "stop_all")
 
         def done(ok: bool, result: Any) -> None:
@@ -1640,20 +1670,35 @@ class AppBackend(QObject):
     @Slot(str)
     def runNow(self, session_id: str) -> None:
         session = self.store.sessions.get(session_id)
-        if session and session.status == SessionStatus.RUNNING:
+        if not session:
+            return
+        if session.status == SessionStatus.RUNNING:
             self._toast("This session is already running", "warning")
             return
-        if session:
-            self._save_session(replace(
-                session,
-                scheduled_start=datetime.now().isoformat(timespec="minutes"),
-                status=SessionStatus.PLANNED,
-                current_step="Waiting",
-                actual_started_at=None,
-                actual_ended_at=None,
-                outcome="",
-            ))
-            QTimer.singleShot(0, self._scheduler_tick)
+        device = self._device_by_id(session.device_id)
+        worker = self._workers.get(session.device_id)
+        if not device or not worker:
+            return
+        if not device.location_configured:
+            self._toast("Choose an observing location before running a session", "warning")
+            return
+        self._save_session(replace(
+            session,
+            scheduled_start=datetime.now().isoformat(timespec="minutes"),
+            status=SessionStatus.PLANNED,
+            current_step="Waiting",
+            actual_started_at=None,
+            actual_ended_at=None,
+            outcome="",
+        ))
+        if session.device_id in self._active_sessions or worker.busy:
+            self._toast("Another session is running on this telescope", "warning", "It will start once that session ends if the scheduler is armed")
+            return
+        if session.device_id in self._disconnecting_ids:
+            self._toast("Wait for the telescope to finish disconnecting", "warning")
+            return
+        # RUN is an explicit request: start now even when the scheduler is disarmed.
+        self._start_session(worker, self.store.sessions.get(session.id))
 
     @Slot(str, str)
     def moveSessionDate(self, session_id: str, day: str) -> None:
@@ -1871,7 +1916,11 @@ class AppBackend(QObject):
         for device in self._devices:
             if device.id in self._active_sessions or not device.location_configured:
                 continue
+            if device.id in self._disconnecting_ids or device.id in self._connecting_ids:
+                continue
             worker = self._workers[device.id]
+            if worker.busy:
+                continue
             sessions = self.store.upcoming(device.id)
             if not sessions:
                 continue
@@ -1912,13 +1961,24 @@ class AppBackend(QObject):
         )
         if active_device:
             self._active_sessions.pop(active_device, None)
+        stopped = session_id in self._stop_requested
+        self._stop_requested.discard(session_id)
         session = self.store.sessions.get(session_id)
         if not session:
             self.sessionsChanged.emit()
             return
+        if session.status != SessionStatus.RUNNING:
+            # Already finalised (for example the worker died and reported it first).
+            self.sessionsChanged.emit()
+            return
         ended = datetime.now(timezone.utc)
         started = datetime.fromisoformat(session.actual_started_at) if session.actual_started_at else ended
-        outcome = "Completed" if ok else str(result)
+        if ok:
+            outcome = "Completed"
+        elif stopped:
+            outcome = "Stopped by user"
+        else:
+            outcome = str(result)
         final = self.store.transition(
             session.id,
             SessionStatus.DONE if ok else SessionStatus.ERROR,
@@ -1944,6 +2004,9 @@ class AppBackend(QObject):
         if ok:
             self.add_log("success", f"Session complete · {final.target.name} in {elapsed}", final.device_id)
             self._toast(f"Session complete · {final.target.name}", "success", f"Ran {elapsed}")
+        elif stopped:
+            self.add_log("warning", f"Session stopped · {final.target.name} after {elapsed}", final.device_id)
+            self._toast(f"Session stopped · {final.target.name}", "warning", f"Ran {elapsed}")
         else:
             self.add_log("error", f"Session failed · {final.target.name}: {outcome}", final.device_id)
             self._toast(f"Session failed · {final.target.name}", "error", outcome)
