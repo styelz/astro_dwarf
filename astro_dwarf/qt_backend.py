@@ -5,7 +5,7 @@ import logging
 import threading
 import time
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -1392,9 +1392,32 @@ class AppBackend(QObject):
     @Slot(str, str)
     def moveSessionDate(self, session_id: str, day: str) -> None:
         session = self.store.sessions.get(session_id)
-        if session:
-            old = datetime.fromisoformat(session.scheduled_start)
-            self._save_session(replace(session, scheduled_start=f"{day}T{old.strftime('%H:%M')}"))
+        if not session:
+            return
+        if session.status == SessionStatus.RUNNING:
+            self.toast.emit("Stop the running session before moving it", "warning")
+            return
+        try:
+            target_day = date.fromisoformat(day)
+        except ValueError:
+            return
+        old_night = date.fromisoformat(observing_date(session.scheduled_start))
+        delta = target_day - old_night
+        if delta.days == 0:
+            return
+        members = [session]
+        group_id = session.mosaic.group_id
+        if group_id:
+            members = [
+                item for item in self.store.sessions.all()
+                if item.mosaic.group_id == group_id
+                and item.device_id == session.device_id
+                and item.status != SessionStatus.RUNNING
+            ]
+        for item in members:
+            start = datetime.fromisoformat(item.scheduled_start) + timedelta(days=delta.days)
+            self.store.sessions.save(replace(item, scheduled_start=start.isoformat(timespec="minutes")))
+        self.sessionsChanged.emit()
 
     @Slot(str)
     def scheduleTemplate(self, template_id: str) -> None:

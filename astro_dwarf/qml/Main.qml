@@ -1849,8 +1849,64 @@ ApplicationWindow {
                 id: calendarPage
                 property date shownMonth: new Date()
                 property date selectedDate: new Date()
+                property bool sessionDragActive: false
+                property point sessionDragPos: Qt.point(0, 0)
+                property var sessionDragData: ({})
                 function dateKey(value) {
                     return value.getFullYear() + "-" + String(value.getMonth() + 1).padStart(2, "0") + "-" + String(value.getDate()).padStart(2, "0")
+                }
+                function beginSessionDrag(item, pos) {
+                    sessionDragData = item
+                    sessionDragPos = pos
+                    sessionDragActive = true
+                }
+                function updateSessionDrag(pos) {
+                    sessionDragPos = pos
+                }
+                function endSessionDrag() {
+                    sessionDragActive = false
+                    sessionDragData = ({})
+                }
+                component SessionDragArea: MouseArea {
+                    required property var dragItem
+                    acceptedButtons: Qt.LeftButton
+                    hoverEnabled: true
+                    preventStealing: true
+                    cursorShape: enabled ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
+                    enabled: String((dragItem && dragItem.status) || "") !== "running"
+                    property bool dragging: false
+                    property real pressX: 0
+                    property real pressY: 0
+                    onPressed: mouse => {
+                        pressX = mouse.x
+                        pressY = mouse.y
+                        dragging = false
+                    }
+                    onPositionChanged: mouse => {
+                        if (!pressed)
+                            return
+                        const dx = mouse.x - pressX
+                        const dy = mouse.y - pressY
+                        if (!dragging && (dx * dx + dy * dy) < 36)
+                            return
+                        const pos = mapToItem(calendarPage, mouse.x, mouse.y)
+                        if (!dragging) {
+                            dragging = true
+                            sessionDragProxy.startDrag(dragItem, pos)
+                        } else {
+                            sessionDragProxy.moveDrag(pos)
+                        }
+                    }
+                    onReleased: {
+                        if (dragging)
+                            sessionDragProxy.finishDrag()
+                        dragging = false
+                    }
+                    onCanceled: {
+                        if (dragging)
+                            sessionDragProxy.cancelDrag()
+                        dragging = false
+                    }
                 }
                 function firstCellDate() {
                     const first = new Date(shownMonth.getFullYear(), shownMonth.getMonth(), 1)
@@ -1907,6 +1963,18 @@ ApplicationWindow {
                                     Layout.fillHeight: true
                                     color: key === calendarPage.dateKey(calendarPage.selectedDate) ? "#C0123C52" : "#99070D16"
                                     border.color: dropArea.containsDrag ? root.accent : root.outline
+                                    DropArea {
+                                        id: dropArea
+                                        anchors.fill: parent
+                                        keys: ["session"]
+                                        onDropped: drop => {
+                                            const sid = String((drop.source && drop.source.sessionId) || "")
+                                            if (!sid)
+                                                return
+                                            backend.moveSessionDate(sid, dayCell.key)
+                                            calendarPage.selectedDate = dayCell.cellDate
+                                        }
+                                    }
                                     Column {
                                         anchors.fill: parent
                                         anchors.margins: 6
@@ -1922,12 +1990,13 @@ ApplicationWindow {
                                                 height: 22
                                                 color: root.statusFill(modelData.status)
                                                 border.color: root.statusColor(modelData.status)
+                                                opacity: calendarPage.sessionDragActive && calendarPage.sessionDragData.id === sessionId ? 0.35 : 1
                                                 Text { anchors.fill: parent; anchors.margins: 4; text: calendarPage.chipText(modelData); color: root.textPrimary; font.pixelSize: 9; elide: Text.ElideRight }
-                                                Drag.active: dragHandler.active
-                                                Drag.source: sessionChip
-                                                Drag.hotSpot.x: width / 2
-                                                Drag.hotSpot.y: height / 2
-                                                DragHandler { id: dragHandler }
+                                                SessionDragArea {
+                                                    anchors.fill: parent
+                                                    dragItem: sessionChip.modelData
+                                                    onPressed: calendarPage.selectedDate = dayCell.cellDate
+                                                }
                                                 TapHandler { acceptedButtons: Qt.RightButton; onTapped: sessionMenu.open() }
                                                 SessionContextMenu {
                                                     id: sessionMenu
@@ -1963,11 +2032,6 @@ ApplicationWindow {
                                             }
                                         }
                                     }
-                                    DropArea {
-                                        id: dropArea
-                                        anchors.fill: parent
-                                        onDropped: drop => backend.moveSessionDate(drop.source.sessionId, dayCell.key)
-                                    }
                                 }
                             }
                         }
@@ -1996,10 +2060,12 @@ ApplicationWindow {
                                 delegate: Rectangle {
                                     id: daySessionRow
                                     required property var modelData
+                                    property string sessionId: modelData.id
                                     width: ListView.view.width
                                     height: 64
                                     color: "#122033"
                                     border.color: root.statusColor(modelData.status)
+                                    opacity: calendarPage.sessionDragActive && calendarPage.sessionDragData.id === sessionId ? 0.35 : 1
                                     ColumnLayout {
                                         anchors.fill: parent
                                         anchors.margins: 8
@@ -2011,6 +2077,13 @@ ApplicationWindow {
                                             HudButton { text: "RESET"; implicitHeight: 24; visible: root.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
                                             HudButton { text: "RUN"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
                                         }
+                                    }
+                                    SessionDragArea {
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        height: 36
+                                        dragItem: daySessionRow.modelData
                                     }
                                     TapHandler {
                                         acceptedButtons: Qt.RightButton
@@ -2028,6 +2101,59 @@ ApplicationWindow {
                                 text: "No sessions this observing night"
                             }
                         }
+                    }
+                }
+                Item {
+                    id: sessionDragProxy
+                    width: 1
+                    height: 1
+                    visible: false
+                    property string sessionId: ""
+                    Drag.keys: ["session"]
+                    Drag.hotSpot.x: 0
+                    Drag.hotSpot.y: 0
+                    function startDrag(item, pos) {
+                        sessionId = item.id
+                        x = pos.x
+                        y = pos.y
+                        Drag.active = true
+                        calendarPage.beginSessionDrag(item, pos)
+                    }
+                    function moveDrag(pos) {
+                        x = pos.x
+                        y = pos.y
+                        calendarPage.updateSessionDrag(pos)
+                    }
+                    function finishDrag() {
+                        if (Drag.active)
+                            Drag.drop()
+                        calendarPage.endSessionDrag()
+                        sessionId = ""
+                    }
+                    function cancelDrag() {
+                        if (Drag.active)
+                            Drag.cancel()
+                        calendarPage.endSessionDrag()
+                        sessionId = ""
+                    }
+                }
+                Rectangle {
+                    id: sessionDragGhost
+                    visible: calendarPage.sessionDragActive
+                    z: 100
+                    width: 168
+                    height: 22
+                    x: calendarPage.sessionDragPos.x - width / 2
+                    y: calendarPage.sessionDragPos.y - height / 2
+                    color: root.statusFill(calendarPage.sessionDragData.status || "")
+                    border.color: root.statusColor(calendarPage.sessionDragData.status || "")
+                    Text {
+                        anchors.fill: parent
+                        anchors.margins: 4
+                        text: calendarPage.sessionDragData && calendarPage.sessionDragData.id ? calendarPage.chipText(calendarPage.sessionDragData) : ""
+                        color: root.textPrimary
+                        font.pixelSize: 9
+                        elide: Text.ElideRight
                     }
                 }
             }
