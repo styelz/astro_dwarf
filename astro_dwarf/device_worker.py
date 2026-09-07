@@ -374,7 +374,12 @@ def sdk_call(operation: str, *args: Any) -> Any:
     function = getattr(_api, function_name, None) if function_name else None
     if function is None:
         raise NotImplementedError(f"Installed SDK does not provide '{operation}'")
-    label = operation.replace("_", " ").title()
+    return _invoke_sdk(operation, function, *args)
+
+
+def _invoke_sdk(operation: str, function: Any, *args: Any, label: str | None = None) -> Any:
+    """Run one blocking SDK call with the shared stop/interrupt bookkeeping."""
+    label = label or operation.replace("_", " ").title()
     # Periodic state refreshes are plumbing; keep them out of the main log.
     call_level = "debug" if operation in _QUIET_OPERATIONS else "sdk"
     global _in_flight
@@ -392,6 +397,18 @@ def sdk_call(operation: str, *args: Any) -> Any:
         _in_flight = None
     log(f"{label}: {result}", call_level)
     return result
+
+
+def _send_request(operation: str, message: Any, command: int, module_id: int, label: str) -> Any:
+    """Send a protobuf request through the SDK socket and return the raw reply code.
+
+    Unlike the ``perform_*`` wrappers (which collapse every failure to ``False``),
+    ``connect_socket`` hands back the device's error code, e.g. -11503 when no
+    matching dark frames exist.
+    """
+    if _api is None:
+        raise RuntimeError("Telescope worker is not configured")
+    return _invoke_sdk(operation, _api.connect_socket, message, command, 0, module_id, label=label)
 
 
 def serializable_state(value: Any) -> Any:
@@ -972,22 +989,185 @@ def _await_operation(name: str, operation: str, since: float) -> None:
 
 
 def _wait_for_capture_slot() -> None:
-    """Do not start stacking while GOTO or calibration still owns the astro engine."""
+    """Do not start stacking while GOTO or calibration still owns the astro engine.
+
+    Tracking taking over means the GOTO has finished, even if a stale GOTO
+    state lingers in telemetry. When the wait runs out we still try to
+    capture: the firmware is the authority and ``_start_capture`` retries on
+    a real busy reply.
+    """
     if _tap is None:
         return
-    deadline = time.monotonic() + 120.0
+    deadline = time.monotonic() + 60.0
     logged = False
     while time.monotonic() < deadline:
         if _stop.is_set():
             raise InterruptedError("Session stopped")
         snapshot = _tap.snapshot()
+        if snapshot.get("tracking_state") == "running":
+            return
         if snapshot.get("goto_state") not in _BUSY_ASTRO and snapshot.get("calibration_state") not in _BUSY_ASTRO:
             return
         if not logged:
             log("Waiting for the telescope to finish slewing before capture…")
             logged = True
         time.sleep(0.5)
-    raise RuntimeError("Telescope still busy; capture not started")
+    log("Telemetry still reports the telescope busy; asking it to start capture anyway", "warning")
+
+
+# Capture starts: worker operation -> request command id (all on the astro module)
+_MODULE_ASTRO = 3
+_CAPTURE_STARTS: dict[str, int] = {"astro": 11005, "wide_astro": 11016, "mosaic": 11031}
+CMD_ASTRO_CONTINUE_SHOOTING = 11050
+CODE_ASTRO_FUNCTION_BUSY = -11501
+CODE_ASTRO_DARK_NOT_FOUND = -11503
+CODE_ASTRO_GOTO_RUNNING = -11508
+CODE_ASTRO_DARK_TEMP_MISMATCH = -11530
+# The astro engine is still winding down GOTO/calibration; try again shortly.
+_CAPTURE_BUSY_CODES = {CODE_ASTRO_FUNCTION_BUSY, CODE_ASTRO_GOTO_RUNNING}
+# Recoverable warnings the official app lets the user bypass ("continue shooting").
+_CAPTURE_DARK_WARNINGS = {
+    CODE_ASTRO_DARK_NOT_FOUND: "No matching dark frames for this exposure/gain/binning",
+    CODE_ASTRO_DARK_TEMP_MISMATCH: "Matching dark frames were taken at a different sensor temperature",
+}
+_CAPTURE_BUSY_TIMEOUT_S = 45.0
+_CAPTURE_BUSY_RETRY_S = 5.0
+_CONTINUE_SHOOTING_TIMEOUT_S = 30.0
+
+
+def _ir_index(name: Any) -> int:
+    """Map the session filter name to the ReqCaptureRawLiveStacking ir_index (VIS 0, Astro 1, Duo-Band 2)."""
+    text = str(name or "").strip().lower()
+    if text.startswith("duo"):
+        return 2
+    if text.startswith("astro"):
+        return 1
+    if text.isdigit():
+        return int(text)
+    return 0
+
+
+def _capture_request(operation: str, args: list[Any], force_start: bool) -> Any:
+    from dwarf_python_api.proto import astro_pb2
+
+    if operation == "astro":
+        message = astro_pb2.ReqCaptureRawLiveStacking()
+        message.ir_index = int(args[0]) if args else 1
+        message.force_start = force_start
+        return message
+    if operation == "mosaic":
+        message = astro_pb2.ReqStartMosaic()
+        message.horizontal_scale = int(args[0])
+        message.vertical_scale = int(args[1])
+        message.rotation = int(round(float(args[2]))) if len(args) > 2 else 0
+        message.ir_index = int(args[3]) if len(args) > 3 else 1
+        message.force_start = force_start
+        return message
+    wide_factory = getattr(astro_pb2, "ReqCaptureWideRawLiveStacking", None)
+    if wide_factory is not None:
+        message = wide_factory()
+        if force_start and hasattr(message, "force_start"):
+            message.force_start = True
+        return message
+    # Older SDK protos only ship the tele request; the wide start accepts an empty body.
+    return astro_pb2.ReqCaptureRawLiveStacking()
+
+
+def _capture_running(snapshot: dict[str, Any]) -> bool:
+    return bool(snapshot.get("capture_active")) or snapshot.get("capture_state") == "running"
+
+
+def _continue_shooting(name: str) -> bool:
+    """Send CMD_ASTRO_CONTINUE_SHOOTING after a recoverable capture warning.
+
+    This is what the official app does when the user taps through the
+    missing-darks warning. The SDK has no reply handler for it, so send it
+    fire-and-forget and watch the reply code / capture state via telemetry.
+    """
+    if _tap is None:
+        return False
+    try:
+        from dwarf_python_api.proto import astro_pb2
+
+        factory = getattr(astro_pb2, "ReqContinueShooting", None)
+    except Exception:
+        factory = None
+    if factory is None:
+        log("Installed SDK has no ReqContinueShooting message", "debug")
+        return False
+    since = time.monotonic()
+    # A leftover "running" flag from an earlier capture must not count as success.
+    stale_running = _capture_running(_tap.snapshot())
+    log(f"{name}: continuing without matching dark frames (CONTINUE SHOOTING)", "warning")
+    try:
+        if not send_without_response(factory(), CMD_ASTRO_CONTINUE_SHOOTING, _MODULE_ASTRO):
+            return False
+    except Exception as exc:
+        log(f"Continue shooting could not be sent: {exc}", "debug")
+        return False
+    while time.monotonic() - since < _CONTINUE_SHOOTING_TIMEOUT_S:
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        code = _tap.response_after(CMD_ASTRO_CONTINUE_SHOOTING, since)
+        if code is not None and code != 0:
+            log(f"Continue shooting rejected: {_error_name(code)}", "warning")
+            return False
+        if _capture_running(_tap.snapshot()) and (code == 0 or not stale_running):
+            log(f"{name}: capture running without dark-frame calibration", "notice")
+            return True
+        time.sleep(0.5)
+    log("Continue shooting sent, but the telescope did not start capturing", "warning")
+    return False
+
+
+def _start_capture(name: str, operation: str, args: list[Any]) -> None:
+    """Start tele/wide/mosaic stacking, surfacing the real firmware reply.
+
+    - Engine busy (GOTO/calibration still winding down): wait and retry.
+    - Missing or mismatched darks: warn, then CONTINUE SHOOTING like the
+      official app; fall back to a forced start if that is refused.
+    - Anything else: fail with the decoded error name and code.
+    """
+    command = _CAPTURE_STARTS[operation]
+    label = name
+    deadline = time.monotonic() + _CAPTURE_BUSY_TIMEOUT_S
+    force_start = False
+    while True:
+        since = time.monotonic()
+        message = _capture_request(operation, args, force_start)
+        result = _send_request(operation, message, command, _MODULE_ASTRO, label)
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        # connect_socket returns the reply code (0 = accepted) or False; never
+        # compare with == 0 directly because False == 0 in Python.
+        code = result if isinstance(result, int) and not isinstance(result, bool) else None
+        if result is True or code == 0:
+            return
+        if code is None and _tap is not None:
+            code = _tap.response_after(command, since)
+            if code == 0:
+                # Accepted, but the SDK gave up before the running notification.
+                if _capture_running(_tap.snapshot()):
+                    return
+                raise RuntimeError(f"{name} failed: the telescope accepted the request but never started capturing")
+        if code is None:
+            raise RuntimeError(f"{name} failed: no reply from the telescope")
+        if code in _CAPTURE_BUSY_CODES:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"{name} failed: {_error_name(code)}")
+            log(f"{name}: astro engine still busy ({_error_name(code)}); retrying in {int(_CAPTURE_BUSY_RETRY_S)} s", "warning")
+            if _stop.wait(_CAPTURE_BUSY_RETRY_S):
+                raise InterruptedError("Session stopped")
+            continue
+        if code in _CAPTURE_DARK_WARNINGS and not force_start:
+            log(f"{name}: {_CAPTURE_DARK_WARNINGS[code]} ({_error_name(code)})", "warning")
+            if _continue_shooting(name):
+                return
+            log(f"{name}: retrying with a forced start", "warning")
+            force_start = True
+            label = f"{name} (forced)"
+            continue
+        raise RuntimeError(f"{name} failed: {_error_name(code)}")
 
 
 def run_session(session: dict[str, Any]) -> bool:
@@ -1007,6 +1187,9 @@ def run_session(session: dict[str, Any]) -> bool:
             return
         _session_phase = operation
         started = time.monotonic()
+        if operation in _CAPTURE_STARTS:
+            _start_capture(name, operation, list(args))
+            return
         if sdk_call(operation, *args) is False:
             if _stop.is_set():
                 raise InterruptedError("Session stopped")
@@ -1070,15 +1253,16 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     step("Set count", "set_count", camera["frame_count"], camera["camera"])
     step("Set binning", "set_binning", camera["binning"])
     _wait_for_capture_slot()
+    ir_index = _ir_index(camera.get("ir_filter"))
     if max(1, mosaic["rows"] * mosaic["columns"]) > 1:
         step("Set mosaic count", "set_mosaic_count", camera["frame_count"])
-        step("Start mosaic", "mosaic", mosaic["horizontal_scale"], mosaic["vertical_scale"], mosaic["rotation_degrees"])
+        step("Start mosaic", "mosaic", mosaic["horizontal_scale"], mosaic["vertical_scale"], mosaic["rotation_degrees"], ir_index)
         step("Waiting for mosaic", "wait_astro")
     elif camera["camera"] == "wide":
         step("Start wide capture", "wide_astro")
         step("Waiting for wide capture", "wait_wide")
     else:
-        step("Start capture", "astro")
+        step("Start capture", "astro", ir_index)
         step("Waiting for capture", "wait_astro")
     return True
 

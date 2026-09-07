@@ -55,13 +55,23 @@ CMD_ASTRO_START_GOTO_DSO = 11002
 CMD_ASTRO_START_GOTO_SOLAR_SYSTEM = 11003
 CMD_ASTRO_START_EQ_SOLVING = 11018
 CMD_FOCUS_START_ASTRO_AUTO_FOCUS = 15004
-# Long-running commands whose reply only arrives once the operation ends.
+CMD_ASTRO_START_CAPTURE_RAW_LIVE_STACKING = 11005
+CMD_ASTRO_START_WIDE_CAPTURE_LIVE_STACKING = 11016
+CMD_ASTRO_START_TELE_MOSAIC = 11031
+CMD_ASTRO_CONTINUE_SHOOTING = 11050
+# Commands whose reply code the worker needs: long-running operations whose
+# reply only arrives once the operation ends, and capture starts whose reply
+# carries firmware warnings (missing darks, engine busy) the SDK only logs.
 _TRACKED_RESPONSES = {
     CMD_ASTRO_START_CALIBRATION,
     CMD_ASTRO_START_GOTO_DSO,
     CMD_ASTRO_START_GOTO_SOLAR_SYSTEM,
     CMD_ASTRO_START_EQ_SOLVING,
     CMD_FOCUS_START_ASTRO_AUTO_FOCUS,
+    CMD_ASTRO_START_CAPTURE_RAW_LIVE_STACKING,
+    CMD_ASTRO_START_WIDE_CAPTURE_LIVE_STACKING,
+    CMD_ASTRO_START_TELE_MOSAIC,
+    CMD_ASTRO_CONTINUE_SHOOTING,
 }
 
 OPERATION_STATES = {0: "idle", 1: "running", 2: "stopping", 3: "stopped"}
@@ -405,9 +415,15 @@ class TelemetryTap:
         if cmd == CMD_NOTIFY_STATE_ASTRO_GOTO:
             return self._decode_named_state("AstroGotoState", data, "goto_state", "goto_target", ASTRO_STATES)
         if cmd == CMD_NOTIFY_STATE_ASTRO_TRACKING:
-            return self._decode_named_state(
+            changes = self._decode_named_state(
                 "AstroTrackingState", data, "tracking_state", "tracking_target", OPERATION_STATES
             )
+            if changes.get("tracking_state") == "running":
+                # The motion motor runs one astro function at a time: tracking
+                # taking over means the GOTO slew/solve has finished, even when
+                # the firmware never sent a final GOTO idle/stopped notification.
+                changes["goto_state"] = "idle"
+            return changes
         if cmd == CMD_NOTIFY_STATE_ASTRO_CALIBRATION:
             message = self._parse("AstroCalibrationState", data)
             return {
@@ -597,6 +613,9 @@ class TelemetryTap:
             elif which == "astro_tracking_state":
                 changes["tracking_state"] = OPERATION_STATES.get(int(exclusive.astro_tracking_state.state), "idle")
                 changes["tracking_target"] = str(exclusive.astro_tracking_state.target_name or "")
+                # Exclusive state: tracking owns the motors, so no GOTO or calibration is running.
+                changes["goto_state"] = "idle"
+                changes["calibration_state"] = "idle"
             elif which == "eq_state":
                 changes["eq_state"] = OPERATION_STATES.get(int(exclusive.eq_state.state), "idle")
             elif which is None:
