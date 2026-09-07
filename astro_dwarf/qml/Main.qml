@@ -137,7 +137,7 @@ ApplicationWindow {
     }
 
     function allLogText() {
-        return (backend.logs || []).map(item => root.logLine(item)).join("\n")
+        return backend.allLogText()
     }
 
     function asset(name) { return Qt.resolvedUrl("assets/" + name) }
@@ -1657,7 +1657,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         radius: width / 2
                                         color: "#B30A1524"
-                                        border.color: root.border
+                                        border.color: root.outline
                                         border.width: 2
                                     }
                                     Rectangle {
@@ -1786,7 +1786,6 @@ ApplicationWindow {
                             SplitView.minimumHeight: 80
                             headerExtra: HudButton {
                                 text: backend.showDebugLogs ? "DEBUG ON" : "DEBUG"
-                                busyText: "UPDATING…"
                                 implicitHeight: 22
                                 implicitWidth: 78
                                 font.pixelSize: 10
@@ -1794,44 +1793,50 @@ ApplicationWindow {
                                 foregroundColor: backend.showDebugLogs ? root.success : root.textSecondary
                                 onClicked: backend.setShowDebugLogs(!backend.showDebugLogs)
                             }
-                                ListView {
-                                    id: logList
-                                    Layout.fillWidth: true
-                                    Layout.fillHeight: true
-                                    Layout.preferredHeight: 0
-                                    clip: true
-                                    spacing: 2
-                                    boundsBehavior: Flickable.StopAtBounds
-                                    ScrollBar.vertical: HiddenBar {}
-                                    ScrollBar.horizontal: HiddenBar {}
-                                    model: backend.logs
+                            ListView {
+                                id: logList
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                Layout.preferredHeight: 0
+                                clip: true
+                                spacing: 2
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: HiddenBar {}
+                                ScrollBar.horizontal: HiddenBar {}
+                                model: backend.logModel
                                 onCountChanged: positionViewAtEnd()
                                 delegate: Text {
-                                    id: logEntry
-                                    required property var modelData
+                                    required property string time
+                                    required property string level
+                                    required property string device
+                                    required property string message
                                     width: ListView.view.width
-                                    text: root.logLine(modelData)
-                                    color: modelData.level === "ERROR" ? root.danger : modelData.level === "SUCCESS" ? root.success : modelData.level === "WARNING" ? root.warning : modelData.level === "SDK" ? root.textSecondary : "#B7D4E2"
+                                    text: time + "  [" + device + "]  " + message
+                                    color: level === "ERROR" ? root.danger : level === "SUCCESS" ? root.success : level === "WARNING" ? root.warning : level === "SDK" ? root.textSecondary : "#B7D4E2"
                                     font.family: "Cascadia Mono"
                                     font.pixelSize: 10
                                     wrapMode: Text.Wrap
                                     TapHandler {
                                         acceptedButtons: Qt.RightButton
-                                        onTapped: logMenu.popup()
+                                        onTapped: {
+                                            logMenu.lineText = text
+                                            logMenu.popup()
+                                        }
                                     }
-                                    HudMenu {
-                                        id: logMenu
-                                        HudMenuItem {
-                                            text: "Copy line"
-                                            glyph: "\uE8C8"
-                                            onTriggered: backend.copyText(root.logLine(logEntry.modelData))
-                                        }
-                                        HudMenuItem {
-                                            text: "Copy all"
-                                            glyph: "\uE8C8"
-                                            enabled: backend.logs.length > 0
-                                            onTriggered: backend.copyText(root.allLogText())
-                                        }
+                                }
+                                HudMenu {
+                                    id: logMenu
+                                    property string lineText: ""
+                                    HudMenuItem {
+                                        text: "Copy line"
+                                        glyph: "\uE8C8"
+                                        onTriggered: backend.copyText(logMenu.lineText)
+                                    }
+                                    HudMenuItem {
+                                        text: "Copy all"
+                                        glyph: "\uE8C8"
+                                        enabled: logList.count > 0
+                                        onTriggered: backend.copyText(root.allLogText())
                                     }
                                 }
                             }

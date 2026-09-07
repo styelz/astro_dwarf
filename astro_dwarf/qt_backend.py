@@ -13,6 +13,8 @@ from uuid import uuid4
 
 from PySide6.QtCore import (
     Property,
+    QAbstractListModel,
+    QModelIndex,
     QProcess,
     QProcessEnvironment,
     QObject,
@@ -236,6 +238,82 @@ _ACTIVITY_STOP = {
 }
 _ACTIVITY_CLEAR = {"stop_all", "reboot", "power_down", "go_live"}
 _ACTIVITY_TRANSIENT = {"calibrate", "autofocus"}
+_LOG_LIMIT = 500
+
+
+class LogListModel(QAbstractListModel):
+    TimeRole = Qt.ItemDataRole.UserRole + 1
+    LevelRole = Qt.ItemDataRole.UserRole + 2
+    DeviceRole = Qt.ItemDataRole.UserRole + 3
+    MessageRole = Qt.ItemDataRole.UserRole + 4
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._all: list[dict[str, str]] = []
+        self._visible: list[dict[str, str]] = []
+        self._show_debug = False
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        if parent.isValid():
+            return 0
+        return len(self._visible)
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid() or not (0 <= index.row() < len(self._visible)):
+            return None
+        entry = self._visible[index.row()]
+        if role == self.TimeRole:
+            return entry["time"]
+        if role == self.LevelRole:
+            return entry["level"]
+        if role == self.DeviceRole:
+            return entry["device"]
+        if role == self.MessageRole:
+            return entry["message"]
+        return None
+
+    def roleNames(self) -> dict[int, bytes]:
+        return {
+            self.TimeRole: b"time",
+            self.LevelRole: b"level",
+            self.DeviceRole: b"device",
+            self.MessageRole: b"message",
+        }
+
+    def visible_entries(self) -> list[dict[str, str]]:
+        return list(self._visible)
+
+    def append(self, entry: dict[str, str]) -> None:
+        self._all.append(entry)
+        if self._is_visible(entry):
+            row = len(self._visible)
+            self.beginInsertRows(QModelIndex(), row, row)
+            self._visible.append(entry)
+            self.endInsertRows()
+        overflow = len(self._all) - _LOG_LIMIT
+        if overflow <= 0:
+            return
+        removed_ids = {id(entry) for entry in self._all[:overflow]}
+        del self._all[:overflow]
+        drop = 0
+        while drop < len(self._visible) and id(self._visible[drop]) in removed_ids:
+            drop += 1
+        if drop:
+            self.beginRemoveRows(QModelIndex(), 0, drop - 1)
+            del self._visible[:drop]
+            self.endRemoveRows()
+
+    def set_show_debug(self, enabled: bool, force: bool = False) -> None:
+        enabled = bool(enabled)
+        if not force and self._show_debug == enabled:
+            return
+        self._show_debug = enabled
+        self.beginResetModel()
+        self._visible = [entry for entry in self._all if self._is_visible(entry)]
+        self.endResetModel()
+
+    def _is_visible(self, entry: dict[str, str]) -> bool:
+        return self._show_debug or entry.get("level") != "SDK"
 
 
 class AppBackend(QObject):
@@ -243,7 +321,6 @@ class AppBackend(QObject):
     sessionsChanged = Signal()
     templatesChanged = Signal()
     historyChanged = Signal()
-    logsChanged = Signal()
     showDebugLogsChanged = Signal()
     selectedDeviceChanged = Signal()
     statusChanged = Signal()
@@ -269,7 +346,7 @@ class AppBackend(QObject):
         if not self._devices:
             self._devices = [self.store.seed_device()]
         self._selected_device_id = self._devices[0].id
-        self._logs: list[dict[str, str]] = []
+        self._log_model = LogListModel(self)
         self._show_debug_logs = False
         self._workers: dict[str, TelescopeProcess] = {}
         self._active_sessions: dict[str, str] = {}
@@ -392,15 +469,16 @@ class AppBackend(QObject):
         return done
 
     def add_log(self, level: str, message: str, device_id: str = "") -> None:
+        text = str(message or "").strip()
+        if not text:
+            return
         device = next((d.name for d in self._devices if d.id == device_id), "System")
-        self._logs.append({
+        self._log_model.append({
             "time": datetime.now().strftime("%H:%M:%S"),
-            "level": level.upper(),
+            "level": str(level or "info").upper(),
             "device": device,
-            "message": message,
+            "message": text,
         })
-        del self._logs[:-500]
-        self.logsChanged.emit()
 
     @Property(str, constant=True)
     def appVersion(self) -> str:
@@ -556,14 +634,19 @@ class AppBackend(QObject):
         if self._show_debug_logs == enabled:
             return
         self._show_debug_logs = enabled
+        self._log_model.set_show_debug(enabled)
         self.showDebugLogsChanged.emit()
-        self.logsChanged.emit()
 
-    @Property("QVariantList", notify=logsChanged)
-    def logs(self) -> list[dict[str, str]]:
-        if self._show_debug_logs:
-            return list(self._logs)
-        return [entry for entry in self._logs if entry.get("level") != "SDK"]
+    @Property(QObject, constant=True)
+    def logModel(self) -> LogListModel:
+        return self._log_model
+
+    @Slot(result=str)
+    def allLogText(self) -> str:
+        return "\n".join(
+            f"{entry['time']}  [{entry['device']}]  {entry['message']}"
+            for entry in self._log_model.visible_entries()
+        )
 
     @Property("QVariantMap", notify=sessionsChanged)
     def currentSession(self) -> dict[str, Any]:
