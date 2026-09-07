@@ -26,6 +26,12 @@ class Camera(StrEnum):
     WIDE = "wide"
 
 
+class WifiMode(StrEnum):
+    AUTO = "auto"
+    AP = "ap"
+    STA = "sta"
+
+
 class TargetKind(StrEnum):
     EQUATORIAL = "equatorial"
     SOLAR = "solar"
@@ -64,6 +70,7 @@ class Device:
     hardware: HardwareProfile = field(default_factory=HardwareProfile)
     ble_enabled: bool = True
     ble_password: str = "DWARF_12345678"
+    wifi_mode: WifiMode = WifiMode.AUTO
     wifi_ssid: str = ""
     wifi_password: str = ""
     latitude: float = 0
@@ -183,6 +190,10 @@ def device_from_dict(data: dict[str, Any]) -> Device:
     configured = data.pop("location_configured", None)
     data["model"] = DeviceModel(data.get("model", DeviceModel.DWARF_3))
     data["camera"] = Camera(data.get("camera", Camera.TELE))
+    try:
+        data["wifi_mode"] = WifiMode(str(data.get("wifi_mode") or WifiMode.AUTO).lower())
+    except ValueError:
+        data["wifi_mode"] = WifiMode.AUTO
     data["hardware"] = hardware_from_dict(data.get("hardware", {}))
     if configured is None:
         timezone_name = str(data.get("timezone_name") or "UTC")

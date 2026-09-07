@@ -2524,6 +2524,7 @@ ApplicationWindow {
                         ble_enabled: bleField.checked,
                         latitude: Number(latField.text), longitude: Number(lonField.text),
                         timezone_name: timezoneField.selectedName || timezoneField.editText, stellarium_url: stellariumField.text,
+                        wifi_mode: ["auto", "ap", "sta"][wifiModeField.currentIndex],
                         wifi_ssid: ssidField.text, wifi_password: wifiField.text,
                         ble_password: blePasswordField.text,
                         observing_day_cutoff_hour: cutoffField.value, slew_seconds: Number(slewField.text),
@@ -2551,6 +2552,7 @@ ApplicationWindow {
                     lonField.text = d.longitude
                     timezoneField.setFromName(d.timezone_name || "")
                     stellariumField.text = d.stellarium_url || "http://localhost:8090"
+                    wifiModeField.currentIndex = Math.max(0, ["auto", "ap", "sta"].indexOf(d.wifi_mode || "auto"))
                     ssidField.text = d.wifi_ssid || ""
                     wifiField.text = d.wifi_password || ""
                     blePasswordField.text = d.ble_password || "DWARF_12345678"
@@ -2606,7 +2608,7 @@ ApplicationWindow {
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 Text { text: "SETTINGS"; color: root.textPrimary; font.pixelSize: 22; font.letterSpacing: 2 }
-                                Text { text: "Independent connection, camera, Wi‑Fi and timing profiles"; color: root.textSecondary; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                                Text { text: "Device, connection, and timing profiles"; color: root.textSecondary; wrapMode: Text.Wrap; Layout.fillWidth: true }
                                 Text { text: "Astro Dwarf v" + backend.appVersion; color: root.accent; font.pixelSize: 12; font.letterSpacing: 1 }
                             }
                             DeviceCombo {}
@@ -2625,8 +2627,6 @@ ApplicationWindow {
                                 HudField { id: nameField; Layout.fillWidth: true }
                                 FieldLabel { text: "MODEL" }
                                 HudCombo { id: modelField; model: ["Dwarf II", "Dwarf 3", "Dwarf Mini"]; Layout.fillWidth: true }
-                                FieldLabel { text: "IP ADDRESS" }
-                                HudField { id: ipField; Layout.fillWidth: true }
                                 FieldLabel { text: "CAMERA" }
                                 HudCombo { id: cameraField; model: ["Tele", "Wide"]; Layout.fillWidth: true }
                                 FieldLabel { text: "TIMEZONE" }
@@ -2642,34 +2642,78 @@ ApplicationWindow {
                                 HudField { id: lonField; Layout.fillWidth: true }
                                 FieldLabel { text: "STELLARIUM" }
                                 HudField { id: stellariumField; Layout.fillWidth: true }
-                                FieldLabel { text: "WIFI SSID" }
-                                HudField { id: ssidField; Layout.fillWidth: true }
-                                FieldLabel { text: "WIFI PASSWORD" }
-                                HudField { id: wifiField; echoMode: TextInput.Password; Layout.fillWidth: true }
+                                FieldLabel { text: "NIGHT CUTOFF" }
+                                SpinBox {
+                                    id: cutoffField
+                                    from: 0
+                                    to: 23
+                                    value: 12
+                                    editable: true
+                                    Layout.fillWidth: true
+                                    palette.text: root.textPrimary
+                                    palette.base: "#0A1524"
+                                    palette.button: "#122033"
+                                    palette.buttonText: root.accent
+                                    palette.highlight: root.accent
+                                }
+                            }
+                        }
+                        HudPanel {
+                            title: "CONNECTION"
+                            width: parent.width
+                            Text {
+                                text: "Bluetooth only finds the telescope and sets its Wi‑Fi. Commands and the live stream always use Wi‑Fi, so this computer must be on the same network afterward."
+                                color: root.textSecondary
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+                            GridLayout {
+                                Layout.fillWidth: true
+                                columns: 4
+                                columnSpacing: 10
+                                rowSpacing: 8
+                                FieldLabel { text: "IP ADDRESS" }
+                                HudField { id: ipField; Layout.fillWidth: true; placeholderText: "192.168.88.1 or LAN IP" }
+                                FieldLabel { text: "CONNECTION MODE" }
+                                HudCombo { id: wifiModeField; model: ["Auto", "AP hotspot", "STA station"]; Layout.fillWidth: true }
+                                Text {
+                                    Layout.fillWidth: true
+                                    Layout.columnSpan: 4
+                                    wrapMode: Text.Wrap
+                                    color: root.textSecondary
+                                    text: wifiModeField.currentIndex === 1
+                                        ? "AP: the telescope broadcasts its own hotspot (for example DWARF3_1). Join that Wi‑Fi on this computer. The IP is usually 192.168.88.1. The hotspot name and password are set on the device."
+                                        : wifiModeField.currentIndex === 2
+                                            ? "STA: Bluetooth tells the telescope to join your home or public router. Enter that router's name and password. This computer must already be on the same Wi-Fi."
+                                            : "Auto: keep the mode already set on the telescope. Bluetooth reads its current IP and does not switch AP or STA."
+                                }
+                                FieldLabel { text: "ROUTER WIFI NAME"; visible: wifiModeField.currentIndex === 2 }
+                                HudField {
+                                    id: ssidField
+                                    Layout.fillWidth: true
+                                    visible: wifiModeField.currentIndex === 2
+                                    placeholderText: "Router name, not DWARF3_…"
+                                }
+                                FieldLabel { text: "ROUTER WIFI PASSWORD"; visible: wifiModeField.currentIndex === 2 }
+                                HudField {
+                                    id: wifiField
+                                    echoMode: TextInput.Password
+                                    Layout.fillWidth: true
+                                    visible: wifiModeField.currentIndex === 2
+                                }
                                 FieldLabel { text: "BLUETOOTH PASSWORD" }
-                                HudField { id: blePasswordField; echoMode: TextInput.Password; Layout.fillWidth: true }
+                                HudField {
+                                    id: blePasswordField
+                                    echoMode: TextInput.Password
+                                    Layout.fillWidth: true
+                                    placeholderText: "Factory default DWARF_12345678"
+                                }
                                 Item { Layout.fillWidth: true }
                                 Item { Layout.fillWidth: true }
                                 HudCheck {
                                     id: bleField
-                                    text: "Find over Bluetooth if IP is empty or unreachable"
+                                    text: "Use Bluetooth when the IP is empty or this computer cannot reach it"
                                     Layout.columnSpan: 4
-                                }
-                                RowLayout {
-                                    Layout.columnSpan: 1
-                                    FieldLabel { text: "NIGHT CUTOFF" }
-                                    SpinBox {
-                                        id: cutoffField
-                                        from: 0
-                                        to: 23
-                                        value: 12
-                                        editable: true
-                                        palette.text: root.textPrimary
-                                        palette.base: "#0A1524"
-                                        palette.button: "#122033"
-                                        palette.buttonText: root.accent
-                                        palette.highlight: root.accent
-                                    }
                                 }
                             }
                         }

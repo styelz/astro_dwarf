@@ -316,6 +316,130 @@ def _pick_ble_device(devices: list[Any], model: str) -> Any:
     return chosen
 
 
+def _is_dwarf_hotspot(ssid: str) -> bool:
+    name = (ssid or "").replace(" ", "").replace("-", "_").upper()
+    return name.startswith(("DWARF3", "DWARF_MINI", "DWARFMINI", "DWARF2", "DWARFII", "DWARF_"))
+
+
+def _station_credentials(ssid: str, password: str) -> tuple[str, str]:
+    if not ssid or not password or _is_dwarf_hotspot(ssid):
+        return "", ""
+    return ssid, password
+
+
+def _set_wifi_ap_message(ble_password: str) -> bytes:
+    import dwarf_python_api.proto.ble_pb2 as ble
+    from dwarf_ble_connect.lib.dwarf_protocol_ble import create_packet_ble
+
+    message = ble.ReqAp()
+    message.cmd = 2
+    message.wifi_type = 0
+    message.auto_start = 1
+    message.country_list = 0
+    message.ble_psd = ble_password
+    return create_packet_ble(2, message)
+
+
+async def _ble_wifi_session(
+    dwarf: Any,
+    ble_password: str,
+    sta_ssid: str,
+    sta_password: str,
+    preferred: str = "auto",
+) -> dict[str, Any]:
+    from bleak import BleakClient
+    from dwarf_ble_connect.lib.dwarf_lib_ble import DWARF_CHARACTERISTIC_UUID
+    from dwarf_ble_connect.lib.dwarf_protocol_ble import (
+        analyze_packet_ble,
+        get_wifi_config_message,
+        set_wifi_STA_message,
+    )
+
+    replies: dict[int, dict[str, Any]] = {}
+    wanted = {"cmd": 1}
+    ready = asyncio.Event()
+
+    def on_notify(_sender, data) -> None:
+        parsed = analyze_packet_ble(data)
+        if not parsed or parsed.get("cmd") != wanted["cmd"]:
+            return
+        replies[int(parsed["cmd"])] = parsed
+        ready.set()
+
+    async def write_and_wait(payload: bytes, cmd: int, timeout: float) -> dict[str, Any]:
+        wanted["cmd"] = cmd
+        ready.clear()
+        await client.write_gatt_char(DWARF_CHARACTERISTIC_UUID, payload)
+        await asyncio.wait_for(ready.wait(), timeout)
+        return replies.get(cmd) or {}
+
+    client = BleakClient(dwarf.address, timeout=15)
+    await client.connect()
+    try:
+        await client.start_notify(DWARF_CHARACTERISTIC_UUID, on_notify)
+        config = await write_and_wait(get_wifi_config_message(ble_password), 1, 8)
+        code = config.get("code")
+        if code not in (0, None):
+            if code == -1:
+                raise RuntimeError(
+                    "Bluetooth password rejected. Set it under Settings (factory default is DWARF_12345678)."
+                )
+            raise RuntimeError(f"Bluetooth config error: {code}")
+
+        current_ip = str(config.get("ip") or "").strip()
+        current_ssid = str(config.get("ssid") or "").strip()
+        wifi_mode = config.get("wifi_mode")
+        mode_name = {1: "AP", 2: "STA"}.get(wifi_mode, f"mode {wifi_mode}")
+        log(f"Telescope Wi-Fi is {mode_name}" + (f" ({current_ssid} at {current_ip})" if current_ip else ""))
+
+        async def start_hotspot() -> dict[str, Any]:
+            log("Starting telescope hotspot…")
+            try:
+                ap = await write_and_wait(_set_wifi_ap_message(ble_password), 2, 15)
+            except TimeoutError:
+                ap = {}
+            if ap.get("code") not in (0, None):
+                raise RuntimeError(f"Could not start telescope hotspot: {ap.get('code')}")
+            return {
+                "ip_address": "192.168.88.1",
+                "ssid": str(ap.get("ssid") or current_ssid),
+                "wifi_mode": 1,
+            }
+
+        if preferred == "ap":
+            if wifi_mode == 1:
+                return {"ip_address": current_ip or "192.168.88.1", "ssid": current_ssid, "wifi_mode": 1}
+            return await start_hotspot()
+
+        if preferred == "sta":
+            if not sta_ssid:
+                raise RuntimeError(
+                    "Station mode needs the router's Wi-Fi name and password. "
+                    "Do not enter the Dwarf hotspot name."
+                )
+            log(f"Asking the telescope to join {sta_ssid}…")
+            try:
+                sta = await write_and_wait(
+                    set_wifi_STA_message(1, ble_password, sta_ssid, sta_password),
+                    3,
+                    20,
+                )
+            except TimeoutError:
+                sta = {}
+            if sta.get("code") == 0 and sta.get("ip"):
+                return {"ip_address": str(sta["ip"]), "ssid": str(sta.get("ssid") or sta_ssid), "wifi_mode": 2}
+            raise RuntimeError(str(sta.get("error") or f"The telescope could not join {sta_ssid}"))
+
+        if current_ip:
+            return {"ip_address": current_ip, "ssid": current_ssid, "wifi_mode": wifi_mode}
+        return await start_hotspot()
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
 def _safe_disconnect() -> None:
     try:
         sdk_call("disconnect")
@@ -336,17 +460,28 @@ def _handshake() -> bool:
 
 def provision_bluetooth() -> str:
     try:
-        from dwarf_ble_connect.lib.dwarf_lib_ble import connect_to_bluetooth_device, discover_dwarf_devices
+        from dwarf_ble_connect.lib.dwarf_lib_ble import discover_dwarf_devices
     except ImportError as exc:
         raise RuntimeError("Bluetooth support is not available in this install") from exc
 
     ssid = str(_device.get("wifi_ssid") or "")
     password = str(_device.get("wifi_password") or "")
     ble_password = str(_device.get("ble_password") or "DWARF_12345678")
-    if ssid:
-        log(f"Scanning Bluetooth to join {ssid}…")
+    preferred = str(_device.get("wifi_mode") or "auto").lower()
+    if preferred == "sta":
+        sta_ssid, sta_password = _station_credentials(ssid, password)
+        if not sta_ssid:
+            raise RuntimeError(
+                "Station mode needs the router's Wi-Fi name and password. "
+                "Do not enter the Dwarf hotspot name."
+            )
+        log(f"Scanning Bluetooth to put the telescope on {sta_ssid}…")
     else:
-        log("Scanning Bluetooth for a nearby Dwarf…")
+        sta_ssid, sta_password = "", ""
+        if preferred == "ap":
+            log("Scanning Bluetooth to use the telescope hotspot…")
+        else:
+            log("Scanning Bluetooth to read the telescope Wi-Fi…")
 
     with contextlib.redirect_stdout(sys.stderr):
         found = _run_async(discover_dwarf_devices)
@@ -361,27 +496,13 @@ def provision_bluetooth() -> str:
     dwarf = _pick_ble_device(devices, str(_device.get("model") or ""))
     log(f"Connecting to {dwarf.name} over Bluetooth…")
 
-    state: dict[str, Any] = {}
     with contextlib.redirect_stdout(sys.stderr):
-        for attempt in range(3):
-            state = _run_async(
-                lambda: connect_to_bluetooth_device(dwarf, ble_password, ssid, password)
-            )
-            if state.get("is_connected") and state.get("ip_address"):
-                break
-            if state.get("error") not in {"Init Pending.. ", "Pending.. "}:
-                break
-            log("Bluetooth still settling, retrying…")
-
-    if not (state.get("is_connected") and state.get("ip_address")):
-        error = str(state.get("error") or "")
-        if "get Config: -1" in error:
-            raise RuntimeError(
-                "Bluetooth password rejected. Set it under Settings (factory default is DWARF_12345678)."
-            )
-        raise RuntimeError(error or "Bluetooth connected but did not return an IP address")
+        state = _run_async(lambda: _ble_wifi_session(dwarf, ble_password, sta_ssid, sta_password, preferred))
+    if not state or not state.get("ip_address"):
+        raise RuntimeError("Bluetooth connected but did not return an IP address")
 
     ip = str(state["ip_address"])
+    _device["_ble_ssid"] = str(state.get("ssid") or "")
     _write_config_ip(ip, state.get("device_dwarf_id"))
     log(f"Bluetooth assigned IP {ip}")
     return ip
@@ -409,7 +530,23 @@ def connect() -> bool | dict[str, str]:
         log(f"Waiting for the telescope at {discovered} ({attempt}/5)…")
         time.sleep(3)
         _safe_disconnect()
-    raise RuntimeError(f"Bluetooth found {discovered}, but the control link did not come up")
+    hotspot = str(_device.get("_ble_ssid") or "")
+    mode = str(_device.get("wifi_mode") or "auto").lower()
+    if discovered == "192.168.88.1" or _is_dwarf_hotspot(hotspot) or mode == "ap":
+        name = hotspot or "the Dwarf hotspot"
+        raise RuntimeError(
+            f"The telescope hotspot {name} is on at {discovered}. "
+            "Join that Wi-Fi on this computer, then connect again. "
+            "Bluetooth only starts the hotspot; control uses Wi-Fi."
+        )
+    if mode == "sta":
+        raise RuntimeError(
+            f"The telescope joined Wi-Fi at {discovered}, but this computer cannot reach it. "
+            "Connect this computer to the same router network."
+        )
+    raise RuntimeError(
+        f"Bluetooth found {discovered}, but this computer cannot reach the telescope over Wi-Fi."
+    )
 
 
 def run_session(session: dict[str, Any]) -> bool:
