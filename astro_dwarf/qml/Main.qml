@@ -41,6 +41,9 @@ ApplicationWindow {
     property color warning: "#F5C542"
     property int currentPage: 0
     property real joySpeed: 1
+    property bool sessionDragActive: false
+    property point sessionDragPos: Qt.point(0, 0)
+    property var sessionDragData: ({})
     readonly property bool targetLocked: backend.selectedDevice.connected && backend.currentSession.status === "running"
     readonly property bool dataPage: currentPage !== 0
     readonly property bool scopeOnline: !!(backend.selectedDevice && backend.selectedDevice.connected)
@@ -121,6 +124,41 @@ ApplicationWindow {
             return
         }
         backend.deviceAction(backend.selectedDeviceId, operation)
+    }
+
+    function beginSessionDrag(item, pos) {
+        sessionDragData = item
+        sessionDragPos = pos
+        sessionDragActive = true
+    }
+    function updateSessionDrag(pos) {
+        sessionDragPos = pos
+    }
+    function endSessionDrag() {
+        sessionDragActive = false
+        sessionDragData = ({})
+    }
+    function dragLabel(item) {
+        if (!item || !item.id)
+            return ""
+        return (item.start_time || "") + "  " + (item.target_name || item.name || "Session")
+    }
+    function durationLabel(seconds) {
+        const value = Math.max(0, Math.round(Number(seconds) || 0))
+        const hours = Math.floor(value / 3600)
+        const minutes = Math.floor((value % 3600) / 60)
+        const secs = value % 60
+        return hours > 0
+            ? hours + "h " + String(minutes).padStart(2, "0") + "m"
+            : minutes > 0 ? minutes + "m " + String(secs).padStart(2, "0") + "s" : secs + "s"
+    }
+    function nextSessionCountdown() {
+        backend.clockText
+        if (!backend.upcomingSessions || backend.upcomingSessions.length === 0)
+            return "No planned sessions"
+        const start = new Date(backend.upcomingSessions[0].scheduled_start)
+        const seconds = Math.floor((start.getTime() - Date.now()) / 1000)
+        return seconds <= 0 ? "Due now" : "T− " + durationLabel(seconds)
     }
 
     function targetCoordinates(item) {
@@ -289,8 +327,10 @@ ApplicationWindow {
         background: Rectangle {
             color: !hudBtn.enabled && !hudBtn.isBusy ? "#070B12" : hudBtn.down || hudBtn.isBusy ? Qt.darker(hudBtn.buttonColor, 1.2) : hudBtn.hovered ? Qt.lighter(hudBtn.buttonColor, 1.18) : hudBtn.buttonColor
             border.color: !hudBtn.enabled && !hudBtn.isBusy ? "#152838" : hudBtn.hovered || hudBtn.down || hudBtn.isBusy ? root.accent : root.outline
-            border.width: 1
-            radius: 2
+            border.width: hudBtn.hovered || hudBtn.down || hudBtn.isBusy ? 2 : 1
+            radius: 3
+            Rectangle { x: 3; y: 3; width: parent.width - 6; height: 1; color: hudBtn.enabled ? "#467B94" : "transparent"; opacity: 0.55 }
+            Rectangle { x: 3; y: parent.height - 4; width: parent.width - 6; height: 1; color: "#02050A"; opacity: 0.9 }
         }
         contentItem: Text {
             text: (hudBtn.isBusy && hudBtn.busyText !== "") ? hudBtn.busyText : hudBtn.text
@@ -299,6 +339,85 @@ ApplicationWindow {
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
+        }
+    }
+
+    component SessionDragArea: MouseArea {
+        required property var dragItem
+        property var pressedAction: null
+        acceptedButtons: Qt.LeftButton
+        hoverEnabled: true
+        preventStealing: true
+        cursorShape: enabled ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
+        enabled: String((dragItem && dragItem.status) || "") !== "running"
+        property bool dragging: false
+        property real pressX: 0
+        property real pressY: 0
+        onPressed: mouse => {
+            pressX = mouse.x
+            pressY = mouse.y
+            dragging = false
+            if (pressedAction)
+                pressedAction()
+        }
+        onPositionChanged: mouse => {
+            if (!pressed)
+                return
+            const dx = mouse.x - pressX
+            const dy = mouse.y - pressY
+            if (!dragging && (dx * dx + dy * dy) < 36)
+                return
+            const pos = mapToItem(root.contentItem, mouse.x, mouse.y)
+            if (!dragging) {
+                dragging = true
+                sessionDragProxy.startDrag(dragItem, pos)
+            } else {
+                sessionDragProxy.moveDrag(pos)
+            }
+        }
+        onReleased: {
+            if (dragging)
+                sessionDragProxy.finishDrag()
+            dragging = false
+        }
+        onCanceled: {
+            if (dragging)
+                sessionDragProxy.cancelDrag()
+            dragging = false
+        }
+    }
+
+    component HudCommandPad: Button {
+        id: commandPad
+        property string glyph: ""
+        property string detail: ""
+        property bool activeState: false
+        property bool destructive: false
+        hoverEnabled: enabled
+        implicitHeight: 58
+        leftPadding: 8
+        rightPadding: 8
+        background: Rectangle {
+            color: commandPad.destructive ? "#301117" : commandPad.activeState ? "#123C35" : commandPad.down ? "#0B2430" : commandPad.hovered ? "#123044" : "#0B1724"
+            border.color: commandPad.destructive ? root.danger : commandPad.activeState ? root.success : commandPad.hovered ? root.accent : root.outline
+            border.width: commandPad.activeState || commandPad.hovered ? 2 : 1
+            radius: 4
+            Rectangle { x: 4; y: 4; width: parent.width - 8; height: 1; color: commandPad.destructive ? root.danger : root.accent; opacity: 0.35 }
+            Rectangle {
+                anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 7
+                width: 7; height: 7; radius: 4
+                color: commandPad.activeState ? root.success : commandPad.enabled ? "#31556B" : "#172631"
+                border.color: commandPad.activeState ? "#C8FFE9" : root.outline
+            }
+        }
+        contentItem: RowLayout {
+            spacing: 7
+            Text { text: commandPad.glyph; color: commandPad.destructive ? root.danger : commandPad.activeState ? root.success : root.accent; font.pixelSize: 18; Layout.preferredWidth: 22; horizontalAlignment: Text.AlignHCenter }
+            ColumnLayout {
+                Layout.fillWidth: true; spacing: 0
+                Text { text: commandPad.text; color: commandPad.enabled ? root.textPrimary : root.textSecondary; font.pixelSize: 10; font.bold: true; font.letterSpacing: 0.7; elide: Text.ElideRight; Layout.fillWidth: true }
+                Text { text: commandPad.detail; color: commandPad.activeState ? root.success : root.textSecondary; font.pixelSize: 8; elide: Text.ElideRight; Layout.fillWidth: true }
+            }
         }
     }
 
@@ -986,6 +1105,26 @@ ApplicationWindow {
                         onDoubleClicked: root.toggleMaximized()
                     }
                 }
+                RowLayout {
+                    spacing: 10
+                    Repeater {
+                        model: [
+                            {label: "LINK", on: root.scopeOnline, color: root.success},
+                            {label: "AUTO", on: backend.schedulerEnabled, color: root.success},
+                            {label: "IMAGE", on: root.scopeImaging, color: root.danger}
+                        ]
+                        delegate: RowLayout {
+                            required property var modelData
+                            spacing: 4
+                            Rectangle {
+                                width: 7; height: 7; radius: 4
+                                color: modelData.on ? modelData.color : "#263746"
+                                border.color: modelData.on ? "#D8FFFF" : root.outline
+                            }
+                            Text { text: modelData.label; color: modelData.on ? root.textPrimary : root.textSecondary; font.pixelSize: 8; font.bold: true }
+                        }
+                    }
+                }
                 Column {
                     Text { text: backend.selectedDevice.status || "OFFLINE"; color: backend.selectedDevice.connected ? root.success : root.textSecondary; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignRight; width: 160 }
                     Text { text: (backend.selectedDevice.name || "No device") + " · " + (backend.selectedDevice.model || ""); color: root.textSecondary; font.pixelSize: 10; horizontalAlignment: Text.AlignRight; width: 160; elide: Text.ElideRight }
@@ -1107,21 +1246,52 @@ ApplicationWindow {
 
                         HudPanel {
                             title: "SYSTEM STATUS"
-                            SplitView.preferredHeight: 168
-                            SplitView.minimumHeight: 96
-                            Image {
+                            SplitView.preferredHeight: 260
+                            SplitView.minimumHeight: 150
+                            RowLayout {
                                 Layout.fillWidth: true
-                                Layout.fillHeight: true
-                                Layout.preferredHeight: 0
-                                source: root.asset("hud-radar.png")
-                                fillMode: Image.PreserveAspectFit
+                                Rectangle { width: 10; height: 10; radius: 5; color: backend.selectedDevice.connected ? root.success : root.danger; border.color: backend.selectedDevice.connected ? "#C8FFE9" : "#FFD0D5" }
+                                ColumnLayout {
+                                    Layout.fillWidth: true; spacing: 0
+                                    Text { text: String(backend.selectedDevice.status || "OFFLINE").toUpperCase(); color: backend.selectedDevice.connected ? root.success : root.warning; font.pixelSize: 15; font.bold: true; font.letterSpacing: 1.4 }
+                                    Text { text: (backend.selectedDevice.name || "No device") + "  ·  " + (backend.selectedDevice.model || ""); color: root.textSecondary; font.pixelSize: 9 }
+                                }
                             }
-                            Text {
-                                text: backend.selectedDevice.connected ? "SCOPE ONLINE" : "LINK DOWN"
-                                color: backend.selectedDevice.connected ? root.success : root.warning
-                                font.pixelSize: 11
-                                font.bold: true
-                                Layout.fillWidth: true
+                            Repeater {
+                                model: [
+                                    {label: "ENDPOINT", value: backend.selectedDevice.ip_address || "—"},
+                                    {label: "SCHEDULER", value: backend.schedulerEnabled ? root.nextSessionCountdown() : "Disarmed"},
+                                    {label: "ACTIVITY", value: root.scopePending || root.scopeActivity || (root.scopeImaging ? "Session imaging" : "Idle")},
+                                    {label: "PREVIEW", value: backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped"},
+                                    {label: "SESSION", value: backend.currentSession.current_step || "No active session"},
+                                    {label: "REMAINING", value: backend.currentSession.id ? root.durationLabel(Number(backend.currentSession.planned_duration_seconds || 0) * (1 - backend.sessionProgress)) : "—"},
+                                    {label: "SITE", value: (backend.selectedDevice.timezone_name || "UTC") + "  " + Number(backend.selectedDevice.latitude || 0).toFixed(2) + "°, " + Number(backend.selectedDevice.longitude || 0).toFixed(2) + "°"}
+                                ]
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    Text { text: modelData.label; color: root.textSecondary; font.pixelSize: 9; font.bold: true; Layout.preferredWidth: 72 }
+                                    Text { text: modelData.value; color: root.textPrimary; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
+                                }
+                            }
+                            Rectangle { Layout.fillWidth: true; height: 1; color: root.outline; visible: backend.selectedDevice.telemetry_rows && backend.selectedDevice.telemetry_rows.length > 0 }
+                            Repeater {
+                                model: backend.selectedDevice.stack_rows || []
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    Text { text: modelData.label; color: root.textSecondary; font.pixelSize: 9; Layout.preferredWidth: 96; elide: Text.ElideRight }
+                                    Text { text: modelData.value; color: root.accent; font.pixelSize: 10; font.family: "Cascadia Mono"; Layout.fillWidth: true; elide: Text.ElideRight }
+                                }
+                            }
+                            Repeater {
+                                model: backend.selectedDevice.telemetry_rows || []
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    Text { text: modelData.label; color: root.textSecondary; font.pixelSize: 9; Layout.preferredWidth: 96; elide: Text.ElideRight }
+                                    Text { text: modelData.value; color: root.textPrimary; font.pixelSize: 10; font.family: "Cascadia Mono"; Layout.fillWidth: true; elide: Text.ElideRight }
+                                }
                             }
                         }
 
@@ -1538,42 +1708,43 @@ ApplicationWindow {
 
                         HudPanel {
                             title: "COMMANDS"
-                            SplitView.preferredHeight: 210
-                            SplitView.minimumHeight: 120
-                            Repeater {
+                            SplitView.preferredHeight: 244
+                            SplitView.minimumHeight: 176
+                            GridLayout {
+                                Layout.fillWidth: true
+                                columns: 4
+                                columnSpacing: 6
+                                rowSpacing: 6
+                                Repeater {
                                 model: [
-                                    {label: "ALIGN", items: [["CALIBRATE", "calibrate"], ["AUTO FOCUS", "autofocus"], ["INFINITY", "infinity"], ["POLAR / EQ", "polar"]]},
-                                    {label: "LIVE", items: [["LIGHTS ON", "lights_on"], ["LIGHTS OFF", "lights_off"], ["GO LIVE", "go_live"], ["STOP GOTO", "stop_goto"]]},
-                                    {label: "CAPTURE", items: [["BURST", "burst_start"], ["STOP BURST", "burst_stop"], ["RECORD", "record_start"], ["STOP REC", "record_stop"], ["TIMELAPSE", "timelapse_start"], ["STOP TL", "timelapse_stop"]]},
-                                    {label: "SYSTEM", items: [["REBOOT", "reboot"], ["POWER DOWN", "power_down"]]}
+                                    {label: "CALIBRATE", glyph: "◎", start: "calibrate", stop: "stop_calibrate", state: "calibrate", detail: "ALIGN"},
+                                    {label: "AUTO FOCUS", glyph: "◉", start: "autofocus", stop: "stop_autofocus", state: "autofocus", detail: "OPTICS"},
+                                    {label: "INFINITY", glyph: "∞", start: "infinity", stop: "stop_autofocus", state: "autofocus", detail: "FOCUS"},
+                                    {label: "POLAR / EQ", glyph: "⌖", start: "polar", stop: "stop_polar", state: "polar", detail: "ALIGN"},
+                                    {label: "LIGHTS", glyph: "✦", start: "lights_on", stop: "lights_off", state: "lights", detail: "CHASSIS"},
+                                    {label: "GO LIVE", glyph: "▶", start: "go_live", stop: "", state: "", detail: "CAMERA"},
+                                    {label: "STOP GOTO", glyph: "■", start: "stop_goto", stop: "", state: "", detail: "MOUNT"},
+                                    {label: "BURST", glyph: "◫", start: "burst_start", stop: "burst_stop", state: "burst", detail: "CAPTURE"},
+                                    {label: "RECORD", glyph: "●", start: "record_start", stop: "record_stop", state: "record", detail: "VIDEO"},
+                                    {label: "TIMELAPSE", glyph: "◷", start: "timelapse_start", stop: "timelapse_stop", state: "timelapse", detail: "CAPTURE"},
+                                    {label: "REBOOT", glyph: "↻", start: "reboot", stop: "", state: "", detail: "SYSTEM", destructive: true},
+                                    {label: "POWER", glyph: "⏻", start: "power_down", stop: "", state: "", detail: "SYSTEM", destructive: true}
                                 ]
-                                delegate: ColumnLayout {
+                                delegate: HudCommandPad {
                                     required property var modelData
+                                    readonly property bool activeForState: modelData.state === "lights"
+                                        ? !!backend.selectedDevice.lights_on
+                                        : modelData.state !== "" && root.scopeActivity === modelData.state
+                                    readonly property string effectiveOperation: activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
                                     Layout.fillWidth: true
-                                    spacing: 3
-                                    Text { text: modelData.label; color: root.textSecondary; font.pixelSize: 9; font.letterSpacing: 1.2; font.bold: true }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        Repeater {
-                                            model: modelData.items
-                                            delegate: HudButton {
-                                                required property var modelData
-                                                Layout.fillWidth: true
-                                                Layout.preferredHeight: 26
-                                                leftPadding: 4
-                                                rightPadding: 4
-                                                font.pixelSize: 9
-                                                text: modelData[0]
-                                                busyText: modelData[0] + "…"
-                                                busy: backend.selectedDevice.pending_action === modelData[1]
-                                                busyMs: 0
-                                                enabled: root.commandEnabled(modelData[1])
-                                                buttonColor: (modelData[1] === "reboot" || modelData[1] === "power_down") ? "#3A1218" : root.surfaceHigh
-                                                foregroundColor: (modelData[1] === "reboot" || modelData[1] === "power_down") ? root.danger : root.textPrimary
-                                                onClicked: root.requestDeviceAction(modelData[1], modelData[0])
-                                            }
-                                        }
-                                    }
+                                    text: modelData.label
+                                    glyph: modelData.glyph
+                                    detail: activeForState ? "ACTIVE · STOP" : modelData.detail
+                                    activeState: activeForState
+                                    destructive: !!modelData.destructive
+                                    enabled: root.commandEnabled(effectiveOperation)
+                                    onClicked: root.requestDeviceAction(effectiveOperation, modelData.label)
+                                }
                                 }
                             }
                         }
@@ -1587,8 +1758,10 @@ ApplicationWindow {
 
                         HudPanel {
                             title: "SCOPE STATUS"
-                            SplitView.preferredHeight: 132
-                            SplitView.minimumHeight: 80
+                            visible: false
+                            SplitView.preferredHeight: 0
+                            SplitView.minimumHeight: 0
+                            SplitView.maximumHeight: 0
                             Repeater {
                                 model: [
                                     {label: "LINK", value: backend.selectedDevice.connected ? "Connected" : "Offline"},
@@ -1754,17 +1927,43 @@ ApplicationWindow {
                                         id: upcomingRow
                                         required property var modelData
                                         width: ListView.view.width
-                                        height: 36
-                                        color: "#122033"
+                                        height: 44
+                                        color: upcomingDrop.containsDrag ? "#163B4D" : "#122033"
+                                        border.color: upcomingDrop.containsDrag ? root.accent : root.outline
+                                        DropArea {
+                                            id: upcomingDrop
+                                            anchors.fill: parent
+                                            keys: ["session"]
+                                            onDropped: drop => {
+                                                const source = root.sessionDragData
+                                                if (source && source.device_id === upcomingRow.modelData.device_id)
+                                                    backend.reorderPlanned(String(source.id || ""), upcomingRow.modelData.id)
+                                            }
+                                        }
                                         RowLayout {
                                             anchors.fill: parent
                                             anchors.margins: 6
+                                            Text { text: "⋮⋮"; color: root.accent; font.pixelSize: 15 }
                                             ColumnLayout {
                                                 Layout.fillWidth: true
                                                 spacing: 0
                                                 Text { text: modelData.target_name; color: root.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
-                                                Text { text: modelData.start_time + " · " + modelData.duration_text; color: root.textSecondary; font.pixelSize: 10 }
+                                                Text {
+                                                    text: {
+                                                        backend.clockText
+                                                        const seconds = Math.floor((new Date(modelData.scheduled_start).getTime() - Date.now()) / 1000)
+                                                        return modelData.start_time + " · " + modelData.duration_text + (seconds > 0 ? " · T−" + root.durationLabel(seconds) : " · DUE")
+                                                    }
+                                                    color: root.textSecondary; font.pixelSize: 9
+                                                }
                                             }
+                                        }
+                                        SessionDragArea {
+                                            anchors.left: parent.left
+                                            anchors.top: parent.top
+                                            anchors.bottom: parent.bottom
+                                            width: 34
+                                            dragItem: upcomingRow.modelData
                                         }
                                         TapHandler {
                                             acceptedButtons: Qt.RightButton
@@ -1774,6 +1973,14 @@ ApplicationWindow {
                                             id: upcomingMenu
                                             sessionData: upcomingRow.modelData
                                         }
+                                    }
+                                    footer: DropArea {
+                                        width: upcomingList.width
+                                        height: 28
+                                        keys: ["session"]
+                                        Rectangle { anchors.fill: parent; color: parent.containsDrag ? "#163B4D" : "transparent"; border.color: parent.containsDrag ? root.accent : "transparent" }
+                                        Text { anchors.centerIn: parent; text: "DROP TO MOVE TO END"; visible: parent.containsDrag; color: root.accent; font.pixelSize: 9 }
+                                        onDropped: drop => backend.reorderPlanned(String((drop.source && drop.source.sessionId) || ""), "")
                                     }
                                 }
                                 EmptyHint { anchors.centerIn: parent; visible: backend.upcomingSessions.length === 0; text: "No upcoming sessions" }
@@ -1849,64 +2056,9 @@ ApplicationWindow {
                 id: calendarPage
                 property date shownMonth: new Date()
                 property date selectedDate: new Date()
-                property bool sessionDragActive: false
-                property point sessionDragPos: Qt.point(0, 0)
-                property var sessionDragData: ({})
+                property int viewMode: 0
                 function dateKey(value) {
                     return value.getFullYear() + "-" + String(value.getMonth() + 1).padStart(2, "0") + "-" + String(value.getDate()).padStart(2, "0")
-                }
-                function beginSessionDrag(item, pos) {
-                    sessionDragData = item
-                    sessionDragPos = pos
-                    sessionDragActive = true
-                }
-                function updateSessionDrag(pos) {
-                    sessionDragPos = pos
-                }
-                function endSessionDrag() {
-                    sessionDragActive = false
-                    sessionDragData = ({})
-                }
-                component SessionDragArea: MouseArea {
-                    required property var dragItem
-                    acceptedButtons: Qt.LeftButton
-                    hoverEnabled: true
-                    preventStealing: true
-                    cursorShape: enabled ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
-                    enabled: String((dragItem && dragItem.status) || "") !== "running"
-                    property bool dragging: false
-                    property real pressX: 0
-                    property real pressY: 0
-                    onPressed: mouse => {
-                        pressX = mouse.x
-                        pressY = mouse.y
-                        dragging = false
-                    }
-                    onPositionChanged: mouse => {
-                        if (!pressed)
-                            return
-                        const dx = mouse.x - pressX
-                        const dy = mouse.y - pressY
-                        if (!dragging && (dx * dx + dy * dy) < 36)
-                            return
-                        const pos = mapToItem(calendarPage, mouse.x, mouse.y)
-                        if (!dragging) {
-                            dragging = true
-                            sessionDragProxy.startDrag(dragItem, pos)
-                        } else {
-                            sessionDragProxy.moveDrag(pos)
-                        }
-                    }
-                    onReleased: {
-                        if (dragging)
-                            sessionDragProxy.finishDrag()
-                        dragging = false
-                    }
-                    onCanceled: {
-                        if (dragging)
-                            sessionDragProxy.cancelDrag()
-                        dragging = false
-                    }
                 }
                 function firstCellDate() {
                     const first = new Date(shownMonth.getFullYear(), shownMonth.getMonth(), 1)
@@ -1919,6 +2071,25 @@ ApplicationWindow {
                 function chipText(item) {
                     return item.start_time + "  " + (item.pane_index < 1000000 ? "pane " + item.pane_index : item.target_name)
                 }
+                readonly property int cutoffHour: Number(backend.selectedDevice.observing_day_cutoff_hour || 12)
+                function timelineMinutes(timeText) {
+                    const bits = String(timeText || "00:00").split(":")
+                    let minutes = Number(bits[0]) * 60 + Number(bits[1]) - cutoffHour * 60
+                    if (minutes < 0)
+                        minutes += 1440
+                    return minutes
+                }
+                function timelineDate(minutes) {
+                    const value = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), cutoffHour, 0, 0, 0)
+                    value.setMinutes(value.getMinutes() + Math.max(0, Math.min(1435, Math.round(minutes / 5) * 5)))
+                    return dateKey(value) + "T" + String(value.getHours()).padStart(2, "0") + ":" + String(value.getMinutes()).padStart(2, "0")
+                }
+                function currentObservingKey() {
+                    const value = new Date()
+                    if (value.getHours() < cutoffHour)
+                        value.setDate(value.getDate() - 1)
+                    return dateKey(value)
+                }
                 HudSplitView {
                     id: calendarSplit
                     anchors.fill: parent
@@ -1929,17 +2100,48 @@ ApplicationWindow {
                         spacing: 10
                         RowLayout {
                             Layout.fillWidth: true
-                            Text { text: Qt.formatDate(calendarPage.shownMonth, "MMMM yyyy").toUpperCase(); color: root.textPrimary; font.pixelSize: 22; font.letterSpacing: 2; Layout.fillWidth: true }
-                            HudButton { text: "‹"; implicitWidth: 40; onClicked: calendarPage.shownMonth = new Date(calendarPage.shownMonth.getFullYear(), calendarPage.shownMonth.getMonth() - 1, 1) }
+                            Text {
+                                text: calendarPage.viewMode === 0
+                                    ? Qt.formatDate(calendarPage.shownMonth, "MMMM yyyy").toUpperCase()
+                                    : Qt.formatDate(calendarPage.selectedDate, "dddd d MMMM").toUpperCase()
+                                color: root.textPrimary; font.pixelSize: 22; font.letterSpacing: 2; Layout.fillWidth: true
+                            }
+                            HudButton { text: "MONTH"; buttonColor: calendarPage.viewMode === 0 ? "#0E3A48" : root.surfaceHigh; foregroundColor: calendarPage.viewMode === 0 ? root.accent : root.textSecondary; onClicked: calendarPage.viewMode = 0 }
+                            HudButton { text: "NIGHT"; buttonColor: calendarPage.viewMode === 1 ? "#0E3A48" : root.surfaceHigh; foregroundColor: calendarPage.viewMode === 1 ? root.accent : root.textSecondary; onClicked: calendarPage.viewMode = 1 }
+                            HudButton {
+                                text: "‹"; implicitWidth: 40
+                                onClicked: {
+                                    if (calendarPage.viewMode === 0)
+                                        calendarPage.shownMonth = new Date(calendarPage.shownMonth.getFullYear(), calendarPage.shownMonth.getMonth() - 1, 1)
+                                    else {
+                                        const value = new Date(calendarPage.selectedDate)
+                                        value.setDate(value.getDate() - 1)
+                                        calendarPage.selectedDate = value
+                                    }
+                                }
+                            }
                             HudButton { text: "TODAY"; onClicked: { calendarPage.shownMonth = new Date(); calendarPage.selectedDate = new Date() } }
-                            HudButton { text: "›"; implicitWidth: 40; onClicked: calendarPage.shownMonth = new Date(calendarPage.shownMonth.getFullYear(), calendarPage.shownMonth.getMonth() + 1, 1) }
+                            HudButton {
+                                text: "›"; implicitWidth: 40
+                                onClicked: {
+                                    if (calendarPage.viewMode === 0)
+                                        calendarPage.shownMonth = new Date(calendarPage.shownMonth.getFullYear(), calendarPage.shownMonth.getMonth() + 1, 1)
+                                    else {
+                                        const value = new Date(calendarPage.selectedDate)
+                                        value.setDate(value.getDate() + 1)
+                                        calendarPage.selectedDate = value
+                                    }
+                                }
+                            }
                             HudButton { text: "+ NEW SESSION"; busyText: "OPENING…"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: sessionDialog.openForDate(calendarPage.dateKey(calendarPage.selectedDate)) }
                         }
                         RowLayout {
+                            visible: calendarPage.viewMode === 0
                             Layout.fillWidth: true
                             Repeater { model: ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]; Text { required property string modelData; text: modelData; color: root.accent; font.pixelSize: 11; font.bold: true; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter } }
                         }
                         GridLayout {
+                            visible: calendarPage.viewMode === 0
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             columns: 7
@@ -1990,12 +2192,12 @@ ApplicationWindow {
                                                 height: 22
                                                 color: root.statusFill(modelData.status)
                                                 border.color: root.statusColor(modelData.status)
-                                                opacity: calendarPage.sessionDragActive && calendarPage.sessionDragData.id === sessionId ? 0.35 : 1
+                                                opacity: root.sessionDragActive && root.sessionDragData.id === sessionId ? 0.35 : 1
                                                 Text { anchors.fill: parent; anchors.margins: 4; text: calendarPage.chipText(modelData); color: root.textPrimary; font.pixelSize: 9; elide: Text.ElideRight }
                                                 SessionDragArea {
                                                     anchors.fill: parent
                                                     dragItem: sessionChip.modelData
-                                                    onPressed: calendarPage.selectedDate = dayCell.cellDate
+                                                    pressedAction: function() { calendarPage.selectedDate = dayCell.cellDate }
                                                 }
                                                 TapHandler { acceptedButtons: Qt.RightButton; onTapped: sessionMenu.open() }
                                                 SessionContextMenu {
@@ -2035,8 +2237,107 @@ ApplicationWindow {
                                 }
                             }
                         }
+                        Item {
+                            id: nightTimeline
+                            visible: calendarPage.viewMode === 1
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            property real hourHeight: 64
+                            Flickable {
+                                id: timelineFlick
+                                anchors.fill: parent
+                                clip: true
+                                contentWidth: width
+                                contentHeight: 24 * nightTimeline.hourHeight + 24
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: ScrollBar {}
+                                Item {
+                                    id: timelineTrack
+                                    width: timelineFlick.width
+                                    height: timelineFlick.contentHeight
+                                    DropArea {
+                                        anchors.fill: parent
+                                        keys: ["session"]
+                                        onDropped: drop => {
+                                            const sid = String((drop.source && drop.source.sessionId) || "")
+                                            if (sid)
+                                                backend.moveSessionStart(sid, calendarPage.timelineDate(drop.y / nightTimeline.hourHeight * 60))
+                                        }
+                                    }
+                                    Repeater {
+                                        model: 25
+                                        delegate: Item {
+                                            required property int index
+                                            y: index * nightTimeline.hourHeight
+                                            width: timelineTrack.width
+                                            height: 1
+                                            Text {
+                                                x: 4; y: -7; width: 52
+                                                text: String((calendarPage.cutoffHour + index) % 24).padStart(2, "0") + ":00"
+                                                color: root.textSecondary
+                                                font.pixelSize: 10
+                                                font.family: "Cascadia Mono"
+                                            }
+                                            Rectangle { x: 58; width: parent.width - 66; height: 1; color: index % 6 === 0 ? root.accent : root.outline; opacity: index % 6 === 0 ? 0.55 : 0.4 }
+                                        }
+                                    }
+                                    Repeater {
+                                        model: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+                                        delegate: Rectangle {
+                                            id: timelineSession
+                                            required property var modelData
+                                            property string sessionId: modelData.id
+                                            x: 66
+                                            y: calendarPage.timelineMinutes(modelData.start_time) / 60 * nightTimeline.hourHeight + 5
+                                            width: timelineTrack.width - 82
+                                            height: Math.max(36, Number(modelData.planned_duration_seconds || 0) / 3600 * nightTimeline.hourHeight - 6)
+                                            color: root.statusFill(modelData.status)
+                                            border.color: root.statusColor(modelData.status)
+                                            border.width: 2
+                                            opacity: root.sessionDragActive && root.sessionDragData.id === sessionId ? 0.35 : 0.96
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 8
+                                                Text { text: "⋮⋮"; color: root.accent; font.pixelSize: 16 }
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true; spacing: 0
+                                                    Text { text: modelData.start_time + "  " + modelData.target_name; color: root.textPrimary; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                    Text { text: modelData.duration_text + "  ·  " + modelData.device_name; color: root.textSecondary; font.pixelSize: 10; visible: timelineSession.height > 48 }
+                                                }
+                                                HudButton { text: "EDIT"; implicitHeight: 24; visible: timelineSession.height > 44; onClicked: sessionDialog.openExisting(timelineSession.modelData) }
+                                                HudButton { text: "RUN"; implicitHeight: 24; visible: timelineSession.height > 44; enabled: modelData.status !== "running"; onClicked: backend.runNow(modelData.id) }
+                                            }
+                                            SessionDragArea {
+                                                anchors.left: parent.left
+                                                anchors.top: parent.top
+                                                anchors.bottom: parent.bottom
+                                                width: 48
+                                                dragItem: timelineSession.modelData
+                                            }
+                                            TapHandler { acceptedButtons: Qt.RightButton; onTapped: timelineMenu.popup() }
+                                            SessionContextMenu { id: timelineMenu; sessionData: timelineSession.modelData }
+                                        }
+                                    }
+                                    Rectangle {
+                                        visible: calendarPage.dateKey(calendarPage.selectedDate) === calendarPage.currentObservingKey()
+                                        x: 58
+                                        width: parent.width - 66
+                                        height: 2
+                                        color: root.warning
+                                        y: calendarPage.timelineMinutes(Qt.formatTime(new Date(), "HH:mm")) / 60 * nightTimeline.hourHeight
+                                        Text { anchors.right: parent.right; anchors.bottom: parent.top; text: "NOW"; color: root.warning; font.pixelSize: 9; font.bold: true }
+                                    }
+                                }
+                            }
+                            EmptyHint {
+                                anchors.centerIn: parent
+                                visible: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).length === 0
+                                text: "Drop a session here after scheduling it, or create a new session for this night"
+                            }
+                        }
                     }
                     HudPanel {
+                        visible: calendarPage.viewMode === 0
                         title: Qt.formatDate(calendarPage.selectedDate, "ddd d MMM").toUpperCase()
                         SplitView.preferredWidth: 312
                         SplitView.minimumWidth: 220
@@ -2065,7 +2366,7 @@ ApplicationWindow {
                                     height: 64
                                     color: "#122033"
                                     border.color: root.statusColor(modelData.status)
-                                    opacity: calendarPage.sessionDragActive && calendarPage.sessionDragData.id === sessionId ? 0.35 : 1
+                                    opacity: root.sessionDragActive && root.sessionDragData.id === sessionId ? 0.35 : 1
                                     ColumnLayout {
                                         anchors.fill: parent
                                         anchors.margins: 8
@@ -2101,59 +2402,6 @@ ApplicationWindow {
                                 text: "No sessions this observing night"
                             }
                         }
-                    }
-                }
-                Item {
-                    id: sessionDragProxy
-                    width: 1
-                    height: 1
-                    visible: false
-                    property string sessionId: ""
-                    Drag.keys: ["session"]
-                    Drag.hotSpot.x: 0
-                    Drag.hotSpot.y: 0
-                    function startDrag(item, pos) {
-                        sessionId = item.id
-                        x = pos.x
-                        y = pos.y
-                        Drag.active = true
-                        calendarPage.beginSessionDrag(item, pos)
-                    }
-                    function moveDrag(pos) {
-                        x = pos.x
-                        y = pos.y
-                        calendarPage.updateSessionDrag(pos)
-                    }
-                    function finishDrag() {
-                        if (Drag.active)
-                            Drag.drop()
-                        calendarPage.endSessionDrag()
-                        sessionId = ""
-                    }
-                    function cancelDrag() {
-                        if (Drag.active)
-                            Drag.cancel()
-                        calendarPage.endSessionDrag()
-                        sessionId = ""
-                    }
-                }
-                Rectangle {
-                    id: sessionDragGhost
-                    visible: calendarPage.sessionDragActive
-                    z: 100
-                    width: 168
-                    height: 22
-                    x: calendarPage.sessionDragPos.x - width / 2
-                    y: calendarPage.sessionDragPos.y - height / 2
-                    color: root.statusFill(calendarPage.sessionDragData.status || "")
-                    border.color: root.statusColor(calendarPage.sessionDragData.status || "")
-                    Text {
-                        anchors.fill: parent
-                        anchors.margins: 4
-                        text: calendarPage.sessionDragData && calendarPage.sessionDragData.id ? calendarPage.chipText(calendarPage.sessionDragData) : ""
-                        color: root.textPrimary
-                        font.pixelSize: 9
-                        elide: Text.ElideRight
                     }
                 }
             }
@@ -2220,12 +2468,25 @@ ApplicationWindow {
                                 ScrollBar.horizontal: HiddenBar {}
                                 model: backend.sessions
                                 delegate: HudPanel {
+                                    id: scheduledRow
                                     required property var modelData
                                     width: ListView.view.width
                                     height: 84
+                                    fill: scheduledDrop.containsDrag ? "#C0163B4D" : "#B3070D16"
+                                    DropArea {
+                                        id: scheduledDrop
+                                        anchors.fill: parent
+                                        keys: ["session"]
+                                        onDropped: drop => {
+                                            const source = root.sessionDragData
+                                            if (source && source.device_id === scheduledRow.modelData.device_id)
+                                                backend.reorderPlanned(String(source.id || ""), scheduledRow.modelData.id)
+                                        }
+                                    }
                                     RowLayout {
                                         Layout.fillWidth: true
                                         Rectangle { width: 4; Layout.fillHeight: true; color: modelData.device_color || root.accent }
+                                        Text { text: "⋮⋮"; color: root.accent; font.pixelSize: 16 }
                                         ColumnLayout {
                                             Layout.preferredWidth: 280
                                             Text { text: modelData.target_name; color: root.textPrimary; font.pixelSize: 16; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
@@ -2242,11 +2503,26 @@ ApplicationWindow {
                                         HudButton { text: "RESET"; visible: root.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
                                         HudButton { text: "RUN"; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
                                     }
+                                    SessionDragArea {
+                                        anchors.left: parent.left
+                                        anchors.top: parent.top
+                                        anchors.bottom: parent.bottom
+                                        width: 42
+                                        dragItem: scheduledRow.modelData
+                                    }
                                     TapHandler { acceptedButtons: Qt.RightButton; onTapped: scheduledMenu.popup() }
                                     SessionContextMenu {
                                         id: scheduledMenu
                                         sessionData: modelData
                                     }
+                                }
+                                footer: DropArea {
+                                    width: parent ? parent.width : 0
+                                    height: 36
+                                    keys: ["session"]
+                                    Rectangle { anchors.fill: parent; color: parent.containsDrag ? "#163B4D" : "transparent"; border.color: parent.containsDrag ? root.accent : "transparent" }
+                                    Text { anchors.centerIn: parent; text: "DROP TO MOVE TO END"; visible: parent.containsDrag; color: root.accent; font.pixelSize: 9 }
+                                    onDropped: drop => backend.reorderPlanned(String((drop.source && drop.source.sessionId) || ""), "")
                                 }
                             }
                         }
@@ -2948,6 +3224,65 @@ ApplicationWindow {
             border.color: "#3F6E82"
             border.width: 2
             z: 2000
+        }
+    }
+
+    Item {
+        id: sessionDragProxy
+        parent: root.contentItem
+        width: 1
+        height: 1
+        visible: false
+        z: 4000
+        property string sessionId: ""
+        Drag.keys: ["session"]
+        Drag.hotSpot.x: 0
+        Drag.hotSpot.y: 0
+        function startDrag(item, pos) {
+            sessionId = item.id
+            x = pos.x
+            y = pos.y
+            Drag.active = true
+            root.beginSessionDrag(item, pos)
+        }
+        function moveDrag(pos) {
+            x = pos.x
+            y = pos.y
+            root.updateSessionDrag(pos)
+        }
+        function finishDrag() {
+            if (Drag.active)
+                Drag.drop()
+            root.endSessionDrag()
+            sessionId = ""
+        }
+        function cancelDrag() {
+            if (Drag.active)
+                Drag.cancel()
+            root.endSessionDrag()
+            sessionId = ""
+        }
+    }
+
+    Rectangle {
+        parent: root.contentItem
+        visible: root.sessionDragActive
+        z: 4001
+        width: 190
+        height: 28
+        x: root.sessionDragPos.x - width / 2
+        y: root.sessionDragPos.y - height / 2
+        color: root.statusFill(root.sessionDragData.status || "")
+        border.color: root.statusColor(root.sessionDragData.status || "")
+        border.width: 2
+        Text {
+            anchors.fill: parent
+            anchors.margins: 5
+            text: root.dragLabel(root.sessionDragData)
+            color: root.textPrimary
+            font.pixelSize: 10
+            font.bold: true
+            elide: Text.ElideRight
         }
     }
 

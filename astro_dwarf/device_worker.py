@@ -217,6 +217,33 @@ def sdk_call(operation: str, *args: Any) -> Any:
     return result
 
 
+def serializable_state(value: Any) -> Any:
+    """Convert SDK/protobuf state into JSON-safe values without inventing fields."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): serializable_state(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [serializable_state(item) for item in value]
+    try:
+        from google.protobuf.json_format import MessageToDict
+        from google.protobuf.message import Message
+
+        if isinstance(value, Message):
+            return MessageToDict(value, preserving_proto_field_name=True)
+    except ImportError:
+        pass
+    if hasattr(value, "__dict__"):
+        data = {
+            str(key): serializable_state(item)
+            for key, item in vars(value).items()
+            if not str(key).startswith("_")
+        }
+        if data:
+            return data
+    return {"value": str(value)}
+
+
 _BLE_NAME_PREFIXES = {
     "Dwarf II": ("DWARF2", "DWARFII"),
     "Dwarf 3": ("DWARF3",),
@@ -564,15 +591,19 @@ def _safe_disconnect() -> None:
         pass
 
 
-def _handshake() -> bool:
+def _handshake() -> dict[str, Any] | None:
     if sdk_call("time") is False:
-        return False
+        return None
+    telemetry: dict[str, Any] = {}
     for operation in ("host_master", "device_state", "location"):
         try:
-            sdk_call(operation)
+            result = sdk_call(operation)
+            if operation == "device_state":
+                normalized = serializable_state(result)
+                telemetry = normalized if isinstance(normalized, dict) else {"value": normalized}
         except NotImplementedError as exc:
             log(str(exc), "warning")
-    return True
+    return telemetry
 
 
 def provision_bluetooth() -> str:
@@ -625,15 +656,16 @@ def provision_bluetooth() -> str:
     return ip
 
 
-def connect() -> bool | dict[str, str]:
+def connect() -> bool | dict[str, Any]:
     ip = str(_device.get("ip_address") or "").strip()
     ble_enabled = bool(_device.get("ble_enabled"))
     if ip:
         log(f"Connecting to {ip}…")
         if ip == "192.168.88.1" and not _host_reachable(ip):
             _ensure_hotspot_link(ip)
-        if _handshake():
-            return {"ip_address": ip}
+        telemetry = _handshake()
+        if telemetry is not None:
+            return {"ip_address": ip, "telemetry": telemetry}
         log("IP connection failed" + (", trying Bluetooth…" if ble_enabled else ""), "warning")
         _safe_disconnect()
     elif not ble_enabled:
@@ -645,8 +677,9 @@ def connect() -> bool | dict[str, str]:
     discovered = provision_bluetooth()
     _ensure_hotspot_link(discovered)
     for attempt in range(1, 6):
-        if _handshake():
-            return {"ip_address": discovered}
+        telemetry = _handshake()
+        if telemetry is not None:
+            return {"ip_address": discovered, "telemetry": telemetry}
         log(f"Waiting for the telescope at {discovered} ({attempt}/5)…")
         time.sleep(3)
         _safe_disconnect()
@@ -744,6 +777,8 @@ def dispatch(message: dict[str, Any]) -> Any:
         return run_session(message["session"])
     if command == "stop_all":
         return stop_all()
+    if command in {"device_state", "stack_status"}:
+        return serializable_state(sdk_call(command))
     if command in {"calibrate", "autofocus", "infinity", "polar"}:
         if sdk_call("astro_mode") is False:
             return False
