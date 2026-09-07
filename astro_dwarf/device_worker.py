@@ -129,27 +129,20 @@ def _interrupt_sdk_wait(reason: str) -> bool:
         return False
 
 
-def _drain_interrupts() -> None:
-    """Remove stale interrupt markers so they cannot fail the next SDK command."""
+def _drain_result_queue() -> None:
+    """Drop leftover SDK results so a prior fire-and-forget command cannot complete the next wait."""
     global _interrupt_pending
-    if not _interrupt_pending:
-        return
     _interrupt_pending = False
     client, loop = _sdk_socket()
     if client is None:
         return
 
     async def drain() -> None:
-        kept = []
         while True:
             try:
-                item = client.result_queue.get_nowait()
+                client.result_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            if not (isinstance(item, dict) and item.get("message") == _INTERRUPT_MARKER):
-                kept.append(item)
-        for item in kept:
-            client.result_queue.put_nowait(item)
 
     try:
         asyncio.run_coroutine_threadsafe(drain(), loop).result(timeout=2)
@@ -385,7 +378,7 @@ def sdk_call(operation: str, *args: Any) -> Any:
     # Periodic state refreshes are plumbing; keep them out of the main log.
     call_level = "debug" if operation in _QUIET_OPERATIONS else "sdk"
     global _in_flight
-    _drain_interrupts()
+    _drain_result_queue()
     _in_flight = operation
     try:
         # Publish _in_flight before reading _stop; request_stop() does the
@@ -913,51 +906,97 @@ _V3_OPERATION_WAITS: dict[str, tuple[int, str | None, bool, float]] = {
     "autofocus": (15004, None, True, 180.0),
     "calibrate": (11000, "calibration_state", False, 600.0),
     "polar": (11018, "eq_state", True, 600.0),
+    "goto": (11002, "goto_state", False, 300.0),
+    "goto_solar": (11003, "goto_state", False, 300.0),
 }
-_NON_FATAL_REPLIES = {11000: {-11500}}  # plate solving retry during calibration
+_NON_FATAL_REPLIES = {
+    11000: {-11500},  # plate solving retry during calibration
+    11002: {-11500},
+    11003: {-11500},
+}
+_BUSY_ASTRO = {"running", "solving", "stopping"}
 
 
 def _await_operation(name: str, operation: str, since: float) -> None:
     """Block until a fire-and-forget V3 operation finishes, fails or times out.
 
-    Dwarf 3 / Mini start calibration, autofocus and polar alignment without a
-    synchronous reply, so the session has to watch telemetry: the device sends
-    the reply for the start command when the operation ends, and calibration
-    also reports its state as a notification.
+    Dwarf 3 / Mini start calibration, autofocus, polar alignment and GOTO
+    without waiting for the slew/solve to finish. The session watches
+    telemetry: the device sends the reply for the start command when the
+    operation ends (or immediately for GOTO), and state notifications
+    report running → solving → idle/stopped.
     """
     if _tap is None:
         return
     reply_cmd, state_key, done_on_reply, timeout = _V3_OPERATION_WAITS[operation]
-    busy_states = {"running", "solving", "stopping"}
     seen_running = False
+    snapshot = _tap.snapshot()
+    state = snapshot.get(state_key) if state_key else None
+    if state in _BUSY_ASTRO:
+        seen_running = True
+    elif (
+        operation in ("goto", "goto_solar")
+        and snapshot.get("tracking_state") == "running"
+        and (time.monotonic() - since) > 5
+    ):
+        # perform_goto already blocked until tracking engaged.
+        return
     log(f"{name} started; waiting for the telescope to finish…")
     while True:
         if _stop.is_set():
             raise InterruptedError("Session stopped")
+        snapshot = _tap.snapshot()
         code = _tap.response_after(reply_cmd, since)
         if code is not None and code != 0 and code not in _NON_FATAL_REPLIES.get(reply_cmd, set()):
             raise RuntimeError(f"{name} failed: {_error_name(code)}")
         if code == 0 and done_on_reply:
             return
-        state = _tap.snapshot().get(state_key) if state_key else None
-        if state in busy_states:
+        state = snapshot.get(state_key) if state_key else None
+        if state in _BUSY_ASTRO:
             seen_running = True
         elif seen_running and state in ("idle", "stopped"):
+            return
+        if (
+            operation in ("goto", "goto_solar")
+            and seen_running
+            and snapshot.get("tracking_state") == "running"
+            and state not in _BUSY_ASTRO
+        ):
             return
         elapsed = time.monotonic() - since
         if elapsed > timeout:
             raise RuntimeError(f"{name} timed out after {int(timeout)} s")
-        if state_key and not seen_running and code is None and elapsed > 30:
+        if state_key and not seen_running and elapsed > 30:
             raise RuntimeError(f"{name} did not start")
         time.sleep(0.5)
 
 
+def _wait_for_capture_slot() -> None:
+    """Do not start stacking while GOTO or calibration still owns the astro engine."""
+    if _tap is None:
+        return
+    deadline = time.monotonic() + 120.0
+    logged = False
+    while time.monotonic() < deadline:
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        snapshot = _tap.snapshot()
+        if snapshot.get("goto_state") not in _BUSY_ASTRO and snapshot.get("calibration_state") not in _BUSY_ASTRO:
+            return
+        if not logged:
+            log("Waiting for the telescope to finish slewing before capture…")
+            logged = True
+        time.sleep(0.5)
+    raise RuntimeError("Telescope still busy; capture not started")
+
+
 def run_session(session: dict[str, Any]) -> bool:
-    global _session_phase
+    global _session_phase, _stop_phase
     _stop.clear()
     _session_active.set()
     _session_phase = None
     v3_model = _device.get("model") in ("Dwarf 3", "Dwarf Mini")
+    completed = False
 
     def step(name: str, operation: str | None = None, *args: Any) -> None:
         global _session_phase
@@ -976,10 +1015,20 @@ def run_session(session: dict[str, Any]) -> bool:
             _await_operation(name, operation, started)
 
     try:
-        return _run_session_steps(session, step)
+        completed = _run_session_steps(session, step)
+        return completed
     finally:
+        leftover = not completed and not _stop.is_set()
+        phase = _session_phase
         _session_active.clear()
         _session_phase = None
+        if leftover:
+            _stop_phase = phase
+            try:
+                log("Stopping leftover telescope activity after session ended", "warning")
+                stop_all()
+            except Exception as exc:
+                log(f"Could not stop leftover activity: {exc}", "debug")
 
 
 def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
@@ -1008,7 +1057,8 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     elif workflow.get("infinite_focus"):
         step("Infinity focus", "autofocus", True)
     if workflow.get("goto") and target.get("ra_hours") is not None:
-        step("GOTO target", "goto", target["ra_hours"], target["dec_degrees"], target["name"])
+        # goto_only=True: we start stacking ourselves after GOTO finishes.
+        step("GOTO target", "goto", target["ra_hours"], target["dec_degrees"], target["name"], True)
     elif workflow.get("goto") and target.get("kind") == "solar":
         ids = {"mercury": 1, "venus": 2, "mars": 3, "jupiter": 4, "saturn": 5, "uranus": 6, "neptune": 7, "moon": 8, "sun": 9}
         name = (target.get("solar_name") or target["name"]).lower()
@@ -1019,6 +1069,7 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         step("Set filter", "set_ir", camera["ir_filter"])
     step("Set count", "set_count", camera["frame_count"], camera["camera"])
     step("Set binning", "set_binning", camera["binning"])
+    _wait_for_capture_slot()
     if max(1, mosaic["rows"] * mosaic["columns"]) > 1:
         step("Set mosaic count", "set_mosaic_count", camera["frame_count"])
         step("Start mosaic", "mosaic", mosaic["horizontal_scale"], mosaic["vertical_scale"], mosaic["rotation_degrees"])
@@ -1045,19 +1096,18 @@ def _stop_targets() -> list[str]:
     snapshot = _tap.snapshot() if _tap is not None else {}
     capturing = bool(snapshot.get("capture_active"))
     wide_capture = capturing and snapshot.get("capture_camera") == "wide"
-    busy = {"running", "solving", "stopping"}
     operations: list[str] = []
     if phase in ("astro", "wait_astro", "mosaic", "set_mosaic_count") or (capturing and not wide_capture):
         operations.append("stop_astro")
     if phase in ("wide_astro", "wait_wide") or wide_capture:
         operations.append("stop_wide")
-    if phase in ("goto", "goto_solar") or snapshot.get("goto_state") in busy:
+    if phase in ("goto", "goto_solar") or snapshot.get("goto_state") in _BUSY_ASTRO:
         operations.append("stop_goto")
-    if phase == "calibrate" or snapshot.get("calibration_state") in busy:
+    if phase == "calibrate" or snapshot.get("calibration_state") in _BUSY_ASTRO:
         operations.append("stop_calibrate")
     if phase == "autofocus" or snapshot.get("autofocus_state") == "running":
         operations.append("stop_autofocus")
-    if phase == "polar" or snapshot.get("eq_state") in busy:
+    if phase == "polar" or snapshot.get("eq_state") in _BUSY_ASTRO:
         operations.append("stop_polar")
     if not operations and phase is None:
         operations.extend(_FALLBACK_STOPS)

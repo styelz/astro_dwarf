@@ -23,8 +23,22 @@ def battery_tone(percent: Any) -> str:
     return "good"
 
 
-def _temp_text(value: Any) -> str:
-    return "—" if value is None else f"{int(value)}°C"
+def _temp_pair(value: Any) -> tuple[str, str]:
+    if value is None:
+        return "—", ""
+    try:
+        celsius = int(value)
+    except (TypeError, ValueError):
+        return "—", ""
+    fahrenheit = round(celsius * 9 / 5 + 32)
+    return f"{celsius}°C", f"{fahrenheit}°F"
+
+
+def _assign_temp(view: dict[str, Any], prefix: str, value: Any) -> None:
+    celsius, fahrenheit = _temp_pair(value)
+    view[f"{prefix}_text"] = celsius if not fahrenheit else f"{celsius} / {fahrenheit}"
+    view[f"{prefix}_c_text"] = celsius
+    view[f"{prefix}_f_text"] = fahrenheit
 
 
 def derive_activity(raw: dict[str, Any]) -> tuple[str, str]:
@@ -36,9 +50,15 @@ def derive_activity(raw: dict[str, Any]) -> tuple[str, str]:
         phase = raw.get("calibration_phase") or 0
         detail = f"SOLVE {phase}" if calibration == "solving" or phase else "STARTING"
         return "calibrate", detail
-    if raw.get("goto_state") == "running":
+    if raw.get("goto_state") in ("running", "solving", "stopping"):
         target = raw.get("goto_target") or ""
-        return "goto", target.upper() if target else "SLEWING"
+        if raw.get("goto_state") == "solving":
+            detail = "PLATE SOLVING"
+        elif raw.get("goto_state") == "stopping":
+            detail = "STOPPING"
+        else:
+            detail = target.upper() if target else "SLEWING"
+        return "goto", detail
     if raw.get("eq_state") == "running":
         return "polar", "EQ SOLVING"
     if raw.get("autofocus_state") == "running":
@@ -95,9 +115,9 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
         view["storage_free_text"] = ""
         view["storage_tone"] = "bad" if valid is False else "unknown"
     view["storage_valid"] = bool(valid) if valid is not None else total is not None
-    view["temperature_text"] = _temp_text(raw.get("temperature_c"))
-    view["cmos_tele_text"] = _temp_text(raw.get("cmos_tele_c"))
-    view["cmos_wide_text"] = _temp_text(raw.get("cmos_wide_c"))
+    _assign_temp(view, "temperature", raw.get("temperature_c"))
+    _assign_temp(view, "cmos_tele", raw.get("cmos_tele_c"))
+    _assign_temp(view, "cmos_wide", raw.get("cmos_wide_c"))
     focus = raw.get("focus_position")
     view["focus_text"] = str(int(focus)) if focus is not None else "—"
     view["mount_mode"] = raw.get("mount_mode") or ""
@@ -184,9 +204,12 @@ class AlertEngine:
             target = current.get("goto_target") or previous.get("goto_target") or ""
             suffix = f" · {target}" if target else ""
             state = current["goto_state"]
-            if state == "running":
+            previous_state = previous.get("goto_state")
+            if state in ("running", "solving") and previous_state not in ("running", "solving", "stopping"):
                 add("info", f"GOTO started{suffix}", "", toast=False)
-            elif state in ("stopped", "idle") and previous.get("goto_state") == "running":
+            elif state == "solving" and previous_state == "running":
+                add("info", f"GOTO plate-solving{suffix}", "", toast=False)
+            elif state in ("stopped", "idle") and previous_state in ("running", "solving", "stopping"):
                 add("success", f"GOTO complete{suffix}", "Target centred; tracking engaged")
         # Calibration
         if changed("calibration_state"):
@@ -217,7 +240,10 @@ class AlertEngine:
                 detail_parts.append(f"{int(stacked)} frames stacked")
             if target:
                 detail_parts.append(target)
-            add("success", "Capture finished", " · ".join(detail_parts))
+            if stacked:
+                add("success", "Capture finished", " · ".join(detail_parts))
+            else:
+                add("info", "Capture ended", " · ".join(detail_parts) or "No frames stacked", toast=False)
         if changed("dark_state") and current["dark_state"] in ("stopped", "idle") and previous.get("dark_state") == "running":
             add("success", "Dark frames complete", "")
         # Power / host

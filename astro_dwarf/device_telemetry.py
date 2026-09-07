@@ -51,10 +51,18 @@ TYPE_NOTIFICATION = 2
 _RESPONSE_TYPES = (1, 3)  # WsPacket.type: 0 request, 1 reply, 2 notification, 3 response
 
 CMD_ASTRO_START_CALIBRATION = 11000
+CMD_ASTRO_START_GOTO_DSO = 11002
+CMD_ASTRO_START_GOTO_SOLAR_SYSTEM = 11003
 CMD_ASTRO_START_EQ_SOLVING = 11018
 CMD_FOCUS_START_ASTRO_AUTO_FOCUS = 15004
 # Long-running commands whose reply only arrives once the operation ends.
-_TRACKED_RESPONSES = {CMD_ASTRO_START_CALIBRATION, CMD_ASTRO_START_EQ_SOLVING, CMD_FOCUS_START_ASTRO_AUTO_FOCUS}
+_TRACKED_RESPONSES = {
+    CMD_ASTRO_START_CALIBRATION,
+    CMD_ASTRO_START_GOTO_DSO,
+    CMD_ASTRO_START_GOTO_SOLAR_SYSTEM,
+    CMD_ASTRO_START_EQ_SOLVING,
+    CMD_FOCUS_START_ASTRO_AUTO_FOCUS,
+}
 
 OPERATION_STATES = {0: "idle", 1: "running", 2: "stopping", 3: "stopped"}
 ASTRO_STATES = {0: "idle", 1: "running", 2: "stopping", 3: "stopped", 4: "solving"}
@@ -115,6 +123,35 @@ class _MessageProxy:
 
     def __setattr__(self, name: str, value: Any) -> None:
         setattr(object.__getattribute__(self, "_message"), name, value)
+
+
+def _protobuf_varint(data: bytes, offset: int = 0) -> tuple[int, int]:
+    value = 0
+    shift = 0
+    while offset < len(data):
+        byte = data[offset]
+        offset += 1
+        value |= (byte & 0x7F) << shift
+        if byte & 0x80 == 0:
+            return value, offset
+        shift += 7
+        if shift >= 64:
+            break
+    return value, offset
+
+
+def _first_enum_field(data: bytes) -> int | None:
+    """Read protobuf field 1 when it is a varint (enum/int)."""
+    if not data:
+        return None
+    try:
+        key, offset = _protobuf_varint(data, 0)
+        if (key >> 3) != 1 or (key & 7) != 0:
+            return None
+        value, _ = _protobuf_varint(data, offset)
+        return value
+    except Exception:
+        return None
 
 
 def _exposure_name(index: Any, model_id: str) -> str:
@@ -257,6 +294,28 @@ class TelemetryTap:
         message.ParseFromString(data)
         return message
 
+    def _decode_named_state(
+        self,
+        factory_name: str,
+        data: bytes,
+        state_key: str,
+        target_key: str,
+        states: dict[int, str],
+    ) -> dict[str, Any]:
+        """Decode goto/tracking notifications even when target_name is not valid UTF-8."""
+        try:
+            message = self._parse(factory_name, data)
+            target = str(message.target_name or "")
+            return {
+                state_key: states.get(int(message.state), str(message.state)),
+                target_key: target,
+            }
+        except Exception:
+            state = _first_enum_field(data)
+            if state is None:
+                return {}
+            return {state_key: states.get(state, str(state))}
+
     def on_packet(self, cmd: int, kind: int, data: bytes) -> None:
         """Decode one incoming packet into telemetry changes (never raises)."""
         if kind in _RESPONSE_TYPES and cmd in _TRACKED_RESPONSES:
@@ -291,6 +350,8 @@ class TelemetryTap:
 
     def _decode(self, cmd: int, kind: int, data: bytes) -> dict[str, Any]:
         if self._notify is None or self._base is None:
+            return {}
+        if kind != TYPE_NOTIFICATION and cmd >= CMD_NOTIFY_ELE:
             return {}
         if cmd == CMD_NOTIFY_ELE:
             message = self._base.ComResWithInt()
@@ -342,17 +403,11 @@ class TelemetryTap:
         if cmd == CMD_NOTIFY_POWER_OFF:
             return {"power_off": True}
         if cmd == CMD_NOTIFY_STATE_ASTRO_GOTO:
-            message = self._parse("AstroGotoState", data)
-            return {
-                "goto_state": ASTRO_STATES.get(int(message.state), str(message.state)),
-                "goto_target": str(message.target_name or ""),
-            }
+            return self._decode_named_state("AstroGotoState", data, "goto_state", "goto_target", ASTRO_STATES)
         if cmd == CMD_NOTIFY_STATE_ASTRO_TRACKING:
-            message = self._parse("AstroTrackingState", data)
-            return {
-                "tracking_state": OPERATION_STATES.get(int(message.state), str(message.state)),
-                "tracking_target": str(message.target_name or ""),
-            }
+            return self._decode_named_state(
+                "AstroTrackingState", data, "tracking_state", "tracking_target", OPERATION_STATES
+            )
         if cmd == CMD_NOTIFY_STATE_ASTRO_CALIBRATION:
             message = self._parse("AstroCalibrationState", data)
             return {
@@ -602,7 +657,9 @@ def normalize_client_status(full: dict[str, Any], model_id: str = "3") -> dict[s
         put("host_mode", bool(full["HostMode"]))
     capturing = bool(full.get("AstroCapture")) or bool(full.get("AstroWideCapture"))
     if capturing:
-        put("capture_active", True)
+        # The SDK sets AstroCapture as soon as START_CAPTURE is *sent*, even when
+        # the device rejects it as busy. Frame counts are still useful; activity
+        # comes from the capture-state notifications instead.
         wide = bool(full.get("AstroWideCapture")) and not bool(full.get("AstroCapture"))
         count_key, stacked_key = ("takeWidePhotoCount", "takeWidePhotoStacked") if wide else ("takePhotoCount", "takePhotoStacked")
         if full.get("takeMosaicCount"):
@@ -692,6 +749,7 @@ _DEMOTE_PREFIXES = (
     "websocket terminated",
     "disconnected",  # the app logs its own "Disconnected" line
     "dwarf stream video type is unknown",  # stream_type 0 = camera not streaming yet
+    "skipping malformed astrogotostate",
 )
 _MAX_LOG_CHARS = 400
 
