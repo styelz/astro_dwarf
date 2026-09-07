@@ -388,7 +388,8 @@ class DwarfClient:
         model_id = {"Dwarf II": "2", "Dwarf 3": "3", "Dwarf Mini": "5"}[self.device.model.value]
         step("Setting exposure", "set_exposure", str(session.camera.exposure_seconds), model_id, session.camera.camera.value)
         step("Setting gain", "set_gain", session.camera.gain, session.camera.camera.value)
-        step("Setting IR filter", "set_ir", session.camera.ir_filter)
+        if session.camera.camera != Camera.WIDE:
+            step("Setting IR filter", "set_ir", session.camera.ir_filter)
         step("Setting frame count", "set_count", session.camera.frame_count, session.camera.camera.value)
         step("Setting binning", "set_binning", session.camera.binning)
         if session.mosaic.panes > 1:

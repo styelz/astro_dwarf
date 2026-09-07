@@ -1235,10 +1235,14 @@ ApplicationWindow {
                                     onClicked: backend.manualFocus(backend.selectedDeviceId, 0)
                                 }
                             }
-                            FieldLabel { text: "FILTER" }
+                            FieldLabel {
+                                text: "FILTER"
+                                visible: backend.selectedDevice.camera !== "wide"
+                            }
                             HudCombo {
                                 id: liveFilter
                                 Layout.fillWidth: true
+                                visible: backend.selectedDevice.camera !== "wide"
                                 enabled: root.commandEnabled("set_ir")
                                 model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
                                 onActivated: backend.setCameraParam(backend.selectedDeviceId, "ir", currentText)
@@ -3089,8 +3093,13 @@ ApplicationWindow {
                 FieldLabel { text: "START"; visible: !sessionDialog.editingTemplate }
                 HudField { id: startTime; Layout.fillWidth: true; Layout.columnSpan: 2; visible: !sessionDialog.editingTemplate }
                 FieldLabel { text: "CAMERA" }
-                HudCombo { id: camera; model: ["Tele", "Wide"]; Layout.fillWidth: true }
-                HudCombo { id: irFilter; model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]; Layout.fillWidth: true }
+                HudCombo { id: camera; model: ["Tele", "Wide"]; Layout.fillWidth: true; Layout.columnSpan: currentIndex === 1 ? 2 : 1 }
+                HudCombo {
+                    id: irFilter
+                    visible: camera.currentIndex === 0
+                    model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
+                    Layout.fillWidth: true
+                }
                 FieldLabel { text: "EXPOSURE" }
                 HudField { id: exposure; Layout.fillWidth: true }
                 HudField { id: gain; placeholderText: "Gain"; Layout.fillWidth: true }

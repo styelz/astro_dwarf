@@ -1003,6 +1003,8 @@ class AppBackend(QObject):
         elif name == "gain":
             operation, args = "set_gain", [int(value), camera]
         elif name == "ir":
+            if camera == Camera.WIDE.value:
+                return
             operation, args = "set_ir", [value]
         else:
             return

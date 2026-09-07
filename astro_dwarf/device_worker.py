@@ -452,7 +452,8 @@ def run_session(session: dict[str, Any]) -> bool:
         step("GOTO solar target", "goto_solar", ids[name], name.title())
     step("Set exposure", "set_exposure", str(camera["exposure_seconds"]), model_id, camera["camera"])
     step("Set gain", "set_gain", camera["gain"], camera["camera"])
-    step("Set filter", "set_ir", camera["ir_filter"])
+    if camera["camera"] != "wide":
+        step("Set filter", "set_ir", camera["ir_filter"])
     step("Set count", "set_count", camera["frame_count"], camera["camera"])
     step("Set binning", "set_binning", camera["binning"])
     if max(1, mosaic["rows"] * mosaic["columns"]) > 1:
