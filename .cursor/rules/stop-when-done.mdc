@@ -1,0 +1,15 @@
+---
+description: Stop after the work is in; do not burn time or credits on hung verification
+alwaysApply: true
+---
+
+# Stop when the work is in
+
+This is a desktop Qt/QML app. The user running it is the real check.
+
+- Once the requested changes are in the files, stop. Say what changed and that they should restart / try it.
+- One cheap check is enough when it helps (`python -m py_compile` on edited modules). Do not pile on more checkers.
+- Do not launch the app (`python -m astro_dwarf`, offscreen Qt, or similar) just to catch QML errors.
+- Do not write brace counters, temp linters, or probe scripts after the feature is written.
+- If a command hangs or returns no output, do not retry it with a different flag or wrapper. Drop it and report.
+- If you are blocked, say so in one short message instead of silently burning more tool calls.

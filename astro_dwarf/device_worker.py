@@ -210,10 +210,11 @@ def sdk_call(operation: str, *args: Any) -> Any:
     function = getattr(_api, function_name, None) if function_name else None
     if function is None:
         raise NotImplementedError(f"Installed SDK does not provide '{operation}'")
-    log(f"{operation.replace('_', ' ').title()}…")
+    label = operation.replace("_", " ").title()
+    log(f"{label}…", "sdk")
     with contextlib.redirect_stdout(sys.stderr):
         result = function(*args)
-    log(f"{operation.replace('_', ' ').title()}: {result}")
+    log(f"{label}: {result}", "sdk")
     return result
 
 
