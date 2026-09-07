@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 build/
 dist/
+.cursor/
 
 # Runtime telescope data and SDK worker files
 data/
