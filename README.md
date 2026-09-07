@@ -1,6 +1,6 @@
 # Astro Dwarf
 
-<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/28c93e4a-27be-4cc8-9bdb-22fe8de397f0" />
+<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/b658353d-5d8d-4027-aa38-cf6498fea76c" />
 
 Native, multi-device control and scheduling for Dwarf telescopes. The interface
 uses **PySide6 and Qt Quick/QML** in a real desktop window; it does not use a
