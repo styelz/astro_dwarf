@@ -59,11 +59,13 @@ from .location import match_timezone, resolve_location, timezone_locations
 from .runtime import prepare_worker_environment, worker_command
 from .storage import SessionStore
 from .stream_preview import LiveImageProvider, StreamPlayer, port_is_open, stream_port
+from .telemetry_view import AlertEngine, derive_activity, format_telemetry
 
 
 class TelescopeProcess(QObject):
     logReceived = Signal(str, str)
     progressReceived = Signal(str, str)
+    telemetryReceived = Signal(dict)
     availabilityChanged = Signal()
 
     def __init__(self, device: Device, parent: QObject | None = None):
@@ -190,10 +192,18 @@ class TelescopeProcess(QObject):
             event = message.get("event")
             if event == "log":
                 self.logReceived.emit(message.get("level", "info"), message.get("message", ""))
+            elif event == "telemetry":
+                data = message.get("data")
+                if isinstance(data, dict) and data:
+                    self.telemetryReceived.emit(data)
             elif event == "progress":
                 self.progressReceived.emit(message["session_id"], message["step"])
             elif event == "response":
-                callback = self._callbacks.pop(int(message.get("id", 0)), None)
+                try:
+                    request_id = int(message.get("id") or 0)
+                except (TypeError, ValueError):
+                    request_id = 0
+                callback = self._callbacks.pop(request_id, None)
                 if callback:
                     callback(bool(message.get("ok")), message.get("result") if message.get("ok") else message.get("error"))
 
@@ -238,7 +248,58 @@ _ACTIVITY_STOP = {
 }
 _ACTIVITY_CLEAR = {"stop_all", "reboot", "power_down", "go_live"}
 _ACTIVITY_TRANSIENT = {"calibrate", "autofocus"}
-_LOG_LIMIT = 500
+_ACTION_LABELS = {
+    "calibrate": "Calibration started",
+    "stop_calibrate": "Calibration stopped",
+    "autofocus": "Autofocus started",
+    "infinity": "Infinity focus started",
+    "stop_autofocus": "Autofocus stopped",
+    "polar": "Polar alignment started",
+    "stop_polar": "Polar alignment stopped",
+    "go_live": "Live view",
+    "photo_mode": "Photo mode",
+    "astro_mode": "Astro mode",
+    "lights_on": "Ring light on",
+    "lights_off": "Ring light off",
+    "indicator_on": "Power indicator on",
+    "indicator_off": "Power indicator off",
+    "burst_start": "Burst started",
+    "burst_stop": "Burst stopped",
+    "record_start": "Recording started",
+    "record_stop": "Recording stopped",
+    "timelapse_start": "Timelapse started",
+    "timelapse_stop": "Timelapse stopped",
+    "photo": "Photo captured",
+    "stop_all": "Stop sent",
+    "reboot": "Reboot requested",
+    "power_down": "Power down requested",
+    "open_camera": "Tele camera opened",
+    "open_wide_camera": "Wide camera opened",
+}
+_ACTION_DETAILS = {
+    "calibrate": "Device will plate-solve and report progress",
+    "autofocus": "Watch the focus position in VITALS",
+    "reboot": "The connection will drop for ~60 s",
+    "power_down": "The connection will drop",
+}
+_LOG_LIMIT = 600
+_LOG_TRIM_BATCH = 100
+_LOG_GLYPHS = {
+    "DEBUG": "·",
+    "SDK": "›",
+    "INFO": "●",
+    "NOTICE": "◆",
+    "SUCCESS": "✓",
+    "WARNING": "⚠",
+    "ERROR": "✗",
+}
+_LOG_FILTERS = {
+    # filter name -> levels shown (None = everything)
+    "all": {"INFO", "NOTICE", "SUCCESS", "WARNING", "ERROR"},
+    "device": {"NOTICE", "SUCCESS", "WARNING", "ERROR"},
+    "alerts": {"WARNING", "ERROR"},
+    "debug": None,
+}
 
 
 class LogListModel(QAbstractListModel):
@@ -246,12 +307,18 @@ class LogListModel(QAbstractListModel):
     LevelRole = Qt.ItemDataRole.UserRole + 2
     DeviceRole = Qt.ItemDataRole.UserRole + 3
     MessageRole = Qt.ItemDataRole.UserRole + 4
+    GlyphRole = Qt.ItemDataRole.UserRole + 5
+    CategoryRole = Qt.ItemDataRole.UserRole + 6
+    CountRole = Qt.ItemDataRole.UserRole + 7
+
+    countsChanged = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._all: list[dict[str, str]] = []
-        self._visible: list[dict[str, str]] = []
-        self._show_debug = False
+        self._all: list[dict[str, Any]] = []
+        self._visible: list[dict[str, Any]] = []
+        self._filter = "all"
+        self._counts: dict[str, int] = {"WARNING": 0, "ERROR": 0}
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         if parent.isValid():
@@ -270,6 +337,12 @@ class LogListModel(QAbstractListModel):
             return entry["device"]
         if role == self.MessageRole:
             return entry["message"]
+        if role == self.GlyphRole:
+            return _LOG_GLYPHS.get(entry["level"], "●")
+        if role == self.CategoryRole:
+            return entry.get("category", "app")
+        if role == self.CountRole:
+            return entry.get("count", 1)
         return None
 
     def roleNames(self) -> dict[int, bytes]:
@@ -278,23 +351,59 @@ class LogListModel(QAbstractListModel):
             self.LevelRole: b"level",
             self.DeviceRole: b"device",
             self.MessageRole: b"message",
+            self.GlyphRole: b"glyph",
+            self.CategoryRole: b"category",
+            self.CountRole: b"count",
         }
 
-    def visible_entries(self) -> list[dict[str, str]]:
+    def visible_entries(self) -> list[dict[str, Any]]:
         return list(self._visible)
 
-    def append(self, entry: dict[str, str]) -> None:
+    @property
+    def filter_name(self) -> str:
+        return self._filter
+
+    def warning_count(self) -> int:
+        return self._counts.get("WARNING", 0)
+
+    def error_count(self) -> int:
+        return self._counts.get("ERROR", 0)
+
+    def append(self, entry: dict[str, Any]) -> None:
+        last = self._all[-1] if self._all else None
+        if (
+            last is not None
+            and last["message"] == entry["message"]
+            and last["level"] == entry["level"]
+            and last["device"] == entry["device"]
+        ):
+            last["count"] = int(last.get("count", 1)) + 1
+            last["time"] = entry["time"]
+            if self._visible and self._visible[-1] is last:
+                row = len(self._visible) - 1
+                self.dataChanged.emit(self.index(row), self.index(row), [self.TimeRole, self.CountRole])
+            return
+        entry.setdefault("count", 1)
         self._all.append(entry)
+        level = entry["level"]
+        if level in self._counts:
+            self._counts[level] += 1
+            self.countsChanged.emit()
         if self._is_visible(entry):
             row = len(self._visible)
             self.beginInsertRows(QModelIndex(), row, row)
             self._visible.append(entry)
             self.endInsertRows()
-        overflow = len(self._all) - _LOG_LIMIT
-        if overflow <= 0:
-            return
-        removed_ids = {id(entry) for entry in self._all[:overflow]}
-        del self._all[:overflow]
+        if len(self._all) > _LOG_LIMIT:
+            self._trim(_LOG_TRIM_BATCH + len(self._all) - _LOG_LIMIT)
+
+    def _trim(self, count: int) -> None:
+        removed = self._all[:count]
+        removed_ids = {id(entry) for entry in removed}
+        del self._all[:count]
+        for entry in removed:
+            if entry["level"] in self._counts:
+                self._counts[entry["level"]] = max(0, self._counts[entry["level"]] - 1)
         drop = 0
         while drop < len(self._visible) and id(self._visible[drop]) in removed_ids:
             drop += 1
@@ -302,18 +411,33 @@ class LogListModel(QAbstractListModel):
             self.beginRemoveRows(QModelIndex(), 0, drop - 1)
             del self._visible[:drop]
             self.endRemoveRows()
+        self.countsChanged.emit()
 
-    def set_show_debug(self, enabled: bool, force: bool = False) -> None:
-        enabled = bool(enabled)
-        if not force and self._show_debug == enabled:
+    def clear(self) -> None:
+        self.beginResetModel()
+        self._all.clear()
+        self._visible.clear()
+        self._counts = {"WARNING": 0, "ERROR": 0}
+        self.endResetModel()
+        self.countsChanged.emit()
+
+    def set_filter(self, name: str) -> None:
+        name = name if name in _LOG_FILTERS else "all"
+        if name == self._filter:
             return
-        self._show_debug = enabled
+        self._filter = name
         self.beginResetModel()
         self._visible = [entry for entry in self._all if self._is_visible(entry)]
         self.endResetModel()
 
-    def _is_visible(self, entry: dict[str, str]) -> bool:
-        return self._show_debug or entry.get("level") != "SDK"
+    def set_show_debug(self, enabled: bool, force: bool = False) -> None:
+        self.set_filter("debug" if enabled else "all")
+
+    def _is_visible(self, entry: dict[str, Any]) -> bool:
+        allowed = _LOG_FILTERS.get(self._filter)
+        if allowed is None:
+            return True
+        return entry.get("level") in allowed
 
 
 class AppBackend(QObject):
@@ -327,7 +451,10 @@ class AppBackend(QObject):
     schedulerEnabledChanged = Signal()
     clockChanged = Signal()
     sessionProgressChanged = Signal()
-    toast = Signal(str, str)
+    toast = Signal(str, str, str)
+    commandFeedback = Signal(str, str, bool)
+    logFilterChanged = Signal()
+    logCountsChanged = Signal()
     locationLookupReady = Signal("QVariantMap")
     _asyncResult = Signal(str, object)
     uiBusyChanged = Signal()
@@ -347,6 +474,7 @@ class AppBackend(QObject):
             self._devices = [self.store.seed_device()]
         self._selected_device_id = self._devices[0].id
         self._log_model = LogListModel(self)
+        self._log_model.countsChanged.connect(self.logCountsChanged)
         self._show_debug_logs = False
         self._workers: dict[str, TelescopeProcess] = {}
         self._active_sessions: dict[str, str] = {}
@@ -357,8 +485,9 @@ class AppBackend(QObject):
         self._pending_actions: dict[str, str] = {}
         self._device_activity: dict[str, str] = {}
         self._device_telemetry: dict[str, dict[str, Any]] = {}
-        self._stack_telemetry: dict[str, dict[str, Any]] = {}
-        self._telemetry_inflight: set[str] = set()
+        self._telemetry_updated: dict[str, float] = {}
+        self._alerts = AlertEngine()
+        self._last_toast: tuple[str, str, float] = ("", "", 0.0)
         self._device_lights: dict[str, bool] = {}
         self._telemetry_tick = 0
         self._joystick_inflight: set[str] = set()
@@ -399,6 +528,7 @@ class AppBackend(QObject):
             old.shutdown()
         worker = TelescopeProcess(device, self)
         worker.logReceived.connect(lambda level, message, did=device.id: self.add_log(level, message, did))
+        worker.telemetryReceived.connect(lambda data, did=device.id: self._on_telemetry(did, data))
         worker.progressReceived.connect(self._session_progress)
         worker.availabilityChanged.connect(self._worker_status_changed)
         self._workers[device.id] = worker
@@ -412,8 +542,7 @@ class AppBackend(QObject):
             self._pending_actions.pop(device_id, None)
             self._device_activity.pop(device_id, None)
             self._device_telemetry.pop(device_id, None)
-            self._stack_telemetry.pop(device_id, None)
-            self._telemetry_inflight.discard(device_id)
+            self._telemetry_updated.pop(device_id, None)
         self._notify_devices()
 
     def _notify_devices(self) -> None:
@@ -421,18 +550,45 @@ class AppBackend(QObject):
         self.selectedDeviceChanged.emit()
         self.statusChanged.emit()
 
-    @staticmethod
-    def _telemetry_rows(data: dict[str, Any], prefix: str = "") -> list[dict[str, str]]:
-        rows: list[dict[str, str]] = []
-        for key, value in data.items():
-            label = f"{prefix} {key}".strip().replace("_", " ").upper()
-            if isinstance(value, dict):
-                rows.extend(AppBackend._telemetry_rows(value, label))
-            elif isinstance(value, list):
-                rows.append({"label": label, "value": ", ".join(map(str, value))})
-            elif value is not None and value != "":
-                rows.append({"label": label, "value": str(value)})
-        return rows[:12]
+    def _on_telemetry(self, device_id: str, data: dict[str, Any]) -> None:
+        """Merge a telemetry delta from the worker and raise transition alerts."""
+        if not isinstance(data, dict) or not data:
+            return
+        previous = dict(self._device_telemetry.get(device_id, {}))
+        current = dict(previous)
+        current.update(data)
+        self._device_telemetry[device_id] = current
+        self._telemetry_updated[device_id] = time.time()
+        if "lights_on" in data:
+            self._device_lights[device_id] = bool(data["lights_on"])
+        for alert in self._alerts.evaluate(previous, current):
+            self.add_log(alert["level"], alert["message"] + (f" — {alert['detail']}" if alert["detail"] else ""), device_id)
+            if alert["toast"]:
+                self._toast(alert["message"], alert["level"], alert["detail"])
+        activity, _detail = derive_activity(current)
+        if activity:
+            # The device now reports the real activity; drop the UI-side guess.
+            self._device_activity[device_id] = activity
+        elif previous and derive_activity(previous)[0]:
+            self._device_activity.pop(device_id, None)
+        if data.get("power_off"):
+            worker = self._workers.get(device_id)
+            if worker:
+                worker.connected = False
+        self._notify_devices()
+
+    def _toast(self, message: str, level: str = "info", detail: str = "") -> None:
+        """Emit a toast, collapsing identical messages fired within two seconds."""
+        text = str(message or "").strip()
+        if not text:
+            return
+        level = str(level or "info").lower()
+        now = time.monotonic()
+        last_text, last_level, last_at = self._last_toast
+        if text == last_text and level == last_level and now - last_at < 2.0:
+            return
+        self._last_toast = (text, level, now)
+        self.toast.emit(text, level, str(detail or ""))
 
     def _set_activity(self, device_id: str, activity: str) -> None:
         current = self._device_activity.get(device_id, "")
@@ -494,11 +650,18 @@ class AppBackend(QObject):
         if not text:
             return
         device = next((d.name for d in self._devices if d.id == device_id), "System")
+        level_name = str(level or "info").upper()
+        if level_name not in _LOG_GLYPHS:
+            level_name = "INFO"
+        category = "device" if device_id else "app"
+        if level_name in ("SDK", "DEBUG"):
+            category = "sdk"
         self._log_model.append({
             "time": datetime.now().strftime("%H:%M:%S"),
-            "level": str(level or "info").upper(),
+            "level": level_name,
             "device": device,
             "message": text,
+            "category": category,
         })
 
     @Property(str, constant=True)
@@ -512,6 +675,7 @@ class AppBackend(QObject):
     @Property("QVariantList", notify=devicesChanged)
     def devices(self) -> list[dict[str, Any]]:
         result = []
+        now = time.time()
         for device in self._devices:
             worker = self._workers.get(device.id)
             data = to_dict(device)
@@ -527,19 +691,32 @@ class AppBackend(QObject):
                 status = "Connected"
             else:
                 status = "Offline"
+            connected = bool(worker and worker.connected)
+            telemetry = format_telemetry(
+                self._device_telemetry.get(device.id, {}) if connected else {},
+                self._telemetry_updated.get(device.id) if connected else None,
+                now,
+            )
+            activity = telemetry["activity"] or self._device_activity.get(device.id, "")
+            raw_telemetry = self._device_telemetry.get(device.id, {})
+            if not connected:
+                lights_on = False
+            elif "lights_on" in raw_telemetry:
+                lights_on = bool(raw_telemetry["lights_on"])
+            else:
+                lights_on = self._device_lights.get(device.id, False)
             data.update({
-                "connected": bool(worker and worker.connected),
+                "connected": connected,
                 "busy": bool(worker and worker.busy),
                 "connecting": connecting,
                 "disconnecting": disconnecting,
                 "pending_action": self._pending_actions.get(device.id, ""),
-                "activity": self._device_activity.get(device.id, ""),
+                "activity": activity,
+                "activity_detail": telemetry["activity_detail"],
+                "activity_from_device": bool(telemetry["activity"]),
                 "status": status,
-                "lights_on": self._device_lights.get(device.id, False),
-                "telemetry": self._device_telemetry.get(device.id, {}),
-                "stack_telemetry": self._stack_telemetry.get(device.id, {}),
-                "telemetry_rows": self._telemetry_rows(self._device_telemetry.get(device.id, {})),
-                "stack_rows": self._telemetry_rows(self._stack_telemetry.get(device.id, {}), "STACK"),
+                "lights_on": lights_on,
+                "telemetry": telemetry,
             })
             result.append(data)
         return result
@@ -663,8 +840,34 @@ class AppBackend(QObject):
         if self._show_debug_logs == enabled:
             return
         self._show_debug_logs = enabled
-        self._log_model.set_show_debug(enabled)
+        self._log_model.set_filter("debug" if enabled else "all")
         self.showDebugLogsChanged.emit()
+        self.logFilterChanged.emit()
+
+    @Property(str, notify=logFilterChanged)
+    def logFilter(self) -> str:
+        return self._log_model.filter_name
+
+    @Slot(str)
+    def setLogFilter(self, name: str) -> None:
+        self._log_model.set_filter(str(name or "all"))
+        debug = self._log_model.filter_name == "debug"
+        if debug != self._show_debug_logs:
+            self._show_debug_logs = debug
+            self.showDebugLogsChanged.emit()
+        self.logFilterChanged.emit()
+
+    @Property(int, notify=logCountsChanged)
+    def logWarningCount(self) -> int:
+        return self._log_model.warning_count()
+
+    @Property(int, notify=logCountsChanged)
+    def logErrorCount(self) -> int:
+        return self._log_model.error_count()
+
+    @Slot()
+    def clearLog(self) -> None:
+        self._log_model.clear()
 
     @Property(QObject, constant=True)
     def logModel(self) -> LogListModel:
@@ -672,10 +875,12 @@ class AppBackend(QObject):
 
     @Slot(result=str)
     def allLogText(self) -> str:
-        return "\n".join(
-            f"{entry['time']}  [{entry['device']}]  {entry['message']}"
-            for entry in self._log_model.visible_entries()
-        )
+        lines = []
+        for entry in self._log_model.visible_entries():
+            count = int(entry.get("count", 1))
+            suffix = f"  (×{count})" if count > 1 else ""
+            lines.append(f"{entry['time']}  {entry['level']:<8}[{entry['device']}]  {entry['message']}{suffix}")
+        return "\n".join(lines)
 
     @Property("QVariantMap", notify=sessionsChanged)
     def currentSession(self) -> dict[str, Any]:
@@ -707,28 +912,10 @@ class AppBackend(QObject):
         if self._active_sessions:
             self.sessionProgressChanged.emit()
         self._telemetry_tick += 1
-        if self._telemetry_tick % 5 == 0:
-            self._poll_device_telemetry()
+        if self._telemetry_tick % 15 == 0 and any(worker.connected for worker in self._workers.values()):
+            # Refresh the derived "stale" markers even when the device is quiet.
+            self._notify_devices()
         self._scheduler_tick()
-
-    def _poll_device_telemetry(self) -> None:
-        for device_id, worker in self._workers.items():
-            if not worker.connected or device_id in self._telemetry_inflight:
-                continue
-            operation = "stack_status" if worker.busy else "device_state"
-            token = f"{device_id}:{operation}"
-            self._telemetry_inflight.add(device_id)
-
-            def done(ok: bool, result: Any, did: str = device_id, op: str = operation, _token: str = token) -> None:
-                self._telemetry_inflight.discard(did)
-                if ok and isinstance(result, dict):
-                    if op == "stack_status":
-                        self._stack_telemetry[did] = result
-                    else:
-                        self._device_telemetry[did] = result
-                    self._notify_devices()
-
-            worker.send(operation, callback=done)
 
     @Property(bool, notify=schedulerEnabledChanged)
     def schedulerEnabled(self) -> bool:
@@ -918,7 +1105,7 @@ class AppBackend(QObject):
         if not device or device_id in self._connecting_ids:
             return
         if not device.location_configured:
-            self.toast.emit("Choose an observing location before connecting the telescope", "warning")
+            self._toast("Choose an observing location before connecting the telescope", "warning")
             return
         worker = self._workers[device_id]
         self._connecting_ids.add(device_id)
@@ -942,10 +1129,23 @@ class AppBackend(QObject):
         self._connecting_ids.discard(device_id)
         if ok and isinstance(result, dict) and result.get("ip_address"):
             self._persist_discovered_ip(device_id, str(result["ip_address"]))
-        if ok and isinstance(result, dict) and isinstance(result.get("telemetry"), dict):
-            self._device_telemetry[device_id] = result["telemetry"]
         self.add_log("success" if ok else "error", "Connected" if ok else f"Connection failed: {result}", device_id)
-        self.toast.emit("Telescope connected" if ok else f"Connection failed: {result}", "success" if ok else "error")
+        if ok:
+            device = self._device_by_id(device_id)
+            telemetry = result.get("telemetry") if isinstance(result, dict) else None
+            detail = ""
+            if isinstance(telemetry, dict) and telemetry:
+                parts = []
+                if telemetry.get("battery_percent") is not None:
+                    parts.append(f"Battery {int(telemetry['battery_percent'])}%")
+                if telemetry.get("storage_total_gb"):
+                    parts.append(f"{int(telemetry.get('storage_free_gb') or 0)}/{int(telemetry['storage_total_gb'])} GB free")
+                detail = " · ".join(parts)
+            self._toast(f"{device.name} connected", "success", detail)
+            if isinstance(telemetry, dict) and telemetry:
+                self._on_telemetry(device_id, telemetry)
+        else:
+            self._toast("Connection failed", "error", str(result))
         self._notify_devices()
 
     @Slot(str)
@@ -960,8 +1160,10 @@ class AppBackend(QObject):
             self._disconnecting_ids.discard(device_id)
             self._set_activity(device_id, "")
             self._device_telemetry.pop(device_id, None)
-            self._stack_telemetry.pop(device_id, None)
+            self._telemetry_updated.pop(device_id, None)
+            self._device_lights.pop(device_id, None)
             self.add_log("info" if ok else "error", "Disconnected" if ok else str(result), device_id)
+            self._toast("Telescope disconnected" if ok else "Disconnect failed", "info" if ok else "error", "" if ok else str(result))
             self._notify_devices()
 
         worker.disconnect_device(done)
@@ -973,14 +1175,20 @@ class AppBackend(QObject):
             return
         self._begin_activity(device_id, operation)
 
+        label = _ACTION_LABELS.get(operation, operation.replace("_", " ").title())
+
         def done(ok: bool, result: Any) -> None:
             self._complete_activity(device_id, operation, ok)
             if ok and operation in {"lights_on", "lights_off"}:
                 self._device_lights[device_id] = operation == "lights_on"
                 self._notify_devices()
-            self.toast.emit(
-                operation.replace("_", " ").title() if ok else str(result), "success" if ok else "error"
-            )
+            self.commandFeedback.emit(device_id, operation, bool(ok))
+            if ok:
+                self.add_log("success", f"{label} acknowledged", device_id)
+                self._toast(label, "success", _ACTION_DETAILS.get(operation, ""))
+            else:
+                self.add_log("error", f"{label} failed: {result}", device_id)
+                self._toast(f"{label} failed", "error", str(result))
 
         worker.send(operation, callback=self._with_pending(device_id, operation, done))
 
@@ -1042,7 +1250,7 @@ class AppBackend(QObject):
     @Slot(str)
     def copyText(self, text: str) -> None:
         QGuiApplication.clipboard().setText(text)
-        self.toast.emit("Copied to clipboard", "success")
+        self._toast("Copied to clipboard", "success")
 
     @Slot()
     def addDevice(self) -> None:
@@ -1058,7 +1266,7 @@ class AppBackend(QObject):
     @Slot(str)
     def deleteDevice(self, device_id: str) -> None:
         if len(self._devices) <= 1:
-            self.toast.emit("Keep at least one telescope profile", "warning")
+            self._toast("Keep at least one telescope profile", "warning")
             return
         worker = self._workers.pop(device_id, None)
         if worker:
@@ -1073,7 +1281,7 @@ class AppBackend(QObject):
         self.devicesChanged.emit()
         self.selectedDeviceChanged.emit()
         self.sessionsChanged.emit()
-        self.toast.emit("Device removed", "success")
+        self._toast("Device removed", "success")
 
     @Slot(str)
     def deleteTemplate(self, template_id: str) -> None:
@@ -1093,7 +1301,7 @@ class AppBackend(QObject):
     def skipSession(self, session_id: str) -> None:
         session = self.store.sessions.get(session_id)
         if not session or session.status != SessionStatus.PLANNED:
-            self.toast.emit("Only planned sessions can be skipped", "warning")
+            self._toast("Only planned sessions can be skipped", "warning")
             return
         self.store.transition(session_id, SessionStatus.SKIPPED, current_step="Skipped")
         self.sessionsChanged.emit()
@@ -1104,10 +1312,10 @@ class AppBackend(QObject):
         if not session:
             return
         if session.status == SessionStatus.RUNNING:
-            self.toast.emit("Stop the running session first", "warning")
+            self._toast("Stop the running session first", "warning")
             return
         if session.status == SessionStatus.PLANNED:
-            self.toast.emit("This session is already planned", "info")
+            self._toast("This session is already planned", "info")
             return
         self._save_session(replace(
             session,
@@ -1117,7 +1325,7 @@ class AppBackend(QObject):
             actual_ended_at=None,
             outcome="",
         ))
-        self.toast.emit("Session reset", "success")
+        self._toast("Session reset", "success")
 
     @Slot(str, str)
     def setLiveCamera(self, device_id: str, camera: str) -> None:
@@ -1150,7 +1358,7 @@ class AppBackend(QObject):
             operation, args = "set_ir", [value]
         else:
             return
-        worker.send(operation, {"args": args}, lambda ok, result: self.toast.emit(
+        worker.send(operation, {"args": args}, lambda ok, result: self._toast(
             f"{name.title()} set" if ok else str(result), "success" if ok else "error"
         ))
 
@@ -1217,9 +1425,9 @@ class AppBackend(QObject):
                 self._save_session(replace(session, planned_duration_seconds=DurationEngine.calculate(session, updated.hardware)))
             self.devicesChanged.emit()
             self.selectedDeviceChanged.emit()
-            self.toast.emit("Device saved", "success")
+            self._toast("Device saved", "success")
         except Exception as exc:
-            self.toast.emit(f"Could not save device: {exc}", "error")
+            self._toast(f"Could not save device: {exc}", "error")
 
     @Slot(str)
     def saveObservingLocation(self, payload: str) -> None:
@@ -1247,15 +1455,15 @@ class AppBackend(QObject):
             self._create_worker(updated)
             self.devicesChanged.emit()
             self.selectedDeviceChanged.emit()
-            self.toast.emit("Observing location saved", "success")
+            self._toast("Observing location saved", "success")
         except Exception as exc:
-            self.toast.emit(f"Could not save location: {exc}", "error")
+            self._toast(f"Could not save location: {exc}", "error")
 
     @Slot(str)
     def lookupLocation(self, query: str) -> None:
         text = query.strip()
         if not text:
-            self.toast.emit("Enter a city or timezone to search", "warning")
+            self._toast("Enter a city or timezone to search", "warning")
             return
 
         def work() -> None:
@@ -1347,9 +1555,9 @@ class AppBackend(QObject):
                     mosaic=session.mosaic,
                 ))
                 self.templatesChanged.emit()
-            self.toast.emit("Session saved", "success")
+            self._toast("Session saved", "success")
         except Exception as exc:
-            self.toast.emit(f"Could not save session: {exc}", "error")
+            self._toast(f"Could not save session: {exc}", "error")
 
     @Slot(str)
     def saveTemplate(self, payload: str) -> None:
@@ -1386,9 +1594,9 @@ class AppBackend(QObject):
                     notes=notes,
                 ))
             self.templatesChanged.emit()
-            self.toast.emit("Template saved", "success")
+            self._toast("Template saved", "success")
         except Exception as exc:
-            self.toast.emit(f"Could not save template: {exc}", "error")
+            self._toast(f"Could not save template: {exc}", "error")
 
     def _save_session(self, session: Session) -> None:
         device = self._device_by_id(session.device_id)
@@ -1400,7 +1608,7 @@ class AppBackend(QObject):
     def deleteSession(self, session_id: str) -> None:
         session = self.store.sessions.get(session_id)
         if session and session.status == SessionStatus.RUNNING:
-            self.toast.emit("Stop the running session before deleting it", "warning")
+            self._toast("Stop the running session before deleting it", "warning")
             return
         self.store.sessions.delete(session_id)
         self.sessionsChanged.emit()
@@ -1409,7 +1617,7 @@ class AppBackend(QObject):
     def clearHistory(self) -> None:
         self.store.history.clear()
         self.historyChanged.emit()
-        self.toast.emit("History cleared", "success")
+        self._toast("History cleared", "success")
 
     @Slot(str)
     def deleteHistoryRecord(self, record_id: str) -> None:
@@ -1433,7 +1641,7 @@ class AppBackend(QObject):
     def runNow(self, session_id: str) -> None:
         session = self.store.sessions.get(session_id)
         if session and session.status == SessionStatus.RUNNING:
-            self.toast.emit("This session is already running", "warning")
+            self._toast("This session is already running", "warning")
             return
         if session:
             self._save_session(replace(
@@ -1453,7 +1661,7 @@ class AppBackend(QObject):
         if not session:
             return
         if session.status == SessionStatus.RUNNING:
-            self.toast.emit("Stop the running session before moving it", "warning")
+            self._toast("Stop the running session before moving it", "warning")
             return
         try:
             target_day = date.fromisoformat(day)
@@ -1506,7 +1714,7 @@ class AppBackend(QObject):
             if left_end > datetime.fromisoformat(right.scheduled_start) and (
                 left.id in moved_ids or right.id in moved_ids
             ):
-                self.toast.emit("Schedule updated; this session overlaps another planned session", "warning")
+                self._toast("Schedule updated; this session overlaps another planned session", "warning")
                 return
 
     @Slot(str, str)
@@ -1515,13 +1723,13 @@ class AppBackend(QObject):
         if not session:
             return
         if session.status == SessionStatus.RUNNING:
-            self.toast.emit("Stop the running session before moving it", "warning")
+            self._toast("Stop the running session before moving it", "warning")
             return
         try:
             target = datetime.fromisoformat(iso_datetime).replace(second=0, microsecond=0)
             current = datetime.fromisoformat(session.scheduled_start)
         except ValueError:
-            self.toast.emit("That schedule time is not valid", "error")
+            self._toast("That schedule time is not valid", "error")
             return
         delta = target - current
         if not delta:
@@ -1598,7 +1806,7 @@ class AppBackend(QObject):
             self.store.sessions.save(session)
         self.sessionsChanged.emit()
         count = len(sessions)
-        self.toast.emit(f"Scheduled {count} pane{'s' if count != 1 else ''}", "success")
+        self._toast(f"Scheduled {count} pane{'s' if count != 1 else ''}", "success")
 
     @Slot(str)
     def importTelescopius(self, raw_path: str) -> None:
@@ -1617,11 +1825,11 @@ class AppBackend(QObject):
         for session in self.store.sessions.all():
             if session.planned_duration_seconds == 0:
                 self._save_session(session)
-        self.toast.emit(f"Imported {count}; skipped {failed}", "success" if count else "warning")
+        self._toast(f"Imported {count}; skipped {failed}", "success" if count else "warning")
 
     def _run_async(self, operation: str, function: Callable[[], Any]) -> None:
         if self._ui_busy:
-            self.toast.emit("Another import is still running", "warning")
+            self._toast("Another import is still running", "warning")
             return
         self._set_ui_busy(operation)
 
@@ -1638,23 +1846,23 @@ class AppBackend(QObject):
         ok, value = result
         if operation == "locationLookup":
             if not ok:
-                self.toast.emit(str(value), "warning")
+                self._toast(str(value), "warning")
                 return
             self.locationLookupReady.emit(value)
             return
         self._set_ui_busy("")
         if not ok:
-            self.toast.emit(f"{operation.title()}: {value}", "error")
+            self._toast(f"{operation.title()}: {value}", "error")
             return
         if operation == "telescopius":
             for template in value:
                 self.store.templates.save(template)
             self.templatesChanged.emit()
-            self.toast.emit(f"Imported {len(value)} session templates", "success")
+            self._toast(f"Imported {len(value)} session templates", "success")
         elif operation == "stellarium":
             self.store.templates.save(SessionTemplate(name=value.name, target=value))
             self.templatesChanged.emit()
-            self.toast.emit(f"Imported {value.name}", "success")
+            self._toast(f"Imported {value.name}", "success")
 
     def _scheduler_tick(self) -> None:
         if not self._scheduler_enabled:
@@ -1686,6 +1894,8 @@ class AppBackend(QObject):
         self._active_sessions[session.device_id] = session.id
         self._set_activity(session.device_id, "")
         self.sessionsChanged.emit()
+        self.add_log("notice", f"Session started · {session.target.name}", session.device_id)
+        self._toast(f"Session started · {session.target.name}", "info", f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s")
         worker.run_session(session, lambda ok, result: self._session_finished(session.id, ok, result))
 
     @Slot(str, str)
@@ -1730,6 +1940,13 @@ class AppBackend(QObject):
             summary=f"{final.camera.frame_count} × {final.camera.exposure_seconds:g}s",
             notes=final.notes,
         ))
+        elapsed = self._duration_text((ended - started).total_seconds())
+        if ok:
+            self.add_log("success", f"Session complete · {final.target.name} in {elapsed}", final.device_id)
+            self._toast(f"Session complete · {final.target.name}", "success", f"Ran {elapsed}")
+        else:
+            self.add_log("error", f"Session failed · {final.target.name}: {outcome}", final.device_id)
+            self._toast(f"Session failed · {final.target.name}", "error", outcome)
         self.sessionsChanged.emit()
         self.historyChanged.emit()
 

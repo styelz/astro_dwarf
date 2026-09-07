@@ -39,6 +39,12 @@ ApplicationWindow {
     property color success: "#3DFFB0"
     property color danger: "#FF6B7A"
     property color warning: "#F5C542"
+    property color notice: "#5EE0D0"
+    property color muted: "#4C6B80"
+    property color glowAccent: "#334DE8FF"
+    readonly property var scopeTelemetry: (backend.selectedDevice && backend.selectedDevice.telemetry) || ({})
+    readonly property string scopeActivityDetail: String((backend.selectedDevice && backend.selectedDevice.activity_detail) || "")
+    readonly property bool scopeActivityFromDevice: !!(backend.selectedDevice && backend.selectedDevice.activity_from_device)
     property int currentPage: 0
     property real joySpeed: 1
     property bool sessionDragActive: false
@@ -69,9 +75,94 @@ ApplicationWindow {
         default: return root.textPrimary
         }
     }
+    function formatDuration(seconds) {
+        const total = Math.max(0, Math.round(Number(seconds || 0)))
+        const h = Math.floor(total / 3600)
+        const m = Math.floor((total % 3600) / 60)
+        if (h > 0)
+            return h + "h " + String(m).padStart(2, "0") + "m"
+        if (m > 0)
+            return m + "m"
+        return total + "s"
+    }
     function canReset(status) {
         const value = String(status || "").toLowerCase()
         return value === "error" || value === "skipped" || value === "done"
+    }
+    function toneForLevel(level) {
+        switch (String(level || "").toLowerCase()) {
+        case "error": return root.danger
+        case "warning": return root.warning
+        case "success": return root.success
+        case "notice": return root.notice
+        case "sdk":
+        case "debug": return root.muted
+        default: return root.accent
+        }
+    }
+    function glyphForLevel(level) {
+        switch (String(level || "").toLowerCase()) {
+        case "error": return "✗"
+        case "warning": return "⚠"
+        case "success": return "✓"
+        case "notice": return "◆"
+        case "sdk": return "›"
+        case "debug": return "·"
+        default: return "●"
+        }
+    }
+    function batteryTone(percent) {
+        const value = Number(percent)
+        if (isNaN(value) || value < 0)
+            return "unknown"
+        return value <= 10 ? "bad" : value <= 20 ? "warn" : "good"
+    }
+    function toneColor(tone) {
+        switch (String(tone || "")) {
+        case "bad": return root.danger
+        case "warn": return root.warning
+        case "good": return root.success
+        default: return root.textSecondary
+        }
+    }
+    function activityLabel(activity) {
+        switch (String(activity || "")) {
+        case "calibrate": return "CALIBRATING"
+        case "goto": return "GOTO"
+        case "polar": return "POLAR / EQ"
+        case "autofocus": return "AUTOFOCUS"
+        case "dark": return "DARK FRAMES"
+        case "imaging": return "STACKING"
+        case "record": return "RECORDING"
+        case "burst": return "BURST"
+        case "timelapse": return "TIMELAPSE"
+        case "poweroff": return "POWER OFF"
+        case "": return ""
+        default: return String(activity).toUpperCase()
+        }
+    }
+    function scopeActivityText() {
+        if (root.scopePending)
+            return "SENDING · " + root.scopePending.replace(/_/g, " ").toUpperCase()
+        const label = root.activityLabel(root.scopeActivity)
+        if (label)
+            return root.scopeActivityDetail ? label + " · " + root.scopeActivityDetail : label
+        if (root.scopeImaging)
+            return "SESSION RUNNING"
+        return root.scopeOnline ? "IDLE" : "OFFLINE"
+    }
+    function activityColor() {
+        if (!root.scopeOnline)
+            return root.textSecondary
+        if (root.scopePending)
+            return root.accent
+        switch (root.scopeActivity) {
+        case "imaging":
+        case "record": return root.danger
+        case "poweroff": return root.danger
+        case "": return root.scopeImaging ? root.danger : root.success
+        default: return root.notice
+        }
     }
     function statusFill(status) {
         switch (String(status || "").toLowerCase()) {
@@ -98,7 +189,8 @@ ApplicationWindow {
             calibrate: "stop_calibrate",
             autofocus: "stop_autofocus",
             infinity: "stop_autofocus",
-            polar: "stop_polar"
+            polar: "stop_polar",
+            goto: "stop_goto"
         }
         if (op === "stop_all")
             return true
@@ -568,22 +660,57 @@ ApplicationWindow {
         property string glyph: ""
         property string detail: ""
         property bool activeState: false
+        property bool pending: false
         property bool destructive: false
+        property string flash: ""   // "", "success" or "error"
+        readonly property color flashColor: flash === "error" ? root.danger : root.success
         hoverEnabled: enabled
         implicitHeight: 58
         leftPadding: 8
         rightPadding: 8
+        function showFlash(kind) {
+            flash = kind
+            flashTimer.restart()
+        }
+        Timer { id: flashTimer; interval: 900; onTriggered: commandPad.flash = "" }
         background: Rectangle {
-            color: commandPad.destructive ? "#301117" : commandPad.activeState ? "#123C35" : commandPad.down ? "#0B2430" : commandPad.hovered ? "#123044" : "#0B1724"
-            border.color: commandPad.destructive ? root.danger : commandPad.activeState ? root.success : commandPad.hovered ? root.accent : root.outline
-            border.width: commandPad.activeState || commandPad.hovered ? 2 : 1
+            id: padBackground
+            color: commandPad.flash !== "" ? Qt.rgba(commandPad.flashColor.r, commandPad.flashColor.g, commandPad.flashColor.b, 0.22)
+                 : commandPad.destructive ? "#301117" : commandPad.activeState ? "#123C35" : commandPad.pending ? "#0F2A3C" : commandPad.down ? "#0B2430" : commandPad.hovered ? "#123044" : "#0B1724"
+            border.color: commandPad.flash !== "" ? commandPad.flashColor : commandPad.destructive ? root.danger : commandPad.activeState ? root.success : commandPad.pending || commandPad.hovered ? root.accent : root.outline
+            border.width: commandPad.activeState || commandPad.hovered || commandPad.pending || commandPad.flash !== "" ? 2 : 1
             radius: 4
+            Behavior on color { ColorAnimation { duration: 160 } }
+            Behavior on border.color { ColorAnimation { duration: 160 } }
             Rectangle { x: 4; y: 4; width: parent.width - 8; height: 1; color: commandPad.destructive ? root.danger : root.accent; opacity: 0.35 }
+            Rectangle {
+                // pulsing ring while the device reports the command running
+                anchors.fill: parent
+                anchors.margins: -3
+                radius: 6
+                color: "transparent"
+                border.color: commandPad.activeState ? root.success : root.accent
+                border.width: 1
+                visible: commandPad.activeState || commandPad.pending
+                opacity: 0
+                SequentialAnimation on opacity {
+                    running: commandPad.activeState || commandPad.pending
+                    loops: Animation.Infinite
+                    NumberAnimation { from: 0.7; to: 0; duration: commandPad.pending ? 600 : 1100; easing.type: Easing.OutQuad }
+                    PauseAnimation { duration: commandPad.pending ? 150 : 400 }
+                }
+            }
             Rectangle {
                 anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 7
                 width: 7; height: 7; radius: 4
-                color: commandPad.activeState ? root.success : commandPad.enabled ? "#31556B" : "#172631"
+                color: commandPad.activeState ? root.success : commandPad.pending ? root.accent : commandPad.enabled ? "#31556B" : "#172631"
                 border.color: commandPad.activeState ? "#C8FFE9" : root.outline
+                SequentialAnimation on opacity {
+                    running: commandPad.pending
+                    loops: Animation.Infinite
+                    NumberAnimation { from: 1; to: 0.2; duration: 320 }
+                    NumberAnimation { from: 0.2; to: 1; duration: 320 }
+                }
             }
         }
         contentItem: RowLayout {
@@ -591,9 +718,238 @@ ApplicationWindow {
             Text { text: commandPad.glyph; color: commandPad.destructive ? root.danger : commandPad.activeState ? root.success : root.accent; font.pixelSize: Math.round(Math.min(26, Math.max(16, commandPad.height * 0.32))); Layout.preferredWidth: font.pixelSize + 6; horizontalAlignment: Text.AlignHCenter }
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 0
-                Text { text: commandPad.text; color: commandPad.enabled ? root.textPrimary : root.textSecondary; font.pixelSize: 10; font.bold: true; font.letterSpacing: 0.7; elide: Text.ElideRight; Layout.fillWidth: true }
-                Text { text: commandPad.detail; color: commandPad.activeState ? root.success : root.textSecondary; font.pixelSize: 8; elide: Text.ElideRight; Layout.fillWidth: true }
+                Text { text: commandPad.text; color: commandPad.enabled || commandPad.activeState ? root.textPrimary : root.textSecondary; font.pixelSize: 10; font.bold: true; font.letterSpacing: 0.7; elide: Text.ElideRight; Layout.fillWidth: true }
+                Text { text: commandPad.flash === "success" ? "DONE" : commandPad.flash === "error" ? "FAILED" : commandPad.pending ? "SENDING…" : commandPad.detail; color: commandPad.flash !== "" ? commandPad.flashColor : commandPad.activeState ? root.success : commandPad.pending ? root.accent : root.textSecondary; font.pixelSize: 8; font.family: commandPad.activeState ? "Cascadia Mono" : root.font.family; elide: Text.ElideRight; Layout.fillWidth: true }
             }
+        }
+    }
+
+    component LedDot: Rectangle {
+        id: led
+        property bool on: false
+        property color onColor: root.success
+        property bool pulse: false
+        width: 7; height: 7; radius: 4
+        color: on ? onColor : "#263746"
+        border.color: on ? "#D8FFFF" : root.outline
+        Behavior on color { ColorAnimation { duration: 200 } }
+        Rectangle {
+            id: ledRing
+            anchors.centerIn: parent
+            width: led.width; height: led.height; radius: width / 2
+            color: "transparent"
+            border.color: led.onColor
+            visible: led.on && led.pulse
+            SequentialAnimation on scale {
+                running: ledRing.visible
+                loops: Animation.Infinite
+                NumberAnimation { from: 1; to: 2.2; duration: 1200; easing.type: Easing.OutQuad }
+                PauseAnimation { duration: 600 }
+            }
+            SequentialAnimation on opacity {
+                running: ledRing.visible
+                loops: Animation.Infinite
+                NumberAnimation { from: 0.8; to: 0; duration: 1200 }
+                PauseAnimation { duration: 600 }
+            }
+        }
+    }
+
+    component HudChip: Rectangle {
+        id: chip
+        property string label: ""
+        property string value: ""
+        property color tone: root.accent
+        property bool glow: false
+        property bool dim: false
+        implicitHeight: 20
+        implicitWidth: chipRowLayout.implicitWidth + 14
+        radius: 3
+        color: Qt.rgba(tone.r, tone.g, tone.b, dim ? 0.05 : 0.14)
+        border.color: Qt.rgba(tone.r, tone.g, tone.b, dim ? 0.25 : 0.55)
+        opacity: dim ? 0.6 : 1
+        Behavior on color { ColorAnimation { duration: 200 } }
+        Rectangle {
+            anchors.fill: parent; anchors.margins: -2; radius: 5
+            color: "transparent"; border.color: chip.tone; opacity: 0.3
+            visible: chip.glow && !chip.dim
+        }
+        RowLayout {
+            id: chipRowLayout
+            anchors.centerIn: parent
+            spacing: 5
+            Text { visible: chip.label !== ""; text: chip.label; color: chip.tone; font.pixelSize: 8; font.bold: true; font.letterSpacing: 1 }
+            Text { visible: chip.value !== ""; text: chip.value; color: root.textPrimary; font.pixelSize: 10; font.family: "Cascadia Mono" }
+        }
+    }
+
+    component BatteryGauge: Item {
+        id: gauge
+        property int percent: -1
+        property bool charging: false
+        property string tone: root.batteryTone(percent)
+        readonly property color toneColor: percent < 0 ? root.muted : root.toneColor(tone)
+        property real shown: Math.max(0, percent)
+        Behavior on shown { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
+        implicitWidth: 72
+        implicitHeight: 72
+        Canvas {
+            anchors.fill: parent
+            readonly property real value: gauge.shown
+            readonly property color ring: gauge.toneColor
+            onValueChanged: requestPaint()
+            onRingChanged: requestPaint()
+            onPaint: {
+                const ctx = getContext("2d")
+                ctx.reset()
+                const cx = width / 2, cy = height / 2, r = Math.min(width, height) / 2 - 5
+                const start = Math.PI * 0.75, span = Math.PI * 1.5
+                ctx.lineCap = "round"
+                ctx.lineWidth = 5
+                ctx.strokeStyle = "#16283A"
+                ctx.beginPath(); ctx.arc(cx, cy, r, start, start + span); ctx.stroke()
+                // tick marks
+                ctx.lineWidth = 1
+                ctx.strokeStyle = "#2A4A62"
+                for (let i = 0; i <= 10; i++) {
+                    const a = start + span * i / 10
+                    ctx.beginPath()
+                    ctx.moveTo(cx + Math.cos(a) * (r - 8), cy + Math.sin(a) * (r - 8))
+                    ctx.lineTo(cx + Math.cos(a) * (r - 11), cy + Math.sin(a) * (r - 11))
+                    ctx.stroke()
+                }
+                if (gauge.percent >= 0) {
+                    ctx.lineWidth = 5
+                    ctx.strokeStyle = ring
+                    ctx.shadowColor = ring
+                    ctx.shadowBlur = 8
+                    ctx.beginPath(); ctx.arc(cx, cy, r, start, start + span * Math.min(1, value / 100)); ctx.stroke()
+                }
+            }
+            onWidthChanged: requestPaint()
+            onHeightChanged: requestPaint()
+        }
+        Column {
+            anchors.centerIn: parent
+            anchors.verticalCenterOffset: 2
+            spacing: -2
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: gauge.percent >= 0 ? gauge.percent + "%" : "—"
+                color: gauge.percent >= 0 ? root.textPrimary : root.muted
+                font.pixelSize: gauge.width >= 70 ? 16 : 13
+                font.family: "Cascadia Mono"
+                font.bold: true
+            }
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: gauge.charging ? "⚡ CHG" : "BATT"
+                color: gauge.charging ? root.warning : root.textSecondary
+                font.pixelSize: 8
+                font.letterSpacing: 1
+                font.bold: true
+                SequentialAnimation on opacity {
+                    running: gauge.charging
+                    loops: Animation.Infinite
+                    NumberAnimation { from: 1; to: 0.35; duration: 700 }
+                    NumberAnimation { from: 0.35; to: 1; duration: 700 }
+                }
+            }
+        }
+    }
+
+    component StorageBar: Item {
+        id: storage
+        property real fraction: 0      // used fraction 0..1
+        property string text: "—"
+        property string tone: "unknown"
+        property bool valid: true
+        readonly property color toneColor: !valid ? root.danger : tone === "unknown" ? root.muted : (tone === "good" ? root.accent : root.toneColor(tone))
+        property real shown: fraction
+        Behavior on shown { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
+        implicitHeight: 10
+        Rectangle {
+            anchors.fill: parent
+            radius: 2
+            color: "#0A1524"
+            border.color: storage.valid ? root.outline : root.danger
+            Rectangle {
+                x: 1; y: 1
+                height: parent.height - 2
+                width: Math.max(0, (parent.width - 2) * Math.min(1, storage.shown))
+                radius: 1
+                color: storage.toneColor
+                opacity: storage.valid ? 0.9 : 0
+            }
+            Row {
+                anchors.fill: parent
+                anchors.margins: 1
+                spacing: 0
+                Repeater {
+                    model: 8
+                    Item {
+                        width: parent.width / 8; height: parent.height
+                        Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: "#05080F"; opacity: 0.8; visible: index < 7 }
+                    }
+                }
+            }
+        }
+    }
+
+    component VitalTile: Rectangle {
+        id: tile
+        property string label: ""
+        property string value: "—"
+        property string unit: ""
+        property string glyph: ""
+        property color tone: root.accent
+        property bool stale: false
+        property bool live: false
+        property bool dimmed: value === "—" || value === ""
+        implicitHeight: 46
+        radius: 3
+        color: "#66091422"
+        border.color: live ? Qt.rgba(tone.r, tone.g, tone.b, 0.6) : "#1A3A50"
+        border.width: 1
+        Behavior on border.color { ColorAnimation { duration: 200 } }
+        Rectangle { x: 0; y: 5; width: 2; height: parent.height - 10; color: tile.dimmed ? "#1E4A63" : tile.tone; opacity: tile.dimmed ? 0.5 : 0.9 }
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 9
+            anchors.rightMargin: 8
+            spacing: 6
+            Text { visible: tile.glyph !== ""; text: tile.glyph; color: tile.dimmed ? root.muted : tile.tone; font.pixelSize: 14; Layout.preferredWidth: 16; horizontalAlignment: Text.AlignHCenter }
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
+                Text { text: tile.label; color: root.textSecondary; font.pixelSize: 8; font.bold: true; font.letterSpacing: 1.1; elide: Text.ElideRight; Layout.fillWidth: true }
+                RowLayout {
+                    spacing: 3
+                    Layout.fillWidth: true
+                    Text {
+                        text: tile.value
+                        color: tile.dimmed ? root.muted : root.textPrimary
+                        font.pixelSize: 14
+                        font.family: "Cascadia Mono"
+                        font.bold: true
+                        elide: Text.ElideRight
+                        Layout.maximumWidth: tile.width - 60
+                        Behavior on color { ColorAnimation { duration: 200 } }
+                    }
+                    Text { visible: tile.unit !== "" && !tile.dimmed; text: tile.unit; color: root.textSecondary; font.pixelSize: 9; Layout.alignment: Qt.AlignBottom; Layout.bottomMargin: 2 }
+                    Item { Layout.fillWidth: true }
+                }
+            }
+        }
+        Text {
+            anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 4
+            visible: tile.stale && !tile.dimmed
+            text: "STALE"
+            color: root.warning
+            font.pixelSize: 7
+            font.bold: true
+            font.letterSpacing: 1
+            opacity: 0.85
         }
     }
 
@@ -1193,11 +1549,103 @@ ApplicationWindow {
         Layout.alignment: Qt.AlignVCenter
     }
 
-    component EmptyHint: Text {
-        color: root.textSecondary
-        font.pixelSize: 13
-        wrapMode: Text.Wrap
-        horizontalAlignment: Text.AlignHCenter
+    component EmptyHint: Column {
+        id: hint
+        property string text: ""
+        property string glyph: "◇"
+        property alias font: hintText.font
+        property alias color: hintText.color
+        spacing: 6
+        width: Math.min(360, parent ? parent.width - 24 : 320)
+        // when placed inside a Layout the width binding is overridden, so size via Layout hints too
+        Layout.preferredWidth: 360
+        Layout.minimumWidth: 160
+        Layout.fillWidth: false
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: hint.glyph !== ""
+            text: hint.glyph
+            color: root.accent
+            opacity: 0.55
+            font.pixelSize: 22
+            Rectangle {
+                anchors.centerIn: parent
+                width: parent.implicitHeight + 18; height: width; radius: width / 2
+                color: "transparent"
+                border.color: root.accent
+                opacity: 0.35
+            }
+        }
+        Text {
+            id: hintText
+            width: hint.width
+            text: hint.text
+            color: root.textSecondary
+            font.pixelSize: 12
+            wrapMode: Text.Wrap
+            horizontalAlignment: Text.AlignHCenter
+        }
+    }
+
+    component PageHeader: RowLayout {
+        id: pageHeader
+        property string title: ""
+        property string subtitle: ""
+        property string glyph: ""
+        default property alias actions: pageActions.data
+        Layout.fillWidth: true
+        spacing: 10
+        Rectangle { width: 3; Layout.preferredHeight: 34; color: root.accent; radius: 1 }
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 1
+            RowLayout {
+                spacing: 8
+                Text { visible: pageHeader.glyph !== ""; text: pageHeader.glyph; color: root.accent; font.pixelSize: 16 }
+                Text { text: pageHeader.title; color: root.textPrimary; font.pixelSize: 22; font.letterSpacing: 2.4; font.bold: true }
+            }
+            Text { visible: pageHeader.subtitle !== ""; text: pageHeader.subtitle; color: root.textSecondary; font.pixelSize: 11; font.letterSpacing: 0.4; elide: Text.ElideRight; Layout.fillWidth: true }
+        }
+        Row {
+            id: pageActions
+            spacing: 8
+            Layout.fillWidth: false
+            Layout.preferredWidth: implicitWidth
+            Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+        }
+    }
+
+    component StatusChip: Rectangle {
+        id: statusChip
+        property string status: ""
+        readonly property color tone: root.statusColor(status)
+        readonly property bool running: String(status || "").toLowerCase() === "running"
+        implicitHeight: 18
+        implicitWidth: statusChipText.implicitWidth + 16
+        radius: 3
+        color: root.statusFill(status)
+        border.color: Qt.rgba(tone.r, tone.g, tone.b, 0.7)
+        Rectangle {
+            anchors.fill: parent; anchors.margins: -2; radius: 5
+            color: "transparent"; border.color: statusChip.tone
+            opacity: 0.3
+            visible: statusChip.running
+            SequentialAnimation on opacity {
+                running: statusChip.running
+                loops: Animation.Infinite
+                NumberAnimation { to: 0.05; duration: 900; easing.type: Easing.InOutSine }
+                NumberAnimation { to: 0.45; duration: 900; easing.type: Easing.InOutSine }
+            }
+        }
+        Text {
+            id: statusChipText
+            anchors.centerIn: parent
+            text: String(statusChip.status || "").toUpperCase()
+            color: statusChip.tone
+            font.pixelSize: 8
+            font.bold: true
+            font.letterSpacing: 1.2
+        }
     }
 
     component PageNavBar: RowLayout {
@@ -1341,37 +1789,74 @@ ApplicationWindow {
                         model: [
                             {label: "LINK", on: root.scopeOnline, color: root.success},
                             {label: "AUTO", on: backend.schedulerEnabled, color: root.success},
-                            {label: "IMAGE", on: root.scopeImaging, color: root.danger}
+                            {label: "IMAGE", on: root.scopeImaging || root.scopeActivity === "imaging", color: root.danger}
                         ]
                         delegate: RowLayout {
                             required property var modelData
                             spacing: 4
+                            LedDot { on: modelData.on; onColor: modelData.color; pulse: true }
+                            Text { text: modelData.label; color: modelData.on ? root.textPrimary : root.textSecondary; font.pixelSize: 8; font.bold: true }
+                        }
+                    }
+                    Rectangle { width: 1; Layout.preferredHeight: 18; color: root.outline; visible: root.scopeOnline }
+                    RowLayout {
+                        // mini battery readout
+                        id: titleBattery
+                        readonly property var t: root.scopeTelemetry
+                        readonly property int percent: root.scopeOnline && t.battery_percent !== undefined ? Number(t.battery_percent) : -1
+                        readonly property color tone: percent < 0 ? root.muted : root.toneColor(root.batteryTone(percent))
+                        visible: root.scopeOnline
+                        spacing: 5
+                        Item {
+                            implicitWidth: 22
+                            implicitHeight: 11
                             Rectangle {
-                                width: 7; height: 7; radius: 4
-                                color: modelData.on ? modelData.color : "#263746"
-                                border.color: modelData.on ? "#D8FFFF" : root.outline
+                                anchors.left: parent.left; anchors.top: parent.top
+                                width: 19; height: 11; radius: 2
+                                color: "transparent"
+                                border.color: titleBattery.tone
                                 Rectangle {
-                                    anchors.centerIn: parent
-                                    width: 7; height: 7; radius: 4
-                                    color: "transparent"
-                                    border.color: modelData.color
-                                    visible: modelData.on
-                                    SequentialAnimation on scale {
-                                        running: modelData.on
-                                        loops: Animation.Infinite
-                                        NumberAnimation { from: 1; to: 2.2; duration: 1200; easing.type: Easing.OutQuad }
-                                        PauseAnimation { duration: 600 }
-                                    }
+                                    x: 2; y: 2
+                                    height: parent.height - 4
+                                    width: Math.max(0, (parent.width - 4) * Math.max(0, titleBattery.percent) / 100)
+                                    color: titleBattery.tone
+                                    Behavior on width { NumberAnimation { duration: 500 } }
                                     SequentialAnimation on opacity {
-                                        running: modelData.on
+                                        running: !!titleBattery.t.charging
                                         loops: Animation.Infinite
-                                        NumberAnimation { from: 0.8; to: 0; duration: 1200 }
-                                        PauseAnimation { duration: 600 }
+                                        NumberAnimation { from: 1; to: 0.35; duration: 700 }
+                                        NumberAnimation { from: 0.35; to: 1; duration: 700 }
                                     }
                                 }
                             }
-                            Text { text: modelData.label; color: modelData.on ? root.textPrimary : root.textSecondary; font.pixelSize: 8; font.bold: true }
+                            Rectangle { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; width: 2; height: 5; color: titleBattery.tone }
                         }
+                        Text {
+                            text: titleBattery.percent >= 0 ? titleBattery.percent + "%" + (titleBattery.t.charging ? "⚡" : "") : "—"
+                            color: titleBattery.percent >= 0 ? root.textPrimary : root.textSecondary
+                            font.pixelSize: 10; font.family: "Cascadia Mono"; font.bold: true
+                        }
+                        ToolTip.visible: batteryHover.hovered
+                        ToolTip.delay: 400
+                        ToolTip.text: "Battery " + (titleBattery.t.battery_text || "—") + (titleBattery.t.charging_text ? "  ·  " + titleBattery.t.charging_text : "") + (titleBattery.t.battery_health_text ? "\n" + titleBattery.t.battery_health_text : "")
+                        HoverHandler { id: batteryHover }
+                    }
+                    RowLayout {
+                        // mini storage readout
+                        id: titleStorage
+                        readonly property var t: root.scopeTelemetry
+                        visible: root.scopeOnline
+                        spacing: 5
+                        Text { text: "▤"; color: titleStorage.t.storage_tone === "bad" ? root.danger : titleStorage.t.storage_tone === "warn" ? root.warning : root.accent; font.pixelSize: 11 }
+                        Text {
+                            text: root.scopeOnline && titleStorage.t.storage_text && titleStorage.t.storage_text !== "—" ? String(titleStorage.t.storage_free_text || titleStorage.t.storage_text) : "—"
+                            color: titleStorage.t.storage_tone === "bad" ? root.danger : titleStorage.t.storage_tone === "warn" ? root.warning : (titleStorage.t.storage_text && titleStorage.t.storage_text !== "—" ? root.textPrimary : root.textSecondary)
+                            font.pixelSize: 10; font.family: "Cascadia Mono"; font.bold: true
+                        }
+                        ToolTip.visible: storageHover.hovered
+                        ToolTip.delay: 400
+                        ToolTip.text: "Storage " + (titleStorage.t.storage_text || "—")
+                        HoverHandler { id: storageHover }
                     }
                 }
                 Column {
@@ -1452,9 +1937,24 @@ ApplicationWindow {
                                 font.pixelSize: 9
                                 opacity: 0.8
                             }
+                            Text {
+                                readonly property var t: deviceCard.modelData.telemetry || ({})
+                                visible: deviceCard.modelData.connected && t.battery_percent !== undefined && Number(t.battery_percent) >= 0
+                                text: (t.battery_percent !== undefined ? t.battery_percent : "") + "%" + (t.charging ? "⚡" : "")
+                                color: root.toneColor(root.batteryTone(t.battery_percent))
+                                font.pixelSize: 9; font.family: "Cascadia Mono"; font.bold: true
+                            }
+                            HudChip {
+                                readonly property var t: deviceCard.modelData.telemetry || ({})
+                                visible: deviceCard.modelData.connected && (deviceCard.modelData.busy || !!t.capture_active)
+                                label: t.capture_active ? "STACK" : "IMAGING"
+                                value: String(t.capture_text || "")
+                                tone: root.danger
+                                implicitHeight: 16
+                            }
                             Rectangle {
                                 width: 6; height: 6; radius: 3
-                                color: deviceCard.modelData.connected ? root.success : "#526077"
+                                color: deviceCard.modelData.connected ? (deviceCard.modelData.busy ? root.danger : root.success) : "#526077"
                                 border.color: deviceCard.modelData.connected ? "#D8FFFF" : "transparent"
                                 border.width: deviceCard.modelData.connected ? 1 : 0
                                 SequentialAnimation on opacity {
@@ -1549,26 +2049,81 @@ ApplicationWindow {
 
                         HudPanel {
                             title: "SYSTEM STATUS"
-                            SplitView.preferredHeight: 240
+                            SplitView.preferredHeight: 214
                             SplitView.minimumHeight: 120
+                            headerExtra: HudChip {
+                                label: root.scopeTelemetry.host_text && root.scopeTelemetry.host_text !== "—" ? root.scopeTelemetry.host_text : ""
+                                tone: root.scopeTelemetry.host_mode === false ? root.warning : root.success
+                                visible: root.scopeOnline && label !== ""
+                                dim: !root.scopeOnline
+                            }
                             RowLayout {
                                 Layout.fillWidth: true
-                                Rectangle { width: 10; height: 10; radius: 5; color: backend.selectedDevice.connected ? root.success : root.danger; border.color: backend.selectedDevice.connected ? "#C8FFE9" : "#FFD0D5" }
+                                LedDot {
+                                    width: 10; height: 10; radius: 5
+                                    on: true
+                                    pulse: root.scopeOnline && (root.scopeImaging || root.scopeActivity !== "")
+                                    onColor: root.scopeLinking ? root.warning : root.scopeImaging ? root.danger : root.scopeOnline ? root.success : root.danger
+                                }
                                 ColumnLayout {
                                     Layout.fillWidth: true; spacing: 0
-                                    Text { text: String(backend.selectedDevice.status || "OFFLINE").toUpperCase(); color: backend.selectedDevice.connected ? root.success : root.warning; font.pixelSize: 15; font.bold: true; font.letterSpacing: 1.4 }
+                                    Text {
+                                        id: statusHeading
+                                        text: String(backend.selectedDevice.status || "OFFLINE").toUpperCase()
+                                        color: root.scopeLinking ? root.warning : root.scopeImaging ? root.danger : root.scopeOnline ? root.success : root.textSecondary
+                                        font.pixelSize: 15; font.bold: true; font.letterSpacing: 1.4
+                                        Behavior on color { ColorAnimation { duration: 200 } }
+                                        SequentialAnimation on opacity {
+                                            running: root.scopeImaging || root.scopeLinking
+                                            loops: Animation.Infinite
+                                            NumberAnimation { from: 1; to: 0.55; duration: 800; easing.type: Easing.InOutSine }
+                                            NumberAnimation { from: 0.55; to: 1; duration: 800; easing.type: Easing.InOutSine }
+                                            onRunningChanged: if (!running) statusHeading.opacity = 1
+                                        }
+                                    }
                                     Text { text: root.deviceLabel(); color: root.textSecondary; font.pixelSize: 9 }
+                                }
+                            }
+                            Rectangle {
+                                // derived activity line from device telemetry
+                                id: activityLine
+                                Layout.fillWidth: true
+                                implicitHeight: 30
+                                radius: 3
+                                readonly property color tone: root.activityColor()
+                                color: Qt.rgba(tone.r, tone.g, tone.b, root.scopeOnline ? 0.12 : 0.04)
+                                border.color: Qt.rgba(tone.r, tone.g, tone.b, root.scopeOnline ? 0.5 : 0.2)
+                                Behavior on color { ColorAnimation { duration: 220 } }
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 9
+                                    anchors.rightMargin: 9
+                                    spacing: 8
+                                    Text { text: root.scopePending ? "⇡" : root.scopeActivity !== "" ? "◈" : root.scopeImaging ? "●" : root.scopeOnline ? "◇" : "○"; color: activityLine.tone; font.pixelSize: 12 }
+                                    Text {
+                                        text: root.scopeActivityText()
+                                        color: activityLine.tone
+                                        font.pixelSize: 11; font.bold: true; font.letterSpacing: 1.2
+                                        font.family: "Cascadia Mono"
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+                                    Text {
+                                        visible: root.scopeActivityFromDevice
+                                        text: "DEVICE"
+                                        color: root.textSecondary
+                                        font.pixelSize: 7; font.bold: true; font.letterSpacing: 1
+                                    }
                                 }
                             }
                             Repeater {
                                 model: [
-                                    {label: "ENDPOINT", value: backend.selectedDevice.ip_address || "—"},
-                                    {label: "SCHEDULER", value: backend.schedulerEnabled ? root.nextSessionCountdown() : "Disarmed"},
-                                    {label: "ACTIVITY", value: root.scopePending || root.scopeActivity || (root.scopeImaging ? "Session imaging" : "Idle")},
-                                    {label: "PREVIEW", value: backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped"},
-                                    {label: "SESSION", value: backend.currentSession.current_step || "No active session"},
-                                    {label: "REMAINING", value: backend.currentSession.id ? root.durationLabel(Number(backend.currentSession.planned_duration_seconds || 0) * (1 - backend.sessionProgress)) : "—"},
-                                    {label: "SITE", value: (backend.selectedDevice.timezone_name || "UTC") + "  " + Number(backend.selectedDevice.latitude || 0).toFixed(2) + "°, " + Number(backend.selectedDevice.longitude || 0).toFixed(2) + "°"}
+                                    {label: "ENDPOINT", value: backend.selectedDevice.ip_address || "—", tone: root.scopeOnline ? root.textPrimary : root.textSecondary},
+                                    {label: "SCHEDULER", value: backend.schedulerEnabled ? root.nextSessionCountdown() : "Disarmed", tone: backend.schedulerEnabled ? root.success : root.textSecondary},
+                                    {label: "PREVIEW", value: backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped", tone: backend.previewPlaying ? root.danger : backend.previewActive ? root.warning : root.textSecondary},
+                                    {label: "SESSION", value: backend.currentSession.current_step || "No active session", tone: backend.currentSession.id ? root.accent : root.textSecondary},
+                                    {label: "REMAINING", value: backend.currentSession.id ? root.durationLabel(Number(backend.currentSession.planned_duration_seconds || 0) * (1 - backend.sessionProgress)) : "—", tone: root.textPrimary},
+                                    {label: "SITE", value: (backend.selectedDevice.timezone_name || "UTC") + "  " + Number(backend.selectedDevice.latitude || 0).toFixed(2) + "°, " + Number(backend.selectedDevice.longitude || 0).toFixed(2) + "°", tone: root.textPrimary}
                                 ]
                                 delegate: RowLayout {
                                     required property var modelData
@@ -1576,27 +2131,105 @@ ApplicationWindow {
                                     spacing: 6
                                     Text { text: modelData.label; color: root.textSecondary; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8; Layout.preferredWidth: 72 }
                                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#1A3A50"; opacity: 0.7 }
-                                    Text { text: modelData.value; color: root.textPrimary; font.pixelSize: 10; font.family: "Cascadia Mono"; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; Layout.maximumWidth: 150 }
+                                    Text { text: modelData.value; color: modelData.tone; font.pixelSize: 10; font.family: "Cascadia Mono"; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; Layout.maximumWidth: 150 }
                                 }
                             }
-                            Rectangle { Layout.fillWidth: true; height: 1; color: root.outline; visible: backend.selectedDevice.telemetry_rows && backend.selectedDevice.telemetry_rows.length > 0 }
-                            Repeater {
-                                model: backend.selectedDevice.stack_rows || []
-                                delegate: RowLayout {
-                                    required property var modelData
-                                    Layout.fillWidth: true
-                                    Text { text: modelData.label; color: root.textSecondary; font.pixelSize: 9; Layout.preferredWidth: 96; elide: Text.ElideRight }
-                                    Text { text: modelData.value; color: root.accent; font.pixelSize: 10; font.family: "Cascadia Mono"; Layout.fillWidth: true; elide: Text.ElideRight }
+                        }
+
+                        HudPanel {
+                            id: vitalsPanel
+                            title: "VITALS"
+                            SplitView.preferredHeight: 262
+                            SplitView.minimumHeight: 150
+                            readonly property var t: root.scopeTelemetry
+                            readonly property bool live: root.scopeOnline && !!t.has_data
+                            readonly property bool stale: !!t.stale
+                            opacity: root.scopeOnline ? 1 : 0.55
+                            Behavior on opacity { NumberAnimation { duration: 240 } }
+                            headerExtra: Row {
+                                spacing: 4
+                                HudChip {
+                                    label: vitalsPanel.stale ? "STALE" : vitalsPanel.live ? "LIVE" : "NO DATA"
+                                    tone: vitalsPanel.stale ? root.warning : vitalsPanel.live ? root.success : root.muted
+                                    glow: vitalsPanel.live && !vitalsPanel.stale
+                                    dim: !vitalsPanel.live
                                 }
                             }
-                            Repeater {
-                                model: backend.selectedDevice.telemetry_rows || []
-                                delegate: RowLayout {
-                                    required property var modelData
-                                    Layout.fillWidth: true
-                                    Text { text: modelData.label; color: root.textSecondary; font.pixelSize: 9; Layout.preferredWidth: 96; elide: Text.ElideRight }
-                                    Text { text: modelData.value; color: root.textPrimary; font.pixelSize: 10; font.family: "Cascadia Mono"; Layout.fillWidth: true; elide: Text.ElideRight }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 10
+                                BatteryGauge {
+                                    percent: vitalsPanel.live && vitalsPanel.t.battery_percent !== undefined ? Number(vitalsPanel.t.battery_percent) : -1
+                                    charging: !!vitalsPanel.t.charging && vitalsPanel.live
+                                    Layout.preferredWidth: 74
+                                    Layout.preferredHeight: 74
                                 }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 5
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Text { text: "STORAGE"; color: root.textSecondary; font.pixelSize: 8; font.bold: true; font.letterSpacing: 1.1; Layout.fillWidth: true }
+                                        Text {
+                                            text: vitalsPanel.live ? String(vitalsPanel.t.storage_text || "—") : "—"
+                                            color: vitalsPanel.live && vitalsPanel.t.storage_tone && vitalsPanel.t.storage_tone !== "unknown" && vitalsPanel.t.storage_tone !== "good" ? root.toneColor(vitalsPanel.t.storage_tone) : root.textPrimary
+                                            font.pixelSize: 11; font.family: "Cascadia Mono"; font.bold: true
+                                        }
+                                    }
+                                    StorageBar {
+                                        Layout.fillWidth: true
+                                        fraction: vitalsPanel.live ? Number(vitalsPanel.t.storage_percent || 0) : 0
+                                        tone: vitalsPanel.live ? String(vitalsPanel.t.storage_tone || "unknown") : "unknown"
+                                        valid: !vitalsPanel.live || vitalsPanel.t.storage_valid !== false
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: vitalsPanel.live ? (vitalsPanel.t.storage_percent ? Math.round(Number(vitalsPanel.t.storage_percent) * 100) + "% USED" : (vitalsPanel.t.storage_valid === false ? "CARD MISSING" : "")) : ""
+                                        color: root.textSecondary; font.pixelSize: 8; font.letterSpacing: 0.8; elide: Text.ElideRight
+                                    }
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 4
+                                        HudChip { label: vitalsPanel.t.charging_text || "BATT"; tone: vitalsPanel.t.charging ? root.warning : root.textSecondary; dim: !vitalsPanel.live; visible: vitalsPanel.live && !!vitalsPanel.t.charging_text }
+                                        Text { visible: !!vitalsPanel.t.battery_health_text && vitalsPanel.live; text: vitalsPanel.t.battery_health_text || ""; color: root.textSecondary; font.pixelSize: 8; font.letterSpacing: 0.6; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        Item { Layout.fillWidth: true; visible: !vitalsPanel.t.battery_health_text }
+                                    }
+                                }
+                            }
+                            GridLayout {
+                                Layout.fillWidth: true
+                                columns: width >= 250 ? 2 : 1
+                                columnSpacing: 6
+                                rowSpacing: 6
+                                VitalTile { Layout.fillWidth: true; glyph: "♨"; label: "BODY TEMP"; value: vitalsPanel.live ? String(vitalsPanel.t.temperature_text || "—") : "—"; tone: root.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                                VitalTile { Layout.fillWidth: true; glyph: "◉"; label: backend.selectedDevice.camera === "wide" ? "WIDE SENSOR" : "TELE SENSOR"; value: vitalsPanel.live ? String((backend.selectedDevice.camera === "wide" ? vitalsPanel.t.cmos_wide_text : vitalsPanel.t.cmos_tele_text) || "—") : "—"; tone: root.notice; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                                VitalTile { Layout.fillWidth: true; glyph: "⌾"; label: "FOCUS"; value: vitalsPanel.live ? String(vitalsPanel.t.focus_text || "—") : "—"; unit: "STEPS"; tone: root.scopeActivity === "autofocus" ? root.notice : root.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                                VitalTile { Layout.fillWidth: true; glyph: "⛭"; label: "MOUNT"; value: vitalsPanel.live ? String(vitalsPanel.t.mount_text || "—") : "—"; unit: vitalsPanel.t.mount_mode === "EQ" ? "EQUATORIAL" : vitalsPanel.t.mount_mode === "AZ" ? "ALT-AZ" : ""; tone: vitalsPanel.t.mount_mode === "EQ" ? root.success : root.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                                VitalTile { Layout.fillWidth: true; glyph: "▶"; label: "STREAM"; value: vitalsPanel.live ? String(vitalsPanel.t.stream_text || "—") : "—"; unit: vitalsPanel.t.shooting_mode_text && vitalsPanel.t.shooting_mode_text !== "—" ? vitalsPanel.t.shooting_mode_text : ""; tone: backend.previewPlaying ? root.danger : root.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                                VitalTile {
+                                    Layout.fillWidth: true
+                                    glyph: "✦"
+                                    label: "LIGHTS"
+                                    value: vitalsPanel.live ? (vitalsPanel.t.lights_on ? "RING ON" : "RING OFF") : "—"
+                                    unit: vitalsPanel.live ? (vitalsPanel.t.indicator_on ? "· LED ON" : "· LED OFF") : ""
+                                    tone: vitalsPanel.t.lights_on ? root.warning : root.accent
+                                    stale: vitalsPanel.stale
+                                    live: vitalsPanel.live
+                                }
+                            }
+                            Text {
+                                visible: !root.scopeOnline
+                                Layout.fillWidth: true
+                                text: "Connect the telescope to stream battery, storage and sensor telemetry."
+                                color: root.textSecondary; font.pixelSize: 9; wrapMode: Text.Wrap
+                            }
+                            Text {
+                                id: vitalsWaiting
+                                visible: root.scopeOnline && !vitalsPanel.live
+                                Layout.fillWidth: true
+                                text: "Waiting for the first device report…"
+                                color: root.textSecondary; font.pixelSize: 9
+                                SequentialAnimation on opacity { running: vitalsWaiting.visible; loops: Animation.Infinite; NumberAnimation { to: 0.4; duration: 700 } NumberAnimation { to: 1; duration: 700 } }
                             }
                         }
 
@@ -1605,8 +2238,26 @@ ApplicationWindow {
                             title: "TARGET"
                             SplitView.preferredHeight: 140
                             SplitView.minimumHeight: 80
+                            headerExtra: HudChip {
+                                readonly property var t: root.scopeTelemetry
+                                readonly property bool tracking: !!t.tracking_active
+                                readonly property bool slewing: root.scopeActivity === "goto"
+                                visible: root.scopeOnline && (tracking || slewing || !!t.capture_active)
+                                label: slewing ? "GOTO" : t.capture_active ? "STACKING" : "TRACKING"
+                                value: slewing ? "" : String(t.capture_text || "")
+                                tone: slewing ? root.notice : t.capture_active ? root.danger : root.success
+                                glow: true
+                            }
                             Text {
-                                text: backend.currentSession.target_name || (backend.selectedDevice.connected ? "No active lock" : "No telescope link")
+                                text: {
+                                    const t = root.scopeTelemetry
+                                    const deviceTarget = String(t.capture_target || t.tracking_target || "")
+                                    if (backend.currentSession.target_name)
+                                        return backend.currentSession.target_name
+                                    if (root.scopeOnline && deviceTarget)
+                                        return deviceTarget
+                                    return backend.selectedDevice.connected ? "No active lock" : "No telescope link"
+                                }
                                 color: root.textPrimary
                                 font.pixelSize: 18
                                 font.bold: true
@@ -1621,7 +2272,25 @@ ApplicationWindow {
                                 color: root.textSecondary
                                 font.pixelSize: 11
                             }
-                            Text { text: backend.currentSession.current_step || (backend.selectedDevice.connected ? "Telescope ready" : "Connect to acquire a lock"); color: root.textSecondary; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                            Text {
+                                text: {
+                                    const t = root.scopeTelemetry
+                                    if (backend.currentSession.current_step) {
+                                        const frames = String(t.capture_text || "")
+                                        return frames && t.capture_active ? backend.currentSession.current_step + "  ·  " + frames + " frames" : backend.currentSession.current_step
+                                    }
+                                    if (!backend.selectedDevice.connected)
+                                        return "Connect to acquire a lock"
+                                    if (root.scopeActivity === "goto")
+                                        return "Slewing to " + (t.tracking_target || root.scopeActivityDetail || "target")
+                                    if (t.tracking_active)
+                                        return "Tracking " + (t.tracking_target || "target") + (t.stacked_text ? "  ·  " + t.stacked_text : "")
+                                    return "Telescope ready"
+                                }
+                                color: root.scopeTelemetry.tracking_active || root.scopeActivity === "goto" ? root.notice : root.textSecondary
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
                             RowLayout {
                                 Layout.fillWidth: true
                                 Text { text: backend.currentSession.duration_text ? "PLANNED  " + backend.currentSession.duration_text : "WAITING FOR SCHEDULE"; color: root.accent; font.pixelSize: 11; font.letterSpacing: 0.8; Layout.fillWidth: true; elide: Text.ElideRight }
@@ -1707,8 +2376,12 @@ ApplicationWindow {
                             SplitView.minimumHeight: 40
                             SplitView.maximumHeight: 64
                             id: linkBanner
-                            readonly property color tone: root.targetLocked ? root.success : (backend.selectedDevice.connected ? root.accent : root.danger)
-                            color: root.targetLocked ? "#C0143C28" : (backend.selectedDevice.connected ? "#C0123C52" : "#C03A1218")
+                            readonly property bool tracking: root.scopeOnline && !!root.scopeTelemetry.tracking_active
+                            readonly property bool slewing: root.scopeOnline && root.scopeActivity === "goto"
+                            readonly property bool locked: root.targetLocked || tracking
+                            readonly property color tone: locked ? root.success : slewing ? root.notice : (backend.selectedDevice.connected ? root.accent : root.danger)
+                            color: locked ? "#C0143C28" : slewing ? "#C0113A3A" : (backend.selectedDevice.connected ? "#C0123C52" : "#C03A1218")
+                            Behavior on color { ColorAnimation { duration: 240 } }
                             border.color: tone
                             Rectangle {
                                 id: bannerGlow
@@ -1719,10 +2392,10 @@ ApplicationWindow {
                                 border.width: 1
                                 opacity: 0.25
                                 SequentialAnimation on opacity {
-                                    running: controlPage.visible && !root.targetLocked
+                                    running: controlPage.visible && !linkBanner.locked
                                     loops: Animation.Infinite
-                                    NumberAnimation { to: 0.05; duration: 1400; easing.type: Easing.InOutSine }
-                                    NumberAnimation { to: 0.45; duration: 1400; easing.type: Easing.InOutSine }
+                                    NumberAnimation { to: 0.05; duration: linkBanner.slewing ? 500 : 1400; easing.type: Easing.InOutSine }
+                                    NumberAnimation { to: 0.45; duration: linkBanner.slewing ? 500 : 1400; easing.type: Easing.InOutSine }
                                 }
                             }
                             Row {
@@ -1730,7 +2403,16 @@ ApplicationWindow {
                                 spacing: 10
                                 Rectangle { width: 6; height: 6; radius: 3; color: linkBanner.tone; anchors.verticalCenter: parent.verticalCenter }
                                 Text {
-                                    text: root.targetLocked ? "TARGET LOCKED" : (backend.selectedDevice.connected ? "NO TARGET LOCK" : "LINK DOWN")
+                                    text: {
+                                        const target = String(root.scopeTelemetry.tracking_target || root.scopeTelemetry.goto_target || "")
+                                        if (linkBanner.slewing)
+                                            return "GOTO" + (target ? " · " + target.toUpperCase() : "")
+                                        if (linkBanner.tracking)
+                                            return "TRACKING" + (target ? " · " + target.toUpperCase() : "")
+                                        if (root.targetLocked)
+                                            return "TARGET LOCKED"
+                                        return backend.selectedDevice.connected ? "NO TARGET LOCK" : "LINK DOWN"
+                                    }
                                     color: linkBanner.tone
                                     font.bold: true
                                     font.letterSpacing: 2
@@ -2007,16 +2689,41 @@ ApplicationWindow {
                                     color: "#B0070D16"
                                     border.color: root.outline
                                     RowLayout {
+                                        id: readoutStrip
+                                        readonly property var t: root.scopeTelemetry
+                                        readonly property bool wide: backend.selectedDevice.camera === "wide"
+                                        readonly property string exposure: {
+                                            const value = wide ? t.wide_exposure_text : t.exposure_text
+                                            return root.scopeOnline && value && value !== "—" ? String(value) : liveExposure.text
+                                        }
+                                        readonly property string gain: {
+                                            const value = wide ? t.wide_gain : t.gain
+                                            return root.scopeOnline && value !== undefined && value !== null ? String(value) : liveGain.text
+                                        }
+                                        readonly property string sensor: String((wide ? t.cmos_wide_text : t.cmos_tele_text) || "—")
                                         anchors.fill: parent
                                         anchors.leftMargin: 10
                                         anchors.rightMargin: 10
-                                        spacing: 14
-                                        Text { text: (backend.selectedDevice.camera === "wide" ? "WIDE" : "TELE"); color: root.accent; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1 }
-                                        Text { text: "EXP " + liveExposure.text + "s"; color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono" }
-                                        Text { text: "GAIN " + liveGain.text; color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono" }
-                                        Text { visible: backend.selectedDevice.camera !== "wide"; text: liveFilter.currentText.toUpperCase(); color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono"; elide: Text.ElideRight; Layout.fillWidth: true }
-                                        Item { Layout.fillWidth: true; visible: backend.selectedDevice.camera === "wide" }
-                                        Text { text: backend.selectedDevice.ip_address || "—"; color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono" }
+                                        spacing: 12
+                                        Text { text: readoutStrip.wide ? "WIDE" : "TELE"; color: root.accent; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1 }
+                                        Text { text: "EXP " + readoutStrip.exposure + "s"; color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono" }
+                                        Text { text: "GAIN " + readoutStrip.gain; color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono" }
+                                        Text { visible: !readoutStrip.wide; text: liveFilter.currentText.toUpperCase(); color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono"; elide: Text.ElideRight }
+                                        Text {
+                                            visible: root.scopeOnline && !!readoutStrip.t.capture_text
+                                            text: "FRAMES " + (readoutStrip.t.capture_text || "")
+                                            color: readoutStrip.t.capture_active ? root.danger : root.textPrimary
+                                            font.pixelSize: 10; font.family: "Cascadia Mono"; font.bold: true
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        Text { visible: root.scopeOnline && readoutStrip.sensor !== "—"; text: "SENSOR " + readoutStrip.sensor; color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono" }
+                                        Text {
+                                            visible: root.scopeOnline && readoutStrip.t.battery_percent !== undefined && Number(readoutStrip.t.battery_percent) >= 0
+                                            text: "BATT " + (readoutStrip.t.battery_text || "—") + (readoutStrip.t.charging ? "⚡" : "")
+                                            color: root.toneColor(root.batteryTone(readoutStrip.t.battery_percent))
+                                            font.pixelSize: 10; font.family: "Cascadia Mono"
+                                        }
+                                        Text { visible: !root.scopeOnline; text: backend.selectedDevice.ip_address || "—"; color: root.textSecondary; font.pixelSize: 10; font.family: "Cascadia Mono" }
                                         Text { text: backend.clockText; color: root.accent; font.pixelSize: 10; font.family: "Cascadia Mono" }
                                     }
                                 }
@@ -2069,20 +2776,62 @@ ApplicationWindow {
                                         onClicked: previewHost.startPreview()
                                     }
                                 }
-                                Rectangle {
+                                Row {
                                     anchors.left: parent.left
                                     anchors.top: parent.top
                                     anchors.margins: 14
-                                    width: 96
-                                    height: 28
+                                    spacing: 6
                                     visible: previewHost.chromeShown
-                                    color: "#C0101520"
-                                    border.color: backend.previewPlaying ? root.success : root.outline
-                                    Row {
-                                        anchors.centerIn: parent
-                                        spacing: 7
-                                        Rectangle { width: 8; height: 8; radius: 4; color: backend.previewPlaying ? root.danger : (backend.previewActive ? root.warning : "#64748B"); anchors.verticalCenter: parent.verticalCenter }
-                                        Text { text: backend.previewPlaying ? "LIVE" : (backend.previewActive ? "STARTING" : "STANDBY"); color: root.textPrimary; font.pixelSize: 11; font.bold: true }
+                                    Rectangle {
+                                        width: 96
+                                        height: 28
+                                        color: "#C0101520"
+                                        border.color: backend.previewPlaying ? root.success : root.outline
+                                        Row {
+                                            anchors.centerIn: parent
+                                            spacing: 7
+                                            Rectangle {
+                                                width: 8; height: 8; radius: 4
+                                                color: backend.previewPlaying ? root.danger : (backend.previewActive ? root.warning : "#64748B")
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                SequentialAnimation on opacity {
+                                                    running: backend.previewPlaying
+                                                    loops: Animation.Infinite
+                                                    NumberAnimation { from: 1; to: 0.3; duration: 600 }
+                                                    NumberAnimation { from: 0.3; to: 1; duration: 600 }
+                                                }
+                                            }
+                                            Text { text: backend.previewPlaying ? "LIVE" : (backend.previewActive ? "STARTING" : "STANDBY"); color: root.textPrimary; font.pixelSize: 11; font.bold: true }
+                                        }
+                                    }
+                                    Rectangle {
+                                        id: recBadge
+                                        readonly property var t: root.scopeTelemetry
+                                        readonly property bool rec: root.scopeOnline && (root.scopeActivity === "record" || !!t.capture_active)
+                                        visible: rec
+                                        width: recRow.implicitWidth + 20
+                                        height: 28
+                                        color: "#C0301117"
+                                        border.color: root.danger
+                                        Row {
+                                            id: recRow
+                                            anchors.centerIn: parent
+                                            spacing: 7
+                                            Rectangle {
+                                                width: 8; height: 8; radius: 4; color: root.danger
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                SequentialAnimation on opacity {
+                                                    running: recBadge.rec
+                                                    loops: Animation.Infinite
+                                                    NumberAnimation { from: 1; to: 0.2; duration: 500 }
+                                                    NumberAnimation { from: 0.2; to: 1; duration: 500 }
+                                                }
+                                            }
+                                            Text {
+                                                text: root.scopeActivity === "record" ? "REC " + root.scopeActivityDetail : "STACKING " + (recBadge.t.capture_text || "")
+                                                color: root.danger; font.pixelSize: 11; font.bold: true; font.family: "Cascadia Mono"
+                                            }
+                                        }
                                     }
                                 }
                                 HudButton {
@@ -2150,7 +2899,7 @@ ApplicationWindow {
                                     {label: "POLAR / EQ", glyph: "⌖", start: "polar", stop: "stop_polar", state: "polar", detail: "ALIGN"},
                                     {label: "LIGHTS", glyph: "✦", start: "lights_on", stop: "lights_off", state: "lights", detail: "CHASSIS"},
                                     {label: "GO LIVE", glyph: "▶", start: "go_live", stop: "", state: "", detail: "CAMERA"},
-                                    {label: "STOP GOTO", glyph: "■", start: "stop_goto", stop: "", state: "", detail: "MOUNT"},
+                                    {label: "STOP GOTO", glyph: "■", start: "stop_goto", stop: "", state: "goto", detail: "MOUNT"},
                                     {label: "BURST", glyph: "◫", start: "burst_start", stop: "burst_stop", state: "burst", detail: "CAPTURE"},
                                     {label: "RECORD", glyph: "●", start: "record_start", stop: "record_stop", state: "record", detail: "VIDEO"},
                                     {label: "TIMELAPSE", glyph: "◷", start: "timelapse_start", stop: "timelapse_stop", state: "timelapse", detail: "CAPTURE"},
@@ -2158,22 +2907,53 @@ ApplicationWindow {
                                     {label: "POWER", glyph: "⏻", start: "power_down", stop: "", state: "", detail: "SYSTEM", destructive: true}
                                 ]
                                 delegate: HudCommandPad {
+                                    id: pad
                                     required property var modelData
+                                    readonly property var t: root.scopeTelemetry
                                     readonly property bool activeForState: modelData.state === "lights"
                                         ? !!backend.selectedDevice.lights_on
                                         : modelData.state !== "" && root.scopeActivity === modelData.state
                                     readonly property string effectiveOperation: activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
+                                    readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop)
+                                    function deviceDetail() {
+                                        if (!activeForState)
+                                            return modelData.detail
+                                        switch (modelData.state) {
+                                        case "calibrate":
+                                            return root.scopeActivityDetail ? (root.scopeActivityDetail.indexOf("SOLVE") === 0 ? "SOLVING · " + root.scopeActivityDetail.replace("SOLVE", "PHASE").trim() : root.scopeActivityDetail) : "RUNNING"
+                                        case "autofocus":
+                                            return t.focus_text && t.focus_text !== "—" ? "RUNNING · " + t.focus_text : "RUNNING"
+                                        case "polar":
+                                            return root.scopeActivityDetail || "RUNNING"
+                                        case "record":
+                                            return "REC · " + (root.scopeActivityDetail || "00:00")
+                                        case "lights":
+                                            return "ON · TAP TO STOP"
+                                        default:
+                                            return root.scopeActivityDetail ? root.scopeActivityDetail + " · STOP" : "ACTIVE · STOP"
+                                        }
+                                    }
                                     Layout.fillWidth: true
                                     Layout.fillHeight: true
                                     Layout.minimumHeight: 44
                                     Layout.preferredHeight: 58
                                     text: modelData.label
                                     glyph: modelData.glyph
-                                    detail: activeForState ? "ACTIVE · STOP" : modelData.detail
+                                    detail: deviceDetail()
                                     activeState: activeForState
+                                    pending: isPending
                                     destructive: !!modelData.destructive
                                     enabled: root.commandEnabled(effectiveOperation)
                                     onClicked: root.requestDeviceAction(effectiveOperation, modelData.label)
+                                    Connections {
+                                        target: backend
+                                        function onCommandFeedback(deviceId, operation, ok) {
+                                            if (deviceId !== backend.selectedDeviceId)
+                                                return
+                                            if (operation === pad.modelData.start || (pad.modelData.stop !== "" && operation === pad.modelData.stop))
+                                                pad.showFlash(ok ? "success" : "error")
+                                        }
+                                    }
                                 }
                                 }
                             }
@@ -2432,79 +3212,281 @@ ApplicationWindow {
                         }
 
                         HudPanel {
+                            id: logPanel
                             title: "LIVE LOG"
                             SplitView.fillHeight: true
                             SplitView.minimumHeight: 80
-                            headerExtra: HudButton {
-                                text: backend.showDebugLogs ? "DEBUG ON" : "DEBUG"
-                                implicitHeight: 22
-                                implicitWidth: 78
-                                font.pixelSize: 10
-                                buttonColor: backend.showDebugLogs ? "#143028" : root.surfaceHigh
-                                foregroundColor: backend.showDebugLogs ? root.success : root.textSecondary
-                                onClicked: backend.setShowDebugLogs(!backend.showDebugLogs)
+                            headerExtra: Row {
+                                spacing: 3
+                                Repeater {
+                                    model: [
+                                        {key: "all", label: "ALL"},
+                                        {key: "device", label: "DEVICE"},
+                                        {key: "alerts", label: "ALERTS"},
+                                        {key: "debug", label: "DEBUG"}
+                                    ]
+                                    delegate: Rectangle {
+                                        id: pill
+                                        required property var modelData
+                                        readonly property bool active: backend.logFilter === modelData.key
+                                        readonly property int badge: modelData.key === "alerts" ? backend.logWarningCount + backend.logErrorCount : 0
+                                        width: pillRow.implicitWidth + 12
+                                        height: 20
+                                        radius: 3
+                                        color: active ? (modelData.key === "debug" ? "#143028" : "#0E3A48") : pillHover.hovered ? "#12283A" : "transparent"
+                                        border.color: active ? (modelData.key === "debug" ? root.success : root.accent) : "#1A3A50"
+                                        Behavior on color { ColorAnimation { duration: 120 } }
+                                        Row {
+                                            id: pillRow
+                                            anchors.centerIn: parent
+                                            spacing: 4
+                                            Text {
+                                                text: pill.modelData.label
+                                                color: pill.active ? (pill.modelData.key === "debug" ? root.success : root.accent) : root.textSecondary
+                                                font.pixelSize: 8; font.bold: true; font.letterSpacing: 1
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
+                                            Rectangle {
+                                                visible: pill.badge > 0
+                                                width: badgeText.implicitWidth + 6; height: 12; radius: 6
+                                                color: backend.logErrorCount > 0 ? root.danger : root.warning
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                Text { id: badgeText; anchors.centerIn: parent; text: pill.badge > 99 ? "99+" : pill.badge; color: "#05080F"; font.pixelSize: 8; font.bold: true }
+                                            }
+                                        }
+                                        HoverHandler { id: pillHover; cursorShape: Qt.PointingHandCursor }
+                                        TapHandler { onTapped: backend.setLogFilter(pill.modelData.key) }
+                                    }
+                                }
+                                Rectangle { width: 1; height: 16; color: root.outline; anchors.verticalCenter: parent.verticalCenter }
+                                HudButton {
+                                    text: "COPY"
+                                    implicitHeight: 20
+                                    implicitWidth: 46
+                                    font.pixelSize: 8
+                                    font.letterSpacing: 1
+                                    leftPadding: 6; rightPadding: 6
+                                    busyText: "COPIED"
+                                    busyMs: 900
+                                    enabled: logList.count > 0
+                                    buttonColor: "transparent"
+                                    foregroundColor: root.textSecondary
+                                    onClicked: backend.copyText(root.allLogText())
+                                }
+                                HudButton {
+                                    text: "CLEAR"
+                                    implicitHeight: 20
+                                    implicitWidth: 50
+                                    font.pixelSize: 8
+                                    font.letterSpacing: 1
+                                    leftPadding: 6; rightPadding: 6
+                                    enabled: logList.count > 0
+                                    buttonColor: "transparent"
+                                    foregroundColor: root.textSecondary
+                                    onClicked: backend.clearLog()
+                                }
                             }
-                            ListView {
-                                id: logList
+                            overlay: Item {
+                                anchors.fill: parent
+                                Rectangle {
+                                    // "N new" follow-tail pill
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    anchors.bottom: parent.bottom
+                                    anchors.bottomMargin: 14
+                                    width: newPillRow.implicitWidth + 22
+                                    height: 22
+                                    radius: 11
+                                    color: "#E00E3A48"
+                                    border.color: root.accent
+                                    visible: !logList.followTail && logList.count > 0
+                                    scale: visible ? 1 : 0.8
+                                    Behavior on scale { NumberAnimation { duration: 140 } }
+                                    Row {
+                                        id: newPillRow
+                                        anchors.centerIn: parent
+                                        spacing: 6
+                                        Text { text: "↓"; color: root.accent; font.pixelSize: 11; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                                        Text {
+                                            text: logList.unseen > 0 ? logList.unseen + " NEW" : "FOLLOW"
+                                            color: root.textPrimary; font.pixelSize: 9; font.bold: true; font.letterSpacing: 1
+                                            anchors.verticalCenter: parent.verticalCenter
+                                        }
+                                    }
+                                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                    TapHandler { onTapped: logList.resumeFollow() }
+                                }
+                            }
+                            Item {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 Layout.preferredHeight: 0
-                                clip: true
-                                spacing: 2
-                                boundsBehavior: Flickable.StopAtBounds
-                                ScrollBar.vertical: HiddenBar {}
-                                ScrollBar.horizontal: HiddenBar {}
-                                model: backend.logModel
-                                onCountChanged: positionViewAtEnd()
-                                delegate: Item {
-                                    id: logRow
-                                    required property string time
-                                    required property string level
-                                    required property string device
-                                    required property string message
-                                    readonly property color tone: level === "ERROR" ? root.danger : level === "SUCCESS" ? root.success : level === "WARNING" ? root.warning : level === "SDK" ? root.textSecondary : "#B7D4E2"
-                                    readonly property string lineText: time + "  [" + device + "]  " + message
-                                    width: ListView.view.width
-                                    height: logText.implicitHeight + 2
-                                    Rectangle {
-                                        x: 0; y: 1
-                                        width: 2
-                                        height: parent.height - 2
-                                        color: logRow.level === "ERROR" || logRow.level === "SUCCESS" || logRow.level === "WARNING" ? logRow.tone : "#1E4A63"
+                                ListView {
+                                    id: logList
+                                    property bool followTail: true
+                                    property int unseen: 0
+                                    property bool _programmatic: false
+                                    anchors.fill: parent
+                                    clip: true
+                                    spacing: 1
+                                    boundsBehavior: Flickable.StopAtBounds
+                                    ScrollBar.vertical: ScrollBar {
+                                        id: logScroll
+                                        policy: ScrollBar.AsNeeded
+                                        onPressedChanged: if (pressed && logList.contentHeight > logList.height) logList.followTail = false
+                                        contentItem: Rectangle { implicitWidth: 3; radius: 1.5; color: root.outline; opacity: logScroll.active ? 0.9 : 0.4 }
+                                        background: Item {}
                                     }
-                                    Text {
-                                        id: logText
-                                        x: 8
-                                        y: 1
-                                        width: parent.width - 8
-                                        text: logRow.lineText
-                                        color: logRow.tone
-                                        font.family: "Cascadia Mono"
-                                        font.pixelSize: 10
-                                        wrapMode: Text.Wrap
+                                    ScrollBar.horizontal: HiddenBar {}
+                                    model: backend.logModel
+                                    reuseItems: true
+                                    function resumeFollow() {
+                                        followTail = true
+                                        unseen = 0
+                                        _programmatic = true
+                                        positionViewAtEnd()
+                                        _programmatic = false
                                     }
-                                    TapHandler {
-                                        acceptedButtons: Qt.RightButton
-                                        onTapped: {
-                                            logMenu.lineText = logRow.lineText
-                                            logMenu.popup()
+                                    function scrollToTail() {
+                                        _programmatic = true
+                                        positionViewAtEnd()
+                                        _programmatic = false
+                                    }
+                                    onCountChanged: {
+                                        if (followTail)
+                                            Qt.callLater(scrollToTail)
+                                        else if (count > 0)
+                                            unseen += 1
+                                    }
+                                    onDraggingChanged: {
+                                        if (dragging && !_programmatic && contentHeight > height)
+                                            followTail = false
+                                    }
+                                    onAtYEndChanged: {
+                                        if (atYEnd && !followTail)
+                                            Qt.callLater(resumeFollow)
+                                    }
+                                    WheelHandler {
+                                        // wheel-up disengages follow-tail; reaching the end again re-engages it
+                                        blocking: false
+                                        onWheel: event => {
+                                            if (event.angleDelta.y > 0 && logList.contentHeight > logList.height)
+                                                logList.followTail = false
+                                        }
+                                    }
+                                    delegate: Rectangle {
+                                        id: logRow
+                                        required property int index
+                                        required property string time
+                                        required property string level
+                                        required property string device
+                                        required property string message
+                                        required property string glyph
+                                        required property int count
+                                        readonly property color tone: root.toneForLevel(level)
+                                        readonly property bool quiet: level === "SDK" || level === "DEBUG" || level === "INFO"
+                                        readonly property string lineText: time + "  " + level + "  [" + device + "]  " + message + (count > 1 ? "  (×" + count + ")" : "")
+                                        width: ListView.view ? ListView.view.width : 0
+                                        height: 18
+                                        color: rowHover.hovered ? "#1A0E2030" : (index % 2 === 0 ? "transparent" : "#0C0A1420")
+                                        Rectangle {
+                                            x: 0; y: 2
+                                            width: 2
+                                            height: parent.height - 4
+                                            radius: 1
+                                            color: logRow.quiet ? "#1E4A63" : logRow.tone
+                                            opacity: logRow.level === "SDK" || logRow.level === "DEBUG" ? 0.45 : 1
+                                        }
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 7
+                                            anchors.rightMargin: 6
+                                            spacing: 6
+                                            Text {
+                                                text: logRow.time
+                                                color: root.muted
+                                                font.family: "Cascadia Mono"
+                                                font.pixelSize: 9
+                                                Layout.preferredWidth: 50
+                                            }
+                                            Text {
+                                                text: logRow.glyph
+                                                color: logRow.quiet && logRow.level !== "INFO" ? root.muted : logRow.tone
+                                                font.pixelSize: 9
+                                                font.bold: true
+                                                Layout.preferredWidth: 10
+                                                horizontalAlignment: Text.AlignHCenter
+                                            }
+                                            Text {
+                                                visible: backend.devices.length > 1
+                                                text: logRow.device
+                                                color: root.textSecondary
+                                                font.pixelSize: 9
+                                                elide: Text.ElideRight
+                                                Layout.maximumWidth: 62
+                                            }
+                                            Text {
+                                                id: logText
+                                                text: logRow.message
+                                                color: logRow.level === "SDK" || logRow.level === "DEBUG" ? root.muted : logRow.level === "INFO" ? "#B7D4E2" : logRow.tone
+                                                font.family: "Cascadia Mono"
+                                                font.pixelSize: 10
+                                                elide: Text.ElideRight
+                                                maximumLineCount: 1
+                                                Layout.fillWidth: true
+                                            }
+                                            Rectangle {
+                                                visible: logRow.count > 1
+                                                width: countText.implicitWidth + 8
+                                                height: 13
+                                                radius: 6
+                                                color: Qt.rgba(logRow.tone.r, logRow.tone.g, logRow.tone.b, 0.2)
+                                                border.color: Qt.rgba(logRow.tone.r, logRow.tone.g, logRow.tone.b, 0.6)
+                                                Text { id: countText; anchors.centerIn: parent; text: "×" + logRow.count; color: logRow.tone; font.pixelSize: 8; font.bold: true }
+                                            }
+                                        }
+                                        HoverHandler { id: rowHover }
+                                        ToolTip.visible: rowHover.hovered && logText.truncated
+                                        ToolTip.delay: 500
+                                        ToolTip.text: logRow.message
+                                        TapHandler {
+                                            acceptedButtons: Qt.RightButton
+                                            onTapped: {
+                                                logMenu.lineText = logRow.lineText
+                                                logMenu.popup()
+                                            }
+                                        }
+                                    }
+                                    HudMenu {
+                                        id: logMenu
+                                        property string lineText: ""
+                                        HudMenuItem {
+                                            text: "Copy line"
+                                            glyph: "\uE8C8"
+                                            onTriggered: backend.copyText(logMenu.lineText)
+                                        }
+                                        HudMenuItem {
+                                            text: "Copy all"
+                                            glyph: "\uE8C8"
+                                            enabled: logList.count > 0
+                                            onTriggered: backend.copyText(root.allLogText())
+                                        }
+                                        HudMenuSeparator {}
+                                        HudMenuItem {
+                                            text: "Clear log"
+                                            glyph: "\uE74D"
+                                            destructive: true
+                                            enabled: logList.count > 0
+                                            onTriggered: backend.clearLog()
                                         }
                                     }
                                 }
-                                HudMenu {
-                                    id: logMenu
-                                    property string lineText: ""
-                                    HudMenuItem {
-                                        text: "Copy line"
-                                        glyph: "\uE8C8"
-                                        onTriggered: backend.copyText(logMenu.lineText)
-                                    }
-                                    HudMenuItem {
-                                        text: "Copy all"
-                                        glyph: "\uE8C8"
-                                        enabled: logList.count > 0
-                                        onTriggered: backend.copyText(root.allLogText())
-                                    }
+                                EmptyHint {
+                                    anchors.centerIn: parent
+                                    visible: logList.count === 0
+                                    width: parent.width - 24
+                                    glyph: backend.logFilter === "alerts" ? "✓" : "◇"
+                                    text: backend.logFilter === "alerts" ? "No warnings or errors" : backend.logFilter === "device" ? "No device reports yet" : "Log is empty"
+                                    font.pixelSize: 11
                                 }
                             }
                         }
@@ -2558,13 +3540,14 @@ ApplicationWindow {
                         SplitView.fillWidth: true
                         SplitView.minimumWidth: 420
                         spacing: 10
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Text {
-                                text: calendarPage.viewMode === 0
-                                    ? Qt.formatDate(calendarPage.shownMonth, "MMMM yyyy").toUpperCase()
-                                    : Qt.formatDate(calendarPage.selectedDate, "dddd d MMMM").toUpperCase()
-                                color: root.textPrimary; font.pixelSize: 22; font.letterSpacing: 2; Layout.fillWidth: true
+                        PageHeader {
+                            title: calendarPage.viewMode === 0
+                                ? Qt.formatDate(calendarPage.shownMonth, "MMMM yyyy").toUpperCase()
+                                : Qt.formatDate(calendarPage.selectedDate, "dddd d MMMM").toUpperCase()
+                            subtitle: {
+                                const total = backend.sessions.filter(item => item.status === "planned").length
+                                const night = calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).length
+                                return total + " planned session" + (total === 1 ? "" : "s") + "  ·  " + night + " on the selected night  ·  night rolls over at " + String(calendarPage.cutoffHour).padStart(2, "0") + ":00"
                             }
                             HudButton { text: "MONTH"; buttonColor: calendarPage.viewMode === 0 ? "#0E3A48" : root.surfaceHigh; foregroundColor: calendarPage.viewMode === 0 ? root.accent : root.textSecondary; onClicked: calendarPage.viewMode = 0 }
                             HudButton { text: "NIGHT"; buttonColor: calendarPage.viewMode === 1 ? "#0E3A48" : root.surfaceHigh; foregroundColor: calendarPage.viewMode === 1 ? root.accent : root.textSecondary; onClicked: calendarPage.viewMode = 1 }
@@ -2621,10 +3604,40 @@ ApplicationWindow {
                                     }
                                     property string key: calendarPage.dateKey(cellDate)
                                     property var daySessions: calendarPage.sessionsForDay(key)
+                                    readonly property bool isToday: key === calendarPage.currentObservingKey()
+                                    readonly property bool isSelected: key === calendarPage.dateKey(calendarPage.selectedDate)
+                                    readonly property bool inMonth: cellDate.getMonth() === calendarPage.shownMonth.getMonth()
                                     Layout.fillWidth: true
                                     Layout.fillHeight: true
-                                    color: key === calendarPage.dateKey(calendarPage.selectedDate) ? "#C0123C52" : "#99070D16"
-                                    border.color: dropArea.containsDrag ? root.accent : root.outline
+                                    radius: 3
+                                    color: isSelected ? "#C0123C52" : cellHover.hovered ? "#B00E1C2C" : inMonth ? "#99070D16" : "#55070D16"
+                                    border.color: dropArea.containsDrag ? root.accent : isSelected ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.7) : root.outline
+                                    Behavior on color { ColorAnimation { duration: 120 } }
+                                    HoverHandler { id: cellHover }
+                                    Rectangle {
+                                        // animated accent ring on tonight's cell
+                                        anchors.fill: parent
+                                        anchors.margins: 2
+                                        radius: 3
+                                        color: "transparent"
+                                        border.color: root.accent
+                                        border.width: 1
+                                        visible: dayCell.isToday
+                                        opacity: 0.6
+                                        SequentialAnimation on opacity {
+                                            running: dayCell.isToday && calendarPage.visible && calendarPage.viewMode === 0
+                                            loops: Animation.Infinite
+                                            NumberAnimation { to: 0.15; duration: 1500; easing.type: Easing.InOutSine }
+                                            NumberAnimation { to: 0.8; duration: 1500; easing.type: Easing.InOutSine }
+                                        }
+                                    }
+                                    Text {
+                                        anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 5
+                                        visible: dayCell.isToday
+                                        text: "TONIGHT"
+                                        color: root.accent
+                                        font.pixelSize: 7; font.bold: true; font.letterSpacing: 1
+                                    }
                                     DropArea {
                                         id: dropArea
                                         anchors.fill: parent
@@ -2641,19 +3654,28 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         anchors.margins: 6
                                         spacing: 3
-                                        Text { text: dayCell.cellDate.getDate(); color: dayCell.cellDate.getMonth() === calendarPage.shownMonth.getMonth() ? root.textPrimary : "#3E5A6A"; font.pixelSize: 11 }
+                                        Text { text: dayCell.cellDate.getDate(); color: dayCell.isToday ? root.accent : dayCell.inMonth ? root.textPrimary : "#3E5A6A"; font.pixelSize: 11; font.bold: dayCell.isToday; font.family: "Cascadia Mono" }
                                         Repeater {
                                             model: dayCell.daySessions.slice(0, 3)
                                             delegate: Rectangle {
                                                 id: sessionChip
                                                 required property var modelData
                                                 property string sessionId: modelData.id
+                                                readonly property color deviceTone: modelData.device_color || root.accent
                                                 width: parent.width
                                                 height: 22
+                                                radius: 2
                                                 color: root.statusFill(modelData.status)
-                                                border.color: root.statusColor(modelData.status)
+                                                border.color: Qt.rgba(root.statusColor(modelData.status).r, root.statusColor(modelData.status).g, root.statusColor(modelData.status).b, 0.55)
                                                 opacity: root.sessionDragActive && root.sessionDragData.id === sessionId ? 0.35 : 1
-                                                Text { anchors.fill: parent; anchors.margins: 4; text: calendarPage.chipText(modelData); color: root.textPrimary; font.pixelSize: 9; elide: Text.ElideRight }
+                                                Rectangle { x: 1; y: 1; width: 3; height: parent.height - 2; radius: 1; color: sessionChip.deviceTone }
+                                                Rectangle {
+                                                    anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 3
+                                                    width: 5; height: 5; radius: 2.5
+                                                    color: root.statusColor(modelData.status)
+                                                    visible: String(modelData.status) !== "planned"
+                                                }
+                                                Text { anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 10; anchors.topMargin: 4; anchors.bottomMargin: 4; text: calendarPage.chipText(modelData); color: root.textPrimary; font.pixelSize: 9; elide: Text.ElideRight }
                                                 SessionDragArea {
                                                     anchors.fill: parent
                                                     dragItem: sessionChip.modelData
@@ -2751,17 +3773,26 @@ ApplicationWindow {
                                             y: calendarPage.timelineMinutes(modelData.start_time) / 60 * nightTimeline.hourHeight + 5
                                             width: timelineTrack.width - 82
                                             height: Math.max(36, Number(modelData.planned_duration_seconds || 0) / 3600 * nightTimeline.hourHeight - 6)
+                                            radius: 3
                                             color: root.statusFill(modelData.status)
                                             border.color: root.statusColor(modelData.status)
-                                            border.width: 2
+                                            border.width: 1
                                             opacity: root.sessionDragActive && root.sessionDragData.id === sessionId ? 0.35 : 0.96
+                                            Rectangle { x: 0; y: 0; width: 4; height: parent.height; radius: 2; color: modelData.device_color || root.accent }
                                             RowLayout {
                                                 anchors.fill: parent
                                                 anchors.margins: 8
+                                                anchors.leftMargin: 12
                                                 Text { text: "⋮⋮"; color: root.accent; font.pixelSize: 16 }
                                                 ColumnLayout {
                                                     Layout.fillWidth: true; spacing: 0
-                                                    Text { text: modelData.start_time + "  " + modelData.target_name; color: root.textPrimary; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 8
+                                                        Text { text: modelData.start_time; color: root.accent; font.family: "Cascadia Mono"; font.pixelSize: 12; font.bold: true }
+                                                        Text { text: modelData.target_name; color: root.textPrimary; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                        StatusChip { status: modelData.status; visible: modelData.status !== "planned" }
+                                                    }
                                                     Text { text: modelData.duration_text + "  ·  " + modelData.device_name; color: root.textSecondary; font.pixelSize: 10; visible: timelineSession.height > 48 }
                                                 }
                                                 HudButton { text: "EDIT"; implicitHeight: 24; visible: timelineSession.height > 44; onClicked: sessionDialog.openExisting(timelineSession.modelData) }
@@ -2791,20 +3822,27 @@ ApplicationWindow {
                             }
                             EmptyHint {
                                 anchors.centerIn: parent
+                                glyph: "☾"
                                 visible: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).length === 0
-                                text: "Drop a session here after scheduling it, or create a new session for this night"
+                                text: "Nothing scheduled for this night. Drop a session onto the timeline, or create a new one."
                             }
                         }
                     }
                     HudPanel {
+                        id: nightPanel
+                        readonly property var nightSessions: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+                        readonly property int nightSeconds: nightSessions.reduce((sum, item) => sum + Number(item.planned_duration_seconds || 0), 0)
                         visible: calendarPage.viewMode === 0
                         title: Qt.formatDate(calendarPage.selectedDate, "ddd d MMM").toUpperCase()
                         SplitView.preferredWidth: 312
                         SplitView.minimumWidth: 220
-                        Text {
-                            text: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).length + " session(s) this night"
-                            color: root.textSecondary
-                            font.pixelSize: 11
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            HudChip { label: nightPanel.nightSessions.length + (nightPanel.nightSessions.length === 1 ? " SESSION" : " SESSIONS"); tone: nightPanel.nightSessions.length > 0 ? root.accent : root.textSecondary }
+                            HudChip { visible: nightPanel.nightSeconds > 0; label: "PLAN"; value: root.formatDuration(nightPanel.nightSeconds); tone: root.textSecondary }
+                            HudChip { visible: calendarPage.dateKey(calendarPage.selectedDate) === calendarPage.currentObservingKey(); label: "TONIGHT"; tone: root.warning; glow: true }
+                            Item { Layout.fillWidth: true }
                         }
                         Item {
                             Layout.fillWidth: true
@@ -2830,14 +3868,23 @@ ApplicationWindow {
                                         property string sessionId: modelData.id
                                         width: ListView.view.width
                                         height: 64
-                                        color: "#122033"
-                                        border.color: root.statusColor(modelData.status)
+                                        radius: 3
+                                        color: root.statusFill(modelData.status)
+                                        border.color: Qt.rgba(root.statusColor(modelData.status).r, root.statusColor(modelData.status).g, root.statusColor(modelData.status).b, 0.5)
                                         opacity: root.sessionDragActive && root.sessionDragData.id === sessionId ? 0.35 : 1
+                                        Rectangle { x: 0; y: 0; width: 3; height: parent.height; radius: 1; color: modelData.device_color || root.accent }
                                         ColumnLayout {
                                             anchors.fill: parent
                                             anchors.margins: 8
+                                            anchors.leftMargin: 11
                                             spacing: 2
-                                            Text { text: modelData.start_time + "  " + modelData.target_name; color: root.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 6
+                                                Text { text: modelData.start_time; color: root.accent; font.pixelSize: 12; font.bold: true; font.family: "Cascadia Mono" }
+                                                Text { text: modelData.target_name; color: root.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                                StatusChip { status: modelData.status; visible: modelData.status !== "planned" }
+                                            }
                                             Text { text: modelData.subtitle + " · " + modelData.duration_text; color: root.textSecondary; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
                                             RowLayout {
                                                 HudButton { text: "EDIT"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
@@ -2865,6 +3912,7 @@ ApplicationWindow {
                             }
                             EmptyHint {
                                 anchors.centerIn: parent
+                                glyph: "☾"
                                 visible: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).length === 0
                                 text: "No sessions this observing night"
                             }
@@ -2890,12 +3938,12 @@ ApplicationWindow {
                     width: sessionsFlick.width
                     height: Math.max(implicitHeight, sessionsFlick.height)
                     spacing: 10
-                    RowLayout {
-                        Layout.fillWidth: true
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            Text { text: "SESSIONS"; color: root.textPrimary; font.pixelSize: 22; font.letterSpacing: 2 }
-                            Text { text: "Templates, scheduled nights, Stellarium and Telescopius import"; color: root.textSecondary }
+                    PageHeader {
+                        title: "SESSIONS"
+                        subtitle: {
+                            const planned = backend.sessions.filter(item => item.status === "planned").length
+                            const running = backend.sessions.filter(item => item.status === "running").length
+                            return planned + " planned · " + (running > 0 ? running + " running · " : "") + backend.templates.length + " template" + (backend.templates.length === 1 ? "" : "s")
                         }
                         HudButton { text: "IMPORT STELLARIUM"; busy: backend.uiBusy === "stellarium"; busyText: "IMPORTING…"; busyMs: 0; enabled: backend.uiBusy === ""; onClicked: backend.importStellarium() }
                         HudButton { text: "IMPORT TELESCOPIUS"; busy: backend.uiBusy === "telescopius"; busyText: backend.uiBusy === "telescopius" ? "IMPORTING…" : "OPENING…"; enabled: backend.uiBusy === ""; onClicked: telescopiusDialog.open() }
@@ -2925,7 +3973,7 @@ ApplicationWindow {
                         Layout.minimumHeight: 280
                         Layout.preferredHeight: 0
                         Item {
-                            EmptyHint { visible: backend.sessions.length === 0; text: "No scheduled sessions yet. Create one or import a target list."; anchors.centerIn: parent }
+                            EmptyHint { visible: backend.sessions.length === 0; glyph: "✦"; text: "No scheduled sessions yet. Create one manually or import a Stellarium / Telescopius target list."; anchors.centerIn: parent }
                             SessionInsertDrop {
                                 id: scheduledInsert
                                 anchors.fill: parent
@@ -2964,13 +4012,15 @@ ApplicationWindow {
                                                 Text { text: modelData.target_name; color: root.textPrimary; font.pixelSize: 16; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                                 Text { text: modelData.subtitle; color: root.textSecondary; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true; visible: modelData.subtitle !== modelData.target_name }
                                             }
-                                            Text { text: modelData.start_date + "  " + modelData.start_time; color: root.textPrimary; Layout.preferredWidth: 150 }
-                                            Text { text: modelData.device_name; color: root.accent; Layout.preferredWidth: 120; elide: Text.ElideRight }
-                                            Text { text: modelData.duration_text; color: root.textSecondary; Layout.preferredWidth: 80 }
-                                            Rectangle {
-                                                width: 86; height: 24; color: root.statusFill(modelData.status); border.color: root.statusColor(modelData.status)
-                                                Text { anchors.centerIn: parent; text: modelData.status.toUpperCase(); color: root.statusColor(modelData.status); font.pixelSize: 9; font.bold: true }
+                                            Text { text: modelData.start_date + "  " + modelData.start_time; color: root.textPrimary; font.family: "Cascadia Mono"; Layout.preferredWidth: 150 }
+                                            RowLayout {
+                                                Layout.preferredWidth: 120
+                                                spacing: 6
+                                                Rectangle { width: 6; height: 6; radius: 3; color: modelData.device_color || root.accent }
+                                                Text { text: modelData.device_name; color: root.textPrimary; Layout.fillWidth: true; elide: Text.ElideRight }
                                             }
+                                            Text { text: modelData.duration_text; color: root.textSecondary; font.family: "Cascadia Mono"; Layout.preferredWidth: 80 }
+                                            StatusChip { status: modelData.status; implicitWidth: 86; implicitHeight: 22 }
                                             HudButton { text: "EDIT"; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
                                             HudButton { text: "RESET"; visible: root.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
                                             HudButton { text: "RUN"; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
@@ -2985,7 +4035,7 @@ ApplicationWindow {
                             }
                         }
                         Item {
-                            EmptyHint { anchors.centerIn: parent; visible: backend.templates.length === 0; text: "No templates yet. Save a session as a reusable template, or import Stellarium / Telescopius." }
+                            EmptyHint { anchors.centerIn: parent; visible: backend.templates.length === 0; glyph: "❖"; text: "No templates yet. Save a session as a reusable template, or import Stellarium / Telescopius." }
                             GridView {
                                 anchors.fill: parent
                                 clip: true
@@ -3101,13 +4151,11 @@ ApplicationWindow {
                     width: historyFlick.width
                     height: Math.max(implicitHeight, historyFlick.height)
                     spacing: 10
-                    RowLayout {
-                        Layout.fillWidth: true
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            Text { text: "HISTORY"; color: root.textPrimary; font.pixelSize: 22; font.letterSpacing: 2 }
-                            Text { text: "Click a run for timing, frames and outcome details"; color: root.textSecondary }
-                        }
+                    PageHeader {
+                        title: "HISTORY"
+                        subtitle: backend.history.length === 0
+                            ? "Completed runs appear here with timing, frames and outcome"
+                            : backend.history.length + " recorded run" + (backend.history.length === 1 ? "" : "s") + "  ·  click a row for timing, frames and outcome details"
                         HudButton {
                             text: "CLEAR HISTORY"
                             enabled: backend.history.length > 0
@@ -3127,16 +4175,27 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Repeater {
                             model: [
-                                ["SESSIONS", String(historyPage.filteredCount)],
-                                ["FRAMES", String(historyPage.filteredFrames)],
-                                ["SUCCESS", historyPage.filteredCount ? Math.round(100 * historyPage.filteredOk / historyPage.filteredCount) + "%" : "—"],
-                                ["IMAGED", historyPage.formatHours(historyPage.filteredSeconds)]
+                                ["SESSIONS", String(historyPage.filteredCount), "◈", root.accent],
+                                ["FRAMES", String(historyPage.filteredFrames), "▦", root.accent],
+                                ["SUCCESS", historyPage.filteredCount ? Math.round(100 * historyPage.filteredOk / historyPage.filteredCount) + "%" : "—", "✓",
+                                    historyPage.filteredCount === 0 ? root.textSecondary : (historyPage.filteredOk === historyPage.filteredCount ? root.success : (historyPage.filteredOk * 2 >= historyPage.filteredCount ? root.warning : root.danger))],
+                                ["IMAGED", historyPage.formatHours(historyPage.filteredSeconds), "◷", root.notice]
                             ]
                             delegate: HudPanel {
+                                id: statTile
                                 required property var modelData
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 90
-                                Text { text: modelData[1]; color: root.accent; font.pixelSize: 28; font.bold: true }
+                                overlay: [
+                                    Text {
+                                        anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12
+                                        text: statTile.modelData[2]
+                                        color: statTile.modelData[3]
+                                        opacity: 0.35
+                                        font.pixelSize: 20
+                                    }
+                                ]
+                                Text { text: modelData[1]; color: modelData[3]; font.pixelSize: 28; font.bold: true; font.family: "Cascadia Mono" }
                                 Text { text: modelData[0]; color: root.textSecondary; font.pixelSize: 11; font.letterSpacing: 1.4 }
                             }
                         }
@@ -3162,7 +4221,9 @@ ApplicationWindow {
                         Layout.preferredHeight: 0
                         EmptyHint {
                             Layout.alignment: Qt.AlignHCenter
+                            Layout.topMargin: 40
                             visible: historyPage.filteredCount === 0
+                            glyph: backend.history.length === 0 ? "◷" : "⌕"
                             text: backend.history.length === 0
                                 ? "No completed runs yet. History appears after a session finishes."
                                 : "No runs match this search."
@@ -3219,8 +4280,14 @@ ApplicationWindow {
                                     readonly property bool expanded: historyPage.expandedIndex === index
                                     width: ListView.view.width
                                     height: rowBody.implicitHeight
-                                    color: expanded ? "#22123C52" : (index % 2 ? "#140A1520" : "transparent")
+                                    readonly property color outcomeTone: modelData.ok ? root.success : root.danger
+                                    readonly property real deltaSeconds: Number(modelData.delta_seconds || 0)
+                                    readonly property color deltaTone: Math.abs(deltaSeconds) < 60 ? root.textSecondary : (deltaSeconds > 0 ? root.warning : root.notice)
+                                    color: expanded ? "#22123C52" : (rowHover.hovered ? "#180E1C2C" : (index % 2 ? "#140A1520" : "transparent"))
                                     border.color: expanded ? root.outline : "transparent"
+                                    Behavior on color { ColorAnimation { duration: 100 } }
+                                    HoverHandler { id: rowHover }
+                                    Rectangle { x: 0; y: 0; width: 2; height: parent.height; color: historyRow.outcomeTone; opacity: historyRow.expanded ? 1 : 0.55 }
                                     Column {
                                         id: rowBody
                                         width: parent.width
@@ -3240,25 +4307,37 @@ ApplicationWindow {
                                                 }
                                                 Repeater {
                                                     model: [
-                                                        {text: historyRow.modelData.date, w: 0.12, color: root.textPrimary},
-                                                        {text: historyRow.modelData.target_name, w: 0.24, color: root.textPrimary},
-                                                        {text: historyRow.modelData.device_name, w: 0.13, color: root.accent},
-                                                        {text: String(historyRow.modelData.frame_count || 0), w: 0.08, color: root.textSecondary},
-                                                        {text: historyRow.modelData.planned_text, w: 0.10, color: root.textSecondary},
-                                                        {text: historyRow.modelData.actual_text, w: 0.10, color: root.textSecondary},
-                                                        {text: historyRow.modelData.outcome, w: 0.23, color: historyRow.modelData.ok ? root.success : root.danger}
+                                                        {text: historyRow.modelData.date, w: 0.12, color: root.textPrimary, mono: true},
+                                                        {text: historyRow.modelData.target_name, w: 0.24, color: root.textPrimary, bold: true},
+                                                        {text: historyRow.modelData.device_name, w: 0.13, color: root.textPrimary, dot: historyRow.modelData.device_color || root.accent},
+                                                        {text: String(historyRow.modelData.frame_count || 0), w: 0.08, color: root.textSecondary, mono: true},
+                                                        {text: historyRow.modelData.planned_text, w: 0.10, color: root.textSecondary, mono: true},
+                                                        {text: historyRow.modelData.actual_text, w: 0.10, color: historyRow.deltaTone, mono: true},
+                                                        {text: (historyRow.modelData.ok ? "✓ " : "✗ ") + historyRow.modelData.outcome, w: 0.23, color: historyRow.outcomeTone}
                                                     ]
-                                                    Text {
+                                                    Item {
                                                         required property var modelData
                                                         width: (parent.width - 22) * modelData.w
                                                         height: parent.height
-                                                        text: modelData.text
-                                                        color: modelData.color
-                                                        font.pixelSize: 12
-                                                        elide: Text.ElideRight
-                                                        verticalAlignment: Text.AlignVCenter
-                                                        leftPadding: 6
-                                                        rightPadding: 6
+                                                        Rectangle {
+                                                            visible: !!parent.modelData.dot
+                                                            anchors.left: parent.left; anchors.leftMargin: 6
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            width: 6; height: 6; radius: 3
+                                                            color: parent.modelData.dot || "transparent"
+                                                        }
+                                                        Text {
+                                                            anchors.fill: parent
+                                                            text: parent.modelData.text
+                                                            color: parent.modelData.color
+                                                            font.pixelSize: 12
+                                                            font.bold: !!parent.modelData.bold
+                                                            font.family: parent.modelData.mono ? "Cascadia Mono" : root.font.family
+                                                            elide: Text.ElideRight
+                                                            verticalAlignment: Text.AlignVCenter
+                                                            leftPadding: parent.modelData.dot ? 16 : 6
+                                                            rightPadding: 6
+                                                        }
                                                     }
                                                 }
                                             }
@@ -3331,9 +4410,10 @@ ApplicationWindow {
                                                     Text { text: historyRow.modelData.started_text; color: root.textPrimary; font.pixelSize: 12 }
                                                     Text { text: historyRow.modelData.ended_text; color: root.textPrimary; font.pixelSize: 12 }
                                                     Text {
-                                                        text: historyRow.modelData.delta_text
-                                                        color: Math.abs(historyRow.modelData.delta_seconds || 0) < 1 ? root.success : (historyRow.modelData.delta_seconds > 0 ? root.warning : root.success)
+                                                        text: (historyRow.deltaSeconds > 60 ? "▲ " : historyRow.deltaSeconds < -60 ? "▼ " : "● ") + historyRow.modelData.delta_text
+                                                        color: Math.abs(historyRow.deltaSeconds) < 60 ? root.success : historyRow.deltaTone
                                                         font.pixelSize: 12
+                                                        font.family: "Cascadia Mono"
                                                     }
                                                 }
                                                 Text {
@@ -3399,7 +4479,8 @@ ApplicationWindow {
                         pane_slew_seconds: Number(paneField.text), startup_seconds: Number(startupField.text)
                     }
                 }
-                function isDirty() { return JSON.stringify(currentPayload()) !== loadedSnapshot }
+                readonly property bool dirty: JSON.stringify(currentPayload()) !== loadedSnapshot
+                function isDirty() { return dirty }
                 function saveCurrent() {
                     backend.saveDevice(JSON.stringify(currentPayload()))
                     loadedSnapshot = JSON.stringify(currentPayload())
@@ -3456,7 +4537,11 @@ ApplicationWindow {
 
                 Flickable {
                     id: settingsFlick
-                    anchors.fill: parent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.bottom: settingsFooter.top
+                    anchors.bottomMargin: 8
                     contentWidth: width
                     contentHeight: settingsColumn.implicitHeight + 24
                     clip: true
@@ -3468,20 +4553,16 @@ ApplicationWindow {
                         id: settingsColumn
                         width: settingsFlick.width
                         spacing: 12
-                        RowLayout {
+                        PageHeader {
                             width: parent.width
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                Text { text: "SETTINGS"; color: root.textPrimary; font.pixelSize: 22; font.letterSpacing: 2 }
-                                Text { text: "Device, connection, and timing profiles"; color: root.textSecondary; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                                Text { text: "Astro Dwarf v" + backend.appVersion; color: root.accent; font.pixelSize: 12; font.letterSpacing: 1 }
-                            }
+                            title: "SETTINGS"
+                            subtitle: "Device, connection and timing profiles  ·  Astro Dwarf v" + backend.appVersion
                             DeviceCombo {}
                             HudButton { text: "+ ADD DEVICE"; busyText: "ADDING…"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: backend.addDevice() }
                             HudButton { text: "REMOVE DEVICE"; busyText: "REMOVING…"; buttonColor: "#3A1218"; foregroundColor: root.danger; onClicked: backend.deleteDevice(backend.selectedDeviceId) }
                         }
                         HudPanel {
-                            title: "INTERFACE"
+                            title: "◫  INTERFACE"
                             width: parent.width
                             GridLayout {
                                 Layout.fillWidth: true
@@ -3506,8 +4587,16 @@ ApplicationWindow {
                             }
                         }
                         HudPanel {
-                            title: "DEVICE"
+                            title: "◈  DEVICE"
                             width: parent.width
+                            headerExtra: [
+                                HudChip {
+                                    label: backend.selectedDevice.connected ? "ONLINE" : "OFFLINE"
+                                    tone: backend.selectedDevice.connected ? root.success : root.textSecondary
+                                    dim: !backend.selectedDevice.connected
+                                    glow: !!backend.selectedDevice.connected
+                                }
+                            ]
                             GridLayout {
                                 Layout.fillWidth: true
                                 columns: 4
@@ -3549,7 +4638,7 @@ ApplicationWindow {
                             }
                         }
                         HudPanel {
-                            title: "CONNECTION"
+                            title: "⇌  CONNECTION"
                             width: parent.width
                             Text {
                                 text: "Bluetooth finds the telescope and sets its Wi‑Fi. In AP mode this app then joins the Dwarf hotspot on this computer. Commands and the live stream always use that Wi‑Fi link."
@@ -3609,7 +4698,7 @@ ApplicationWindow {
                             }
                         }
                         HudPanel {
-                            title: "HARDWARE DURATION PROFILE"
+                            title: "◷  HARDWARE DURATION PROFILE"
                             width: parent.width
                             Text { text: "These overheads size calendar blocks and remaining-time estimates."; color: root.textSecondary; wrapMode: Text.Wrap; Layout.fillWidth: true }
                             GridLayout {
@@ -3636,16 +4725,9 @@ ApplicationWindow {
                                 FieldLabel { text: "STARTUP S" }
                                 HudField { id: startupField; Layout.fillWidth: true }
                             }
-                            HudButton {
-                                text: "SAVE DEVICE"
-                                busyText: "SAVING…"
-                                buttonColor: "#0E3A48"
-                                foregroundColor: root.accent
-                                onClicked: settingsPage.saveCurrent()
-                            }
                         }
                         HudPanel {
-                            title: "LEGACY IMPORT"
+                            title: "⇩  LEGACY IMPORT"
                             width: parent.width
                             RowLayout {
                                 Layout.fillWidth: true
@@ -3655,6 +4737,50 @@ ApplicationWindow {
                                 }
                                 HudButton { text: "CHOOSE FOLDER…"; busyText: "OPENING…"; onClicked: legacyDialog.open() }
                             }
+                        }
+                    }
+                }
+                Rectangle {
+                    // sticky save bar
+                    id: settingsFooter
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 46
+                    radius: 3
+                    color: settingsPage.dirty ? "#C00E2A3A" : "#B3070D16"
+                    border.color: settingsPage.dirty ? Qt.rgba(root.warning.r, root.warning.g, root.warning.b, 0.6) : root.outline
+                    Behavior on color { ColorAnimation { duration: 180 } }
+                    Behavior on border.color { ColorAnimation { duration: 180 } }
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 14
+                        anchors.rightMargin: 10
+                        spacing: 10
+                        LedDot { on: true; onColor: settingsPage.dirty ? root.warning : root.success; pulse: settingsPage.dirty }
+                        Text {
+                            Layout.fillWidth: true
+                            text: settingsPage.dirty
+                                ? "UNSAVED CHANGES · " + (backend.selectedDevice.name || "device").toUpperCase()
+                                : "ALL CHANGES SAVED · " + (backend.selectedDevice.name || "device").toUpperCase()
+                            color: settingsPage.dirty ? root.warning : root.textSecondary
+                            font.pixelSize: 10
+                            font.bold: true
+                            font.letterSpacing: 1.2
+                            elide: Text.ElideRight
+                        }
+                        HudButton {
+                            text: "REVERT"
+                            visible: settingsPage.dirty
+                            onClicked: settingsPage.load()
+                        }
+                        HudButton {
+                            text: settingsPage.dirty ? "SAVE DEVICE" : "SAVED"
+                            enabled: settingsPage.dirty
+                            busyText: "SAVING…"
+                            buttonColor: settingsPage.dirty ? "#0E3A48" : root.surfaceHigh
+                            foregroundColor: settingsPage.dirty ? root.accent : root.textSecondary
+                            onClicked: settingsPage.saveCurrent()
                         }
                     }
                 }
@@ -3735,30 +4861,234 @@ ApplicationWindow {
         }
     }
 
-    Popup {
-        id: snackbar
-        property alias text: snackbarText.text
-        property string level: "info"
-        width: Math.min(root.width - 80, 520)
-        height: 52
-        x: (root.width - width) / 2
-        y: root.height - height - 70
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        background: Rectangle {
-            color: "#0B1520"
-            border.color: snackbar.level === "error" ? root.danger : snackbar.level === "warning" ? root.warning : root.accent
+    Item {
+        // Stacked toast notifications, top-right below the title bar.
+        id: toastHost
+        parent: Overlay.overlay
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.topMargin: 74
+        anchors.rightMargin: 14
+        width: Math.min(380, root.width - 40)
+        height: toastColumn.implicitHeight
+        z: 900
+        readonly property int maxToasts: 4
+        property int nextId: 1
+
+        function durationFor(level) {
+            switch (String(level || "").toLowerCase()) {
+            case "error": return 8000
+            case "warning": return 6000
+            case "success": return 4000
+            default: return 3000
+            }
         }
-        contentItem: Text { id: snackbarText; color: root.textPrimary; verticalAlignment: Text.AlignVCenter; wrapMode: Text.Wrap; leftPadding: 8 }
-        onOpened: snackbarTimer.restart()
-        Timer { id: snackbarTimer; interval: 4000; onTriggered: snackbar.close() }
+        function push(message, level, detail) {
+            const text = String(message || "").trim()
+            if (text === "")
+                return
+            const tone = String(level || "info").toLowerCase()
+            for (let i = 0; i < toastModel.count; i++) {
+                const existing = toastModel.get(i)
+                if (existing.message === text && existing.level === tone) {
+                    toastModel.setProperty(i, "count", existing.count + 1)
+                    toastModel.setProperty(i, "detail", String(detail || existing.detail || ""))
+                    toastModel.setProperty(i, "restart", existing.restart + 1)
+                    return
+                }
+            }
+            while (toastModel.count >= maxToasts)
+                toastModel.remove(0)
+            toastModel.append({
+                toastId: nextId++,
+                message: text,
+                level: tone,
+                detail: String(detail || ""),
+                count: 1,
+                restart: 0,
+                duration: durationFor(tone)
+            })
+        }
+        function dismiss(toastId) {
+            for (let i = 0; i < toastModel.count; i++) {
+                if (toastModel.get(i).toastId === toastId) {
+                    toastModel.remove(i)
+                    return
+                }
+            }
+        }
+
+        ListModel { id: toastModel }
+
+        Column {
+            id: toastColumn
+            anchors.right: parent.right
+            width: parent.width
+            spacing: 8
+            add: Transition {
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 220 }
+                NumberAnimation { property: "x"; from: 60; to: 0; duration: 260; easing.type: Easing.OutCubic }
+            }
+            move: Transition { NumberAnimation { properties: "y"; duration: 200; easing.type: Easing.OutCubic } }
+            Repeater {
+                model: toastModel
+                delegate: Rectangle {
+                    id: toastCard
+                    required property int index
+                    required property int toastId
+                    required property string message
+                    required property string level
+                    required property string detail
+                    required property int count
+                    required property int restart
+                    required property int duration
+                    readonly property color tone: root.toneForLevel(level)
+                    readonly property bool hovering: toastHover.hovered
+                    width: toastColumn.width
+                    height: toastBody.implicitHeight + 18
+                    radius: 4
+                    color: "#F00A1220"
+                    border.color: Qt.rgba(tone.r, tone.g, tone.b, 0.75)
+                    border.width: 1
+                    opacity: 1
+                    clip: true
+                    onRestartChanged: {
+                        toastTimer.restart()
+                        toastProgress.restartSweep()
+                    }
+                    Rectangle {
+                        // soft glow
+                        anchors.fill: parent; anchors.margins: -3; radius: 7
+                        color: "transparent"; border.color: toastCard.tone; opacity: 0.18
+                    }
+                    Rectangle { x: 0; y: 0; width: 3; height: parent.height; color: toastCard.tone }
+                    RowLayout {
+                        id: toastBody
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 10
+                        spacing: 10
+                        Rectangle {
+                            width: 26; height: 26; radius: 13
+                            color: Qt.rgba(toastCard.tone.r, toastCard.tone.g, toastCard.tone.b, 0.16)
+                            border.color: Qt.rgba(toastCard.tone.r, toastCard.tone.g, toastCard.tone.b, 0.6)
+                            Layout.alignment: Qt.AlignTop
+                            Text { anchors.centerIn: parent; text: root.glyphForLevel(toastCard.level); color: toastCard.tone; font.pixelSize: 13; font.bold: true }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Text {
+                                    text: toastCard.message
+                                    color: root.textPrimary
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                    wrapMode: Text.Wrap
+                                    maximumLineCount: 2
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
+                                }
+                                Rectangle {
+                                    visible: toastCard.count > 1
+                                    width: toastCount.implicitWidth + 10; height: 16; radius: 8
+                                    color: toastCard.tone
+                                    Text { id: toastCount; anchors.centerIn: parent; text: "×" + toastCard.count; color: "#05080F"; font.pixelSize: 9; font.bold: true }
+                                }
+                            }
+                            Text {
+                                visible: toastCard.detail !== ""
+                                text: toastCard.detail
+                                color: root.textSecondary
+                                font.pixelSize: 10
+                                wrapMode: Text.Wrap
+                                maximumLineCount: 3
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            RowLayout {
+                                visible: toastCard.level === "error" || toastCard.level === "warning"
+                                spacing: 10
+                                Layout.topMargin: 2
+                                Text {
+                                    text: "VIEW LOG"
+                                    color: viewLogHover.hovered ? root.textPrimary : toastCard.tone
+                                    font.pixelSize: 9; font.bold: true; font.letterSpacing: 1.2
+                                    HoverHandler { id: viewLogHover; cursorShape: Qt.PointingHandCursor }
+                                    TapHandler {
+                                        onTapped: {
+                                            root.goToPage(0)
+                                            backend.setLogFilter("alerts")
+                                            toastHost.dismiss(toastCard.toastId)
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: "DISMISS"
+                                    color: dismissHover.hovered ? root.textPrimary : root.textSecondary
+                                    font.pixelSize: 9; font.bold: true; font.letterSpacing: 1.2
+                                    HoverHandler { id: dismissHover; cursorShape: Qt.PointingHandCursor }
+                                    TapHandler { onTapped: toastHost.dismiss(toastCard.toastId) }
+                                }
+                            }
+                        }
+                        Text {
+                            text: "✕"
+                            color: closeHover.hovered ? root.textPrimary : root.muted
+                            font.pixelSize: 11
+                            Layout.alignment: Qt.AlignTop
+                            HoverHandler { id: closeHover; cursorShape: Qt.PointingHandCursor }
+                            TapHandler { onTapped: toastHost.dismiss(toastCard.toastId) }
+                        }
+                    }
+                    Rectangle {
+                        // auto-dismiss progress rail
+                        id: toastProgress
+                        anchors.left: parent.left
+                        anchors.bottom: parent.bottom
+                        anchors.leftMargin: 3
+                        height: 2
+                        color: toastCard.tone
+                        opacity: 0.8
+                        width: parent.width - 3
+                        function restartSweep() {
+                            sweep.stop()
+                            width = toastCard.width - 3
+                            sweep.restart()
+                        }
+                        NumberAnimation on width {
+                            id: sweep
+                            to: 0
+                            duration: toastCard.duration
+                            running: true
+                            paused: running && toastCard.hovering
+                        }
+                    }
+                    Timer {
+                        id: toastTimer
+                        interval: toastCard.duration
+                        running: !toastCard.hovering
+                        repeat: false
+                        onTriggered: toastHost.dismiss(toastCard.toastId)
+                    }
+                    HoverHandler { id: toastHover }
+                    TapHandler {
+                        acceptedButtons: Qt.LeftButton
+                        onTapped: toastHost.dismiss(toastCard.toastId)
+                    }
+                }
+            }
+        }
     }
 
     Connections {
         target: backend
-        function onToast(message, level) {
-            snackbar.level = level
-            snackbar.text = message
-            snackbar.open()
+        function onToast(message, level, detail) {
+            toastHost.push(message, level, detail)
         }
         function onLocationLookupReady(item) {
             if (locationDialog.visible)

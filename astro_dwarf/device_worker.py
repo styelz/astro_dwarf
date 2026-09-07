@@ -21,13 +21,21 @@ import queue
 from pathlib import Path
 from typing import Any
 
+from .device_telemetry import TelemetryTap, install_sdk_logging
+
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 _write_lock = threading.Lock()
 _api = None
+_tap: TelemetryTap | None = None
 _device: dict[str, Any] = {}
 _stop = threading.Event()
 _commands: queue.Queue[dict[str, Any]] = queue.Queue()
+_connected = threading.Event()
+_QUIET_OPERATIONS = {"device_state", "stack_status"}
+_STATE_REFRESH_SECONDS = 30.0
+_STATUS_POLL_SECONDS = 2.0
+_MODEL_IDS = {"Dwarf II": "2", "Dwarf 3": "3", "Dwarf Mini": "5"}
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -38,6 +46,62 @@ def emit(payload: dict[str, Any]) -> None:
 
 def log(message: str, level: str = "info") -> None:
     emit({"event": "log", "level": level, "message": message})
+
+
+def _client_status() -> Any:
+    try:
+        from dwarf_python_api.lib import websockets_utils
+
+        if getattr(websockets_utils, "client_instance", None) is None:
+            return None
+        return websockets_utils.get_client_status()
+    except Exception:
+        return None
+
+
+def _queued_internal(command: str) -> bool:
+    with _commands.mutex:
+        return any(item.get("internal") and item.get("command") == command for item in _commands.queue)
+
+
+def request_state_refresh() -> None:
+    """Queue a full device-state read behind the current SDK command."""
+    if _connected.is_set() and not _queued_internal("device_state"):
+        _commands.put({"command": "device_state", "internal": True})
+
+
+def _telemetry_loop() -> None:
+    """Flush buffered telemetry, mirror the SDK cache, and refresh device state."""
+    last_status = 0.0
+    last_refresh = time.monotonic()
+    while True:
+        time.sleep(0.25)
+        tap = _tap
+        if tap is None:
+            continue
+        try:
+            tap.flush()
+        except Exception:
+            pass
+        if not _connected.is_set():
+            last_refresh = time.monotonic()
+            continue
+        if tap.snapshot().get("power_off"):
+            _connected.clear()
+            continue
+        now = time.monotonic()
+        if now - last_status >= _STATUS_POLL_SECONDS:
+            last_status = now
+            status = _client_status()
+            if status is not None:
+                tap.poll_client_status(status)
+        # Command-triggered refreshes stamp state_snapshot_at too, so they push the periodic one out.
+        snapshot_at = tap.snapshot().get("state_snapshot_at")
+        if isinstance(snapshot_at, (int, float)):
+            last_refresh = max(last_refresh, now - max(0.0, time.time() - float(snapshot_at)))
+        if now - last_refresh >= _STATE_REFRESH_SECONDS:
+            last_refresh = now
+            request_state_refresh()
 
 
 def send_without_response(message: Any, command: int, module_id: int) -> bool:
@@ -144,9 +208,15 @@ def configure(device: dict[str, Any]) -> bool:
     )
     os.chdir(folder)
     with contextlib.redirect_stdout(sys.stderr):
-        from dwarf_python_api.lib import dwarf_utils
+        from dwarf_python_api.lib import dwarf_utils, websockets_utils
 
         _api = dwarf_utils
+    install_sdk_logging(emit)
+    global _tap
+    _tap = TelemetryTap(emit, _MODEL_IDS.get(str(device.get("model")), "3"))
+    if not _tap.install(websockets_utils):
+        log("Telemetry tap unavailable; only SDK cache values will be shown", "warning")
+    threading.Thread(target=_telemetry_loop, name="telemetry", daemon=True).start()
     log(f"Worker ready for {device.get('name')} at {device.get('ip_address')}")
     return True
 
@@ -211,10 +281,12 @@ def sdk_call(operation: str, *args: Any) -> Any:
     if function is None:
         raise NotImplementedError(f"Installed SDK does not provide '{operation}'")
     label = operation.replace("_", " ").title()
-    log(f"{label}…", "sdk")
+    # Periodic state refreshes are plumbing; keep them out of the main log.
+    call_level = "debug" if operation in _QUIET_OPERATIONS else "sdk"
+    log(f"{label}…", call_level)
     with contextlib.redirect_stdout(sys.stderr):
         result = function(*args)
-    log(f"{label}: {result}", "sdk")
+    log(f"{label}: {result}", call_level)
     return result
 
 
@@ -585,7 +657,14 @@ async def _ble_wifi_session(
             pass
 
 
+def _mark_disconnected() -> None:
+    _connected.clear()
+    if _tap is not None:
+        _tap.reset()
+
+
 def _safe_disconnect() -> None:
+    _mark_disconnected()
     try:
         sdk_call("disconnect")
     except Exception:
@@ -595,16 +674,19 @@ def _safe_disconnect() -> None:
 def _handshake() -> dict[str, Any] | None:
     if sdk_call("time") is False:
         return None
-    telemetry: dict[str, Any] = {}
     for operation in ("host_master", "device_state", "location"):
         try:
-            result = sdk_call(operation)
-            if operation == "device_state":
-                normalized = serializable_state(result)
-                telemetry = normalized if isinstance(normalized, dict) else {"value": normalized}
+            sdk_call(operation)
         except NotImplementedError as exc:
             log(str(exc), "warning")
-    return telemetry
+    _connected.set()
+    if _tap is None:
+        return {}
+    status = _client_status()
+    if status is not None:
+        _tap.poll_client_status(status)
+    _tap.flush()
+    return _tap.snapshot()
 
 
 def provision_bluetooth() -> str:
@@ -768,6 +850,9 @@ def stop_all() -> bool:
     return True
 
 
+_REFRESH_AFTER = {"lights_on", "lights_off", "indicator_on", "indicator_off", "go_live", "photo_mode", "astro_mode", "shooting_mode", "set_ir", "set_binning"}
+
+
 def dispatch(message: dict[str, Any]) -> Any:
     command = message["command"]
     if command == "configure":
@@ -778,29 +863,51 @@ def dispatch(message: dict[str, Any]) -> Any:
         return run_session(message["session"])
     if command == "stop_all":
         return stop_all()
-    if command in {"device_state", "stack_status"}:
+    if command == "telemetry":
+        return _tap.snapshot() if _tap else {}
+    if command == "device_state":
+        if not _connected.is_set() and message.get("internal"):
+            return False
+        result = sdk_call("device_state")
+        if _tap is not None:
+            _tap.flush()
+        return serializable_state(result)
+    if command == "stack_status":
         return serializable_state(sdk_call(command))
+    if command in {"disconnect", "reboot", "power_down"}:
+        _mark_disconnected()
+        return sdk_call(command)
     if command in {"calibrate", "autofocus", "infinity", "polar"}:
         if sdk_call("astro_mode") is False:
             return False
     if command == "infinity":
-        return sdk_call("autofocus", True)
-    capture_techniques = {
-        "burst_start": 3,
-        "record_start": 4,
-        "timelapse_start": 5,
-    }
-    if command in capture_techniques:
-        if sdk_call("shooting_mode", 1, capture_techniques[command]) is False:
-            return False
-    return sdk_call(command, *message.get("args", []))
+        result = sdk_call("autofocus", True)
+    else:
+        capture_techniques = {
+            "burst_start": 3,
+            "record_start": 4,
+            "timelapse_start": 5,
+        }
+        if command in capture_techniques:
+            if sdk_call("shooting_mode", 1, capture_techniques[command]) is False:
+                return False
+        result = sdk_call(command, *message.get("args", []))
+    if command in _REFRESH_AFTER and result is not False:
+        request_state_refresh()
+    return result
 
 
 def execute(message: dict[str, Any]) -> None:
     request_id = message.get("id")
+    internal = bool(message.get("internal"))
     try:
-        emit({"event": "response", "id": request_id, "ok": True, "result": dispatch(message)})
+        result = dispatch(message)
+        if not internal:
+            emit({"event": "response", "id": request_id, "ok": True, "result": result})
     except Exception as exc:
+        if internal:
+            log(f"Background {message.get('command')} failed: {exc}", "debug")
+            return
         traceback.print_exc(file=sys.stderr)
         emit({"event": "response", "id": request_id, "ok": False, "error": str(exc)})
 
