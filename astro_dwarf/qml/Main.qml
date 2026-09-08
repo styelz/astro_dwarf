@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import QtQuick.Shapes
 import QtQuick.Window
 import QtCore
 
@@ -50,6 +51,9 @@ ApplicationWindow {
     property bool sessionDragActive: false
     property point sessionDragPos: Qt.point(0, 0)
     property var sessionDragData: ({})
+    property real sessionDragGrabOffsetY: 0
+    property int sessionDragPreviewMinutes: -1
+    property string sessionDragPreviewTime: ""
     readonly property bool targetLocked: backend.selectedDevice.connected && backend.currentSession.status === "running"
     readonly property bool dataPage: currentPage !== 0
     readonly property bool scopeOnline: !!(backend.selectedDevice && backend.selectedDevice.connected)
@@ -88,6 +92,101 @@ ApplicationWindow {
     function canReset(status) {
         const value = String(status || "").toLowerCase()
         return value === "error" || value === "skipped" || value === "done"
+    }
+    function idSetCount(map) {
+        return Object.keys(map || {}).length
+    }
+    function idSetKeys(map) {
+        return Object.keys(map || {})
+    }
+    function idSetHas(map, id) {
+        return !!(map && id && map[id])
+    }
+    function idSetToggle(map, id) {
+        const next = Object.assign({}, map || {})
+        if (!id)
+            return next
+        if (next[id])
+            delete next[id]
+        else
+            next[id] = true
+        return next
+    }
+    function itemIndexById(items, id) {
+        const list = items || []
+        for (let i = 0; i < list.length; i++) {
+            if (list[i] && list[i].id === id)
+                return i
+        }
+        return -1
+    }
+    function clickSelect(map, items, id, shift, anchorId) {
+        const list = items || []
+        const clicked = root.itemIndexById(list, id)
+        if (!id || clicked < 0)
+            return { map: map || {}, anchor: anchorId || "" }
+        const select = !root.idSetHas(map, id)
+        if (shift) {
+            let start = root.itemIndexById(list, anchorId)
+            if (start < 0)
+                start = clicked
+            const lo = Math.min(start, clicked)
+            const hi = Math.max(start, clicked)
+            const next = Object.assign({}, map || {})
+            for (let i = lo; i <= hi; i++) {
+                const itemId = list[i] && list[i].id
+                if (!itemId)
+                    continue
+                if (select)
+                    next[itemId] = true
+                else
+                    delete next[itemId]
+            }
+            return { map: next, anchor: anchorId || id }
+        }
+        return { map: root.idSetToggle(map, id), anchor: id }
+    }
+    function idSetAll(items, on) {
+        const next = {}
+        if (!on)
+            return next
+        const list = items || []
+        for (let i = 0; i < list.length; i++) {
+            const id = list[i] && list[i].id
+            if (id)
+                next[id] = true
+        }
+        return next
+    }
+    function pruneIdSet(map, items) {
+        const alive = {}
+        const list = items || []
+        for (let i = 0; i < list.length; i++) {
+            const id = list[i] && list[i].id
+            if (id)
+                alive[id] = true
+        }
+        const next = {}
+        const keys = Object.keys(map || {})
+        for (let i = 0; i < keys.length; i++) {
+            if (alive[keys[i]])
+                next[keys[i]] = true
+        }
+        return next
+    }
+    function confirmBulkDelete(kind, idMap, noun) {
+        const ids = root.idSetKeys(idMap)
+        if (!ids.length)
+            return
+        const plural = ids.length === 1 ? noun : noun + "s"
+        confirmDialog.kind = kind
+        confirmDialog.pendingIds = ids
+        confirmDialog.headingText = "DELETE " + plural.toUpperCase()
+        confirmDialog.confirmLabel = ids.length === 1 ? "DELETE" : "DELETE " + ids.length
+        confirmDialog.summary = kind === "deleteSessions"
+            ? "Delete " + ids.length + " " + plural + "? Running sessions will be skipped. This cannot be undone."
+            : "Delete " + ids.length + " " + plural + "? This cannot be undone."
+        confirmDialog.open()
     }
     function toneForLevel(level) {
         switch (String(level || "").toLowerCase()) {
@@ -222,15 +321,26 @@ ApplicationWindow {
         sessionDragData = item
         sessionDragPos = pos
         sessionDragActive = true
+        root.refreshSessionDragPreview(pos)
     }
     function updateSessionDrag(pos) {
         sessionDragPos = pos
+        root.refreshSessionDragPreview(pos)
     }
     function endSessionDrag() {
         sessionDragActive = false
         sessionDragData = ({})
+        sessionDragGrabOffsetY = 0
+        sessionDragPreviewMinutes = -1
+        sessionDragPreviewTime = ""
     }
-    function startSessionDrag(item, pos) {
+    function refreshSessionDragPreview(pos) {
+        const minutes = calendarPage.timelineMinutesFromPos(pos)
+        sessionDragPreviewMinutes = minutes
+        sessionDragPreviewTime = minutes < 0 ? "" : calendarPage.timelineClock(minutes)
+    }
+    function startSessionDrag(item, pos, grabY) {
+        sessionDragGrabOffsetY = calendarPage.viewMode === 1 ? Number(grabY || 0) : 0
         sessionDragProxy.startDrag(item, pos)
     }
     function moveSessionDrag(pos) {
@@ -322,7 +432,8 @@ ApplicationWindow {
     function dragLabel(item) {
         if (!item || !item.id)
             return ""
-        return (item.start_time || "") + "  " + (item.target_name || item.name || "Session")
+        const time = sessionDragPreviewTime || item.start_time || ""
+        return time + "  " + (item.target_name || item.name || "Session")
     }
     function durationLabel(seconds) {
         const value = Math.max(0, Math.round(Number(seconds) || 0))
@@ -337,8 +448,8 @@ ApplicationWindow {
         backend.clockText
         if (!backend.upcomingSessions || backend.upcomingSessions.length === 0)
             return "No planned sessions"
-        const start = new Date(backend.upcomingSessions[0].scheduled_start)
-        const seconds = Math.floor((start.getTime() - Date.now()) / 1000)
+        const startMs = Number(backend.upcomingSessions[0].start_epoch_ms)
+        const seconds = Math.floor(((isNaN(startMs) ? new Date(backend.upcomingSessions[0].scheduled_start).getTime() : startMs) - Date.now()) / 1000)
         return seconds <= 0 ? "Due now" : "T− " + durationLabel(seconds)
     }
 
@@ -414,38 +525,45 @@ ApplicationWindow {
         clip: true
 
         Rectangle { anchors.fill: parent; color: panel.fill }
-        Canvas {
+        Shape {
+            id: frame
             anchors.fill: parent
-            onPaint: {
-                const ctx = getContext("2d")
-                ctx.reset()
-                const w = width, h = height, n = 11
-                ctx.strokeStyle = "#66E8FFFF"
-                ctx.lineWidth = 1.25
-                ctx.beginPath()
-                ctx.moveTo(n, 1.5)
-                ctx.lineTo(w - n, 1.5)
-                ctx.lineTo(w - 1.5, n)
-                ctx.lineTo(w - 1.5, h - n)
-                ctx.lineTo(w - n, h - 1.5)
-                ctx.lineTo(n, h - 1.5)
-                ctx.lineTo(1.5, h - n)
-                ctx.lineTo(1.5, n)
-                ctx.closePath()
-                ctx.stroke()
-                // accent corner ticks
-                ctx.strokeStyle = "#CC4DE8FF"
-                ctx.lineWidth = 2
-                const t = 14
-                ctx.beginPath()
-                ctx.moveTo(n, 1.5); ctx.lineTo(n + t, 1.5)
-                ctx.moveTo(1.5, n); ctx.lineTo(1.5, n + t)
-                ctx.moveTo(w - n, h - 1.5); ctx.lineTo(w - n - t, h - 1.5)
-                ctx.moveTo(w - 1.5, h - n); ctx.lineTo(w - 1.5, h - n - t)
-                ctx.stroke()
+            preferredRendererType: Shape.CurveRenderer
+            readonly property real n: 11
+            readonly property real o: 1.5
+            readonly property real t: 14
+            ShapePath {
+                strokeColor: "#66E8FFFF"
+                strokeWidth: 1.25
+                fillColor: "transparent"
+                capStyle: ShapePath.FlatCap
+                joinStyle: ShapePath.MiterJoin
+                startX: frame.n
+                startY: frame.o
+                PathLine { x: panel.width - frame.n; y: frame.o }
+                PathLine { x: panel.width - frame.o; y: frame.n }
+                PathLine { x: panel.width - frame.o; y: panel.height - frame.n }
+                PathLine { x: panel.width - frame.n; y: panel.height - frame.o }
+                PathLine { x: frame.n; y: panel.height - frame.o }
+                PathLine { x: frame.o; y: panel.height - frame.n }
+                PathLine { x: frame.o; y: frame.n }
+                PathLine { x: frame.n; y: frame.o }
             }
-            onWidthChanged: requestPaint()
-            onHeightChanged: requestPaint()
+            ShapePath {
+                strokeColor: "#CC4DE8FF"
+                strokeWidth: 2
+                fillColor: "transparent"
+                capStyle: ShapePath.FlatCap
+                startX: frame.n
+                startY: frame.o
+                PathLine { x: frame.n + frame.t; y: frame.o }
+                PathMove { x: frame.o; y: frame.n }
+                PathLine { x: frame.o; y: frame.n + frame.t }
+                PathMove { x: panel.width - frame.n; y: panel.height - frame.o }
+                PathLine { x: panel.width - frame.n - frame.t; y: panel.height - frame.o }
+                PathMove { x: panel.width - frame.o; y: panel.height - frame.n }
+                PathLine { x: panel.width - frame.o; y: panel.height - frame.n - frame.t }
+            }
         }
         ColumnLayout {
             anchors.fill: parent
@@ -559,50 +677,40 @@ ApplicationWindow {
         }
     }
 
-    component SessionDragArea: MouseArea {
+    component SessionDragArea: DragHandler {
         required property var dragItem
         property var pressedAction: null
+        target: null
         acceptedButtons: Qt.LeftButton
-        hoverEnabled: true
-        preventStealing: true
-        cursorShape: enabled ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
+        acceptedModifiers: Qt.NoModifier
+        cursorShape: Qt.ClosedHandCursor
         enabled: String((dragItem && dragItem.status) || "") !== "running"
-        property bool dragging: false
-        property real pressX: 0
-        property real pressY: 0
-        onPressed: mouse => {
-            pressX = mouse.x
-            pressY = mouse.y
-            dragging = false
-            if (pressedAction)
-                pressedAction()
+        property bool started: false
+
+        function mappedPos() {
+            return parent.mapToItem(root.contentItem, centroid.position.x, centroid.position.y)
         }
-        onPositionChanged: mouse => {
-            if (!pressed)
-                return
-            const dx = mouse.x - pressX
-            const dy = mouse.y - pressY
-            if (!dragging && (dx * dx + dy * dy) < 36)
-                return
-            const pos = mapToItem(root.contentItem, mouse.x, mouse.y)
-            if (!dragging) {
-                dragging = true
-                root.startSessionDrag(dragItem, pos)
-            } else {
-                root.moveSessionDrag(pos)
+
+        onActiveChanged: {
+            if (active) {
+                started = true
+                if (pressedAction)
+                    pressedAction()
+                root.startSessionDrag(dragItem, mappedPos(), centroid.position.y)
+            } else if (started) {
+                started = false
+                root.completeSessionDrag(mappedPos())
             }
         }
-        onReleased: mouse => {
-            if (dragging) {
-                const pos = mapToItem(root.contentItem, mouse.x, mouse.y)
-                root.completeSessionDrag(pos)
-            }
-            dragging = false
+        onTranslationChanged: {
+            if (active)
+                root.moveSessionDrag(mappedPos())
         }
         onCanceled: {
-            if (dragging)
+            if (started) {
+                started = false
                 root.cancelSessionDrag()
-            dragging = false
+            }
         }
     }
 
@@ -1037,6 +1145,10 @@ ApplicationWindow {
         readonly property string sessionId: String((sessionData && sessionData.id) || "")
         readonly property string sessionStatus: String((sessionData && sessionData.status) || "")
         readonly property string coordinates: root.targetCoordinates(sessionData)
+        property var selectionItems: []
+        property var selectedMap: ({})
+        signal selectAllRequested()
+        signal unselectAllRequested()
 
         HudMenuItem {
             text: "Edit"
@@ -1079,6 +1191,19 @@ ApplicationWindow {
             glyph: "\uE8C8"
             enabled: sessionContextMenu.coordinates !== ""
             onTriggered: backend.copyText(sessionContextMenu.coordinates)
+        }
+        HudMenuSeparator {}
+        HudMenuItem {
+            text: "Select all"
+            glyph: "\uE8A5"
+            enabled: (sessionContextMenu.selectionItems || []).length > 0
+            onTriggered: sessionContextMenu.selectAllRequested()
+        }
+        HudMenuItem {
+            text: "Unselect all"
+            glyph: "\uE711"
+            enabled: root.idSetCount(sessionContextMenu.selectedMap) > 0
+            onTriggered: sessionContextMenu.unselectAllRequested()
         }
         HudMenuSeparator {}
         HudMenuItem {
@@ -1540,6 +1665,90 @@ ApplicationWindow {
         }
     }
 
+    // Floats above a row instead of taking layout space, so revealing it never shifts content.
+    component SelectBox: Item {
+        id: selectBox
+        property bool checked: false
+        property bool revealed: false
+        readonly property bool shown: revealed || checked
+        signal toggled(bool shiftHeld)
+        z: 30
+        implicitWidth: 13
+        implicitHeight: 13
+        width: 13
+        height: 13
+        opacity: shown ? 1 : 0
+        enabled: shown
+        Behavior on opacity { NumberAnimation { duration: 90 } }
+        Rectangle {
+            anchors.fill: parent
+            color: selectBox.checked ? "#F0123C52" : "#E0060C16"
+            border.color: root.accent
+            border.width: 1
+            radius: 2
+            Text {
+                anchors.centerIn: parent
+                text: selectBox.checked ? "✓" : ""
+                color: root.accent
+                font.pixelSize: 9
+                font.bold: true
+            }
+        }
+        MouseArea {
+            anchors.fill: parent
+            anchors.margins: -4
+            acceptedButtons: Qt.LeftButton
+            preventStealing: true
+            propagateComposedEvents: false
+            cursorShape: Qt.PointingHandCursor
+            onClicked: mouse => {
+                mouse.accepted = true
+                selectBox.toggled(!!(mouse.modifiers & Qt.ShiftModifier))
+            }
+        }
+    }
+
+    component SelectionBar: RowLayout {
+        id: selectionBar
+        property int selectedCount: 0
+        property int totalCount: 0
+        property string noun: "item"
+        property bool active: true
+        signal selectAllRequested()
+        signal clearRequested()
+        signal deleteRequested()
+        Layout.fillWidth: true
+        visible: active && totalCount > 0
+        spacing: 8
+        HudButton {
+            text: selectionBar.selectedCount > 0 && selectionBar.selectedCount === selectionBar.totalCount ? "CLEAR" : "SELECT ALL"
+            implicitHeight: 28
+            onClicked: {
+                if (selectionBar.selectedCount > 0 && selectionBar.selectedCount === selectionBar.totalCount)
+                    selectionBar.clearRequested()
+                else
+                    selectionBar.selectAllRequested()
+            }
+        }
+        Text {
+            visible: selectionBar.selectedCount > 0
+            text: selectionBar.selectedCount + " selected"
+            color: root.accent
+            font.pixelSize: 11
+            font.letterSpacing: 0.4
+        }
+        Item { Layout.fillWidth: true }
+        HudButton {
+            text: selectionBar.selectedCount > 1 ? "DELETE " + selectionBar.selectedCount : "DELETE SELECTED"
+            enabled: selectionBar.selectedCount > 0
+            implicitHeight: 28
+            busyText: "DELETING…"
+            buttonColor: "#3A1218"
+            foregroundColor: root.danger
+            onClicked: selectionBar.deleteRequested()
+        }
+    }
+
     component FieldLabel: Text {
         color: root.textSecondary
         font.pixelSize: 10
@@ -1864,7 +2073,18 @@ ApplicationWindow {
                     Text { text: backend.selectedDevice.status || "OFFLINE"; color: backend.selectedDevice.connected ? root.success : root.textSecondary; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignRight; width: 160 }
                     Text { text: root.deviceLabel(); color: root.textSecondary; font.pixelSize: 10; horizontalAlignment: Text.AlignRight; width: 160; elide: Text.ElideRight }
                 }
-                Text { text: backend.clockText; color: root.accent; font.pixelSize: 22; font.family: "Cascadia Mono"; font.letterSpacing: 1 }
+                Column {
+                    Text { text: backend.clockText; color: root.accent; font.pixelSize: 22; font.family: "Cascadia Mono"; font.letterSpacing: 1; horizontalAlignment: Text.AlignRight; width: 168 }
+                    Text {
+                        text: backend.selectedDevice.timezone_name || "UTC"
+                        color: root.textSecondary
+                        font.pixelSize: 9
+                        font.family: "Cascadia Mono"
+                        horizontalAlignment: Text.AlignRight
+                        width: 168
+                        elide: Text.ElideRight
+                    }
+                }
             }
         }
 
@@ -2037,6 +2257,20 @@ ApplicationWindow {
 
             Item {
                 id: controlPage
+                property var selectedUpcomingIds: ({})
+                property string selectionAnchorId: ""
+                readonly property int selectedUpcomingCount: root.idSetCount(selectedUpcomingIds)
+                function selectClick(id, shift) {
+                    const result = root.clickSelect(selectedUpcomingIds, backend.upcomingSessions, id, shift, selectionAnchorId)
+                    selectedUpcomingIds = result.map
+                    selectionAnchorId = result.anchor
+                }
+                Connections {
+                    target: backend
+                    function onSessionsChanged() {
+                        controlPage.selectedUpcomingIds = root.pruneIdSet(controlPage.selectedUpcomingIds, backend.upcomingSessions)
+                    }
+                }
                 HudSplitView {
                     id: controlColumns
                     anchors.fill: parent
@@ -2050,13 +2284,51 @@ ApplicationWindow {
 
                         HudPanel {
                             title: "SYSTEM STATUS"
-                            SplitView.preferredHeight: 214
+                            SplitView.preferredHeight: 180
                             SplitView.minimumHeight: 120
-                            headerExtra: HudChip {
-                                label: root.scopeTelemetry.host_text && root.scopeTelemetry.host_text !== "—" ? root.scopeTelemetry.host_text : ""
-                                tone: root.scopeTelemetry.host_mode === false ? root.warning : root.success
-                                visible: root.scopeOnline && label !== ""
-                                dim: !root.scopeOnline
+                            headerExtra: Row {
+                                spacing: 4
+                                HudChip {
+                                    label: root.scopeTelemetry.host_text && root.scopeTelemetry.host_text !== "—" ? root.scopeTelemetry.host_text : ""
+                                    tone: root.scopeTelemetry.host_mode === false ? root.warning : root.success
+                                    visible: root.scopeOnline && label !== ""
+                                    dim: !root.scopeOnline
+                                }
+                                Rectangle {
+                                    // compact activity badge derived from device telemetry
+                                    id: activityBadge
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    height: 20
+                                    width: Math.min(140, activityBadgeRow.implicitWidth + 14)
+                                    radius: 3
+                                    readonly property color tone: root.activityColor()
+                                    color: Qt.rgba(tone.r, tone.g, tone.b, root.scopeOnline ? 0.14 : 0.05)
+                                    border.color: Qt.rgba(tone.r, tone.g, tone.b, root.scopeOnline ? 0.55 : 0.25)
+                                    opacity: root.scopeOnline ? 1 : 0.7
+                                    Behavior on color { ColorAnimation { duration: 220 } }
+                                    RowLayout {
+                                        id: activityBadgeRow
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 7
+                                        anchors.rightMargin: 7
+                                        spacing: 5
+                                        Text { text: root.scopePending ? "⇡" : root.scopeActivity !== "" ? "◈" : root.scopeImaging ? "●" : root.scopeOnline ? "◇" : "○"; color: activityBadge.tone; font.pixelSize: 9 }
+                                        Text {
+                                            text: root.scopeActivityText()
+                                            color: activityBadge.tone
+                                            font.pixelSize: 8; font.bold: true; font.letterSpacing: 1
+                                            font.family: "Cascadia Mono"
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                        }
+                                        Text {
+                                            visible: root.scopeActivityFromDevice
+                                            text: "DEV"
+                                            color: root.textSecondary
+                                            font.pixelSize: 6; font.bold: true; font.letterSpacing: 1
+                                        }
+                                    }
+                                }
                             }
                             RowLayout {
                                 Layout.fillWidth: true
@@ -2083,38 +2355,6 @@ ApplicationWindow {
                                         }
                                     }
                                     Text { text: root.deviceLabel(); color: root.textSecondary; font.pixelSize: 9 }
-                                }
-                            }
-                            Rectangle {
-                                // derived activity line from device telemetry
-                                id: activityLine
-                                Layout.fillWidth: true
-                                implicitHeight: 30
-                                radius: 3
-                                readonly property color tone: root.activityColor()
-                                color: Qt.rgba(tone.r, tone.g, tone.b, root.scopeOnline ? 0.12 : 0.04)
-                                border.color: Qt.rgba(tone.r, tone.g, tone.b, root.scopeOnline ? 0.5 : 0.2)
-                                Behavior on color { ColorAnimation { duration: 220 } }
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 9
-                                    anchors.rightMargin: 9
-                                    spacing: 8
-                                    Text { text: root.scopePending ? "⇡" : root.scopeActivity !== "" ? "◈" : root.scopeImaging ? "●" : root.scopeOnline ? "◇" : "○"; color: activityLine.tone; font.pixelSize: 12 }
-                                    Text {
-                                        text: root.scopeActivityText()
-                                        color: activityLine.tone
-                                        font.pixelSize: 11; font.bold: true; font.letterSpacing: 1.2
-                                        font.family: "Cascadia Mono"
-                                        elide: Text.ElideRight
-                                        Layout.fillWidth: true
-                                    }
-                                    Text {
-                                        visible: root.scopeActivityFromDevice
-                                        text: "DEVICE"
-                                        color: root.textSecondary
-                                        font.pixelSize: 7; font.bold: true; font.letterSpacing: 1
-                                    }
                                 }
                             }
                             Repeater {
@@ -2240,15 +2480,27 @@ ApplicationWindow {
                             title: "TARGET"
                             SplitView.preferredHeight: 140
                             SplitView.minimumHeight: 80
-                            headerExtra: HudChip {
-                                readonly property var t: root.scopeTelemetry
-                                readonly property bool tracking: !!t.tracking_active
-                                readonly property bool slewing: root.scopeActivity === "goto"
-                                visible: root.scopeOnline && (tracking || slewing || !!t.capture_active)
-                                label: slewing ? "GOTO" : t.capture_active ? "STACKING" : "TRACKING"
-                                value: slewing ? "" : String(t.capture_text || "")
-                                tone: slewing ? root.notice : t.capture_active ? root.danger : root.success
-                                glow: true
+                            headerExtra: Row {
+                                spacing: 4
+                                HudChip {
+                                    readonly property var t: root.scopeTelemetry
+                                    visible: root.scopeOnline && !!t.capture_active
+                                    label: "STACKING"
+                                    value: String(t.capture_text || "")
+                                    tone: root.danger
+                                    glow: true
+                                }
+                                HudChip {
+                                    // compact lock-state badge (replaces the old full-width link banner)
+                                    id: lockBadge
+                                    readonly property bool tracking: root.scopeOnline && !!root.scopeTelemetry.tracking_active
+                                    readonly property bool slewing: root.scopeOnline && root.scopeActivity === "goto"
+                                    readonly property bool locked: root.targetLocked || tracking
+                                    label: slewing ? "GOTO" : tracking ? "TRACKING" : root.targetLocked ? "TARGET LOCKED" : (backend.selectedDevice.connected ? "NO TARGET LOCK" : "LINK DOWN")
+                                    tone: locked ? root.success : slewing ? root.notice : (backend.selectedDevice.connected ? root.accent : root.danger)
+                                    glow: locked || slewing
+                                    dim: !backend.selectedDevice.connected
+                                }
                             }
                             Text {
                                 text: {
@@ -2370,56 +2622,6 @@ ApplicationWindow {
                                         && root.commandEnabled("stop_all")
                                     onTriggered: backend.stopDevice(backend.selectedDeviceId)
                                 }
-                            }
-                        }
-
-                        Rectangle {
-                            SplitView.preferredHeight: 48
-                            SplitView.minimumHeight: 40
-                            SplitView.maximumHeight: 64
-                            id: linkBanner
-                            readonly property bool tracking: root.scopeOnline && !!root.scopeTelemetry.tracking_active
-                            readonly property bool slewing: root.scopeOnline && root.scopeActivity === "goto"
-                            readonly property bool locked: root.targetLocked || tracking
-                            readonly property color tone: locked ? root.success : slewing ? root.notice : (backend.selectedDevice.connected ? root.accent : root.danger)
-                            color: locked ? "#C0143C28" : slewing ? "#C0113A3A" : (backend.selectedDevice.connected ? "#C0123C52" : "#C03A1218")
-                            Behavior on color { ColorAnimation { duration: 240 } }
-                            border.color: tone
-                            Rectangle {
-                                id: bannerGlow
-                                anchors.fill: parent
-                                anchors.margins: 3
-                                color: "transparent"
-                                border.color: linkBanner.tone
-                                border.width: 1
-                                opacity: 0.25
-                                SequentialAnimation on opacity {
-                                    running: controlPage.visible && !linkBanner.locked
-                                    loops: Animation.Infinite
-                                    NumberAnimation { to: 0.05; duration: linkBanner.slewing ? 500 : 1400; easing.type: Easing.InOutSine }
-                                    NumberAnimation { to: 0.45; duration: linkBanner.slewing ? 500 : 1400; easing.type: Easing.InOutSine }
-                                }
-                            }
-                            Row {
-                                anchors.centerIn: parent
-                                spacing: 10
-                                Rectangle { width: 6; height: 6; radius: 3; color: linkBanner.tone; anchors.verticalCenter: parent.verticalCenter }
-                                Text {
-                                    text: {
-                                        const target = String(root.scopeTelemetry.tracking_target || root.scopeTelemetry.goto_target || "")
-                                        if (linkBanner.slewing)
-                                            return "GOTO" + (target ? " · " + target.toUpperCase() : "")
-                                        if (linkBanner.tracking)
-                                            return "TRACKING" + (target ? " · " + target.toUpperCase() : "")
-                                        if (root.targetLocked)
-                                            return "TARGET LOCKED"
-                                        return backend.selectedDevice.connected ? "NO TARGET LOCK" : "LINK DOWN"
-                                    }
-                                    color: linkBanner.tone
-                                    font.bold: true
-                                    font.letterSpacing: 2
-                                }
-                                Rectangle { width: 6; height: 6; radius: 3; color: linkBanner.tone; anchors.verticalCenter: parent.verticalCenter }
                             }
                         }
 
@@ -2633,11 +2835,67 @@ ApplicationWindow {
                                 }
 
                                 Image {
+                                    id: liveFrame
                                     anchors.fill: parent
                                     visible: backend.previewPlaying
                                     cache: false
                                     fillMode: Image.PreserveAspectFit
                                     source: backend.previewPlaying ? ("image://live/frame/" + backend.previewGeneration) : ""
+
+                                    // Dual Lenses Locating: double-click a spot on the wide live
+                                    // view and the firmware slews the tele camera onto it. On the
+                                    // tele view the backend explains the gesture needs the wide camera.
+                                    readonly property bool centerEnabled: backend.previewPlaying && root.motionEnabled
+                                    readonly property bool wideView: backend.selectedDevice.camera === "wide"
+                                    readonly property real frameX: (width - paintedWidth) / 2
+                                    readonly property real frameY: (height - paintedHeight) / 2
+
+                                    function centerOn(px, py) {
+                                        if (!centerEnabled || paintedWidth <= 0 || paintedHeight <= 0)
+                                            return
+                                        const fx = px - frameX
+                                        const fy = py - frameY
+                                        if (fx < 0 || fy < 0 || fx > paintedWidth || fy > paintedHeight)
+                                            return
+                                        if (wideView)
+                                            tapMarker.showAt(px, py)
+                                        backend.centerOnTap(backend.selectedDeviceId, fx / paintedWidth, fy / paintedHeight)
+                                    }
+
+                                    TapHandler {
+                                        acceptedButtons: Qt.LeftButton
+                                        enabled: liveFrame.centerEnabled
+                                        gesturePolicy: TapHandler.ReleaseWithinBounds
+                                        onDoubleTapped: (eventPoint, button) => liveFrame.centerOn(eventPoint.position.x, eventPoint.position.y)
+                                    }
+
+                                    Item {
+                                        id: tapMarker
+                                        width: 44
+                                        height: 44
+                                        opacity: 0
+                                        visible: opacity > 0
+                                        function showAt(px, py) {
+                                            x = px - width / 2
+                                            y = py - height / 2
+                                            tapMarkerAnim.restart()
+                                        }
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            radius: width / 2
+                                            color: "transparent"
+                                            border.color: root.accent
+                                            border.width: 2
+                                        }
+                                        Rectangle { anchors.centerIn: parent; width: 14; height: 1.5; color: root.accent }
+                                        Rectangle { anchors.centerIn: parent; width: 1.5; height: 14; color: root.accent }
+                                        SequentialAnimation {
+                                            id: tapMarkerAnim
+                                            PropertyAction { target: tapMarker; property: "opacity"; value: 1 }
+                                            PauseAnimation { duration: 350 }
+                                            NumberAnimation { target: tapMarker; property: "opacity"; to: 0; duration: 500 }
+                                        }
+                                    }
                                 }
                                 Image {
                                     anchors.fill: parent
@@ -3146,6 +3404,36 @@ ApplicationWindow {
                             title: "UP NEXT"
                             SplitView.preferredHeight: 110
                             SplitView.minimumHeight: 72
+                            headerExtra: Row {
+                                spacing: 4
+                                visible: backend.upcomingSessions.length > 0
+                                HudButton {
+                                    text: controlPage.selectedUpcomingCount > 0 && controlPage.selectedUpcomingCount === backend.upcomingSessions.length ? "CLEAR" : "ALL"
+                                    implicitHeight: 20
+                                    implicitWidth: 44
+                                    font.pixelSize: 8
+                                    leftPadding: 6
+                                    rightPadding: 6
+                                    onClicked: {
+                                        if (controlPage.selectedUpcomingCount > 0 && controlPage.selectedUpcomingCount === backend.upcomingSessions.length)
+                                            controlPage.selectedUpcomingIds = ({})
+                                        else
+                                            controlPage.selectedUpcomingIds = root.idSetAll(backend.upcomingSessions, true)
+                                    }
+                                }
+                                HudButton {
+                                    text: controlPage.selectedUpcomingCount > 1 ? "DEL " + controlPage.selectedUpcomingCount : "DELETE"
+                                    enabled: controlPage.selectedUpcomingCount > 0
+                                    implicitHeight: 20
+                                    implicitWidth: controlPage.selectedUpcomingCount > 1 ? 64 : 58
+                                    font.pixelSize: 8
+                                    leftPadding: 6
+                                    rightPadding: 6
+                                    buttonColor: "#3A1218"
+                                    foregroundColor: root.danger
+                                    onClicked: root.confirmBulkDelete("deleteSessions", controlPage.selectedUpcomingIds, "session")
+                                }
+                            }
                             Item {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
@@ -3172,10 +3460,31 @@ ApplicationWindow {
                                             color: "#122033"
                                             border.color: root.outline
                                             opacity: root.sessionDragActive && root.sessionDragData.id === modelData.id ? 0.35 : 1
+                                            SessionDragArea {
+                                                dragItem: upcomingRow.modelData
+                                            }
+                                            HoverHandler { id: upcomingHover }
+                                            TapHandler {
+                                                acceptedButtons: Qt.LeftButton
+                                                acceptedModifiers: Qt.ShiftModifier
+                                                onTapped: controlPage.selectClick(upcomingRow.modelData.id, true)
+                                            }
                                             RowLayout {
                                                 anchors.fill: parent
                                                 anchors.margins: 6
-                                                Text { text: "⋮⋮"; color: root.accent; font.pixelSize: 15 }
+                                                spacing: 6
+                                                Item {
+                                                    Layout.preferredWidth: 16
+                                                    Layout.maximumWidth: 16
+                                                    Layout.fillHeight: true
+                                                    SelectBox {
+                                                        id: upcomingSelect
+                                                        anchors.centerIn: parent
+                                                        checked: root.idSetHas(controlPage.selectedUpcomingIds, upcomingRow.modelData.id)
+                                                        revealed: upcomingHover.hovered || controlPage.selectedUpcomingCount > 0
+                                                        onToggled: (shiftHeld) => controlPage.selectClick(upcomingRow.modelData.id, shiftHeld)
+                                                    }
+                                                }
                                                 ColumnLayout {
                                                     Layout.fillWidth: true
                                                     spacing: 0
@@ -3183,20 +3492,18 @@ ApplicationWindow {
                                                     Text {
                                                         readonly property bool due: {
                                                             backend.clockText
-                                                            return new Date(modelData.scheduled_start).getTime() <= Date.now()
+                                                            const startMs = Number(modelData.start_epoch_ms)
+                                                            return (isNaN(startMs) ? new Date(modelData.scheduled_start).getTime() : startMs) <= Date.now()
                                                         }
                                                         text: {
                                                             backend.clockText
-                                                            const seconds = Math.floor((new Date(modelData.scheduled_start).getTime() - Date.now()) / 1000)
+                                                            const startMs = Number(modelData.start_epoch_ms)
+                                                            const seconds = Math.floor(((isNaN(startMs) ? new Date(modelData.scheduled_start).getTime() : startMs) - Date.now()) / 1000)
                                                             return modelData.start_time + " · " + modelData.duration_text + (seconds > 0 ? " · T−" + root.durationLabel(seconds) : " · DUE")
                                                         }
                                                         color: due ? root.warning : root.textSecondary; font.pixelSize: 9
                                                     }
                                                 }
-                                            }
-                                            SessionDragArea {
-                                                anchors.fill: parent
-                                                dragItem: upcomingRow.modelData
                                             }
                                             TapHandler {
                                                 acceptedButtons: Qt.RightButton
@@ -3205,6 +3512,13 @@ ApplicationWindow {
                                             SessionContextMenu {
                                                 id: upcomingMenu
                                                 sessionData: upcomingRow.modelData
+                                                selectionItems: backend.upcomingSessions
+                                                selectedMap: controlPage.selectedUpcomingIds
+                                                onSelectAllRequested: controlPage.selectedUpcomingIds = root.idSetAll(backend.upcomingSessions, true)
+                                                onUnselectAllRequested: {
+                                                    controlPage.selectedUpcomingIds = ({})
+                                                    controlPage.selectionAnchorId = ""
+                                                }
                                             }
                                         }
                                     }
@@ -3501,8 +3815,31 @@ ApplicationWindow {
                 property date shownMonth: new Date()
                 property date selectedDate: new Date()
                 property int viewMode: 0
+                property var selectedIds: ({})
+                property string selectionAnchorId: ""
+                readonly property int selectedCount: root.idSetCount(selectedIds)
+                function selectClick(id, shift, items) {
+                    const result = root.clickSelect(selectedIds, items || backend.sessions, id, shift, selectionAnchorId)
+                    selectedIds = result.map
+                    selectionAnchorId = result.anchor
+                }
+                Connections {
+                    target: backend
+                    function onSessionsChanged() {
+                        calendarPage.selectedIds = root.pruneIdSet(calendarPage.selectedIds, backend.sessions)
+                    }
+                }
                 function dateKey(value) {
                     return value.getFullYear() + "-" + String(value.getMonth() + 1).padStart(2, "0") + "-" + String(value.getDate()).padStart(2, "0")
+                }
+                function dateFromKey(key) {
+                    const parts = String(key || "").split("-")
+                    if (parts.length < 3)
+                        return new Date()
+                    return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), 12, 0, 0)
+                }
+                function observingNow() {
+                    return backend.localNow || {}
                 }
                 function firstCellDate() {
                     const first = new Date(shownMonth.getFullYear(), shownMonth.getMonth(), 1)
@@ -3523,16 +3860,35 @@ ApplicationWindow {
                         minutes += 1440
                     return minutes
                 }
+                function snapTimelineMinutes(minutes) {
+                    return Math.max(0, Math.min(1435, Math.round(Number(minutes) / 5) * 5))
+                }
+                function timelineClock(minutes) {
+                    const snapped = calendarPage.snapTimelineMinutes(minutes)
+                    const hour = (cutoffHour + Math.floor(snapped / 60)) % 24
+                    const minute = snapped % 60
+                    return String(hour).padStart(2, "0") + ":" + String(minute).padStart(2, "0")
+                }
+                function timelineMinutesFromPos(pos) {
+                    if (root.currentPage !== 1 || calendarPage.viewMode !== 1 || !nightTimeline.visible)
+                        return -1
+                    const local = timelineTrack.mapFromItem(root.contentItem, pos.x, pos.y)
+                    if (local.x < 0 || local.x > timelineTrack.width)
+                        return -1
+                    return calendarPage.snapTimelineMinutes((local.y - root.sessionDragGrabOffsetY - nightTimeline.itemOffset) / nightTimeline.hourHeight * 60)
+                }
                 function timelineDate(minutes) {
                     const value = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), cutoffHour, 0, 0, 0)
-                    value.setMinutes(value.getMinutes() + Math.max(0, Math.min(1435, Math.round(minutes / 5) * 5)))
+                    value.setMinutes(value.getMinutes() + calendarPage.snapTimelineMinutes(minutes))
                     return dateKey(value) + "T" + String(value.getHours()).padStart(2, "0") + ":" + String(value.getMinutes()).padStart(2, "0")
                 }
                 function currentObservingKey() {
-                    const value = new Date()
-                    if (value.getHours() < cutoffHour)
-                        value.setDate(value.getDate() - 1)
-                    return dateKey(value)
+                    return String(calendarPage.observingNow().observing_date || calendarPage.dateKey(new Date()))
+                }
+                Component.onCompleted: {
+                    const today = calendarPage.dateFromKey(calendarPage.currentObservingKey())
+                    selectedDate = today
+                    shownMonth = today
                 }
                 HudSplitView {
                     id: calendarSplit
@@ -3549,7 +3905,7 @@ ApplicationWindow {
                             subtitle: {
                                 const total = backend.sessions.filter(item => item.status === "planned").length
                                 const night = calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).length
-                                return total + " planned session" + (total === 1 ? "" : "s") + "  ·  " + night + " on the selected night  ·  night rolls over at " + String(calendarPage.cutoffHour).padStart(2, "0") + ":00"
+                                return total + " planned session" + (total === 1 ? "" : "s") + "  ·  " + night + " on the selected night  ·  night rolls over at " + String(calendarPage.cutoffHour).padStart(2, "0") + ":00  ·  " + (backend.selectedDevice.timezone_name || "UTC")
                             }
                             HudButton { text: "MONTH"; buttonColor: calendarPage.viewMode === 0 ? "#0E3A48" : root.surfaceHigh; foregroundColor: calendarPage.viewMode === 0 ? root.accent : root.textSecondary; onClicked: calendarPage.viewMode = 0 }
                             HudButton { text: "NIGHT"; buttonColor: calendarPage.viewMode === 1 ? "#0E3A48" : root.surfaceHigh; foregroundColor: calendarPage.viewMode === 1 ? root.accent : root.textSecondary; onClicked: calendarPage.viewMode = 1 }
@@ -3565,7 +3921,12 @@ ApplicationWindow {
                                     }
                                 }
                             }
-                            HudButton { text: "TODAY"; onClicked: { calendarPage.shownMonth = new Date(); calendarPage.selectedDate = new Date() } }
+                            HudButton { text: "TODAY"; onClicked: {
+                                const key = calendarPage.currentObservingKey()
+                                const today = calendarPage.dateFromKey(key)
+                                calendarPage.shownMonth = today
+                                calendarPage.selectedDate = today
+                            } }
                             HudButton {
                                 text: "›"; implicitWidth: 40
                                 onClicked: {
@@ -3579,6 +3940,24 @@ ApplicationWindow {
                                 }
                             }
                             HudButton { text: "+ NEW SESSION"; busyText: "OPENING…"; buttonColor: "#0E3A48"; foregroundColor: root.accent; onClicked: sessionDialog.openForDate(calendarPage.dateKey(calendarPage.selectedDate)) }
+                        }
+                        SelectionBar {
+                            active: calendarPage.viewMode === 1
+                            selectedCount: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).filter(item => root.idSetHas(calendarPage.selectedIds, item.id)).length
+                            totalCount: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).length
+                            noun: "session"
+                            onSelectAllRequested: calendarPage.selectedIds = root.idSetAll(calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)), true)
+                            onClearRequested: calendarPage.selectedIds = ({})
+                            onDeleteRequested: {
+                                const chosen = {}
+                                const items = calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+                                for (let i = 0; i < items.length; i++) {
+                                    const id = items[i] && items[i].id
+                                    if (id && root.idSetHas(calendarPage.selectedIds, id))
+                                        chosen[id] = true
+                                }
+                                root.confirmBulkDelete("deleteSessions", chosen, "session")
+                            }
                         }
                         RowLayout {
                             visible: calendarPage.viewMode === 0
@@ -3679,7 +4058,6 @@ ApplicationWindow {
                                                 }
                                                 Text { anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 10; anchors.topMargin: 4; anchors.bottomMargin: 4; text: calendarPage.chipText(modelData); color: root.textPrimary; font.pixelSize: 9; elide: Text.ElideRight }
                                                 SessionDragArea {
-                                                    anchors.fill: parent
                                                     dragItem: sessionChip.modelData
                                                     pressedAction: function() { calendarPage.selectedDate = dayCell.cellDate }
                                                 }
@@ -3687,6 +4065,13 @@ ApplicationWindow {
                                                 SessionContextMenu {
                                                     id: sessionMenu
                                                     sessionData: sessionChip.modelData
+                                                    selectionItems: dayCell.daySessions
+                                                    selectedMap: calendarPage.selectedIds
+                                                    onSelectAllRequested: calendarPage.selectedIds = root.idSetAll(dayCell.daySessions, true)
+                                                    onUnselectAllRequested: {
+                                                        calendarPage.selectedIds = ({})
+                                                        calendarPage.selectionAnchorId = ""
+                                                    }
                                                 }
                                             }
                                         }
@@ -3717,6 +4102,22 @@ ApplicationWindow {
                                                 sessionDialog.openForDate(dayCell.key)
                                             }
                                         }
+                                        HudMenuSeparator {}
+                                        HudMenuItem {
+                                            text: "Select all"
+                                            glyph: "\uE8A5"
+                                            enabled: dayCell.daySessions.length > 0
+                                            onTriggered: calendarPage.selectedIds = root.idSetAll(dayCell.daySessions, true)
+                                        }
+                                        HudMenuItem {
+                                            text: "Unselect all"
+                                            glyph: "\uE711"
+                                            enabled: calendarPage.selectedCount > 0
+                                            onTriggered: {
+                                                calendarPage.selectedIds = ({})
+                                                calendarPage.selectionAnchorId = ""
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -3727,6 +4128,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             property real hourHeight: 64
+                            property real itemOffset: 5
                             Flickable {
                                 id: timelineFlick
                                 anchors.fill: parent
@@ -3744,8 +4146,12 @@ ApplicationWindow {
                                         keys: ["session"]
                                         onDropped: drop => {
                                             const sid = root.dragSessionId(drop)
-                                            if (sid)
-                                                backend.moveSessionStart(sid, calendarPage.timelineDate(drop.y / nightTimeline.hourHeight * 60))
+                                            if (!sid)
+                                                return
+                                            const minutes = calendarPage.timelineMinutesFromPos(root.sessionDragPos)
+                                            if (minutes < 0)
+                                                return
+                                            backend.moveSessionStart(sid, calendarPage.timelineDate(minutes))
                                         }
                                     }
                                     Repeater {
@@ -3772,7 +4178,7 @@ ApplicationWindow {
                                             required property var modelData
                                             property string sessionId: modelData.id
                                             x: 66
-                                            y: calendarPage.timelineMinutes(modelData.start_time) / 60 * nightTimeline.hourHeight + 5
+                                            y: calendarPage.timelineMinutes(modelData.start_time) / 60 * nightTimeline.hourHeight + nightTimeline.itemOffset
                                             width: timelineTrack.width - 82
                                             height: Math.max(36, Number(modelData.planned_duration_seconds || 0) / 3600 * nightTimeline.hourHeight - 6)
                                             radius: 3
@@ -3781,11 +4187,32 @@ ApplicationWindow {
                                             border.width: 1
                                             opacity: root.sessionDragActive && root.sessionDragData.id === sessionId ? 0.35 : 0.96
                                             Rectangle { x: 0; y: 0; width: 4; height: parent.height; radius: 2; color: modelData.device_color || root.accent }
+                                            SessionDragArea {
+                                                dragItem: timelineSession.modelData
+                                            }
+                                            HoverHandler { id: timelineHover }
+                                            TapHandler {
+                                                acceptedButtons: Qt.LeftButton
+                                                acceptedModifiers: Qt.ShiftModifier
+                                                onTapped: calendarPage.selectClick(timelineSession.modelData.id, true, calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)))
+                                            }
                                             RowLayout {
                                                 anchors.fill: parent
                                                 anchors.margins: 8
                                                 anchors.leftMargin: 12
-                                                Text { text: "⋮⋮"; color: root.accent; font.pixelSize: 16 }
+                                                spacing: 6
+                                                Item {
+                                                    Layout.preferredWidth: 16
+                                                    Layout.maximumWidth: 16
+                                                    Layout.fillHeight: true
+                                                    SelectBox {
+                                                        id: timelineSelect
+                                                        anchors.centerIn: parent
+                                                        checked: root.idSetHas(calendarPage.selectedIds, timelineSession.modelData.id)
+                                                        revealed: timelineHover.hovered || calendarPage.selectedCount > 0
+                                                        onToggled: (shiftHeld) => calendarPage.selectClick(timelineSession.modelData.id, shiftHeld, calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)))
+                                                    }
+                                                }
                                                 ColumnLayout {
                                                     Layout.fillWidth: true; spacing: 0
                                                     RowLayout {
@@ -3800,15 +4227,18 @@ ApplicationWindow {
                                                 HudButton { text: "EDIT"; implicitHeight: 24; visible: timelineSession.height > 44; onClicked: sessionDialog.openExisting(timelineSession.modelData) }
                                                 HudButton { text: "RUN"; implicitHeight: 24; visible: timelineSession.height > 44; enabled: modelData.status !== "running"; onClicked: backend.runNow(modelData.id) }
                                             }
-                                            SessionDragArea {
-                                                anchors.left: parent.left
-                                                anchors.top: parent.top
-                                                anchors.bottom: parent.bottom
-                                                width: 48
-                                                dragItem: timelineSession.modelData
-                                            }
                                             TapHandler { acceptedButtons: Qt.RightButton; onTapped: timelineMenu.popup() }
-                                            SessionContextMenu { id: timelineMenu; sessionData: timelineSession.modelData }
+                                            SessionContextMenu {
+                                                id: timelineMenu
+                                                sessionData: timelineSession.modelData
+                                                selectionItems: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+                                                selectedMap: calendarPage.selectedIds
+                                                onSelectAllRequested: calendarPage.selectedIds = root.idSetAll(calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)), true)
+                                                onUnselectAllRequested: {
+                                                    calendarPage.selectedIds = ({})
+                                                    calendarPage.selectionAnchorId = ""
+                                                }
+                                            }
                                         }
                                     }
                                     Rectangle {
@@ -3817,8 +4247,49 @@ ApplicationWindow {
                                         width: parent.width - 66
                                         height: 2
                                         color: root.warning
-                                        y: calendarPage.timelineMinutes(Qt.formatTime(new Date(), "HH:mm")) / 60 * nightTimeline.hourHeight
+                                        y: calendarPage.timelineMinutes(String(backend.clockText).substring(0, 5)) / 60 * nightTimeline.hourHeight
                                         Text { anchors.right: parent.right; anchors.bottom: parent.top; text: "NOW"; color: root.warning; font.pixelSize: 9; font.bold: true }
+                                    }
+                                    Rectangle {
+                                        visible: root.sessionDragActive && root.sessionDragPreviewMinutes >= 0
+                                        x: 58
+                                        width: parent.width - 66
+                                        height: 2
+                                        color: root.accent
+                                        y: root.sessionDragPreviewMinutes / 60 * nightTimeline.hourHeight
+                                        z: 30
+                                        Text {
+                                            anchors.left: parent.left
+                                            anchors.bottom: parent.top
+                                            text: root.sessionDragPreviewTime
+                                            color: root.accent
+                                            font.pixelSize: 11
+                                            font.bold: true
+                                            font.family: "Cascadia Mono"
+                                        }
+                                    }
+                                    Rectangle {
+                                        visible: root.sessionDragActive && root.sessionDragPreviewMinutes >= 0
+                                        x: 66
+                                        y: root.sessionDragPreviewMinutes / 60 * nightTimeline.hourHeight + nightTimeline.itemOffset
+                                        width: timelineTrack.width - 82
+                                        height: Math.max(36, Number(root.sessionDragData.planned_duration_seconds || 0) / 3600 * nightTimeline.hourHeight - 6)
+                                        radius: 3
+                                        color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.12)
+                                        border.color: root.accent
+                                        border.width: 2
+                                        z: 25
+                                        Text {
+                                            anchors.left: parent.left
+                                            anchors.leftMargin: 12
+                                            anchors.top: parent.top
+                                            anchors.topMargin: 8
+                                            text: root.sessionDragPreviewTime
+                                            color: root.accent
+                                            font.family: "Cascadia Mono"
+                                            font.pixelSize: 12
+                                            font.bold: true
+                                        }
                                     }
                                 }
                             }
@@ -3845,6 +4316,42 @@ ApplicationWindow {
                             HudChip { visible: nightPanel.nightSeconds > 0; label: "PLAN"; value: root.formatDuration(nightPanel.nightSeconds); tone: root.textSecondary }
                             HudChip { visible: calendarPage.dateKey(calendarPage.selectedDate) === calendarPage.currentObservingKey(); label: "TONIGHT"; tone: root.warning; glow: true }
                             Item { Layout.fillWidth: true }
+                        }
+                        SelectionBar {
+                            selectedCount: nightPanel.nightSessions.filter(item => root.idSetHas(calendarPage.selectedIds, item.id)).length
+                            totalCount: nightPanel.nightSessions.length
+                            noun: "session"
+                            onSelectAllRequested: {
+                                const next = Object.assign({}, calendarPage.selectedIds)
+                                for (let i = 0; i < nightPanel.nightSessions.length; i++) {
+                                    const id = nightPanel.nightSessions[i] && nightPanel.nightSessions[i].id
+                                    if (id)
+                                        next[id] = true
+                                }
+                                calendarPage.selectedIds = next
+                            }
+                            onClearRequested: {
+                                const drop = {}
+                                for (let i = 0; i < nightPanel.nightSessions.length; i++) {
+                                    const id = nightPanel.nightSessions[i] && nightPanel.nightSessions[i].id
+                                    if (id)
+                                        drop[id] = true
+                                }
+                                const next = Object.assign({}, calendarPage.selectedIds)
+                                const keys = Object.keys(drop)
+                                for (let i = 0; i < keys.length; i++)
+                                    delete next[keys[i]]
+                                calendarPage.selectedIds = next
+                            }
+                            onDeleteRequested: {
+                                const chosen = {}
+                                for (let i = 0; i < nightPanel.nightSessions.length; i++) {
+                                    const id = nightPanel.nightSessions[i] && nightPanel.nightSessions[i].id
+                                    if (id && root.idSetHas(calendarPage.selectedIds, id))
+                                        chosen[id] = true
+                                }
+                                root.confirmBulkDelete("deleteSessions", chosen, "session")
+                            }
                         }
                         Item {
                             Layout.fillWidth: true
@@ -3874,11 +4381,20 @@ ApplicationWindow {
                                         color: root.statusFill(modelData.status)
                                         border.color: Qt.rgba(root.statusColor(modelData.status).r, root.statusColor(modelData.status).g, root.statusColor(modelData.status).b, 0.5)
                                         opacity: root.sessionDragActive && root.sessionDragData.id === sessionId ? 0.35 : 1
+                                        SessionDragArea {
+                                            dragItem: daySessionRow.modelData
+                                        }
+                                        HoverHandler { id: daySessionHover }
+                                        TapHandler {
+                                            acceptedButtons: Qt.LeftButton
+                                            acceptedModifiers: Qt.ShiftModifier
+                                            onTapped: calendarPage.selectClick(daySessionRow.modelData.id, true, nightPanel.nightSessions)
+                                        }
                                         Rectangle { x: 0; y: 0; width: 3; height: parent.height; radius: 1; color: modelData.device_color || root.accent }
                                         ColumnLayout {
                                             anchors.fill: parent
                                             anchors.margins: 8
-                                            anchors.leftMargin: 11
+                                            anchors.leftMargin: 20
                                             spacing: 2
                                             RowLayout {
                                                 Layout.fillWidth: true
@@ -3894,12 +4410,18 @@ ApplicationWindow {
                                                 HudButton { text: "RUN"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
                                             }
                                         }
-                                        SessionDragArea {
-                                            anchors.left: parent.left
-                                            anchors.right: parent.right
+                                        Item {
+                                            x: 3
+                                            width: 15
                                             anchors.top: parent.top
-                                            height: 36
-                                            dragItem: daySessionRow.modelData
+                                            anchors.bottom: parent.bottom
+                                            SelectBox {
+                                                id: daySessionSelect
+                                                anchors.centerIn: parent
+                                                checked: root.idSetHas(calendarPage.selectedIds, daySessionRow.modelData.id)
+                                                revealed: daySessionHover.hovered || calendarPage.selectedCount > 0
+                                                onToggled: (shiftHeld) => calendarPage.selectClick(daySessionRow.modelData.id, shiftHeld, nightPanel.nightSessions)
+                                            }
                                         }
                                         TapHandler {
                                             acceptedButtons: Qt.RightButton
@@ -3908,6 +4430,21 @@ ApplicationWindow {
                                         SessionContextMenu {
                                             id: daySessionMenu
                                             sessionData: daySessionRow.modelData
+                                            selectionItems: nightPanel.nightSessions
+                                            selectedMap: calendarPage.selectedIds
+                                            onSelectAllRequested: {
+                                                const next = Object.assign({}, calendarPage.selectedIds)
+                                                for (let i = 0; i < nightPanel.nightSessions.length; i++) {
+                                                    const id = nightPanel.nightSessions[i] && nightPanel.nightSessions[i].id
+                                                    if (id)
+                                                        next[id] = true
+                                                }
+                                                calendarPage.selectedIds = next
+                                            }
+                                            onUnselectAllRequested: {
+                                                calendarPage.selectedIds = ({})
+                                                calendarPage.selectionAnchorId = ""
+                                            }
                                         }
                                     }
                                 }
@@ -3975,71 +4512,289 @@ ApplicationWindow {
                         Layout.minimumHeight: 280
                         Layout.preferredHeight: 0
                         Item {
+                            id: scheduledPage
+                            property var selectedIds: ({})
+                            property string selectionAnchorId: ""
+                            readonly property int selectedCount: root.idSetCount(selectedIds)
+                            function selectClick(id, shift) {
+                                const result = root.clickSelect(selectedIds, backend.sessions, id, shift, selectionAnchorId)
+                                selectedIds = result.map
+                                selectionAnchorId = result.anchor
+                            }
+                            readonly property int rowInset: 12
+                            readonly property int colGap: 12
+                            readonly property int gripWidth: 28
+                            readonly property int startWidth: 148
+                            readonly property int deviceWidth: 118
+                            readonly property int durationWidth: 72
+                            readonly property int statusWidth: 92
+                            readonly property int actionsWidth: 228
+                            Connections {
+                                target: backend
+                                function onSessionsChanged() {
+                                    scheduledPage.selectedIds = root.pruneIdSet(scheduledPage.selectedIds, backend.sessions)
+                                }
+                            }
                             EmptyHint { visible: backend.sessions.length === 0; glyph: "✦"; text: "No scheduled sessions yet. Create one manually or import a Stellarium / Telescopius target list."; anchors.centerIn: parent }
-                            SessionInsertDrop {
-                                id: scheduledInsert
+                            ColumnLayout {
                                 anchors.fill: parent
-                                targetList: scheduledList
-                                rowHeight: 84
-                                ListView {
-                                    id: scheduledList
-                                    anchors.fill: parent
-                                    clip: true
-                                    spacing: 8
-                                    boundsBehavior: Flickable.StopAtBounds
-                                    ScrollBar.vertical: HiddenBar {}
-                                    ScrollBar.horizontal: HiddenBar {}
-                                    model: backend.sessions
-                                    delegate: HudPanel {
-                                        id: scheduledRow
-                                        required property var modelData
-                                        width: ListView.view.width
-                                        height: 84
-                                        opacity: root.sessionDragActive && root.sessionDragData.id === modelData.id ? 0.35 : 1
-                                        overlay: [
-                                            SessionDragArea {
-                                                anchors.left: parent.left
-                                                anchors.top: parent.top
-                                                anchors.bottom: parent.bottom
-                                                width: 56
-                                                dragItem: scheduledRow.modelData
-                                            }
-                                        ]
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Rectangle { width: 4; Layout.fillHeight: true; color: modelData.device_color || root.accent }
-                                            Text { text: "⋮⋮"; color: root.accent; font.pixelSize: 16 }
-                                            ColumnLayout {
-                                                Layout.preferredWidth: 280
-                                                Text { text: modelData.target_name; color: root.textPrimary; font.pixelSize: 16; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
-                                                Text { text: modelData.subtitle; color: root.textSecondary; font.pixelSize: 11; elide: Text.ElideRight; Layout.fillWidth: true; visible: modelData.subtitle !== modelData.target_name }
-                                            }
-                                            Text { text: modelData.start_date + "  " + modelData.start_time; color: root.textPrimary; font.family: "Cascadia Mono"; Layout.preferredWidth: 150 }
+                                spacing: 4
+                                visible: backend.sessions.length > 0
+                                SelectionBar {
+                                    selectedCount: scheduledPage.selectedCount
+                                    totalCount: backend.sessions.length
+                                    noun: "session"
+                                    onSelectAllRequested: scheduledPage.selectedIds = root.idSetAll(backend.sessions, true)
+                                    onClearRequested: scheduledPage.selectedIds = ({})
+                                    onDeleteRequested: root.confirmBulkDelete("deleteSessions", scheduledPage.selectedIds, "session")
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Layout.leftMargin: scheduledPage.rowInset
+                                    Layout.rightMargin: scheduledPage.rowInset
+                                    Layout.preferredHeight: 18
+                                    spacing: scheduledPage.colGap
+                                    Item { Layout.preferredWidth: scheduledPage.gripWidth; Layout.maximumWidth: scheduledPage.gripWidth }
+                                    Text { text: "SESSION"; color: root.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4; font.bold: true; Layout.fillWidth: true }
+                                    Text { text: "START"; color: root.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4; font.bold: true; Layout.preferredWidth: scheduledPage.startWidth; Layout.maximumWidth: scheduledPage.startWidth }
+                                    Text { text: "DEVICE"; color: root.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4; font.bold: true; Layout.preferredWidth: scheduledPage.deviceWidth; Layout.maximumWidth: scheduledPage.deviceWidth }
+                                    Text { text: "LENGTH"; color: root.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4; font.bold: true; Layout.preferredWidth: scheduledPage.durationWidth; Layout.maximumWidth: scheduledPage.durationWidth; horizontalAlignment: Text.AlignRight; Layout.fillWidth: false }
+                                    Text { text: "STATUS"; color: root.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4; font.bold: true; Layout.preferredWidth: scheduledPage.statusWidth; Layout.maximumWidth: scheduledPage.statusWidth; horizontalAlignment: Text.AlignHCenter }
+                                    Item { Layout.preferredWidth: scheduledPage.actionsWidth; Layout.maximumWidth: scheduledPage.actionsWidth }
+                                }
+                                SessionInsertDrop {
+                                    id: scheduledInsert
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    targetList: scheduledList
+                                    rowHeight: 76
+                                    ListView {
+                                        id: scheduledList
+                                        anchors.fill: parent
+                                        clip: true
+                                        spacing: 6
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        ScrollBar.vertical: HiddenBar {}
+                                        ScrollBar.horizontal: HiddenBar {}
+                                        model: backend.sessions
+                                        delegate: HudPanel {
+                                            id: scheduledRow
+                                            required property var modelData
+                                            width: ListView.view.width
+                                            height: 76
+                                            fill: root.idSetHas(scheduledPage.selectedIds, modelData.id) ? "#C0123C52" : "#B3070D16"
+                                            opacity: root.sessionDragActive && root.sessionDragData.id === modelData.id ? 0.35 : 1
+                                            overlay: [
+                                                HoverHandler { id: scheduledHover },
+                                                TapHandler {
+                                                    acceptedButtons: Qt.LeftButton
+                                                    acceptedModifiers: Qt.ShiftModifier
+                                                    onTapped: scheduledPage.selectClick(scheduledRow.modelData.id, true)
+                                                },
+                                                Item {
+                                                    anchors.fill: parent
+                                                    anchors.rightMargin: scheduledPage.rowInset + scheduledPage.actionsWidth
+                                                    SessionDragArea {
+                                                        dragItem: scheduledRow.modelData
+                                                    }
+                                                },
+                                                SelectBox {
+                                                    id: scheduledSelect
+                                                    anchors.left: parent.left
+                                                    anchors.leftMargin: scheduledPage.rowInset + Math.round((scheduledPage.gripWidth - width) / 2) + 2
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                    checked: root.idSetHas(scheduledPage.selectedIds, scheduledRow.modelData.id)
+                                                    revealed: scheduledHover.hovered || scheduledPage.selectedCount > 0
+                                                    onToggled: (shiftHeld) => scheduledPage.selectClick(scheduledRow.modelData.id, shiftHeld)
+                                                }
+                                            ]
                                             RowLayout {
-                                                Layout.preferredWidth: 120
-                                                spacing: 6
-                                                Rectangle { width: 6; height: 6; radius: 3; color: modelData.device_color || root.accent }
-                                                Text { text: modelData.device_name; color: root.textPrimary; Layout.fillWidth: true; elide: Text.ElideRight }
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+                                                spacing: scheduledPage.colGap
+                                                Item {
+                                                    Layout.preferredWidth: scheduledPage.gripWidth
+                                                    Layout.maximumWidth: scheduledPage.gripWidth
+                                                    Layout.fillHeight: true
+                                                    Rectangle {
+                                                        width: 4
+                                                        height: parent.height - 8
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        color: scheduledRow.modelData.device_color || root.accent
+                                                    }
+                                                }
+                                                Item {
+                                                    Layout.fillWidth: true
+                                                    Layout.fillHeight: true
+                                                    Layout.minimumWidth: 140
+                                                    Column {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        anchors.left: parent.left
+                                                        anchors.right: parent.right
+                                                        spacing: 3
+                                                        Text {
+                                                            width: parent.width
+                                                            text: scheduledRow.modelData.target_name
+                                                            color: root.textPrimary
+                                                            font.pixelSize: 15
+                                                            font.bold: true
+                                                            elide: Text.ElideRight
+                                                        }
+                                                        Text {
+                                                            width: parent.width
+                                                            text: scheduledRow.modelData.subtitle
+                                                            color: root.textSecondary
+                                                            font.pixelSize: 11
+                                                            elide: Text.ElideRight
+                                                            visible: scheduledRow.modelData.subtitle !== scheduledRow.modelData.target_name
+                                                        }
+                                                    }
+                                                }
+                                                Text {
+                                                    text: scheduledRow.modelData.start_date + "  " + scheduledRow.modelData.start_time
+                                                    color: root.textPrimary
+                                                    font.family: "Cascadia Mono"
+                                                    font.pixelSize: 13
+                                                    Layout.preferredWidth: scheduledPage.startWidth
+                                                    Layout.maximumWidth: scheduledPage.startWidth
+                                                    Layout.minimumWidth: scheduledPage.startWidth
+                                                    Layout.fillWidth: false
+                                                    Layout.alignment: Qt.AlignVCenter
+                                                }
+                                                Item {
+                                                    Layout.preferredWidth: scheduledPage.deviceWidth
+                                                    Layout.maximumWidth: scheduledPage.deviceWidth
+                                                    Layout.minimumWidth: scheduledPage.deviceWidth
+                                                    Layout.fillHeight: true
+                                                    Row {
+                                                        anchors.verticalCenter: parent.verticalCenter
+                                                        anchors.left: parent.left
+                                                        anchors.right: parent.right
+                                                        spacing: 8
+                                                        Rectangle {
+                                                            width: 7
+                                                            height: 7
+                                                            radius: 4
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                            color: scheduledRow.modelData.device_color || root.accent
+                                                        }
+                                                        Text {
+                                                            width: parent.width - 15
+                                                            text: scheduledRow.modelData.device_name
+                                                            color: root.textPrimary
+                                                            elide: Text.ElideRight
+                                                            font.pixelSize: 13
+                                                            anchors.verticalCenter: parent.verticalCenter
+                                                        }
+                                                    }
+                                                }
+                                                Text {
+                                                    text: scheduledRow.modelData.duration_text
+                                                    color: root.textSecondary
+                                                    font.family: "Cascadia Mono"
+                                                    font.pixelSize: 13
+                                                    horizontalAlignment: Text.AlignRight
+                                                    Layout.preferredWidth: scheduledPage.durationWidth
+                                                    Layout.maximumWidth: scheduledPage.durationWidth
+                                                    Layout.minimumWidth: scheduledPage.durationWidth
+                                                    Layout.fillWidth: false
+                                                    Layout.alignment: Qt.AlignVCenter
+                                                }
+                                                Item {
+                                                    Layout.preferredWidth: scheduledPage.statusWidth
+                                                    Layout.maximumWidth: scheduledPage.statusWidth
+                                                    Layout.minimumWidth: scheduledPage.statusWidth
+                                                    Layout.fillHeight: true
+                                                    StatusChip {
+                                                        anchors.centerIn: parent
+                                                        status: scheduledRow.modelData.status
+                                                        implicitWidth: 86
+                                                        implicitHeight: 22
+                                                    }
+                                                }
+                                                RowLayout {
+                                                    Layout.preferredWidth: scheduledPage.actionsWidth
+                                                    Layout.maximumWidth: scheduledPage.actionsWidth
+                                                    Layout.minimumWidth: scheduledPage.actionsWidth
+                                                    Layout.fillWidth: false
+                                                    Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+                                                    spacing: 6
+                                                    HudButton {
+                                                        text: "EDIT"
+                                                        implicitHeight: 30
+                                                        Layout.preferredWidth: 68
+                                                        enabled: scheduledRow.modelData.status !== "running"
+                                                        busyText: "OPENING…"
+                                                        onClicked: sessionDialog.openExisting(scheduledRow.modelData)
+                                                    }
+                                                    HudButton {
+                                                        text: "RESET"
+                                                        implicitHeight: 30
+                                                        Layout.preferredWidth: 76
+                                                        opacity: root.canReset(scheduledRow.modelData.status) ? 1 : 0
+                                                        enabled: root.canReset(scheduledRow.modelData.status)
+                                                        busyText: "RESETTING…"
+                                                        onClicked: backend.resetSession(scheduledRow.modelData.id)
+                                                    }
+                                                    HudButton {
+                                                        text: "RUN"
+                                                        implicitHeight: 30
+                                                        Layout.preferredWidth: 68
+                                                        enabled: scheduledRow.modelData.status !== "running"
+                                                        busyText: "STARTING…"
+                                                        onClicked: backend.runNow(scheduledRow.modelData.id)
+                                                    }
+                                                }
                                             }
-                                            Text { text: modelData.duration_text; color: root.textSecondary; font.family: "Cascadia Mono"; Layout.preferredWidth: 80 }
-                                            StatusChip { status: modelData.status; implicitWidth: 86; implicitHeight: 22 }
-                                            HudButton { text: "EDIT"; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
-                                            HudButton { text: "RESET"; visible: root.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
-                                            HudButton { text: "RUN"; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
-                                        }
-                                        TapHandler { acceptedButtons: Qt.RightButton; onTapped: scheduledMenu.popup() }
-                                        SessionContextMenu {
-                                            id: scheduledMenu
-                                            sessionData: modelData
+                                            TapHandler { acceptedButtons: Qt.RightButton; onTapped: scheduledMenu.popup() }
+                                            SessionContextMenu {
+                                                id: scheduledMenu
+                                                sessionData: scheduledRow.modelData
+                                                selectionItems: backend.sessions
+                                                selectedMap: scheduledPage.selectedIds
+                                                onSelectAllRequested: scheduledPage.selectedIds = root.idSetAll(backend.sessions, true)
+                                                onUnselectAllRequested: {
+                                                    scheduledPage.selectedIds = ({})
+                                                    scheduledPage.selectionAnchorId = ""
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                         Item {
+                            id: templatesPage
+                            property var selectedIds: ({})
+                            property string selectionAnchorId: ""
+                            readonly property int selectedCount: root.idSetCount(selectedIds)
+                            function selectClick(id, shift) {
+                                const result = root.clickSelect(selectedIds, backend.templates, id, shift, selectionAnchorId)
+                                selectedIds = result.map
+                                selectionAnchorId = result.anchor
+                            }
+                            Connections {
+                                target: backend
+                                function onTemplatesChanged() {
+                                    templatesPage.selectedIds = root.pruneIdSet(templatesPage.selectedIds, backend.templates)
+                                }
+                            }
                             EmptyHint { anchors.centerIn: parent; visible: backend.templates.length === 0; glyph: "❖"; text: "No templates yet. Save a session as a reusable template, or import Stellarium / Telescopius." }
-                            GridView {
+                            ColumnLayout {
                                 anchors.fill: parent
+                                spacing: 4
+                                visible: backend.templates.length > 0
+                                SelectionBar {
+                                    selectedCount: templatesPage.selectedCount
+                                    totalCount: backend.templates.length
+                                    noun: "template"
+                                    onSelectAllRequested: templatesPage.selectedIds = root.idSetAll(backend.templates, true)
+                                    onClearRequested: templatesPage.selectedIds = ({})
+                                    onDeleteRequested: root.confirmBulkDelete("deleteTemplates", templatesPage.selectedIds, "template")
+                                }
+                            GridView {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
                                 clip: true
                                 cellWidth: 340
                                 cellHeight: 170
@@ -4053,6 +4808,23 @@ ApplicationWindow {
                                     width: 324
                                     height: 156
                                     title: modelData.name
+                                    fill: root.idSetHas(templatesPage.selectedIds, modelData.id) ? "#C0123C52" : "#B3070D16"
+                                    overlay: [
+                                        HoverHandler { id: templateHover },
+                                        TapHandler {
+                                            acceptedButtons: Qt.LeftButton
+                                            acceptedModifiers: Qt.ShiftModifier
+                                            onTapped: templatesPage.selectClick(templateCard.modelData.id, true)
+                                        },
+                                        SelectBox {
+                                            anchors.right: parent.right
+                                            anchors.top: parent.top
+                                            anchors.margins: 8
+                                            checked: root.idSetHas(templatesPage.selectedIds, templateCard.modelData.id)
+                                            revealed: templateHover.hovered || templatesPage.selectedCount > 0
+                                            onToggled: (shiftHeld) => templatesPage.selectClick(templateCard.modelData.id, shiftHeld)
+                                        }
+                                    ]
                                     Text {
                                         visible: modelData.target_name !== modelData.name
                                         text: modelData.target_name
@@ -4086,6 +4858,22 @@ ApplicationWindow {
                                         }
                                         HudMenuSeparator {}
                                         HudMenuItem {
+                                            text: "Select all"
+                                            glyph: "\uE8A5"
+                                            enabled: backend.templates.length > 0
+                                            onTriggered: templatesPage.selectedIds = root.idSetAll(backend.templates, true)
+                                        }
+                                        HudMenuItem {
+                                            text: "Unselect all"
+                                            glyph: "\uE711"
+                                            enabled: templatesPage.selectedCount > 0
+                                            onTriggered: {
+                                                templatesPage.selectedIds = ({})
+                                                templatesPage.selectionAnchorId = ""
+                                            }
+                                        }
+                                        HudMenuSeparator {}
+                                        HudMenuItem {
                                             text: "Delete"
                                             glyph: "\uE74D"
                                             destructive: true
@@ -4093,6 +4881,7 @@ ApplicationWindow {
                                         }
                                     }
                                 }
+                            }
                             }
                         }
                     }
@@ -4105,6 +4894,16 @@ ApplicationWindow {
                 property string query: ""
                 property int outcomeFilter: 0
                 property int expandedIndex: -1
+                property var selectedIds: ({})
+                property string selectionAnchorId: ""
+                readonly property int selectedCount: root.idSetCount(selectedIds)
+                // Leading gutter shared by the expand chevron and the floating select box.
+                readonly property int gutterWidth: 24
+                function selectClick(id, shift) {
+                    const result = root.clickSelect(selectedIds, filteredHistory, id, shift, selectionAnchorId)
+                    selectedIds = result.map
+                    selectionAnchorId = result.anchor
+                }
                 readonly property var filteredHistory: {
                     const items = backend.history || []
                     const q = historyPage.query.trim().toLowerCase()
@@ -4125,9 +4924,12 @@ ApplicationWindow {
                     return out
                 }
                 readonly property int filteredCount: filteredHistory.length
-                readonly property int filteredFrames: filteredHistory.reduce((sum, item) => sum + (item.frame_count || 0), 0)
                 readonly property int filteredOk: filteredHistory.filter(item => item.ok).length
+                readonly property int filteredFailed: filteredCount - filteredOk
+                readonly property int filteredPlannedFrames: filteredHistory.reduce((sum, item) => sum + (item.planned_frames || item.frame_count || 0), 0)
+                readonly property int filteredCapturedFrames: filteredHistory.reduce((sum, item) => sum + (item.captured_frames || 0), 0)
                 readonly property int filteredSeconds: filteredHistory.reduce((sum, item) => sum + (item.actual_duration_seconds || 0), 0)
+                readonly property int filteredPlannedSeconds: filteredHistory.reduce((sum, item) => sum + (item.planned_duration_seconds || 0), 0)
                 function formatHours(seconds) {
                     const hours = Math.max(0, seconds) / 3600
                     return hours >= 10 ? hours.toFixed(0) + "h" : hours.toFixed(1) + "h"
@@ -4135,7 +4937,13 @@ ApplicationWindow {
                 function resetExpanded() { historyPage.expandedIndex = -1 }
                 onQueryChanged: resetExpanded()
                 onOutcomeFilterChanged: resetExpanded()
-                Connections { target: backend; function onHistoryChanged() { historyPage.resetExpanded() } }
+                Connections {
+                    target: backend
+                    function onHistoryChanged() {
+                        historyPage.resetExpanded()
+                        historyPage.selectedIds = root.pruneIdSet(historyPage.selectedIds, backend.history)
+                    }
+                }
 
                 Flickable {
                     id: historyFlick
@@ -4177,17 +4985,23 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Repeater {
                             model: [
-                                ["SESSIONS", String(historyPage.filteredCount), "◈", root.accent],
-                                ["FRAMES", String(historyPage.filteredFrames), "▦", root.accent],
-                                ["SUCCESS", historyPage.filteredCount ? Math.round(100 * historyPage.filteredOk / historyPage.filteredCount) + "%" : "—", "✓",
-                                    historyPage.filteredCount === 0 ? root.textSecondary : (historyPage.filteredOk === historyPage.filteredCount ? root.success : (historyPage.filteredOk * 2 >= historyPage.filteredCount ? root.warning : root.danger))],
-                                ["IMAGED", historyPage.formatHours(historyPage.filteredSeconds), "◷", root.notice]
+                                [historyPage.filteredOk + " · " + historyPage.filteredFailed, "PASSED · FAILED", "◈",
+                                    historyPage.filteredCount === 0 ? root.textSecondary : (historyPage.filteredFailed === 0 ? root.success : (historyPage.filteredOk > 0 ? root.warning : root.danger)),
+                                    historyPage.filteredCount + " session" + (historyPage.filteredCount === 1 ? "" : "s")],
+                                [String(historyPage.filteredCapturedFrames) + " / " + String(historyPage.filteredPlannedFrames), "CAPTURED / PLANNED", "▦",
+                                    historyPage.filteredCapturedFrames > 0 ? root.accent : root.textSecondary,
+                                    "frames"],
+                                [historyPage.filteredCount ? Math.round(100 * historyPage.filteredOk / historyPage.filteredCount) + "%" : "—", "SUCCESS", "✓",
+                                    historyPage.filteredCount === 0 ? root.textSecondary : (historyPage.filteredOk === historyPage.filteredCount ? root.success : (historyPage.filteredOk * 2 >= historyPage.filteredCount ? root.warning : root.danger)),
+                                    historyPage.filteredOk + " passed"],
+                                [historyPage.formatHours(historyPage.filteredSeconds) + " / " + historyPage.formatHours(historyPage.filteredPlannedSeconds), "ACTUAL / PLANNED", "◷", root.notice,
+                                    "imaging time"]
                             ]
                             delegate: HudPanel {
                                 id: statTile
                                 required property var modelData
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: 90
+                                Layout.preferredHeight: 108
                                 overlay: [
                                     Text {
                                         anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12
@@ -4197,8 +5011,9 @@ ApplicationWindow {
                                         font.pixelSize: 20
                                     }
                                 ]
-                                Text { text: modelData[1]; color: modelData[3]; font.pixelSize: 28; font.bold: true; font.family: "Cascadia Mono" }
-                                Text { text: modelData[0]; color: root.textSecondary; font.pixelSize: 11; font.letterSpacing: 1.4 }
+                                Text { text: modelData[0]; color: modelData[3]; font.pixelSize: 22; font.bold: true; font.family: "Cascadia Mono"; wrapMode: Text.NoWrap; elide: Text.ElideRight; Layout.fillWidth: true }
+                                Text { text: modelData[1]; color: root.textSecondary; font.pixelSize: 11; font.letterSpacing: 1.4 }
+                                Text { visible: !!(modelData[4]); text: modelData[4] || ""; color: root.muted; font.pixelSize: 10 }
                             }
                         }
                     }
@@ -4214,6 +5029,23 @@ ApplicationWindow {
                             model: ["All outcomes", "Completed", "Failed"]
                             currentIndex: historyPage.outcomeFilter
                             onActivated: historyPage.outcomeFilter = currentIndex
+                        }
+                    }
+                    SelectionBar {
+                        selectedCount: historyPage.filteredHistory.filter(item => root.idSetHas(historyPage.selectedIds, item.id)).length
+                        totalCount: historyPage.filteredCount
+                        noun: "run"
+                        onSelectAllRequested: historyPage.selectedIds = root.idSetAll(historyPage.filteredHistory, true)
+                        onClearRequested: historyPage.selectedIds = ({})
+                        onDeleteRequested: {
+                            const chosen = {}
+                            const items = historyPage.filteredHistory
+                            for (let i = 0; i < items.length; i++) {
+                                const id = items[i] && items[i].id
+                                if (id && root.idSetHas(historyPage.selectedIds, id))
+                                    chosen[id] = true
+                            }
+                            root.confirmBulkDelete("deleteHistory", chosen, "run")
                         }
                     }
                     HudPanel {
@@ -4241,16 +5073,16 @@ ApplicationWindow {
                                 Layout.preferredHeight: 32
                                 Row {
                                     anchors.fill: parent
-                                    Text { width: 22; height: parent.height; text: ""; color: root.accent }
+                                    Item { width: historyPage.gutterWidth; height: parent.height }
                                     Repeater {
                                         model: [
-                                            {label: "DATE", w: 0.12}, {label: "TARGET", w: 0.24}, {label: "DEVICE", w: 0.13},
-                                            {label: "FRAMES", w: 0.08}, {label: "PLANNED", w: 0.10}, {label: "ACTUAL", w: 0.10},
+                                            {label: "DATE", w: 0.12}, {label: "TARGET", w: 0.22}, {label: "DEVICE", w: 0.12},
+                                            {label: "FRAMES", w: 0.11}, {label: "PLANNED", w: 0.10}, {label: "ACTUAL", w: 0.10},
                                             {label: "OUTCOME", w: 0.23}
                                         ]
                                         Text {
                                             required property var modelData
-                                            width: (parent.width - 22) * modelData.w
+                                            width: (parent.width - historyPage.gutterWidth) * modelData.w
                                             height: parent.height
                                             text: modelData.label
                                             color: root.accent
@@ -4285,7 +5117,7 @@ ApplicationWindow {
                                     readonly property color outcomeTone: modelData.ok ? root.success : root.danger
                                     readonly property real deltaSeconds: Number(modelData.delta_seconds || 0)
                                     readonly property color deltaTone: Math.abs(deltaSeconds) < 60 ? root.textSecondary : (deltaSeconds > 0 ? root.warning : root.notice)
-                                    color: expanded ? "#22123C52" : (rowHover.hovered ? "#180E1C2C" : (index % 2 ? "#140A1520" : "transparent"))
+                                    color: expanded || root.idSetHas(historyPage.selectedIds, modelData.id) ? "#22123C52" : (rowHover.hovered ? "#180E1C2C" : (index % 2 ? "#140A1520" : "transparent"))
                                     border.color: expanded ? root.outline : "transparent"
                                     Behavior on color { ColorAnimation { duration: 100 } }
                                     HoverHandler { id: rowHover }
@@ -4298,28 +5130,50 @@ ApplicationWindow {
                                             height: 42
                                             Row {
                                                 anchors.fill: parent
-                                                Text {
-                                                    width: 22
+                                                Item {
+                                                    width: historyPage.gutterWidth
                                                     height: parent.height
-                                                    text: historyRow.expanded ? "▾" : "▸"
-                                                    color: root.accent
-                                                    font.pixelSize: 10
-                                                    horizontalAlignment: Text.AlignHCenter
-                                                    verticalAlignment: Text.AlignVCenter
+                                                    z: 2
+                                                    Text {
+                                                        anchors.fill: parent
+                                                        anchors.leftMargin: 2
+                                                        text: historyRow.expanded ? "▾" : "▸"
+                                                        color: root.accent
+                                                        font.pixelSize: 10
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                        verticalAlignment: Text.AlignVCenter
+                                                        opacity: historySelect.shown ? 0 : 1
+                                                        Behavior on opacity { NumberAnimation { duration: 90 } }
+                                                    }
+                                                    SelectBox {
+                                                        id: historySelect
+                                                        anchors.centerIn: parent
+                                                        anchors.horizontalCenterOffset: 1
+                                                        checked: root.idSetHas(historyPage.selectedIds, historyRow.modelData.id)
+                                                        revealed: rowHover.hovered || historyPage.selectedCount > 0
+                                                        onToggled: (shiftHeld) => historyPage.selectClick(historyRow.modelData.id, shiftHeld)
+                                                    }
+                                                    MouseArea {
+                                                        anchors.fill: parent
+                                                        acceptedButtons: Qt.LeftButton
+                                                        preventStealing: true
+                                                        cursorShape: Qt.PointingHandCursor
+                                                        onClicked: mouse => historyPage.selectClick(historyRow.modelData.id, !!(mouse.modifiers & Qt.ShiftModifier))
+                                                    }
                                                 }
                                                 Repeater {
                                                     model: [
                                                         {text: historyRow.modelData.date, w: 0.12, color: root.textPrimary, mono: true},
-                                                        {text: historyRow.modelData.target_name, w: 0.24, color: root.textPrimary, bold: true},
-                                                        {text: historyRow.modelData.device_name, w: 0.13, color: root.textPrimary, dot: historyRow.modelData.device_color || root.accent},
-                                                        {text: String(historyRow.modelData.frame_count || 0), w: 0.08, color: root.textSecondary, mono: true},
+                                                        {text: historyRow.modelData.target_name, w: 0.22, color: root.textPrimary, bold: true},
+                                                        {text: historyRow.modelData.device_name, w: 0.12, color: root.textPrimary, dot: historyRow.modelData.device_color || root.accent},
+                                                        {text: historyRow.modelData.frame_text || String(historyRow.modelData.frame_count || 0), w: 0.11, color: root.textSecondary, mono: true},
                                                         {text: historyRow.modelData.planned_text, w: 0.10, color: root.textSecondary, mono: true},
                                                         {text: historyRow.modelData.actual_text, w: 0.10, color: historyRow.deltaTone, mono: true},
                                                         {text: (historyRow.modelData.ok ? "✓ " : "✗ ") + historyRow.modelData.outcome, w: 0.23, color: historyRow.outcomeTone}
                                                     ]
                                                     Item {
                                                         required property var modelData
-                                                        width: (parent.width - 22) * modelData.w
+                                                        width: (parent.width - historyPage.gutterWidth) * modelData.w
                                                         height: parent.height
                                                         Rectangle {
                                                             visible: !!parent.modelData.dot
@@ -4345,9 +5199,16 @@ ApplicationWindow {
                                             }
                                             MouseArea {
                                                 anchors.fill: parent
+                                                anchors.leftMargin: historyPage.gutterWidth
                                                 acceptedButtons: Qt.LeftButton
                                                 cursorShape: Qt.PointingHandCursor
-                                                onClicked: historyPage.expandedIndex = historyRow.expanded ? -1 : historyRow.index
+                                                onClicked: mouse => {
+                                                    if (mouse.modifiers & Qt.ShiftModifier) {
+                                                        historyPage.selectClick(historyRow.modelData.id, true)
+                                                        return
+                                                    }
+                                                    historyPage.expandedIndex = historyRow.expanded ? -1 : historyRow.index
+                                                }
                                             }
                                             TapHandler {
                                                 acceptedButtons: Qt.RightButton
@@ -4376,6 +5237,22 @@ ApplicationWindow {
                                                 }
                                                 HudMenuSeparator {}
                                                 HudMenuItem {
+                                                    text: "Select all"
+                                                    glyph: "\uE8A5"
+                                                    enabled: historyPage.filteredCount > 0
+                                                    onTriggered: historyPage.selectedIds = root.idSetAll(historyPage.filteredHistory, true)
+                                                }
+                                                HudMenuItem {
+                                                    text: "Unselect all"
+                                                    glyph: "\uE711"
+                                                    enabled: historyPage.selectedCount > 0
+                                                    onTriggered: {
+                                                        historyPage.selectedIds = ({})
+                                                        historyPage.selectionAnchorId = ""
+                                                    }
+                                                }
+                                                HudMenuSeparator {}
+                                                HudMenuItem {
                                                     text: "Remove"
                                                     glyph: "\uE74D"
                                                     destructive: true
@@ -4389,8 +5266,8 @@ ApplicationWindow {
                                             height: visible ? detailCol.implicitHeight + 16 : 0
                                             ColumnLayout {
                                                 id: detailCol
-                                                width: parent.width - 30
-                                                x: 22
+                                                x: historyPage.gutterWidth + 6
+                                                width: parent.width - x - 8
                                                 y: 4
                                                 spacing: 6
                                                 Text {
@@ -4417,6 +5294,14 @@ ApplicationWindow {
                                                         font.pixelSize: 12
                                                         font.family: "Cascadia Mono"
                                                     }
+                                                    Text { text: "FRAMES"; color: root.textSecondary; font.pixelSize: 9; font.bold: true }
+                                                    Text { text: "CAPTURED"; color: root.textSecondary; font.pixelSize: 9; font.bold: true }
+                                                    Text { text: "PLANNED TIME"; color: root.textSecondary; font.pixelSize: 9; font.bold: true }
+                                                    Text { text: "ACTUAL TIME"; color: root.textSecondary; font.pixelSize: 9; font.bold: true }
+                                                    Text { text: String(historyRow.modelData.planned_frames || historyRow.modelData.frame_count || 0) + " planned"; color: root.textPrimary; font.pixelSize: 12 }
+                                                    Text { text: String(historyRow.modelData.captured_frames || 0) + " captured"; color: historyRow.modelData.ok ? root.success : root.textPrimary; font.pixelSize: 12 }
+                                                    Text { text: historyRow.modelData.planned_text; color: root.textPrimary; font.pixelSize: 12; font.family: "Cascadia Mono" }
+                                                    Text { text: historyRow.modelData.actual_text; color: historyRow.deltaTone; font.pixelSize: 12; font.family: "Cascadia Mono" }
                                                 }
                                                 Text {
                                                     Layout.fillWidth: true
@@ -4811,7 +5696,7 @@ ApplicationWindow {
         visible: root.sessionDragActive
         enabled: false
         z: 4000
-        width: 196
+        width: 220
         height: 30
         radius: 2
         property string sessionId: ""
@@ -4852,14 +5737,26 @@ ApplicationWindow {
             root.endSessionDrag()
             sessionId = ""
         }
-        Text {
+        Row {
             anchors.fill: parent
             anchors.margins: 5
-            text: root.dragLabel(root.sessionDragData)
-            color: root.textPrimary
-            font.pixelSize: 10
-            font.bold: true
-            elide: Text.ElideRight
+            spacing: 6
+            Text {
+                text: root.sessionDragPreviewTime || (root.sessionDragData.start_time || "")
+                color: root.accent
+                font.pixelSize: 10
+                font.bold: true
+                font.family: "Cascadia Mono"
+                width: 40
+            }
+            Text {
+                width: Math.max(20, sessionDragProxy.width - 56)
+                text: (root.sessionDragData.target_name || root.sessionDragData.name || "Session")
+                color: root.textPrimary
+                font.pixelSize: 10
+                font.bold: true
+                elide: Text.ElideRight
+            }
         }
     }
 
@@ -5218,10 +6115,11 @@ ApplicationWindow {
         property string kind: "device"
         property string headingText: "CONFIRM COMMAND"
         property string confirmLabel: "CONFIRM"
+        property var pendingIds: []
         modal: true
         anchors.centerIn: Overlay.overlay
         width: 420
-        height: 176
+        height: 196
         padding: 16
         background: Rectangle { color: "#0B1520"; border.color: root.danger }
         contentItem: ColumnLayout {
@@ -5239,6 +6137,12 @@ ApplicationWindow {
                     onClicked: {
                         if (confirmDialog.kind === "clearHistory")
                             backend.clearHistory()
+                        else if (confirmDialog.kind === "deleteSessions")
+                            backend.deleteSessions(confirmDialog.pendingIds)
+                        else if (confirmDialog.kind === "deleteTemplates")
+                            backend.deleteTemplates(confirmDialog.pendingIds)
+                        else if (confirmDialog.kind === "deleteHistory")
+                            backend.deleteHistoryRecords(confirmDialog.pendingIds)
                         else
                             backend.deviceAction(backend.selectedDeviceId, confirmDialog.operation)
                         confirmDialog.close()
@@ -5268,7 +6172,83 @@ ApplicationWindow {
         height: Math.min(root.height - 80, 720)
         property string editingId: ""
         property bool editingTemplate: false
+        property var templateMembers: []
+        property int paneIndex: 0
+        property bool syncingPane: false
+        readonly property int paneCount: templateMembers.length
+        readonly property bool multiPaneTemplate: editingTemplate && paneCount > 1
         padding: 0
+
+        function cloneValue(value) {
+            return JSON.parse(JSON.stringify(value || {}))
+        }
+        function paneLabel(item, index) {
+            const name = (item && (item.pane_name || item.name)) || ("Pane " + (index + 1))
+            return "Pane " + (index + 1) + " · " + name
+        }
+        function paneChoices() {
+            const items = templateMembers
+            const labels = []
+            for (let i = 0; i < items.length; i++)
+                labels.push(sessionDialog.paneLabel(items[i], i))
+            return labels
+        }
+        function loadPaneCoordinates(data) {
+            sessionName.text = data.pane_name || data.name || ""
+            const target = data.target || {}
+            targetName.text = target.name || data.target_name || ""
+            const kind = target.kind || "equatorial"
+            targetType.currentIndex = Math.max(0, ["equatorial", "solar", "none"].indexOf(kind))
+            ra.text = target.ra_hours != null && target.ra_hours !== "" ? target.ra_hours : ""
+            dec.text = target.dec_degrees != null && target.dec_degrees !== "" ? target.dec_degrees : ""
+        }
+        function stashCurrentPane() {
+            if (!editingTemplate || paneCount === 0)
+                return
+            const members = templateMembers.slice()
+            const current = sessionDialog.cloneValue(members[paneIndex] || {})
+            current.id = editingId || current.id
+            current.pane_name = sessionName.text
+            current.name = sessionName.text
+            current.target = {
+                name: targetName.text,
+                kind: targetType.currentText,
+                ra_hours: ra.text,
+                dec_degrees: dec.text
+            }
+            members[paneIndex] = current
+            templateMembers = members
+        }
+        function showPane(index) {
+            if (syncingPane || !editingTemplate || index < 0 || index >= paneCount || index === paneIndex)
+                return
+            syncingPane = true
+            stashCurrentPane()
+            paneIndex = index
+            editingId = templateMembers[index].id || editingId
+            loadPaneCoordinates(templateMembers[index])
+            panePicker.currentIndex = index
+            syncingPane = false
+        }
+        function memberPayloads() {
+            stashCurrentPane()
+            const shared = sessionDialog.formPayload()
+            const items = templateMembers
+            const result = []
+            for (let i = 0; i < items.length; i++) {
+                const pane = items[i] || {}
+                const target = pane.target || {}
+                result.push(Object.assign({}, shared, {
+                    id: pane.id || "",
+                    name: pane.pane_name || pane.name || shared.name,
+                    target: target.name || shared.target,
+                    target_kind: target.kind || shared.target_kind,
+                    ra: target.ra_hours != null ? String(target.ra_hours) : "",
+                    dec: target.dec_degrees != null ? String(target.dec_degrees) : ""
+                }))
+            }
+            return result
+        }
 
         function fillForm(data) {
             sessionName.text = data.pane_name || data.name || ""
@@ -5316,6 +6296,8 @@ ApplicationWindow {
         function openForDate(day) {
             editingId = ""
             editingTemplate = false
+            templateMembers = []
+            paneIndex = 0
             sessionName.text = ""
             targetName.text = ""
             targetType.currentIndex = 0
@@ -5347,15 +6329,28 @@ ApplicationWindow {
         function openExisting(data) {
             editingId = data.id
             editingTemplate = false
+            templateMembers = []
+            paneIndex = 0
             fillForm(data)
             startTime.text = String(data.scheduled_start).substring(0, 16)
             open()
         }
         function openTemplate(data) {
-            editingId = data.id
+            const members = data.members && data.members.length ? data.members : [data]
+            const cloned = []
+            for (let i = 0; i < members.length; i++)
+                cloned.push(sessionDialog.cloneValue(members[i]))
             editingTemplate = true
+            templateMembers = cloned
+            paneIndex = 0
+            editingId = cloned[0].id || data.id
             fillForm(data)
+            loadPaneCoordinates(cloned[0])
             startTime.text = ""
+            syncingPane = true
+            panePicker.model = sessionDialog.paneChoices()
+            panePicker.currentIndex = 0
+            syncingPane = false
             open()
         }
 
@@ -5368,6 +6363,37 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Text { text: sessionDialog.editingTemplate ? "EDIT TEMPLATE" : (sessionDialog.editingId ? "EDIT SESSION" : "NEW SESSION"); color: root.accent; font.pixelSize: 20; font.letterSpacing: 2; Layout.fillWidth: true }
                 HudButton { text: "×"; implicitWidth: 40; onClicked: sessionDialog.close() }
+            }
+            RowLayout {
+                visible: sessionDialog.multiPaneTemplate
+                Layout.fillWidth: true
+                spacing: 8
+                HudButton {
+                    text: "‹ PREV"
+                    busyMs: 0
+                    enabled: sessionDialog.paneIndex > 0
+                    onClicked: sessionDialog.showPane(sessionDialog.paneIndex - 1)
+                }
+                HudCombo {
+                    id: panePicker
+                    Layout.fillWidth: true
+                    model: []
+                    onActivated: sessionDialog.showPane(currentIndex)
+                }
+                HudButton {
+                    text: "NEXT ›"
+                    busyMs: 0
+                    enabled: sessionDialog.paneIndex < sessionDialog.paneCount - 1
+                    onClicked: sessionDialog.showPane(sessionDialog.paneIndex + 1)
+                }
+            }
+            Text {
+                visible: sessionDialog.multiPaneTemplate
+                text: "Each pane has its own name and coordinates. Camera, mosaic, wait, and workflow apply to every pane."
+                color: root.textSecondary
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
             }
             GridLayout {
                 Layout.fillWidth: true
@@ -5431,11 +6457,14 @@ ApplicationWindow {
                     buttonColor: "#0E3A48"
                     foregroundColor: root.accent
                     onClicked: {
-                        const payload = JSON.stringify(sessionDialog.formPayload())
-                        if (sessionDialog.editingTemplate)
-                            backend.saveTemplate(payload)
-                        else
-                            backend.saveSession(payload)
+                        if (sessionDialog.editingTemplate) {
+                            const payload = sessionDialog.formPayload()
+                            if (sessionDialog.paneCount > 1)
+                                payload.members = sessionDialog.memberPayloads()
+                            backend.saveTemplate(JSON.stringify(payload))
+                        } else {
+                            backend.saveSession(JSON.stringify(sessionDialog.formPayload()))
+                        }
                         sessionDialog.close()
                     }
                 }

@@ -53,7 +53,10 @@ from .services import (
     mosaic_group_title,
     observing_date,
     pane_sort_key,
+    parse_in_zone,
     stagger_mosaic_sessions,
+    store_local_iso,
+    zoneinfo_from_name,
 )
 from .location import match_timezone, resolve_location, timezone_locations
 from .runtime import prepare_worker_environment, worker_command
@@ -484,12 +487,14 @@ class AppBackend(QObject):
         self._active_sessions: dict[str, str] = {}
         self._stop_requested: set[str] = set()
         self._scheduler_enabled = False
-        self._clock_text = datetime.now().strftime("%H:%M:%S")
+        self._clock_text = datetime.now(self._zone_for()).strftime("%H:%M:%S")
         self._connecting_ids: set[str] = set()
         self._disconnecting_ids: set[str] = set()
         self._pending_actions: dict[str, str] = {}
         self._device_activity: dict[str, str] = {}
         self._device_telemetry: dict[str, dict[str, Any]] = {}
+        self._session_capture_base: dict[str, int] = {}
+        self._session_capture_peak: dict[str, int] = {}
         self._telemetry_updated: dict[str, float] = {}
         self._alerts = AlertEngine()
         self._last_toast: tuple[str, str, float] = ("", "", 0.0)
@@ -580,6 +585,7 @@ class AppBackend(QObject):
             worker = self._workers.get(device_id)
             if worker:
                 worker.connected = False
+        self._track_session_capture(device_id, current)
         self._notify_devices()
 
     def _toast(self, message: str, level: str = "info", detail: str = "") -> None:
@@ -737,14 +743,16 @@ class AppBackend(QObject):
     def _session_dict(self, session: Session) -> dict[str, Any]:
         device = next((item for item in self._devices if item.id == session.device_id), None)
         data = to_dict(session)
-        start = datetime.fromisoformat(session.scheduled_start)
+        start = parse_in_zone(session.scheduled_start, self._zone_for(device))
         finish = start + timedelta(seconds=max(0, session.planned_duration_seconds))
         data["device_name"] = device.name if device else "Unknown"
         data["device_color"] = device.color if device else "#4DE8FF"
         data["target_name"] = session.target.name
-        data["start_date"] = session.scheduled_start[:10]
-        data["start_time"] = session.scheduled_start[11:16]
-        data["end_time"] = finish.isoformat(timespec="minutes")
+        data["scheduled_start"] = store_local_iso(start, start.tzinfo or self._zone_for(device))
+        data["start_date"] = start.date().isoformat()
+        data["start_time"] = start.strftime("%H:%M")
+        data["end_time"] = store_local_iso(finish, start.tzinfo or self._zone_for(device))
+        data["start_epoch_ms"] = int(start.timestamp() * 1000)
         data["duration_text"] = self._duration_text(session.planned_duration_seconds)
         data["summary"] = f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s"
         data["display_title"] = mosaic_group_title(session.target.name, session.mosaic.group_id or "")
@@ -752,6 +760,7 @@ class AppBackend(QObject):
         data["observing_date"] = observing_date(
             session.scheduled_start,
             device.observing_day_cutoff_hour if device else 12,
+            self._zone_for(device),
         )
         data["pane_index"] = pane_sort_key(session.name)[0]
         return data
@@ -773,6 +782,7 @@ class AppBackend(QObject):
         group_id = first.mosaic.group_id or ""
         grouped = len(members) > 1
         title = mosaic_group_title(first.name, group_id) if grouped else first.name
+        ordered = sorted(members, key=lambda item: pane_sort_key(item.name))
         data["id"] = first.id
         data["group_id"] = group_id
         data["is_group"] = grouped
@@ -780,11 +790,17 @@ class AppBackend(QObject):
         data["pane_name"] = first.name
         data["name"] = title
         data["target_name"] = mosaic_group_title(first.target.name, group_id) if grouped else first.target.name
-        data["member_ids"] = [item.id for item in sorted(members, key=lambda item: pane_sort_key(item.name))]
+        data["member_ids"] = [item.id for item in ordered]
+        data["members"] = [self._template_member_dict(item) for item in ordered]
         if grouped:
             data["summary"] = f"{len(members)} panes · {first.camera.frame_count} × {first.camera.exposure_seconds:g}s"
         else:
             data["summary"] = f"{first.camera.frame_count} × {first.camera.exposure_seconds:g}s · {first.mosaic.rows}×{first.mosaic.columns}"
+        return data
+
+    def _template_member_dict(self, template: SessionTemplate) -> dict[str, Any]:
+        data = to_dict(template)
+        data["pane_name"] = template.name
         return data
 
     @Property("QVariantList", notify=templatesChanged)
@@ -816,6 +832,13 @@ class AppBackend(QObject):
             data["planned_text"] = self._duration_text(record.planned_duration_seconds)
             data["actual_text"] = self._duration_text(record.actual_duration_seconds)
             data["ok"] = str(record.outcome).strip().lower() == "completed"
+            planned_frames = int(record.frame_count or 0)
+            captured = record.captured_frame_count
+            if captured is None:
+                captured = planned_frames if data["ok"] else 0
+            data["planned_frames"] = planned_frames
+            data["captured_frames"] = int(captured)
+            data["frame_text"] = f"{int(captured)}/{planned_frames}"
             data["scheduled_text"] = self._stamp_text(record.scheduled_start)
             data["started_text"] = self._stamp_text(record.actual_started_at)
             data["ended_text"] = self._stamp_text(record.actual_ended_at)
@@ -898,6 +921,28 @@ class AppBackend(QObject):
     def clockText(self) -> str:
         return self._clock_text
 
+    @Property("QVariantMap", notify=clockChanged)
+    def localNow(self) -> dict[str, Any]:
+        device = self._device_by_id(self._selected_device_id)
+        tz = self._zone_for(device)
+        now = datetime.now(tz)
+        cutoff = device.observing_day_cutoff_hour if device else 12
+        observing = now - timedelta(days=1) if now.hour < cutoff else now
+        return {
+            "timezone": device.timezone_name if device else "UTC",
+            "date": now.date().isoformat(),
+            "time": now.strftime("%H:%M:%S"),
+            "hour": now.hour,
+            "minute": now.minute,
+            "year": now.year,
+            "month": now.month,
+            "day": now.day,
+            "observing_date": observing.date().isoformat(),
+            "observing_year": observing.year,
+            "observing_month": observing.month,
+            "observing_day": observing.day,
+        }
+
     @Property(float, notify=sessionProgressChanged)
     def sessionProgress(self) -> float:
         session = self.currentSession
@@ -906,11 +951,11 @@ class AppBackend(QObject):
         if not session or not started or planned <= 0:
             return 0.0
         started_at = datetime.fromisoformat(started)
-        now = datetime.now(started_at.tzinfo) if started_at.tzinfo else datetime.now()
+        now = datetime.now(started_at.tzinfo) if started_at.tzinfo else self._now_local()
         return min(1.0, max(0.0, (now - started_at).total_seconds() / planned))
 
     def _tick(self) -> None:
-        clock = datetime.now().strftime("%H:%M:%S")
+        clock = self._now_local().strftime("%H:%M:%S")
         if clock != self._clock_text:
             self._clock_text = clock
             self.clockChanged.emit()
@@ -1093,6 +1138,7 @@ class AppBackend(QObject):
             self._selected_device_id = device_id
             self.selectedDeviceChanged.emit()
             self.sessionsChanged.emit()
+            self.clockChanged.emit()
 
     @Property(str, notify=uiBusyChanged)
     def uiBusy(self) -> str:
@@ -1253,6 +1299,49 @@ class AppBackend(QObject):
         if worker and worker.connected:
             worker.send("stop_motors")
 
+    @Slot(str, float, float)
+    def centerOnTap(self, device_id: str, nx: float, ny: float) -> None:
+        """Dual Lenses Locating: point the tele camera at the tapped wide-view spot.
+
+        ``nx``/``ny`` are 0-1 positions inside the painted video frame. The
+        firmware interprets the command in the *wide* camera's pixel frame and
+        slews so that point lands on the tele camera's footprint (the official
+        app's green frame). Verified on a Dwarf 3: a tap 25% off centre moves
+        the wide view by ~25% of its frame. The reference is the tele footprint
+        rather than the frame centre, so a click on the *tele* preview cannot
+        be expressed precisely with this command; like the official app, the
+        gesture is only offered on the wide view.
+        """
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            return
+        if device_id != self._selected_device_id or not self._preview_playing:
+            return
+        device = self._device_by_id(device_id)
+        if device.camera != Camera.WIDE:
+            self._toast(
+                "Double-click centering works on the wide camera",
+                "warning",
+                "Switch CAMERA to Wide, double-click the target, then switch back to Tele",
+            )
+            return
+        telemetry = self._device_telemetry.get(device_id) or {}
+        width = int(telemetry.get("wide_width") or 0)
+        height = int(telemetry.get("wide_height") or 0)
+        if width <= 0 or height <= 0:
+            width, height = self.live_images.frame_size()
+        if width <= 0 or height <= 0:
+            width, height = 1920, 1080
+        x = int(round(max(0.0, min(1.0, float(nx))) * (width - 1)))
+        y = int(round(max(0.0, min(1.0, float(ny))) * (height - 1)))
+        self.add_log("info", f"Centering tele on wide-view tap ({x}, {y})", device_id)
+
+        def done(ok: bool, result: Any) -> None:
+            if not ok:
+                self.add_log("error", f"Center on tap failed: {result}", device_id)
+
+        worker.send("center_tap", {"args": [x, y]}, done)
+
     @Slot(str, int)
     def manualFocus(self, device_id: str, direction: int) -> None:
         worker = self._workers.get(device_id)
@@ -1313,19 +1402,46 @@ class AppBackend(QObject):
         self.sessionsChanged.emit()
         self._toast("Device removed", "success")
 
+    def _normalize_ids(self, ids: Any) -> list[str]:
+        if ids is None:
+            return []
+        if isinstance(ids, str):
+            return [ids] if ids else []
+        values: list[str] = []
+        seen: set[str] = set()
+        for item in ids:
+            value = str(item or "").strip()
+            if value and value not in seen:
+                seen.add(value)
+                values.append(value)
+        return values
+
     @Slot(str)
     def deleteTemplate(self, template_id: str) -> None:
-        template = self.store.templates.get(template_id)
-        if not template:
+        self.deleteTemplates([template_id])
+
+    @Slot(list)
+    @Slot("QVariantList")
+    def deleteTemplates(self, template_ids: list) -> None:
+        to_delete: set[str] = set()
+        for template_id in self._normalize_ids(template_ids):
+            template = self.store.templates.get(template_id)
+            if not template:
+                continue
+            group_id = template.mosaic.group_id
+            if group_id:
+                for item in self.store.templates.all():
+                    if item.mosaic.group_id == group_id:
+                        to_delete.add(item.id)
+            else:
+                to_delete.add(template_id)
+        if not to_delete:
             return
-        group_id = template.mosaic.group_id
-        if group_id:
-            for item in self.store.templates.all():
-                if item.mosaic.group_id == group_id:
-                    self.store.templates.delete(item.id)
-        else:
-            self.store.templates.delete(template_id)
+        for item_id in to_delete:
+            self.store.templates.delete(item_id)
         self.templatesChanged.emit()
+        count = len(to_delete)
+        self._toast(f"Deleted {count} template{'s' if count != 1 else ''}", "success")
 
     @Slot(str)
     def skipSession(self, session_id: str) -> None:
@@ -1455,6 +1571,7 @@ class AppBackend(QObject):
                 self._save_session(replace(session, planned_duration_seconds=DurationEngine.calculate(session, updated.hardware)))
             self.devicesChanged.emit()
             self.selectedDeviceChanged.emit()
+            self.clockChanged.emit()
             self._toast("Device saved", "success")
         except Exception as exc:
             self._toast(f"Could not save device: {exc}", "error")
@@ -1485,6 +1602,7 @@ class AppBackend(QObject):
             self._create_worker(updated)
             self.devicesChanged.emit()
             self.selectedDeviceChanged.emit()
+            self.clockChanged.emit()
             self._toast("Observing location saved", "success")
         except Exception as exc:
             self._toast(f"Could not save location: {exc}", "error")
@@ -1557,12 +1675,13 @@ class AppBackend(QObject):
                 values, existing.mosaic if existing else None
             )
             resetting = existing is not None and existing.status != SessionStatus.PLANNED
+            device = self._device_by_id(values["device_id"])
             session = Session(
                 id=existing.id if existing else uuid4().hex,
                 name=values.get("name") or values["target"],
                 target=target,
                 device_id=values["device_id"],
-                scheduled_start=datetime.fromisoformat(values["scheduled_start"]).isoformat(timespec="minutes"),
+                scheduled_start=self._store_session_time(values["scheduled_start"], device),
                 camera=camera,
                 workflow=workflow,
                 mosaic=mosaic,
@@ -1589,40 +1708,52 @@ class AppBackend(QObject):
         except Exception as exc:
             self._toast(f"Could not save session: {exc}", "error")
 
+    def _save_one_template(self, values: dict[str, Any]) -> SessionTemplate:
+        existing = self.store.templates.get(values.get("id", "")) if values.get("id") else None
+        target, camera, workflow, mosaic = self._fields_from_payload(
+            values, existing.mosaic if existing else None
+        )
+        name = values.get("name") or values["target"]
+        notes = values.get("notes", existing.notes if existing else "")
+        if existing:
+            template = replace(
+                existing,
+                name=name,
+                target=target,
+                camera=camera,
+                workflow=workflow,
+                mosaic=mosaic,
+                notes=notes,
+            )
+        else:
+            template = SessionTemplate(
+                name=name,
+                target=target,
+                camera=camera,
+                workflow=workflow,
+                mosaic=mosaic,
+                notes=notes,
+            )
+        self.store.templates.save(template)
+        return template
+
     @Slot(str)
     def saveTemplate(self, payload: str) -> None:
         try:
             values = json.loads(payload)
-            existing = self.store.templates.get(values.get("id", "")) if values.get("id") else None
-            target, camera, workflow, mosaic = self._fields_from_payload(
-                values, existing.mosaic if existing else None
-            )
-            name = values.get("name") or values["target"]
-            notes = values.get("notes", existing.notes if existing else "")
-            if existing:
-                self.store.templates.save(replace(
-                    existing,
-                    name=name,
-                    target=target,
-                    camera=camera,
-                    workflow=workflow,
-                    mosaic=mosaic,
-                    notes=notes,
-                ))
-                group_id = existing.mosaic.group_id
+            panes = values.get("members")
+            if isinstance(panes, list) and panes:
+                shared = {key: value for key, value in values.items() if key != "members"}
+                for pane in panes:
+                    merged = {**shared, **pane}
+                    self._save_one_template(merged)
+            else:
+                saved = self._save_one_template(values)
+                group_id = saved.mosaic.group_id
                 if group_id:
                     for item in self.store.templates.all():
-                        if item.id != existing.id and item.mosaic.group_id == group_id:
-                            self.store.templates.save(replace(item, camera=camera, workflow=workflow))
-            else:
-                self.store.templates.save(SessionTemplate(
-                    name=name,
-                    target=target,
-                    camera=camera,
-                    workflow=workflow,
-                    mosaic=mosaic,
-                    notes=notes,
-                ))
+                        if item.id != saved.id and item.mosaic.group_id == group_id:
+                            self.store.templates.save(replace(item, camera=saved.camera, workflow=saved.workflow))
             self.templatesChanged.emit()
             self._toast("Template saved", "success")
         except Exception as exc:
@@ -1636,12 +1767,33 @@ class AppBackend(QObject):
 
     @Slot(str)
     def deleteSession(self, session_id: str) -> None:
-        session = self.store.sessions.get(session_id)
-        if session and session.status == SessionStatus.RUNNING:
-            self._toast("Stop the running session before deleting it", "warning")
-            return
-        self.store.sessions.delete(session_id)
-        self.sessionsChanged.emit()
+        self.deleteSessions([session_id])
+
+    @Slot(list)
+    @Slot("QVariantList")
+    def deleteSessions(self, session_ids: list) -> None:
+        deleted = 0
+        skipped_running = 0
+        for session_id in self._normalize_ids(session_ids):
+            session = self.store.sessions.get(session_id)
+            if not session:
+                continue
+            if session.status == SessionStatus.RUNNING:
+                skipped_running += 1
+                continue
+            self.store.sessions.delete(session_id)
+            deleted += 1
+        if deleted:
+            self.sessionsChanged.emit()
+        if skipped_running and not deleted:
+            self._toast("Stop running sessions before deleting them", "warning")
+        elif skipped_running:
+            self._toast(
+                f"Deleted {deleted}; skipped {skipped_running} running",
+                "warning",
+            )
+        elif deleted:
+            self._toast(f"Deleted {deleted} session{'s' if deleted != 1 else ''}", "success")
 
     @Slot()
     def clearHistory(self) -> None:
@@ -1651,8 +1803,18 @@ class AppBackend(QObject):
 
     @Slot(str)
     def deleteHistoryRecord(self, record_id: str) -> None:
-        if self.store.history.delete(record_id):
+        self.deleteHistoryRecords([record_id])
+
+    @Slot(list)
+    @Slot("QVariantList")
+    def deleteHistoryRecords(self, record_ids: list) -> None:
+        deleted = 0
+        for record_id in self._normalize_ids(record_ids):
+            if self.store.history.delete(record_id):
+                deleted += 1
+        if deleted:
             self.historyChanged.emit()
+            self._toast(f"Deleted {deleted} recorded run{'s' if deleted != 1 else ''}", "success")
 
     @Slot(str)
     def duplicateSession(self, session_id: str) -> None:
@@ -1684,7 +1846,7 @@ class AppBackend(QObject):
             return
         self._save_session(replace(
             session,
-            scheduled_start=datetime.now().isoformat(timespec="minutes"),
+            scheduled_start=self._store_session_time(self._now_local(device), device),
             status=SessionStatus.PLANNED,
             current_step="Waiting",
             actual_started_at=None,
@@ -1712,7 +1874,11 @@ class AppBackend(QObject):
             target_day = date.fromisoformat(day)
         except ValueError:
             return
-        old_night = date.fromisoformat(observing_date(session.scheduled_start))
+        old_night = date.fromisoformat(observing_date(
+            session.scheduled_start,
+            self._device_by_id(session.device_id).observing_day_cutoff_hour,
+            self._zone_for_id(session.device_id),
+        ))
         delta = target_day - old_night
         if delta.days == 0:
             return
@@ -1726,8 +1892,9 @@ class AppBackend(QObject):
                 and item.status != SessionStatus.RUNNING
             ]
         for item in members:
-            start = datetime.fromisoformat(item.scheduled_start) + timedelta(days=delta.days)
-            self.store.sessions.save(replace(item, scheduled_start=start.isoformat(timespec="minutes")))
+            tz = self._zone_for_id(item.device_id)
+            start = parse_in_zone(item.scheduled_start, tz) + timedelta(days=delta.days)
+            self.store.sessions.save(replace(item, scheduled_start=store_local_iso(start, tz)))
         self.sessionsChanged.emit()
 
     def _session_group(self, session: Session) -> list[Session]:
@@ -1744,23 +1911,26 @@ class AppBackend(QObject):
             key=lambda item: (item.scheduled_start, pane_sort_key(item.name), item.name),
         )
 
+    def _session_window(self, session: Session, tz) -> tuple[datetime, datetime]:
+        start = parse_in_zone(session.scheduled_start, tz).replace(second=0, microsecond=0)
+        occupied = max(1, int(max(0, session.planned_duration_seconds) // 60))
+        return start, start + timedelta(minutes=occupied)
+
     def _warn_schedule_overlap(self, moved_ids: set[str], device_id: str) -> None:
-        planned = sorted(
-            (
-                item for item in self.store.sessions.all()
-                if item.device_id == device_id and item.status == SessionStatus.PLANNED
-            ),
-            key=lambda item: item.scheduled_start,
-        )
-        for left, right in zip(planned, planned[1:]):
-            left_end = datetime.fromisoformat(left.scheduled_start) + timedelta(
-                seconds=max(0, left.planned_duration_seconds)
-            )
-            if left_end > datetime.fromisoformat(right.scheduled_start) and (
-                left.id in moved_ids or right.id in moved_ids
-            ):
-                self._toast("Schedule updated; this session overlaps another planned session", "warning")
-                return
+        tz = self._zone_for_id(device_id)
+        planned = [
+            item for item in self.store.sessions.all()
+            if item.device_id == device_id and item.status == SessionStatus.PLANNED
+        ]
+        moved = [item for item in planned if item.id in moved_ids]
+        others = [item for item in planned if item.id not in moved_ids]
+        for left in moved:
+            left_start, left_end = self._session_window(left, tz)
+            for right in others:
+                right_start, right_end = self._session_window(right, tz)
+                if left_start < right_end and right_start < left_end:
+                    self._toast("Schedule updated; this session overlaps another planned session", "warning")
+                    return
 
     @Slot(str, str)
     def moveSessionStart(self, session_id: str, iso_datetime: str) -> None:
@@ -1771,8 +1941,9 @@ class AppBackend(QObject):
             self._toast("Stop the running session before moving it", "warning")
             return
         try:
-            target = datetime.fromisoformat(iso_datetime).replace(second=0, microsecond=0)
-            current = datetime.fromisoformat(session.scheduled_start)
+            tz = self._zone_for_id(session.device_id)
+            target = parse_in_zone(iso_datetime, tz).replace(second=0, microsecond=0)
+            current = parse_in_zone(session.scheduled_start, tz)
         except ValueError:
             self._toast("That schedule time is not valid", "error")
             return
@@ -1782,8 +1953,9 @@ class AppBackend(QObject):
         members = self._session_group(session)
         moved_ids = {item.id for item in members}
         for item in members:
-            start = datetime.fromisoformat(item.scheduled_start) + delta
-            self.store.sessions.save(replace(item, scheduled_start=start.isoformat(timespec="minutes")))
+            item_tz = self._zone_for_id(item.device_id)
+            start = parse_in_zone(item.scheduled_start, item_tz) + delta
+            self.store.sessions.save(replace(item, scheduled_start=store_local_iso(start, item_tz)))
         self.sessionsChanged.emit()
         self._warn_schedule_overlap(moved_ids, session.device_id)
 
@@ -1802,6 +1974,7 @@ class AppBackend(QObject):
         target_night = observing_date(
             before.scheduled_start if before else session.scheduled_start,
             cutoff,
+            self._zone_for(device),
         )
         queue = sorted(
             (
@@ -1809,7 +1982,7 @@ class AppBackend(QObject):
                 if item.device_id == session.device_id
                 and item.status == SessionStatus.PLANNED
                 and item.id not in moving_ids
-                and observing_date(item.scheduled_start, cutoff) == target_night
+                and observing_date(item.scheduled_start, cutoff, self._zone_for(device)) == target_night
             ),
             key=lambda item: (item.scheduled_start, pane_sort_key(item.name), item.name),
         )
@@ -1822,12 +1995,12 @@ class AppBackend(QObject):
         ordered = queue[:insert_at] + moving + queue[insert_at:]
         if not ordered:
             return
-        starts = [datetime.fromisoformat(item.scheduled_start) for item in queue]
+        starts = [parse_in_zone(item.scheduled_start, self._zone_for(device)) for item in queue]
         if not starts:
-            starts = [datetime.fromisoformat(item.scheduled_start) for item in moving]
+            starts = [parse_in_zone(item.scheduled_start, self._zone_for(device)) for item in moving]
         cursor = min(starts)
         for item in ordered:
-            self.store.sessions.save(replace(item, scheduled_start=cursor.isoformat(timespec="minutes")))
+            self.store.sessions.save(replace(item, scheduled_start=store_local_iso(cursor, self._zone_for(device))))
             cursor += timedelta(seconds=max(60, item.planned_duration_seconds))
         self.sessionsChanged.emit()
 
@@ -1841,8 +2014,8 @@ class AppBackend(QObject):
             [item for item in self.store.templates.all() if item.mosaic.group_id == group_id]
             if group_id else [template]
         )
-        start = datetime.now().replace(second=0, microsecond=0)
         device = self._device_by_id(self._selected_device_id)
+        start = self._now_local(device).replace(second=0, microsecond=0)
         sessions = [
             self.store.clone_template(item, self._selected_device_id, start)
             for item in templates
@@ -1912,7 +2085,6 @@ class AppBackend(QObject):
     def _scheduler_tick(self) -> None:
         if not self._scheduler_enabled:
             return
-        now = datetime.now().astimezone()
         for device in self._devices:
             if device.id in self._active_sessions or not device.location_configured:
                 continue
@@ -1925,10 +2097,9 @@ class AppBackend(QObject):
             if not sessions:
                 continue
             session = sessions[0]
-            due = datetime.fromisoformat(session.scheduled_start)
-            if due.tzinfo is None:
-                due = due.astimezone()
-            if due > now:
+            tz = self._zone_for(device)
+            due = parse_in_zone(session.scheduled_start, tz)
+            if due > datetime.now(tz):
                 continue
             self._start_session(worker, session)
 
@@ -1941,6 +2112,8 @@ class AppBackend(QObject):
             current_step="Starting worker",
         )
         self._active_sessions[session.device_id] = session.id
+        self._session_capture_base[session.id] = self._telemetry_frame_count(session.device_id)
+        self._session_capture_peak[session.id] = 0
         self._set_activity(session.device_id, "")
         self.sessionsChanged.emit()
         self.add_log("notice", f"Session started · {session.target.name}", session.device_id)
@@ -1986,6 +2159,7 @@ class AppBackend(QObject):
             current_step=outcome,
             outcome=outcome,
         )
+        captured = self._captured_frames_for(session.id, final.camera.frame_count, ok)
         self.store.history.save(HistoryRecord(
             session_id=final.id,
             device_id=final.device_id,
@@ -1996,8 +2170,9 @@ class AppBackend(QObject):
             planned_duration_seconds=final.planned_duration_seconds,
             actual_duration_seconds=(ended - started).total_seconds(),
             frame_count=final.camera.frame_count,
+            captured_frame_count=captured,
             outcome=outcome,
-            summary=f"{final.camera.frame_count} × {final.camera.exposure_seconds:g}s",
+            summary=f"{captured}/{final.camera.frame_count} frames · {final.camera.exposure_seconds:g}s",
             notes=final.notes,
         ))
         elapsed = self._duration_text((ended - started).total_seconds())
@@ -2035,15 +2210,62 @@ class AppBackend(QObject):
             if len(starts) != 1:
                 continue
             device = self._device_by_id(device_id)
-            start = datetime.fromisoformat(members[0].scheduled_start)
+            start = parse_in_zone(members[0].scheduled_start, self._zone_for(device))
             for session in stagger_mosaic_sessions(members, start, device.hardware):
                 self.store.sessions.save(session)
             changed = True
         if changed:
             self.sessionsChanged.emit()
 
+    def _telemetry_frame_count(self, device_id: str) -> int:
+        raw = self._device_telemetry.get(device_id) or {}
+        peak = 0
+        for key in ("capture_stacked", "capture_current"):
+            try:
+                peak = max(peak, int(raw.get(key) or 0))
+            except (TypeError, ValueError):
+                continue
+        return peak
+
+    def _track_session_capture(self, device_id: str, telemetry: dict[str, Any]) -> None:
+        session_id = self._active_sessions.get(device_id)
+        if not session_id:
+            return
+        observed = 0
+        for key in ("capture_stacked", "capture_current"):
+            try:
+                observed = max(observed, int(telemetry.get(key) or 0))
+            except (TypeError, ValueError):
+                continue
+        base = self._session_capture_base.get(session_id, 0)
+        gained = observed if observed < base else max(0, observed - base)
+        self._session_capture_peak[session_id] = max(self._session_capture_peak.get(session_id, 0), gained)
+
+    def _captured_frames_for(self, session_id: str, planned: int, ok: bool) -> int:
+        captured = self._session_capture_peak.pop(session_id, 0)
+        self._session_capture_base.pop(session_id, None)
+        planned = max(0, int(planned or 0))
+        if captured <= 0:
+            return planned if ok else 0
+        return min(planned, captured)
+
     def _device_by_id(self, device_id: str) -> Device:
         return next(item for item in self._devices if item.id == device_id)
+
+    def _zone_for(self, device: Device | None = None):
+        item = device or self._device_by_id(self._selected_device_id)
+        return zoneinfo_from_name(item.timezone_name if item else "UTC")
+
+    def _zone_for_id(self, device_id: str):
+        return self._zone_for(self._device_by_id(device_id))
+
+    def _now_local(self, device: Device | None = None) -> datetime:
+        return datetime.now(self._zone_for(device))
+
+    def _store_session_time(self, value: datetime | str, device: Device | None = None) -> str:
+        tz = self._zone_for(device)
+        parsed = parse_in_zone(value, tz) if isinstance(value, str) else value
+        return store_local_iso(parsed, tz)
 
     @staticmethod
     def _duration_text(seconds: float) -> str:

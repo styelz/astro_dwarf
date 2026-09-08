@@ -174,6 +174,7 @@ class HistoryRecord:
     recorded_at: str = field(default_factory=utc_now)
     summary: str = ""
     notes: str = ""
+    captured_frame_count: int | None = None
 
 
 def to_dict(value: Any) -> dict[str, Any]:

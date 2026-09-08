@@ -46,6 +46,13 @@ class LiveImageProvider(QQuickImageProvider):
     def clear(self) -> None:
         self._image = QImage()
 
+    def frame_size(self) -> tuple[int, int]:
+        """Native (width, height) of the latest decoded frame; (0, 0) when empty."""
+        image = self._image
+        if image.isNull():
+            return (0, 0)
+        return (image.width(), image.height())
+
 
 class StreamPlayer(QObject):
     """Live preview via ffmpeg CLI so RTSP matches VLC and stays off Qt Multimedia."""

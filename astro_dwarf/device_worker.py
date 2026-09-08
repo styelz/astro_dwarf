@@ -327,6 +327,15 @@ def sdk_call(operation: str, *args: Any) -> Any:
             message.vector_length = float(args[1])
             return send_without_response(message, 14006, 6)
         return send_without_response(motor_control_pb2.ReqMotorServiceJoystickStop(), 14008, 6)
+    if operation == "center_tap":
+        # Dual Lenses Locating (official app double-tap): the firmware slews so
+        # the given live-frame pixel ends up centered. CMD 14009, MODULE_MOTOR.
+        from dwarf_python_api.proto import motor_control_pb2
+
+        message = motor_control_pb2.ReqDualCameraLinkage()
+        message.x = int(args[0])
+        message.y = int(args[1])
+        return send_without_response(message, 14009, 6)
     if operation == "manual_focus":
         from dwarf_python_api.proto import focus_pb2
 

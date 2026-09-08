@@ -2,26 +2,17 @@
 
 <img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/b658353d-5d8d-4027-aa38-cf6498fea76c" />
 
-Native, multi-device control and scheduling for Dwarf telescopes. The interface
-uses **PySide6 and Qt Quick/QML** in a real desktop window; it does not use a
-browser or webview.
+Desktop app for controlling and scheduling [Dwarf II](https://dwarflab.com/), Dwarf 3, and Dwarf Mini telescopes. Each telescope is a separate profile with its own IP, location, and session queue.
 
-## Included
+The Control page shows live view, device status, camera settings, commands, the upcoming queue, and a log. Calendar, Templates, History, and Settings are the other pages.
 
-- Multiple named Dwarf II, Dwarf 3, or Dwarf Mini profiles
-- Independent per-device connection and scheduler state
-- Live control dashboard with stream, logs, current step, and upcoming sessions
-- Calendar planning with duration calculated from editable hardware overheads
-- Reusable session templates and manually scheduled sessions
-- Stellarium current-target and Telescopius CSV import
-- Single, wide, and mosaic imaging models
-- Native right-click session menus
-- JSON persistence, immutable run history, and old `Astro_Sessions` import
-- Typed wrapper for calibration, focus, polar alignment, GOTO, camera, imaging,
-  motors, lights, reboot, and power commands from
-  [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api)
+Sessions can be created by hand, from templates, from Stellarium's current target, or from a Telescopius CSV. Duration includes hardware overheads you can edit per telescope (slew, settle, calibration, focus, and so on). Tele/wide cameras and mosaics are supported.
 
-## Run
+Hardware commands go through [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api).
+
+## Run from source
+
+Needs [Python 3.11+](https://www.python.org/downloads/) and Git.
 
 ```text
 git clone https://github.com/styelz/astro_dwarf.git
@@ -30,78 +21,39 @@ cd astro_dwarf
 .\start.bat         # Windows
 ```
 
-On the first run, the script creates a local `.venv` and installs the required
-packages. Later runs skip installation and start the app directly.
+The first run creates a local `.venv` and installs packages. Later runs skip that and start the app.
 
-Configure each telescope's IP, model and location in Settings.
-The scheduler is deliberately stopped at launch; start it from the Control
-page only when the telescope and session queue are ready.
+Set each telescope's IP, model, and location in Settings. The scheduler stays stopped until you start it from Control. Dwarf 3 and Mini live view needs `ffmpeg` on `PATH` (installers already include it). With the camera set to Wide, double-click a spot on the live view and the telescope slews the tele camera onto it (the official app's Dual Lenses Locating).
 
-## Install
+## Installers
 
-The version number is stored in the root `VERSION` file. Change that one file
-and push it to `main` to build unsigned installers and publish them on the
-[GitHub Releases page](https://github.com/styelz/astro_dwarf/releases).
-Other pushes to `main` do not start a release build. You can also run
-**Build OS installers** from Actions and enter a version number; the successful
-workflow writes that number back to `VERSION`. Leave the input blank to rebuild
-the version already in the file. The version is shown in the title bar and
-Settings.
+Unsigned builds are on [GitHub Releases](https://github.com/styelz/astro_dwarf/releases). Pushing a change to the root `VERSION` file on `main` publishes a new set; you can also run **Build OS installers** in Actions.
 
-- **Windows x64:** download and run `AstroDwarf-Setup-<version>-win64.exe`.
-  The installer is per-user and writes to `%LOCALAPPDATA%\Astro Dwarf`, so it
-  does not need administrator permission. Windows SmartScreen may show an
-  unrecognized-app warning; choose **More info** and **Run anyway**. If an older
-  copy was installed under Program Files, uninstall that first.
-- **macOS Apple Silicon:** open the `.dmg`, drag Astro Dwarf to Applications,
-  then right-click the installed app and choose **Open** the first time to
-  approve the unsigned app in Gatekeeper.
-- **Linux x64:** choose the portable `.AppImage`, Debian/Ubuntu `.deb`, or
-  Fedora/RHEL `.rpm`. The package installers place the app under
-  `/opt/astro-dwarf`.
+- **Windows x64:** `AstroDwarf-Setup-<version>-win64.exe`. Per-user install to `%LOCALAPPDATA%\Astro Dwarf`; no admin required. SmartScreen may warn on an unrecognized app: **More info** → **Run anyway**. Uninstall any older Program Files copy first.
+- **macOS Apple Silicon:** open the `.dmg`, drag to Applications, then right-click the app and choose **Open** the first time (unsigned / Gatekeeper).
+- **Linux x64:** portable `.AppImage`, Debian/Ubuntu `.deb`, or Fedora/RHEL `.rpm`. Package installs go to `/opt/astro-dwarf`.
 
 ```bash
-# Portable AppImage
 chmod +x AstroDwarf-*-linux-x86_64.AppImage
 ./AstroDwarf-*-linux-x86_64.AppImage
 
-# Debian or Ubuntu
 sudo apt install ./AstroDwarf-*-linux-amd64.deb
-
-# Fedora or RHEL
 sudo dnf install ./AstroDwarf-*-linux-x86_64.rpm
 ```
 
-The installers include ffmpeg for the Dwarf 3 and Dwarf Mini RTSP live view.
+## Data
 
-## Telescope SDK
+When run from source, files live under `data/` in the repo. Installed copies use the OS app-data directory.
 
-Hardware control uses [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api)
-(see [Credits](#credits)). That library talks to Dwarf II, Dwarf 3, and Dwarf Mini
-over the V3 protobuf/WebSocket protocol.
+```text
+devices/    telescope profiles and timing
+templates/  reusable session recipes
+sessions/   scheduled and running sessions
+history/    completed runs
+```
 
-The SDK keeps global device configuration, so the app launches one isolated
-Python process per physical telescope. All SDK calls are asynchronous from the
-Qt UI. Worker stdout, SDK diagnostics and errors are forwarded into the visible
-Live Log panel instead of blocking or disappearing in a terminal.
+Old `Astro_Sessions` JSON can be imported from Settings. The old app's files are not changed.
 
 ## Credits
 
-Telescope commands in this app are provided by
-[`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api), created and
-maintained by [JC L. (`stevejcl`)](https://github.com/stevejcl). Thanks to JC
-for making that API available.
-
-## Storage
-
-Application code lives in `astro_dwarf/`. Runtime data is under `data/`:
-
-```text
-devices/    per-telescope and timing profiles
-templates/  reusable imaging recipes
-sessions/   scheduled and running session snapshots
-history/    immutable completed-run records
-```
-
-Old scheduler JSON can be imported from Settings. Existing applications are
-not modified or imported at runtime.
+Telescope commands come from [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api) by [JC L. (`stevejcl`)](https://github.com/stevejcl).

@@ -11,6 +11,7 @@ import re
 import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from math import ceil
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -50,8 +51,37 @@ def mosaic_group_title(name: str, group_id: str = "") -> str:
     return (group_id or "Mosaic").replace("_", " ").replace("-", " ").strip()
 
 
-def observing_date(scheduled_start: str, cutoff_hour: int = 12) -> str:
-    value = datetime.fromisoformat(scheduled_start)
+def zoneinfo_from_name(name: str | None) -> ZoneInfo:
+    text = str(name or "UTC").strip() or "UTC"
+    try:
+        return ZoneInfo(text)
+    except (ZoneInfoNotFoundError, Exception):
+        return ZoneInfo("UTC")
+
+
+def parse_in_zone(value: str, tz: ZoneInfo) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=tz)
+    return parsed.astimezone(tz)
+
+
+def store_local_iso(value: datetime, tz: ZoneInfo) -> str:
+    if value.tzinfo is None:
+        local = value.replace(tzinfo=tz)
+    else:
+        local = value.astimezone(tz)
+    return local.replace(second=0, microsecond=0).isoformat(timespec="minutes")
+
+
+def observing_date(scheduled_start: str, cutoff_hour: int = 12, tz: ZoneInfo | str | None = None) -> str:
+    zone = tz if isinstance(tz, ZoneInfo) else zoneinfo_from_name(tz) if tz else None
+    if zone is None:
+        value = datetime.fromisoformat(str(scheduled_start).replace("Z", "+00:00"))
+        if value.tzinfo is not None:
+            value = value.replace(tzinfo=None)
+    else:
+        value = parse_in_zone(scheduled_start, zone)
     if value.hour < cutoff_hour:
         value -= timedelta(days=1)
     return value.date().isoformat()
@@ -525,8 +555,9 @@ class Scheduler:
                 planned_duration_seconds=session.planned_duration_seconds,
                 actual_duration_seconds=(ended - started).total_seconds(),
                 frame_count=session.camera.frame_count,
+                captured_frame_count=session.camera.frame_count if status == SessionStatus.DONE else 0,
                 outcome=outcome,
-                summary=f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s",
+                summary=f"{session.camera.frame_count if status == SessionStatus.DONE else 0}/{session.camera.frame_count} frames · {session.camera.exposure_seconds:g}s",
                 notes=session.notes,
             )
         )
