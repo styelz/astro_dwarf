@@ -29,3 +29,4 @@ HudSplitView 1.0 HudSplitView.qml
 
 HudFrame 1.0 HudFrame.qml
 HudCheckMark 1.0 HudCheckMark.qml
+RowGutter 1.0 RowGutter.qml

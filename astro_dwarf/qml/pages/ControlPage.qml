@@ -508,65 +508,71 @@ Item {
                         statusText = backend.selectedDevice.connected ? backend.videoUrl : "Connect a telescope to start the stream"
                     }
 
-                    property bool chromeVisible: true
-                    property bool chromeHold: false
-                    readonly property bool chromeShown: !backend.previewPlaying || chromeVisible
+                    // Chrome model: status (LIVE/REC badges, readout strip) is always on
+                    // while streaming; controls (stop button, reticle, grid) appear on
+                    // pointer motion or a touch tap and fade after a short idle, unless
+                    // the pointer is resting on a control. First stream ever shows a hint.
+                    property bool controlsVisible: false
+                    property bool controlHovered: false
+                    readonly property bool chromeShown: !backend.previewPlaying || controlsVisible
 
-                    function revealChrome() {
-                        chromeVisible = true
-                        if (!chromeHold)
+                    function revealControls() {
+                        controlsVisible = true
+                        firstRunHint.dismiss()
+                        if (!controlHovered)
                             chromeIdleTimer.restart()
                     }
 
-                    function leaveChrome() {
-                        if (chromeHold)
+                    function hideControls() {
+                        if (controlHovered)
                             return
-                        chromeVisible = false
+                        controlsVisible = false
                         chromeIdleTimer.stop()
                     }
 
-                    function beginChromeHold() {
-                        chromeVisible = true
-                        chromeHold = true
-                        chromeIdleTimer.stop()
-                        chromeHoldTimer.restart()
+                    function toggleControls() {
+                        if (controlsVisible)
+                            hideControls()
+                        else
+                            revealControls()
                     }
 
-                    function clearChromeHold() {
-                        chromeHold = false
-                        chromeVisible = true
-                        chromeHoldTimer.stop()
-                        chromeIdleTimer.stop()
-                    }
-
-                    Timer {
-                        id: chromeHoldTimer
-                        interval: 5000
-                        repeat: false
-                        onTriggered: {
-                            previewHost.chromeHold = false
-                            if (!previewHover.hovered)
-                                previewHost.chromeVisible = false
-                            else
-                                chromeIdleTimer.restart()
+                    function holdControls(hold) {
+                        controlHovered = hold
+                        if (hold) {
+                            controlsVisible = true
+                            chromeIdleTimer.stop()
+                        } else {
+                            chromeIdleTimer.restart()
                         }
                     }
+
                     Timer {
                         id: chromeIdleTimer
-                        interval: 3000
+                        interval: 2500
                         repeat: false
-                        onTriggered: previewHost.chromeVisible = false
+                        onTriggered: {
+                            if (!previewHost.controlHovered)
+                                previewHost.controlsVisible = false
+                        }
                     }
 
                     HoverHandler {
                         id: previewHover
                         enabled: backend.previewPlaying
                         acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                        onPointChanged: previewHost.revealChrome()
+                        onPointChanged: previewHost.revealControls()
                         onHoveredChanged: {
                             if (!hovered)
-                                previewHost.leaveChrome()
+                                previewHost.hideControls()
                         }
+                    }
+                    TapHandler {
+                        // touch: single tap toggles the controls (mouse users hover instead)
+                        enabled: backend.previewPlaying
+                        acceptedDevices: PointerDevice.TouchScreen
+                        gesturePolicy: TapHandler.ReleaseWithinBounds
+                        onSingleTapped: previewHost.toggleControls()
                     }
 
                     Connections {
@@ -583,10 +589,13 @@ Item {
                                 previewHost.statusText = backend.previewStatus
                         }
                         function onPreviewPlayingChanged() {
-                            if (backend.previewPlaying)
-                                previewHost.beginChromeHold()
+                            previewHost.controlHovered = false
+                            previewHost.controlsVisible = false
+                            chromeIdleTimer.stop()
+                            if (backend.previewPlaying && !Theme.previewChromeHintSeen)
+                                firstRunHint.show()
                             else
-                                previewHost.clearChromeHold()
+                                firstRunHint.hide()
                         }
                     }
 
@@ -701,7 +710,9 @@ Item {
                         anchors.bottom: parent.bottom
                         anchors.margins: 14
                         height: 24
-                        visible: previewHost.chromeShown
+                        // status stays up while streaming; it just recedes when the controls are away
+                        opacity: previewHost.chromeShown ? 1 : 0.62
+                        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
                         color: Theme.hsl(0.079, 0.517, 0.057, 0.690)
                         border.color: Theme.outline
                         RowLayout {
@@ -746,6 +757,8 @@ Item {
                     Canvas {
                         anchors.fill: parent
                         opacity: previewHost.chromeShown ? 0.9 : 0
+                        visible: opacity > 0
+                        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
                         readonly property bool reticle: backend.previewPlaying
                         onReticleChanged: requestPaint()
                         onPaint: {
@@ -797,7 +810,8 @@ Item {
                         anchors.top: parent.top
                         anchors.margins: 14
                         spacing: 6
-                        visible: previewHost.chromeShown
+                        opacity: previewHost.chromeShown ? 1 : 0.75
+                        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
                         Rectangle {
                             width: 96
                             height: 28
@@ -851,13 +865,65 @@ Item {
                         }
                     }
                     HudButton {
+                        id: stopPreviewButton
                         anchors.right: parent.right
                         anchors.top: parent.top
                         anchors.margins: 14
-                        visible: backend.previewActive && previewHost.chromeShown
+                        opacity: backend.previewActive && previewHost.chromeShown ? 1 : 0
+                        visible: opacity > 0
+                        Behavior on opacity { NumberAnimation { duration: Theme.normal } }
                         text: "STOP PREVIEW"
                         busyText: "STOPPING…"
+                        onHoveredChanged: previewHost.holdControls(hovered)
                         onClicked: previewHost.stopPreview()
+                    }
+                    Rectangle {
+                        // one-time hint the first time a stream comes up
+                        id: firstRunHint
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 50
+                        width: hintRow.implicitWidth + 28
+                        height: 30
+                        radius: 15
+                        color: Theme.popupBg
+                        border.color: Theme.accent
+                        opacity: 0
+                        visible: opacity > 0
+                        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
+                        function show() {
+                            opacity = 1
+                            hintTimer.restart()
+                        }
+                        function hide() {
+                            opacity = 0
+                            hintTimer.stop()
+                        }
+                        function dismiss() {
+                            if (opacity === 0)
+                                return
+                            Theme.previewChromeHintSeen = true
+                            hide()
+                        }
+                        Timer {
+                            id: hintTimer
+                            interval: 8000
+                            repeat: false
+                            onTriggered: firstRunHint.dismiss()
+                        }
+                        Row {
+                            id: hintRow
+                            anchors.centerIn: parent
+                            spacing: 10
+                            Text { text: "\uE962"; font.family: Theme.fontIcon; font.pixelSize: 12; color: Theme.accent; anchors.verticalCenter: parent.verticalCenter }
+                            Text {
+                                text: "MOVE THE POINTER OVER THE STREAM FOR CONTROLS  ·  DOUBLE-CLICK A STAR TO CENTRE IT"
+                                color: Theme.textPrimary
+                                font.pixelSize: Theme.fontSm
+                                font.letterSpacing: Theme.tracking1
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                        }
                     }
                     TapHandler {
                         acceptedButtons: Qt.RightButton
@@ -1229,18 +1295,16 @@ Item {
                                 RowLayout {
                                     anchors.fill: parent
                                     anchors.margins: 6
+                                    anchors.leftMargin: 2
                                     spacing: 6
-                                    Item {
-                                        Layout.preferredWidth: 16
-                                        Layout.maximumWidth: 16
+                                    RowGutter {
+                                        Layout.preferredWidth: 20
+                                        Layout.maximumWidth: 20
                                         Layout.fillHeight: true
-                                        SelectBox {
-                                            id: upcomingSelect
-                                            anchors.centerIn: parent
-                                            checked: Util.idSetHas(controlPage.selectedUpcomingIds, upcomingRow.modelData.id)
-                                            revealed: upcomingHover.hovered || controlPage.selectedUpcomingCount > 0
-                                            onToggled: (shiftHeld) => controlPage.selectClick(upcomingRow.modelData.id, shiftHeld)
-                                        }
+                                        spineColor: upcomingRow.modelData.device_color || Theme.accent
+                                        checked: Util.idSetHas(controlPage.selectedUpcomingIds, upcomingRow.modelData.id)
+                                        revealed: upcomingHover.hovered || controlPage.selectedUpcomingCount > 0
+                                        onToggled: (shiftHeld) => controlPage.selectClick(upcomingRow.modelData.id, shiftHeld)
                                     }
                                     ColumnLayout {
                                         Layout.fillWidth: true

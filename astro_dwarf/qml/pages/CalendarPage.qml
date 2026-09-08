@@ -386,7 +386,6 @@ Item {
                                 border.color: Util.statusColor(modelData.status)
                                 border.width: 1
                                 opacity: DragCoordinator.active && DragCoordinator.data.id === sessionId ? 0.35 : 0.96
-                                Rectangle { x: 0; y: 0; width: 4; height: parent.height; radius: 2; color: modelData.device_color || Theme.accent }
                                 SessionDragArea {
                                     dragItem: timelineSession.modelData
                                 }
@@ -398,20 +397,18 @@ Item {
                                 }
                                 RowLayout {
                                     anchors.fill: parent
-                                    anchors.margins: 8
-                                    anchors.leftMargin: 12
+                                    anchors.margins: 6
+                                    anchors.leftMargin: 2
                                     spacing: 6
-                                    Item {
-                                        Layout.preferredWidth: 16
-                                        Layout.maximumWidth: 16
+                                    RowGutter {
+                                        Layout.preferredWidth: 20
+                                        Layout.maximumWidth: 20
                                         Layout.fillHeight: true
-                                        SelectBox {
-                                            id: timelineSelect
-                                            anchors.centerIn: parent
-                                            checked: Util.idSetHas(calendarPage.selectedIds, timelineSession.modelData.id)
-                                            revealed: timelineHover.hovered || calendarPage.selectedCount > 0
-                                            onToggled: (shiftHeld) => calendarPage.selectClick(timelineSession.modelData.id, shiftHeld, calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)))
-                                        }
+                                        spineInset: 2
+                                        spineColor: timelineSession.modelData.device_color || Theme.accent
+                                        checked: Util.idSetHas(calendarPage.selectedIds, timelineSession.modelData.id)
+                                        revealed: timelineHover.hovered || calendarPage.selectedCount > 0
+                                        onToggled: (shiftHeld) => calendarPage.selectClick(timelineSession.modelData.id, shiftHeld, calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)))
                                     }
                                     ColumnLayout {
                                         Layout.fillWidth: true; spacing: 0
@@ -591,11 +588,20 @@ Item {
                                 acceptedModifiers: Qt.ShiftModifier
                                 onTapped: calendarPage.selectClick(daySessionRow.modelData.id, true, nightPanel.nightSessions)
                             }
-                            Rectangle { x: 0; y: 0; width: 3; height: parent.height; radius: 1; color: modelData.device_color || Theme.accent }
+                            RowGutter {
+                                x: 2
+                                width: 20
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
+                                spineColor: daySessionRow.modelData.device_color || Theme.accent
+                                checked: Util.idSetHas(calendarPage.selectedIds, daySessionRow.modelData.id)
+                                revealed: daySessionHover.hovered || calendarPage.selectedCount > 0
+                                onToggled: (shiftHeld) => calendarPage.selectClick(daySessionRow.modelData.id, shiftHeld, nightPanel.nightSessions)
+                            }
                             ColumnLayout {
                                 anchors.fill: parent
                                 anchors.margins: 8
-                                anchors.leftMargin: 20
+                                anchors.leftMargin: 28
                                 spacing: 2
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -609,19 +615,6 @@ Item {
                                     HudButton { text: "EDIT"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
                                     HudButton { text: "RESET"; implicitHeight: 24; visible: Util.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
                                     HudButton { text: "RUN"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
-                                }
-                            }
-                            Item {
-                                x: 3
-                                width: 15
-                                anchors.top: parent.top
-                                anchors.bottom: parent.bottom
-                                SelectBox {
-                                    id: daySessionSelect
-                                    anchors.centerIn: parent
-                                    checked: Util.idSetHas(calendarPage.selectedIds, daySessionRow.modelData.id)
-                                    revealed: daySessionHover.hovered || calendarPage.selectedCount > 0
-                                    onToggled: (shiftHeld) => calendarPage.selectClick(daySessionRow.modelData.id, shiftHeld, nightPanel.nightSessions)
                                 }
                             }
                             TapHandler {
