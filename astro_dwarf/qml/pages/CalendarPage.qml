@@ -15,6 +15,7 @@ Item {
     property int viewMode: 0
     property var selectedIds: ({})
     property string selectionAnchorId: ""
+    property int nowLineScrollTries: 0
     readonly property int selectedCount: Util.idSetCount(selectedIds)
     function selectClick(id, shift, items) {
         const result = Util.clickSelect(selectedIds, items || backend.sessions, id, shift, selectionAnchorId)
@@ -83,6 +84,40 @@ Item {
     function currentObservingKey() {
         return String(calendarPage.observingNow().observing_date || calendarPage.dateKey(new Date()))
     }
+    function openNight(value) {
+        selectedDate = value
+        viewMode = 1
+        requestNowLineScroll()
+    }
+    function requestNowLineScroll() {
+        nowLineScrollTries = 0
+        nowLineScrollTimer.restart()
+    }
+    function scrollNowLineIntoView() {
+        if (calendarPage.viewMode !== 1 || !nightTimeline.visible)
+            return
+        if (calendarPage.dateKey(calendarPage.selectedDate) !== calendarPage.currentObservingKey())
+            return
+        const viewH = timelineFlick.height
+        if (viewH <= 1) {
+            if (nowLineScrollTries < 8) {
+                nowLineScrollTries += 1
+                nowLineScrollTimer.restart()
+            }
+            return
+        }
+        nowLineScrollTries = 0
+        const y = nowLine.y
+        const maxY = Math.max(0, timelineFlick.contentHeight - viewH)
+        const target = Math.max(0, Math.min(maxY, y - viewH / 2 + nowLine.height / 2))
+        timelineFlick.contentY = target
+    }
+    Timer {
+        id: nowLineScrollTimer
+        interval: 16
+        repeat: false
+        onTriggered: calendarPage.scrollNowLineIntoView()
+    }
     Component.onCompleted: {
         const today = calendarPage.dateFromKey(calendarPage.currentObservingKey())
         selectedDate = today
@@ -107,7 +142,7 @@ Item {
                     return total + " planned session" + (total === 1 ? "" : "s") + "  ·  " + night + " on the selected night  ·  night rolls over at " + String(calendarPage.cutoffHour).padStart(2, "0") + ":00  ·  " + (backend.selectedDevice.timezone_name || "UTC")
                 }
                 HudButton { text: "MONTH"; buttonColor: calendarPage.viewMode === 0 ? Theme.fillActive : Theme.surfaceHigh; foregroundColor: calendarPage.viewMode === 0 ? Theme.accent : Theme.textSecondary; onClicked: calendarPage.viewMode = 0 }
-                HudButton { text: "NIGHT"; buttonColor: calendarPage.viewMode === 1 ? Theme.fillActive : Theme.surfaceHigh; foregroundColor: calendarPage.viewMode === 1 ? Theme.accent : Theme.textSecondary; onClicked: calendarPage.viewMode = 1 }
+                HudButton { text: "NIGHT"; buttonColor: calendarPage.viewMode === 1 ? Theme.fillActive : Theme.surfaceHigh; foregroundColor: calendarPage.viewMode === 1 ? Theme.accent : Theme.textSecondary; onClicked: calendarPage.openNight(calendarPage.selectedDate) }
                 HudButton {
                     text: "‹"; implicitWidth: 40
                     onClicked: {
@@ -125,6 +160,7 @@ Item {
                     const today = calendarPage.dateFromKey(key)
                     calendarPage.shownMonth = today
                     calendarPage.selectedDate = today
+                    calendarPage.requestNowLineScroll()
                 } }
                 HudButton {
                     text: "›"; implicitWidth: 40
@@ -284,10 +320,14 @@ Item {
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: calendarPage.selectedDate = dayCell.cellDate
+                                    onDoubleClicked: calendarPage.openNight(dayCell.cellDate)
                                 }
                             }
                         }
-                        TapHandler { onTapped: calendarPage.selectedDate = dayCell.cellDate }
+                        TapHandler {
+                            onTapped: calendarPage.selectedDate = dayCell.cellDate
+                            onDoubleTapped: calendarPage.openNight(dayCell.cellDate)
+                        }
                         TapHandler {
                             acceptedButtons: Qt.RightButton
                             onTapped: dayMenu.popup()
@@ -329,6 +369,10 @@ Item {
                 Layout.fillHeight: true
                 property real hourHeight: 64
                 property real itemOffset: 5
+                onVisibleChanged: {
+                    if (visible)
+                        calendarPage.requestNowLineScroll()
+                }
                 Flickable {
                     id: timelineFlick
                     anchors.fill: parent
@@ -440,10 +484,12 @@ Item {
                             }
                         }
                         Rectangle {
+                            id: nowLine
                             visible: calendarPage.dateKey(calendarPage.selectedDate) === calendarPage.currentObservingKey()
                             x: 58
                             width: parent.width - 66
                             height: 2
+                            z: 20
                             color: Theme.warning
                             y: calendarPage.timelineMinutes(String(backend.clockText).substring(0, 5)) / 60 * nightTimeline.hourHeight
                             Text { anchors.right: parent.right; anchors.bottom: parent.top; text: "NOW"; color: Theme.warning; font.pixelSize: 9; font.bold: true }
