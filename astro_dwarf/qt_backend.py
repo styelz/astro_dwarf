@@ -15,6 +15,7 @@ from uuid import uuid4
 from PySide6.QtCore import (
     Property,
     QAbstractListModel,
+    QEvent,
     QModelIndex,
     QProcess,
     QProcessEnvironment,
@@ -62,7 +63,7 @@ from .services import (
 from .location import match_timezone, resolve_location, timezone_locations
 from .runtime import PROCESS_CREATION_FLAGS, kill_pid_tree, prepare_worker_environment, worker_command
 from .storage import SessionStore
-from .stream_preview import LiveImageProvider, StreamPlayer, port_is_open, stream_port
+from .stream_preview import LiveFrames, StreamPlayer, port_is_open, preview_window_is_live, set_live_frames, stream_port
 from .telemetry_view import AlertEngine, derive_activity, format_telemetry
 
 
@@ -465,6 +466,20 @@ class LogListModel(QAbstractListModel):
         return entry.get("level") in allowed
 
 
+class _PreviewWindowFilter(QObject):
+    def eventFilter(self, _watched, event) -> bool:
+        if event.type() in (
+            QEvent.Type.Expose,
+            QEvent.Type.Show,
+            QEvent.Type.WindowActivate,
+            QEvent.Type.ApplicationActivate,
+        ):
+            backend = self.parent()
+            if backend is not None:
+                backend._on_preview_window_state()
+        return False
+
+
 class AppBackend(QObject):
     devicesChanged = Signal()
     sessionsChanged = Signal()
@@ -537,7 +552,8 @@ class AppBackend(QObject):
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self._tick)
         self.timer.start()
-        self.live_images = LiveImageProvider()
+        self.live_images = LiveFrames(self)
+        set_live_frames(self.live_images)
         self._preview_token = 0
         self._preview_active = False
         self._preview_playing = False
@@ -548,6 +564,8 @@ class AppBackend(QObject):
         self._preview_tele_generation = 0
         self._preview_wide_generation = 0
         self._last_preview_ui: dict[str, float] = {}
+        self._preview_window = None
+        self._preview_window_filter = None
         self._shut_down = False
         self._preview_thread = QThread(self)
         self._tele_player = StreamPlayer()
@@ -1231,6 +1249,24 @@ class AppBackend(QObject):
         self.previewTeleGenerationChanged.emit()
         self.previewWideGenerationChanged.emit()
 
+    def bindPreviewWindow(self, window) -> None:
+        self._preview_window = window
+        if window is None:
+            return
+        visibility_changed = getattr(window, "visibilityChanged", None)
+        if visibility_changed is not None:
+            visibility_changed.connect(self._on_preview_window_state)
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.applicationStateChanged.connect(self._on_preview_window_state)
+        self._preview_window_filter = _PreviewWindowFilter(self)
+        window.installEventFilter(self._preview_window_filter)
+
+    def _on_preview_window_state(self, *_args) -> None:
+        if not self._preview_active or not preview_window_is_live(self._preview_window):
+            return
+        self.live_images.notify("*")
+
     def _on_tele_frame(self, image) -> None:
         self._on_camera_frame("tele", image)
 
@@ -1241,31 +1277,36 @@ class AppBackend(QObject):
         if not self._preview_active:
             return
         self.live_images.update(camera, image)
+        first_frame = (camera == "wide" and not self._preview_wide_playing) or (
+            camera == "tele" and not self._preview_tele_playing
+        )
+        window_live = preview_window_is_live(self._preview_window)
         now = time.monotonic()
-        if (camera == "wide" and self._preview_wide_playing) or (
-            camera == "tele" and self._preview_tele_playing
-        ):
+        if not first_frame:
             if now - self._last_preview_ui.get(camera, 0.0) < 0.05:
                 return
+            if not window_live:
+                return
         self._last_preview_ui[camera] = now
-        self._preview_generation += 1
-        if camera == "wide":
-            self._preview_wide_generation += 1
-            if not self._preview_wide_playing:
+        if first_frame:
+            self._preview_generation += 1
+            if camera == "wide":
+                self._preview_wide_generation += 1
                 self._preview_wide_playing = True
                 self.previewWidePlayingChanged.emit()
-            self.previewWideGenerationChanged.emit()
-        else:
-            self._preview_tele_generation += 1
-            if not self._preview_tele_playing:
+                self.previewWideGenerationChanged.emit()
+            else:
+                self._preview_tele_generation += 1
                 self._preview_tele_playing = True
                 self.previewTelePlayingChanged.emit()
-            self.previewTeleGenerationChanged.emit()
-        if not self._preview_playing:
-            self._preview_playing = True
-            self._set_preview_status(self.videoUrl)
-            self.previewPlayingChanged.emit()
-        self.previewGenerationChanged.emit()
+                self.previewTeleGenerationChanged.emit()
+            if not self._preview_playing:
+                self._preview_playing = True
+                self._set_preview_status(self.videoUrl)
+                self.previewPlayingChanged.emit()
+            self.previewGenerationChanged.emit()
+        if window_live:
+            self.live_images.notify(camera)
 
     def _on_tele_failed(self, message: str) -> None:
         self._on_camera_preview_failed("tele", message)
@@ -2421,6 +2462,7 @@ class AppBackend(QObject):
         self.stopPreview()
         self._tele_player.abort()
         self._wide_player.abort()
+        set_live_frames(None)
         for worker in list(self._workers.values()):
             worker.shutdown(wait=False)
         if self._preview_thread.isRunning():

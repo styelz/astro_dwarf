@@ -28,6 +28,16 @@ def package_root() -> Path:
     return Path(__file__).resolve().parent
 
 
+def configure_quick_runtime() -> None:
+    """Must run before QGuiApplication. Keeps live view from freezing on alt-tab.
+
+    PySide paints live frames in Python. Qt's default threaded scene-graph
+    loop can deadlock the GIL against the render thread when Windows restores
+    an occluded window, which leaves the UI stuck until the process is killed.
+    """
+    os.environ.setdefault("QSG_RENDER_LOOP", "basic")
+
+
 def configure_qml_import_path() -> None:
     """Register both Windows and POSIX PySide6 QML layouts in frozen builds."""
     if not is_frozen():

@@ -1,4 +1,5 @@
 import QtQuick
+import AstroDwarf 1.0
 import ".."
 
 // One live camera pane: decoded frames, Dual Lenses Locating on the wide
@@ -7,7 +8,7 @@ Item {
     id: pane
     property bool playing: false
     property bool wideView: false
-    property string source: ""
+    property string camera: "tele"
     property bool centerEnabled: false
     property bool showFootprint: false
     property bool swallowClicks: false
@@ -24,13 +25,12 @@ Item {
     readonly property real frameY: (height - paintedHeight) / 2
     signal centerRequested(real nx, real ny)
 
-    Image {
+    LiveFrameItem {
         id: frame
         anchors.fill: parent
         visible: pane.playing
-        cache: false
-        fillMode: Image.PreserveAspectFit
-        source: pane.source
+        playing: pane.playing
+        camera: pane.camera
     }
 
     function centerOn(px, py) {

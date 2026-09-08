@@ -547,10 +547,8 @@ Item {
                         const v = Number(root.scopeTelemetry.tele_match_nh)
                         return (v > 0 && v < 1) ? v : 0
                     }
-                    function liveSource(wide) {
-                        if (wide)
-                            return backend.previewWidePlaying ? ("image://live/wide/" + backend.previewWideGeneration) : ""
-                        return backend.previewTelePlaying ? ("image://live/tele/" + backend.previewTeleGeneration) : ""
+                    function liveCamera(wide) {
+                        return wide ? "wide" : "tele"
                     }
                     function swapViews() {
                         if (!pipAvailable)
@@ -690,13 +688,7 @@ Item {
                         anchors.fill: parent
                         playing: previewHost.mainPlaying
                         wideView: previewHost.displayWide
-                        source: {
-                            backend.previewTeleGeneration
-                            backend.previewWideGeneration
-                            backend.previewTelePlaying
-                            backend.previewWidePlaying
-                            return previewHost.liveSource(previewHost.displayWide)
-                        }
+                        camera: previewHost.liveCamera(previewHost.displayWide)
                         centerEnabled: playing && root.motionEnabled
                         showFootprint: wideView
                         chromeShown: previewHost.chromeShown
@@ -737,13 +729,7 @@ Item {
                             anchors.margins: 1
                             playing: previewHost.pipPlaying
                             wideView: !previewHost.displayWide
-                            source: {
-                                backend.previewTeleGeneration
-                                backend.previewWideGeneration
-                                backend.previewTelePlaying
-                                backend.previewWidePlaying
-                                return previewHost.liveSource(!previewHost.displayWide)
-                            }
+                            camera: previewHost.liveCamera(!previewHost.displayWide)
                             centerEnabled: playing && root.motionEnabled
                             swallowClicks: true
                             showFootprint: wideView

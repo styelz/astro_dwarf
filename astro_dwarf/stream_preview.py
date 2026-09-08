@@ -5,11 +5,13 @@ import sys
 import threading
 from typing import Optional
 
-from PySide6.QtCore import QObject, QProcess, QTimer, Signal, Slot
-from PySide6.QtGui import QImage
-from PySide6.QtQuick import QQuickImageProvider
+from PySide6.QtCore import Property, QObject, QProcess, QRectF, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QWindow
+from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
 
 from .runtime import PROCESS_CREATION_FLAGS, ffmpeg_mjpeg_command, ffmpeg_path, kill_pid_tree
+
+_live_frames: LiveFrames | None = None
 
 
 def port_is_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -26,27 +28,30 @@ def stream_port(url: str) -> int:
     return 554
 
 
-class LiveImageProvider(QQuickImageProvider):
-    def __init__(self):
-        super().__init__(QQuickImageProvider.Image)
+def live_frames() -> LiveFrames | None:
+    return _live_frames
+
+
+def set_live_frames(hub: LiveFrames | None) -> None:
+    global _live_frames
+    _live_frames = hub
+
+
+class LiveFrames(QObject):
+    """Latest tele/wide frames, updated from the GUI thread.
+
+    Live view used to go through QQuickImageProvider. requestImage() runs on
+    Qt's render thread, which in Python has to take the GIL. After alt-tab the
+    GUI thread waits for a scene-graph sync while the render thread waits for
+    the GIL, and the window never comes back.
+    """
+
+    frameChanged = Signal(str)
+
+    def __init__(self, parent: Optional[QObject] = None):
+        super().__init__(parent)
         self._lock = threading.Lock()
         self._images = {"tele": QImage(), "wide": QImage()}
-        self._empty = QImage(1, 1, QImage.Format_ARGB32)
-        self._empty.fill(0)
-
-    def _key(self, image_id: str) -> str:
-        key = (image_id or "").split("/", 1)[0].strip().lower()
-        return key if key in self._images else "tele"
-
-    def requestImage(self, image_id, size, _requested_size):
-        key = self._key(image_id)
-        with self._lock:
-            stored = self._images[key]
-            image = QImage(stored) if not stored.isNull() else QImage(self._empty)
-        if size is not None:
-            size.setWidth(image.width())
-            size.setHeight(image.height())
-        return image
 
     def update(self, key: str, image: QImage) -> None:
         if key not in self._images:
@@ -54,12 +59,21 @@ class LiveImageProvider(QQuickImageProvider):
         with self._lock:
             self._images[key] = image
 
+    def notify(self, key: str = "*") -> None:
+        self.frameChanged.emit(key)
+
+    def peek(self, key: str) -> QImage:
+        with self._lock:
+            stored = self._images.get(key) or QImage()
+            return QImage(stored) if not stored.isNull() else QImage()
+
     def clear(self, key: str | None = None) -> None:
         with self._lock:
             if key in self._images:
                 self._images[key] = QImage()
             else:
                 self._images = {"tele": QImage(), "wide": QImage()}
+        self.frameChanged.emit(key or "*")
 
     def frame_size(self, key: str = "wide") -> tuple[int, int]:
         """Native (width, height) of the latest decoded frame; (0, 0) when empty."""
@@ -68,6 +82,147 @@ class LiveImageProvider(QQuickImageProvider):
             if image.isNull():
                 return (0, 0)
             return (image.width(), image.height())
+
+
+class LiveFrameItem(QQuickPaintedItem):
+    """Paints a live camera frame on the GUI thread (PreserveAspectFit)."""
+
+    cameraChanged = Signal()
+    playingChanged = Signal()
+    paintedSizeChanged = Signal()
+
+    def __init__(self, parent: Optional[QQuickItem] = None):
+        super().__init__(parent)
+        self.setRenderTarget(QQuickPaintedItem.RenderTarget.Image)
+        self.setFillColor(QColor(0, 0, 0, 0))
+        self.setOpaquePainting(False)
+        self.setAntialiasing(False)
+        self.setMipmap(False)
+        self._camera = "tele"
+        self._playing = False
+        self._painted_w = 0.0
+        self._painted_h = 0.0
+        hub = live_frames()
+        if hub is not None:
+            hub.frameChanged.connect(self._on_hub_frame)
+
+    def _camera_key(self) -> str:
+        return self._camera
+
+    def getCamera(self) -> str:
+        return self._camera
+
+    def setCamera(self, value: str) -> None:
+        key = (value or "tele").strip().lower()
+        if key not in ("tele", "wide"):
+            key = "tele"
+        if key == self._camera:
+            return
+        self._camera = key
+        self.cameraChanged.emit()
+        self._sync_painted_size()
+        self.update()
+
+    camera = Property(str, getCamera, setCamera, notify=cameraChanged)
+
+    def getPlaying(self) -> bool:
+        return self._playing
+
+    def setPlaying(self, value: bool) -> None:
+        playing = bool(value)
+        if playing == self._playing:
+            return
+        self._playing = playing
+        self.playingChanged.emit()
+        self._sync_painted_size()
+        self.update()
+
+    playing = Property(bool, getPlaying, setPlaying, notify=playingChanged)
+
+    def getPaintedWidth(self) -> float:
+        return self._painted_w
+
+    paintedWidth = Property(float, getPaintedWidth, notify=paintedSizeChanged)
+
+    def getPaintedHeight(self) -> float:
+        return self._painted_h
+
+    paintedHeight = Property(float, getPaintedHeight, notify=paintedSizeChanged)
+
+    def geometryChange(self, new_geometry, old_geometry) -> None:
+        super().geometryChange(new_geometry, old_geometry)
+        self._sync_painted_size()
+
+    @Slot(str)
+    def _on_hub_frame(self, key: str) -> None:
+        if not self._playing:
+            return
+        if key not in ("*", self._camera):
+            return
+        self._sync_painted_size()
+        self.update()
+
+    def _fit_rect(self, image: QImage) -> QRectF | None:
+        if image.isNull() or self.width() <= 0 or self.height() <= 0:
+            return None
+        image_w = float(image.width())
+        image_h = float(image.height())
+        if image_w <= 0 or image_h <= 0:
+            return None
+        scale = min(self.width() / image_w, self.height() / image_h)
+        draw_w = image_w * scale
+        draw_h = image_h * scale
+        return QRectF((self.width() - draw_w) / 2.0, (self.height() - draw_h) / 2.0, draw_w, draw_h)
+
+    def _sync_painted_size(self) -> None:
+        width = 0.0
+        height = 0.0
+        if self._playing:
+            hub = live_frames()
+            image = hub.peek(self._camera) if hub is not None else QImage()
+            rect = self._fit_rect(image)
+            if rect is not None:
+                width = rect.width()
+                height = rect.height()
+        if width == self._painted_w and height == self._painted_h:
+            return
+        self._painted_w = width
+        self._painted_h = height
+        self.paintedSizeChanged.emit()
+
+    def paint(self, painter: QPainter) -> None:
+        if not self._playing:
+            return
+        hub = live_frames()
+        if hub is None:
+            return
+        image = hub.peek(self._camera)
+        rect = self._fit_rect(image)
+        if rect is None:
+            return
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+        painter.drawImage(rect, image)
+
+
+def preview_window_is_live(window) -> bool:
+    """False when the window is hidden, minimized, or in the background."""
+    app = QGuiApplication.instance()
+    if app is not None:
+        try:
+            if app.applicationState() != Qt.ApplicationState.ApplicationActive:
+                return False
+        except RuntimeError:
+            return False
+    if window is None:
+        return True
+    try:
+        if hasattr(window, "isExposed") and not window.isExposed():
+            return False
+        visibility = window.visibility()
+        hidden = (QWindow.Visibility.Minimized, QWindow.Visibility.Hidden)
+        return visibility not in hidden
+    except RuntimeError:
+        return False
 
 
 class StreamPlayer(QObject):
@@ -89,6 +244,8 @@ class StreamPlayer(QObject):
         self._stderr = ""
         self._pid = 0
         self._pid_lock = threading.Lock()
+        self._latest_image: QImage | None = None
+        self._flush_scheduled = False
         self._watchdog = QTimer(self)
         self._watchdog.setSingleShot(True)
         self._watchdog.timeout.connect(self._on_watchdog)
@@ -111,6 +268,8 @@ class StreamPlayer(QObject):
         self._cancelled = True
         self._url = ""
         self._watchdog.stop()
+        self._latest_image = None
+        self._flush_scheduled = False
         self._teardown()
 
     def _start_process(self) -> None:
@@ -140,6 +299,8 @@ class StreamPlayer(QObject):
         self._got_frame = False
         self._buffer = b""
         self._stderr = ""
+        self._latest_image = None
+        self._flush_scheduled = False
         process.start(program, arguments)
         if not process.waitForStarted(4000):
             if not self._cancelled:
@@ -182,21 +343,41 @@ class StreamPlayer(QObject):
         if self._process is None:
             return
         self._buffer += bytes(self._process.readAllStandardOutput())
+        last = None
         while True:
             start = self._buffer.find(b"\xff\xd8")
             end = self._buffer.find(b"\xff\xd9", start + 2) if start >= 0 else -1
             if start < 0 or end < 0:
-                if len(self._buffer) > 5_000_000:
+                if start > 0:
+                    self._buffer = self._buffer[start:]
+                elif len(self._buffer) > 5_000_000:
                     self._buffer = self._buffer[-64_000:]
-                return
-            jpeg = self._buffer[start : end + 2]
+                break
+            last = self._buffer[start : end + 2]
             self._buffer = self._buffer[end + 2 :]
-            image = QImage.fromData(jpeg, "JPG")
-            if image.isNull():
-                continue
-            self._got_frame = True
-            self._watchdog.stop()
-            self.frameReady.emit(image)
+        if last is None:
+            return
+        image = QImage.fromData(last, "JPG")
+        if image.isNull():
+            return
+        self._queue_frame(image)
+
+    def _queue_frame(self, image: QImage) -> None:
+        self._latest_image = image
+        if self._flush_scheduled:
+            return
+        self._flush_scheduled = True
+        QTimer.singleShot(0, self._flush_frame)
+
+    def _flush_frame(self) -> None:
+        self._flush_scheduled = False
+        image = self._latest_image
+        self._latest_image = None
+        if image is None or image.isNull() or self._cancelled:
+            return
+        self._got_frame = True
+        self._watchdog.stop()
+        self.frameReady.emit(image)
 
     def _on_stderr(self) -> None:
         if self._process is None:

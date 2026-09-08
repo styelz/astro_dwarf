@@ -10,10 +10,18 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QGuiApplication, QIcon
-from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
 
 from .qt_backend import AppBackend
-from .runtime import configure_qml_import_path, data_root, is_frozen, kill_pid_tree, package_root
+from .runtime import (
+    configure_qml_import_path,
+    configure_quick_runtime,
+    data_root,
+    is_frozen,
+    kill_pid_tree,
+    package_root,
+)
+from .stream_preview import LiveFrameItem
 from .version import __version__
 
 _DWMWA_USE_IMMERSIVE_DARK_MODE = 20
@@ -78,6 +86,7 @@ def _apply_windows_frame(window, caption_hex: str = "#0B1520", border_hex: str =
 def run() -> int:
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
     os.environ["QML_DISABLE_DISK_CACHE"] = "1"
+    configure_quick_runtime()
     configure_qml_import_path()
     application = QGuiApplication(sys.argv)
     application.setApplicationName("Astro Dwarf")
@@ -89,10 +98,10 @@ def run() -> int:
     if not icon.isNull():
         application.setWindowIcon(icon)
     backend = AppBackend(data_root())
+    qmlRegisterType(LiveFrameItem, "AstroDwarf", 1, 0, "LiveFrameItem")
     engine = QQmlApplicationEngine()
     engine.warnings.connect(lambda warnings: [print(warning.toString(), file=sys.stderr) for warning in warnings])
     engine.rootContext().setContextProperty("backend", backend)
-    engine.addImageProvider("live", backend.live_images)
     engine.load(QUrl.fromLocalFile(str(resources / "qml" / "Main.qml")))
 
     if not engine.rootObjects():
@@ -101,6 +110,13 @@ def run() -> int:
     window = engine.rootObjects()[0]
     if not icon.isNull() and hasattr(window, "setIcon"):
         window.setIcon(icon)
+    persist_scene = getattr(window, "setPersistentSceneGraph", None)
+    persist_graphics = getattr(window, "setPersistentGraphics", None)
+    if callable(persist_scene):
+        persist_scene(True)
+    if callable(persist_graphics):
+        persist_graphics(True)
+    backend.bindPreviewWindow(window)
     # Wire the hook after load: QML already queued the saved theme during onCompleted.
     backend.bindWindowFrame(lambda caption, border, text: _apply_windows_frame(window, caption, border, text))
 
