@@ -1366,11 +1366,15 @@ class AppBackend(QObject):
                 "Switch CAMERA to Wide, double-click the target, then switch back to Tele",
             )
             return
-        telemetry = self._device_telemetry.get(device_id) or {}
-        width = int(telemetry.get("wide_width") or 0)
-        height = int(telemetry.get("wide_height") or 0)
+        # Scale into the decoded live frame — that is what the user clicked on
+        # and what the firmware treats as the wide stream's pixel space. Camera
+        # telemetry can report a different still-photo size; using it here
+        # shifted taps a little off the cursor.
+        width, height = self.live_images.frame_size()
         if width <= 0 or height <= 0:
-            width, height = self.live_images.frame_size()
+            telemetry = self._device_telemetry.get(device_id) or {}
+            width = int(telemetry.get("wide_width") or 0)
+            height = int(telemetry.get("wide_height") or 0)
         if width <= 0 or height <= 0:
             width, height = 1920, 1080
         x = int(round(max(0.0, min(1.0, float(nx))) * (width - 1)))

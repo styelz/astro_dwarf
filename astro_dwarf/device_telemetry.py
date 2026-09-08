@@ -573,6 +573,8 @@ class TelemetryTap:
                 changes[f"{prefix}_resolution"] = f"{int(camera.resolution_width)}×{int(camera.resolution_height)}"
             if camera.h_fov or camera.v_fov:
                 changes[f"{prefix}_fov"] = f"{float(camera.h_fov):.2f}° × {float(camera.v_fov):.2f}°"
+                changes[f"{prefix}_fov_h"] = float(camera.h_fov)
+                changes[f"{prefix}_fov_v"] = float(camera.v_fov)
             if camera.resolution_width and camera.resolution_height:
                 # Numeric size: tap-to-center scales clicks into the wide camera's pixel frame.
                 changes[f"{prefix}_width"] = int(camera.resolution_width)

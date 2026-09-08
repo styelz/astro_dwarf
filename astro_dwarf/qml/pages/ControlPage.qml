@@ -669,14 +669,21 @@ Item {
                         }
 
                         TapHandler {
+                            // PointerHandler is not an Item, so it has no anchors; it
+                            // already covers its parent. Map from the scene because
+                            // eventPoint.position can sit a few pixels off the cursor.
                             acceptedButtons: Qt.LeftButton
                             enabled: liveFrame.centerEnabled
                             gesturePolicy: TapHandler.ReleaseWithinBounds
-                            onDoubleTapped: (eventPoint, button) => liveFrame.centerOn(eventPoint.position.x, eventPoint.position.y)
+                            onDoubleTapped: (eventPoint, button) => {
+                                const p = liveFrame.mapFromItem(null, eventPoint.scenePosition.x, eventPoint.scenePosition.y)
+                                liveFrame.centerOn(p.x, p.y)
+                            }
                         }
 
                         Item {
                             id: tapMarker
+                            z: 2
                             width: 44
                             height: 44
                             opacity: 0
@@ -701,6 +708,35 @@ Item {
                                 PauseAnimation { duration: 350 }
                                 NumberAnimation { target: tapMarker; property: "opacity"; to: 0; duration: 500 }
                             }
+                        }
+
+                        // Official-app green frame: the tele camera's footprint on the
+                        // wide view. Dual Lenses Locating puts the tap onto this box,
+                        // not the wide-frame centre, so drawing it avoids a "slightly
+                        // off the reticle" reading of a successful slew.
+                        Rectangle {
+                            id: teleFootprint
+                            enabled: false
+                            visible: liveFrame.wideView && liveFrame.paintedWidth > 0
+                            readonly property real fovH: {
+                                const tele = Number(root.scopeTelemetry.tele_fov_h)
+                                const wide = Number(root.scopeTelemetry.wide_fov_h)
+                                return (tele > 0 && wide > 0) ? tele / wide : 2.95 / 45.06
+                            }
+                            readonly property real fovV: {
+                                const tele = Number(root.scopeTelemetry.tele_fov_v)
+                                const wide = Number(root.scopeTelemetry.wide_fov_v)
+                                return (tele > 0 && wide > 0) ? tele / wide : 1.66 / 25.93
+                            }
+                            width: liveFrame.paintedWidth * fovH
+                            height: liveFrame.paintedHeight * fovV
+                            x: liveFrame.frameX + (liveFrame.paintedWidth - width) / 2
+                            y: liveFrame.frameY + (liveFrame.paintedHeight - height) / 2
+                            color: "transparent"
+                            border.color: Theme.accent
+                            border.width: 1
+                            opacity: previewHost.chromeShown ? 0.85 : 0.4
+                            Behavior on opacity { NumberAnimation { duration: Theme.slow } }
                         }
                     }
                     Image {
@@ -806,12 +842,16 @@ Item {
                         readonly property color ink: Theme.hsl(-0.021, 1.000, 0.955, 0.533)
                         onReticleChanged: requestPaint()
                         onInkChanged: requestPaint()
+                        readonly property real paintedCX: liveFrame.visible ? liveFrame.frameX + liveFrame.paintedWidth / 2 : width / 2
+                        readonly property real paintedCY: liveFrame.visible ? liveFrame.frameY + liveFrame.paintedHeight / 2 : height / 2
+                        onPaintedCXChanged: requestPaint()
+                        onPaintedCYChanged: requestPaint()
                         onPaint: {
                             const ctx = getContext("2d")
                             ctx.reset()
                             if (!reticle)
                                 return
-                            const cx = width / 2, cy = height / 2
+                            const cx = paintedCX, cy = paintedCY
                             ctx.strokeStyle = ink
                             ctx.lineWidth = 1.2
                             ctx.beginPath()
