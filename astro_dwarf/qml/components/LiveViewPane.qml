@@ -14,6 +14,10 @@ Item {
     property bool chromeShown: true
     property real fovH: 2.95 / 45.06
     property real fovV: 1.66 / 25.93
+    property real footprintNx: 0.5
+    property real footprintNy: 0.5
+    property real footprintNw: 0
+    property real footprintNh: 0
     readonly property real paintedWidth: frame.paintedWidth
     readonly property real paintedHeight: frame.paintedHeight
     readonly property real frameX: (width - paintedWidth) / 2
@@ -84,10 +88,10 @@ Item {
         id: teleFootprint
         enabled: false
         visible: pane.showFootprint && pane.wideView && paintedWidth > 0
-        width: paintedWidth * pane.fovH
-        height: paintedHeight * pane.fovV
-        x: pane.frameX + (paintedWidth - width) / 2
-        y: pane.frameY + (paintedHeight - height) / 2
+        width: paintedWidth * (pane.footprintNw > 0 ? pane.footprintNw : pane.fovH)
+        height: paintedHeight * (pane.footprintNh > 0 ? pane.footprintNh : pane.fovV)
+        x: pane.frameX + paintedWidth * pane.footprintNx - width / 2
+        y: pane.frameY + paintedHeight * pane.footprintNy - height / 2
         color: "transparent"
         border.color: Theme.accent
         border.width: 1

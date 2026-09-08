@@ -465,6 +465,40 @@ class LogListModel(QAbstractListModel):
         return entry.get("level") in allowed
 
 
+# DualCameraLinkage (cmd 14009) is always wide-camera 1920×1080, not the
+# decoded JPEG size or the still-photo resolution in telemetry.
+_LINKAGE_W = 1920
+_LINKAGE_H = 1080
+
+
+def _wide_linkage_pixels(nx: float, ny: float, telemetry: dict[str, Any] | None) -> tuple[int, int]:
+    """Map a 0-1 wide-view tap onto firmware DualCameraLinkage pixels.
+
+    The command slews the tap onto the tele footprint. When the device reports
+    that footprint, shift the command so the tap lands on the wide-frame
+    centre (the on-screen crosshair) instead.
+    """
+    nx = max(0.0, min(1.0, float(nx)))
+    ny = max(0.0, min(1.0, float(ny)))
+    x = nx * (_LINKAGE_W - 1)
+    y = ny * (_LINKAGE_H - 1)
+    telemetry = telemetry or {}
+    try:
+        tx = float(telemetry.get("tele_match_cx"))
+        ty = float(telemetry.get("tele_match_cy"))
+    except (TypeError, ValueError):
+        tx = ty = None
+    if tx is not None and ty is not None:
+        # Ignore implausible boxes (tele is a small patch near the wide centre).
+        if 0.2 * (_LINKAGE_W - 1) < tx < 0.8 * (_LINKAGE_W - 1) and 0.2 * (_LINKAGE_H - 1) < ty < 0.8 * (_LINKAGE_H - 1):
+            x += tx - (_LINKAGE_W - 1) / 2.0
+            y += ty - (_LINKAGE_H - 1) / 2.0
+    return (
+        int(round(max(0.0, min(float(_LINKAGE_W - 1), x)))),
+        int(round(max(0.0, min(float(_LINKAGE_H - 1), y)))),
+    )
+
+
 class AppBackend(QObject):
     devicesChanged = Signal()
     sessionsChanged = Signal()
@@ -1474,14 +1508,13 @@ class AppBackend(QObject):
 
     @Slot(str, float, float)
     def centerOnTap(self, device_id: str, nx: float, ny: float) -> None:
-        """Dual Lenses Locating: point the tele camera at the tapped wide-view spot.
+        """Slew so the tapped wide-view spot lands on the centre crosshair.
 
-        ``nx``/``ny`` are 0-1 positions inside the painted *wide* video frame,
-        whether that pane is the main view or the picture-in-picture. The
-        firmware interprets the command in the wide camera's pixel frame and
-        slews so that point lands on the tele camera's footprint (the official
-        app's green frame). A click on the tele preview cannot be expressed
-        with this command, so the gesture is only offered on the wide pane.
+        ``nx``/``ny`` are 0-1 positions inside the painted *wide* video frame.
+        DualCameraLinkage always uses the wide camera's 1920×1080 pixel space
+        (verified on Dwarf 3). The command itself aims at the tele footprint,
+        which sits off the wide centre at close range, so the tap is shifted
+        by that footprint when the device reports it.
         """
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
@@ -1495,24 +1528,9 @@ class AppBackend(QObject):
                 "Wait for the wide stream, then double-click the target on the wide view",
             )
             return
-        # Scale into the decoded live frame — that is what the user clicked on
-        # and what the firmware treats as the wide stream's pixel space. Camera
-        # telemetry can report a different still-photo size; using it here
-        # shifted taps a little off the cursor.
-        width, height = self.live_images.frame_size("wide")
-        if width <= 0 or height <= 0:
-            telemetry = self._device_telemetry.get(device_id) or {}
-            width = int(telemetry.get("wide_width") or 0)
-            height = int(telemetry.get("wide_height") or 0)
-        if width <= 0 or height <= 0:
-            width, height = 1920, 1080
-        x = int(round(max(0.0, min(1.0, float(nx))) * (width - 1)))
-        y = int(round(max(0.0, min(1.0, float(ny))) * (height - 1)))
-        self.add_log(
-            "info",
-            f"Centering tele on wide-view tap ({x}, {y}) of {width}×{height}",
-            device_id,
-        )
+        telemetry = self._device_telemetry.get(device_id) or {}
+        x, y = _wide_linkage_pixels(nx, ny, telemetry)
+        self.add_log("info", f"Center tap 1920×1080 ({x}, {y})", device_id)
 
         def done(ok: bool, result: Any) -> None:
             if not ok:

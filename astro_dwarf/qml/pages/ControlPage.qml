@@ -531,6 +531,22 @@ Item {
                         const wide = Number(root.scopeTelemetry.wide_fov_v)
                         return (tele > 0 && wide > 0) ? tele / wide : 1.66 / 25.93
                     }
+                    readonly property real teleMatchNx: {
+                        const v = Number(root.scopeTelemetry.tele_match_nx)
+                        return (v > 0 && v < 1) ? v : 0.5
+                    }
+                    readonly property real teleMatchNy: {
+                        const v = Number(root.scopeTelemetry.tele_match_ny)
+                        return (v > 0 && v < 1) ? v : 0.5
+                    }
+                    readonly property real teleMatchNw: {
+                        const v = Number(root.scopeTelemetry.tele_match_nw)
+                        return (v > 0 && v < 1) ? v : 0
+                    }
+                    readonly property real teleMatchNh: {
+                        const v = Number(root.scopeTelemetry.tele_match_nh)
+                        return (v > 0 && v < 1) ? v : 0
+                    }
                     function liveSource(wide) {
                         if (wide)
                             return backend.previewWidePlaying ? ("image://live/wide/" + backend.previewWideGeneration) : ""
@@ -686,6 +702,10 @@ Item {
                         chromeShown: previewHost.chromeShown
                         fovH: previewHost.teleFovH
                         fovV: previewHost.teleFovV
+                        footprintNx: previewHost.teleMatchNx
+                        footprintNy: previewHost.teleMatchNy
+                        footprintNw: previewHost.teleMatchNw
+                        footprintNh: previewHost.teleMatchNh
                         onCenterRequested: (nx, ny) => backend.centerOnTap(backend.selectedDeviceId, nx, ny)
                     }
 
@@ -730,6 +750,10 @@ Item {
                             chromeShown: previewHost.chromeShown
                             fovH: previewHost.teleFovH
                             fovV: previewHost.teleFovV
+                            footprintNx: previewHost.teleMatchNx
+                            footprintNy: previewHost.teleMatchNy
+                            footprintNw: previewHost.teleMatchNw
+                            footprintNh: previewHost.teleMatchNh
                             onCenterRequested: (nx, ny) => backend.centerOnTap(backend.selectedDeviceId, nx, ny)
                         }
                         Rectangle {

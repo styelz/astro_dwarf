@@ -15,6 +15,7 @@ import time
 from typing import Any, Callable
 
 # Notification command ids (dwarf_python_api/proto/protocol.proto).
+CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING = 15200
 CMD_NOTIFY_ELE = 15201
 CMD_NOTIFY_CHARGE = 15202
 CMD_NOTIFY_SDCARD_INFO = 15203
@@ -363,6 +364,30 @@ class TelemetryTap:
             return {}
         if kind != TYPE_NOTIFICATION and cmd >= CMD_NOTIFY_ELE:
             return {}
+        if cmd == CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING:
+            message = self._parse("PictureMatching", data)
+            if message is None:
+                return {}
+            width = int(message.width)
+            height = int(message.height)
+            if width <= 0 or height <= 0:
+                return {}
+            x = int(message.x)
+            y = int(message.y)
+            # Firmware DualCameraLinkage is 1920×1080; scale the rect if the
+            # notify uses a larger still-photo frame.
+            span_w = max(x + width, 1920)
+            span_h = max(y + height, 1080)
+            cx = (x + width / 2.0) * 1919 / max(span_w - 1, 1)
+            cy = (y + height / 2.0) * 1079 / max(span_h - 1, 1)
+            return {
+                "tele_match_cx": cx,
+                "tele_match_cy": cy,
+                "tele_match_nx": (x + width / 2.0) / span_w,
+                "tele_match_ny": (y + height / 2.0) / span_h,
+                "tele_match_nw": width / span_w,
+                "tele_match_nh": height / span_h,
+            }
         if cmd == CMD_NOTIFY_ELE:
             message = self._base.ComResWithInt()
             message.ParseFromString(data)
