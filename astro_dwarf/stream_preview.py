@@ -30,30 +30,41 @@ class LiveImageProvider(QQuickImageProvider):
     def __init__(self):
         super().__init__(QQuickImageProvider.Image)
         self._lock = threading.Lock()
-        self._image = QImage()
+        self._images = {"tele": QImage(), "wide": QImage()}
         self._empty = QImage(1, 1, QImage.Format_ARGB32)
         self._empty.fill(0)
 
-    def requestImage(self, _id, size, _requested_size):
+    def _key(self, image_id: str) -> str:
+        key = (image_id or "").split("/", 1)[0].strip().lower()
+        return key if key in self._images else "tele"
+
+    def requestImage(self, image_id, size, _requested_size):
+        key = self._key(image_id)
         with self._lock:
-            image = QImage(self._image) if not self._image.isNull() else QImage(self._empty)
+            stored = self._images[key]
+            image = QImage(stored) if not stored.isNull() else QImage(self._empty)
         if size is not None:
             size.setWidth(image.width())
             size.setHeight(image.height())
         return image
 
-    def update(self, image: QImage) -> None:
+    def update(self, key: str, image: QImage) -> None:
+        if key not in self._images:
+            return
         with self._lock:
-            self._image = image
+            self._images[key] = image
 
-    def clear(self) -> None:
+    def clear(self, key: str | None = None) -> None:
         with self._lock:
-            self._image = QImage()
+            if key in self._images:
+                self._images[key] = QImage()
+            else:
+                self._images = {"tele": QImage(), "wide": QImage()}
 
-    def frame_size(self) -> tuple[int, int]:
+    def frame_size(self, key: str = "wide") -> tuple[int, int]:
         """Native (width, height) of the latest decoded frame; (0, 0) when empty."""
         with self._lock:
-            image = self._image
+            image = self._images.get(key) or QImage()
             if image.isNull():
                 return (0, 0)
             return (image.width(), image.height())

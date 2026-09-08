@@ -487,9 +487,14 @@ class AppBackend(QObject):
     previewPlayingChanged = Signal()
     previewStatusChanged = Signal()
     previewGenerationChanged = Signal()
-    _openPreviewStream = Signal(str)
-    _closePreviewStream = Signal()
-    _previewReady = Signal(int, str)
+    previewTelePlayingChanged = Signal()
+    previewWidePlayingChanged = Signal()
+    previewTeleGenerationChanged = Signal()
+    previewWideGenerationChanged = Signal()
+    _openTeleStream = Signal(str)
+    _openWideStream = Signal(str)
+    _closePreviewStreams = Signal()
+    _previewReady = Signal(int, str, str)
 
     def __init__(self, data_root: Path, parent: QObject | None = None):
         super().__init__(parent)
@@ -536,18 +541,29 @@ class AppBackend(QObject):
         self._preview_token = 0
         self._preview_active = False
         self._preview_playing = False
+        self._preview_tele_playing = False
+        self._preview_wide_playing = False
         self._preview_status = ""
         self._preview_generation = 0
-        self._last_preview_ui = 0.0
+        self._preview_tele_generation = 0
+        self._preview_wide_generation = 0
+        self._last_preview_ui: dict[str, float] = {}
         self._shut_down = False
         self._preview_thread = QThread(self)
-        self._stream_player = StreamPlayer()
-        self._stream_player.moveToThread(self._preview_thread)
-        self._stream_player.frameReady.connect(self._on_preview_frame)
-        self._stream_player.failed.connect(self._on_preview_failed)
-        self._stream_player.statusChanged.connect(self._on_preview_status)
-        self._openPreviewStream.connect(self._stream_player.openStream, Qt.QueuedConnection)
-        self._closePreviewStream.connect(self._stream_player.closeStream, Qt.QueuedConnection)
+        self._tele_player = StreamPlayer()
+        self._wide_player = StreamPlayer()
+        self._tele_player.moveToThread(self._preview_thread)
+        self._wide_player.moveToThread(self._preview_thread)
+        self._tele_player.frameReady.connect(self._on_tele_frame)
+        self._wide_player.frameReady.connect(self._on_wide_frame)
+        self._tele_player.failed.connect(self._on_tele_failed)
+        self._wide_player.failed.connect(self._on_wide_failed)
+        self._tele_player.statusChanged.connect(self._on_tele_status)
+        self._wide_player.statusChanged.connect(self._on_wide_status)
+        self._openTeleStream.connect(self._tele_player.openStream, Qt.QueuedConnection)
+        self._openWideStream.connect(self._wide_player.openStream, Qt.QueuedConnection)
+        self._closePreviewStreams.connect(self._tele_player.closeStream, Qt.QueuedConnection)
+        self._closePreviewStreams.connect(self._wide_player.closeStream, Qt.QueuedConnection)
         self._previewReady.connect(self._open_ready_stream)
         self._preview_thread.start()
         self._window_frame_hook = None
@@ -1034,9 +1050,7 @@ class AppBackend(QObject):
     @Property(str, notify=selectedDeviceChanged)
     def videoUrl(self) -> str:
         device = next(item for item in self._devices if item.id == self._selected_device_id)
-        if device.model in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
-            return f"rtsp://{device.ip_address}/{'ch1' if device.camera == Camera.WIDE else 'ch0'}/stream0"
-        return f"http://{device.ip_address}:8092/{'secondstream' if device.camera == Camera.WIDE else 'mainstream'}"
+        return self._stream_url(device, device.camera)
 
     @Property(bool, notify=previewActiveChanged)
     def previewActive(self) -> bool:
@@ -1053,6 +1067,27 @@ class AppBackend(QObject):
     @Property(int, notify=previewGenerationChanged)
     def previewGeneration(self) -> int:
         return self._preview_generation
+
+    @Property(bool, notify=previewTelePlayingChanged)
+    def previewTelePlaying(self) -> bool:
+        return self._preview_tele_playing
+
+    @Property(bool, notify=previewWidePlayingChanged)
+    def previewWidePlaying(self) -> bool:
+        return self._preview_wide_playing
+
+    @Property(int, notify=previewTeleGenerationChanged)
+    def previewTeleGeneration(self) -> int:
+        return self._preview_tele_generation
+
+    @Property(int, notify=previewWideGenerationChanged)
+    def previewWideGeneration(self) -> int:
+        return self._preview_wide_generation
+
+    def _stream_url(self, device: Device, camera: Camera) -> str:
+        if device.model in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
+            return f"rtsp://{device.ip_address}/{'ch1' if camera == Camera.WIDE else 'ch0'}/stream0"
+        return f"http://{device.ip_address}:8092/{'secondstream' if camera == Camera.WIDE else 'mainstream'}"
 
     def _set_preview_status(self, text: str) -> None:
         if self._preview_status == text:
@@ -1072,27 +1107,31 @@ class AppBackend(QObject):
         token = self._preview_token
         self._preview_active = True
         self._preview_playing = False
+        self._preview_tele_playing = False
+        self._preview_wide_playing = False
         self.live_images.clear()
         self._set_preview_status("Starting live camera…")
         self.previewActiveChanged.emit()
         self.previewPlayingChanged.emit()
-        camera_op = "open_wide_camera" if device.camera == Camera.WIDE else "open_camera"
-        url = self.videoUrl
-        host = urlparse(url).hostname or device.ip_address
-        port = stream_port(url)
+        self.previewTelePlayingChanged.emit()
+        self.previewWidePlayingChanged.emit()
+        tele_url = self._stream_url(device, Camera.TELE)
+        wide_url = self._stream_url(device, Camera.WIDE)
+        host = urlparse(tele_url).hostname or device.ip_address
+        port = stream_port(tele_url)
 
-        def after_camera(ok: bool, result: Any) -> None:
+        def after_cameras(ok: bool, result: Any) -> None:
             if token != self._preview_token:
                 return
             if not ok:
                 self.add_log("error", f"Could not open camera: {result}", device_id)
                 self._set_preview_status("Camera failed to open")
                 return
-            self.add_log("info", f"Opening {url} in the background", device_id)
-            self._set_preview_status("Waiting for stream " + url)
+            self.add_log("info", f"Opening {tele_url} and {wide_url} in the background", device_id)
+            self._set_preview_status("Waiting for stream " + tele_url)
             threading.Thread(
                 target=self._wait_for_stream,
-                args=(token, url, host, port),
+                args=(token, tele_url, wide_url, host, port),
                 daemon=True,
                 name="preview-wait",
             ).start()
@@ -1101,14 +1140,37 @@ class AppBackend(QObject):
             if token != self._preview_token:
                 return
             if not ok:
-                after_camera(False, result)
+                after_cameras(False, result)
                 return
             if device.model in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
                 # V3 photo mode already initializes both RTSP cameras. The
                 # legacy tele open command can hang after wide was opened.
-                after_camera(True, result)
+                after_cameras(True, result)
                 return
-            worker.send(camera_op, callback=after_camera)
+            primary_op = "open_wide_camera" if device.camera == Camera.WIDE else "open_camera"
+            secondary_op = "open_camera" if device.camera == Camera.WIDE else "open_wide_camera"
+
+            def after_primary(primary_ok: bool, primary_result: Any) -> None:
+                if token != self._preview_token:
+                    return
+                if not primary_ok:
+                    after_cameras(False, primary_result)
+                    return
+
+                def after_secondary(secondary_ok: bool, secondary_result: Any) -> None:
+                    if token != self._preview_token:
+                        return
+                    if not secondary_ok:
+                        self.add_log(
+                            "warning",
+                            f"Second camera did not open for picture-in-picture: {secondary_result}",
+                            device_id,
+                        )
+                    after_cameras(True, primary_result)
+
+                worker.send(secondary_op, callback=after_secondary)
+
+            worker.send(primary_op, callback=after_primary)
 
         def after_live(ok: bool, result: Any) -> None:
             if token != self._preview_token:
@@ -1119,7 +1181,7 @@ class AppBackend(QObject):
 
         worker.send("go_live", callback=after_live)
 
-    def _wait_for_stream(self, token: int, url: str, host: str, port: int) -> None:
+    def _wait_for_stream(self, token: int, tele_url: str, wide_url: str, host: str, port: int) -> None:
         deadline = time.monotonic() + 12
         while token == self._preview_token and time.monotonic() < deadline:
             if port_is_open(host, port, timeout=0.8):
@@ -1127,50 +1189,114 @@ class AppBackend(QObject):
             time.sleep(0.35)
         if token != self._preview_token:
             return
-        self._previewReady.emit(token, url)
+        self._previewReady.emit(token, tele_url, wide_url)
 
-    def _open_ready_stream(self, token: int, url: str) -> None:
+    def _open_ready_stream(self, token: int, tele_url: str, wide_url: str) -> None:
         if token != self._preview_token:
             return
-        self._openPreviewStream.emit(url)
+        device = self._device_by_id(self._selected_device_id)
+        primary_wide = device.camera == Camera.WIDE
+        if primary_wide:
+            self._openWideStream.emit(wide_url)
+            QTimer.singleShot(400, lambda: self._open_secondary_stream(token, "tele", tele_url))
+        else:
+            self._openTeleStream.emit(tele_url)
+            QTimer.singleShot(400, lambda: self._open_secondary_stream(token, "wide", wide_url))
+
+    def _open_secondary_stream(self, token: int, camera: str, url: str) -> None:
+        if token != self._preview_token or not self._preview_active:
+            return
+        if camera == "wide":
+            self._openWideStream.emit(url)
+        else:
+            self._openTeleStream.emit(url)
 
     @Slot()
     def stopPreview(self) -> None:
         self._preview_token += 1
         if self._preview_active or self._preview_playing:
-            self._closePreviewStream.emit()
+            self._closePreviewStreams.emit()
         self._preview_active = False
         self._preview_playing = False
+        self._preview_tele_playing = False
+        self._preview_wide_playing = False
         self.live_images.clear()
+        self._last_preview_ui.clear()
         self._set_preview_status("")
         self.previewActiveChanged.emit()
         self.previewPlayingChanged.emit()
+        self.previewTelePlayingChanged.emit()
+        self.previewWidePlayingChanged.emit()
         self.previewGenerationChanged.emit()
+        self.previewTeleGenerationChanged.emit()
+        self.previewWideGenerationChanged.emit()
 
-    def _on_preview_frame(self, image) -> None:
+    def _on_tele_frame(self, image) -> None:
+        self._on_camera_frame("tele", image)
+
+    def _on_wide_frame(self, image) -> None:
+        self._on_camera_frame("wide", image)
+
+    def _on_camera_frame(self, camera: str, image) -> None:
         if not self._preview_active:
             return
-        self.live_images.update(image)
+        self.live_images.update(camera, image)
         now = time.monotonic()
-        if self._preview_playing and now - self._last_preview_ui < 0.05:
-            return
-        self._last_preview_ui = now
+        if (camera == "wide" and self._preview_wide_playing) or (
+            camera == "tele" and self._preview_tele_playing
+        ):
+            if now - self._last_preview_ui.get(camera, 0.0) < 0.05:
+                return
+        self._last_preview_ui[camera] = now
         self._preview_generation += 1
+        if camera == "wide":
+            self._preview_wide_generation += 1
+            if not self._preview_wide_playing:
+                self._preview_wide_playing = True
+                self.previewWidePlayingChanged.emit()
+            self.previewWideGenerationChanged.emit()
+        else:
+            self._preview_tele_generation += 1
+            if not self._preview_tele_playing:
+                self._preview_tele_playing = True
+                self.previewTelePlayingChanged.emit()
+            self.previewTeleGenerationChanged.emit()
         if not self._preview_playing:
             self._preview_playing = True
             self._set_preview_status(self.videoUrl)
             self.previewPlayingChanged.emit()
         self.previewGenerationChanged.emit()
 
-    def _on_preview_failed(self, message: str) -> None:
+    def _on_tele_failed(self, message: str) -> None:
+        self._on_camera_preview_failed("tele", message)
+
+    def _on_wide_failed(self, message: str) -> None:
+        self._on_camera_preview_failed("wide", message)
+
+    def _on_camera_preview_failed(self, camera: str, message: str) -> None:
+        other_playing = self._preview_wide_playing if camera == "tele" else self._preview_tele_playing
         text = message or "Video preview failed"
+        url = self._stream_url(self._device_by_id(self._selected_device_id), Camera(camera))
         if "Could not open file" in text or not text.strip():
-            text = f"Could not open {self.videoUrl}. The control link is up, but the camera stream is not reachable yet."
+            text = f"Could not open {url}. The control link is up, but the camera stream is not reachable yet."
+        if other_playing:
+            self.add_log("warning", f"{camera} preview: {text}")
+            return
         self.add_log("error", text)
         self._set_preview_status(text)
 
-    def _on_preview_status(self, message: str) -> None:
-        if self._preview_active:
+    def _on_tele_status(self, message: str) -> None:
+        self._on_camera_preview_status("tele", message)
+
+    def _on_wide_status(self, message: str) -> None:
+        self._on_camera_preview_status("wide", message)
+
+    def _on_camera_preview_status(self, camera: str, message: str) -> None:
+        if not self._preview_active:
+            return
+        device = self._device_by_id(self._selected_device_id)
+        primary = "wide" if device.camera == Camera.WIDE else "tele"
+        if camera == primary or not self._preview_playing:
             self._set_preview_status(message)
 
     @Slot(str, str)
@@ -1350,33 +1476,30 @@ class AppBackend(QObject):
     def centerOnTap(self, device_id: str, nx: float, ny: float) -> None:
         """Dual Lenses Locating: point the tele camera at the tapped wide-view spot.
 
-        ``nx``/``ny`` are 0-1 positions inside the painted video frame. The
-        firmware interprets the command in the *wide* camera's pixel frame and
+        ``nx``/``ny`` are 0-1 positions inside the painted *wide* video frame,
+        whether that pane is the main view or the picture-in-picture. The
+        firmware interprets the command in the wide camera's pixel frame and
         slews so that point lands on the tele camera's footprint (the official
-        app's green frame). Verified on a Dwarf 3: a tap 25% off centre moves
-        the wide view by ~25% of its frame. The reference is the tele footprint
-        rather than the frame centre, so a click on the *tele* preview cannot
-        be expressed precisely with this command; like the official app, the
-        gesture is only offered on the wide view.
+        app's green frame). A click on the tele preview cannot be expressed
+        with this command, so the gesture is only offered on the wide pane.
         """
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
             return
         if device_id != self._selected_device_id or not self._preview_playing:
             return
-        device = self._device_by_id(device_id)
-        if device.camera != Camera.WIDE:
+        if not self._preview_wide_playing:
             self._toast(
-                "Double-click centering works on the wide camera",
+                "Double-click centering needs the wide camera",
                 "warning",
-                "Switch CAMERA to Wide, double-click the target, then switch back to Tele",
+                "Wait for the wide stream, then double-click the target on the wide view",
             )
             return
         # Scale into the decoded live frame — that is what the user clicked on
         # and what the firmware treats as the wide stream's pixel space. Camera
         # telemetry can report a different still-photo size; using it here
         # shifted taps a little off the cursor.
-        width, height = self.live_images.frame_size()
+        width, height = self.live_images.frame_size("wide")
         if width <= 0 or height <= 0:
             telemetry = self._device_telemetry.get(device_id) or {}
             width = int(telemetry.get("wide_width") or 0)
@@ -1385,7 +1508,11 @@ class AppBackend(QObject):
             width, height = 1920, 1080
         x = int(round(max(0.0, min(1.0, float(nx))) * (width - 1)))
         y = int(round(max(0.0, min(1.0, float(ny))) * (height - 1)))
-        self.add_log("info", f"Centering tele on wide-view tap ({x}, {y})", device_id)
+        self.add_log(
+            "info",
+            f"Centering tele on wide-view tap ({x}, {y}) of {width}×{height}",
+            device_id,
+        )
 
         def done(ok: bool, result: Any) -> None:
             if not ok:
@@ -1577,8 +1704,6 @@ class AppBackend(QObject):
         current = self._device_by_id(device_id)
         if current.camera == Camera(camera):
             return
-        if device_id == self._selected_device_id and self._preview_active:
-            self.stopPreview()
         updated = replace(current, camera=Camera(camera))
         self.store.devices.save(updated)
         self._devices = [updated if item.id == updated.id else item for item in self._devices]
@@ -2300,7 +2425,8 @@ class AppBackend(QObject):
         except RuntimeError:
             pass
         self.stopPreview()
-        self._stream_player.abort()
+        self._tele_player.abort()
+        self._wide_player.abort()
         for worker in list(self._workers.values()):
             worker.shutdown(wait=False)
         if self._preview_thread.isRunning():

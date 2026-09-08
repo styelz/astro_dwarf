@@ -508,6 +508,31 @@ Item {
                     Layout.preferredHeight: 0
                     property string previewDeviceId: backend.selectedDeviceId
                     property string statusText: backend.selectedDevice.connected ? backend.videoUrl : "Connect a telescope to start the stream"
+                    property bool mainIsWide: backend.selectedDevice.camera === "wide"
+                    readonly property bool pipAvailable: backend.previewTelePlaying && backend.previewWidePlaying
+                    readonly property bool displayWide: pipAvailable ? mainIsWide : backend.previewWidePlaying
+                    readonly property bool mainPlaying: displayWide ? backend.previewWidePlaying : backend.previewTelePlaying
+                    readonly property bool pipPlaying: pipAvailable
+                    readonly property real teleFovH: {
+                        const tele = Number(root.scopeTelemetry.tele_fov_h)
+                        const wide = Number(root.scopeTelemetry.wide_fov_h)
+                        return (tele > 0 && wide > 0) ? tele / wide : 2.95 / 45.06
+                    }
+                    readonly property real teleFovV: {
+                        const tele = Number(root.scopeTelemetry.tele_fov_v)
+                        const wide = Number(root.scopeTelemetry.wide_fov_v)
+                        return (tele > 0 && wide > 0) ? tele / wide : 1.66 / 25.93
+                    }
+                    function liveSource(wide) {
+                        if (wide)
+                            return backend.previewWidePlaying ? ("image://live/wide/" + backend.previewWideGeneration) : ""
+                        return backend.previewTelePlaying ? ("image://live/tele/" + backend.previewTeleGeneration) : ""
+                    }
+                    function swapViews() {
+                        if (!pipAvailable)
+                            return
+                        mainIsWide = !mainIsWide
+                    }
                     readonly property bool previewFailed: {
                         const s = String(backend.previewStatus || "").toLowerCase()
                         return s.indexOf("fail") >= 0 || s.indexOf("could not") >= 0
@@ -535,6 +560,7 @@ Item {
                             backend.uiLog("warning", "Preview needs an active telescope connection")
                             return
                         }
+                        mainIsWide = backend.selectedDevice.camera === "wide"
                         statusText = "Starting live camera…"
                         backend.startPreview(backend.selectedDeviceId)
                     }
@@ -632,111 +658,116 @@ Item {
                                 firstRunHint.show()
                             else
                                 firstRunHint.hide()
-                            liveFrame.source = backend.previewPlaying
-                                ? ("image://live/frame/" + backend.previewGeneration) : ""
-                        }
-                        function onPreviewGenerationChanged() {
-                            liveFrame.source = backend.previewPlaying
-                                ? ("image://live/frame/" + backend.previewGeneration) : ""
                         }
                     }
 
-                    Image {
+                    LiveViewPane {
                         id: liveFrame
                         anchors.fill: parent
-                        visible: backend.previewPlaying
-                        cache: false
-                        fillMode: Image.PreserveAspectFit
-
-                        // Dual Lenses Locating: double-click a spot on the wide live
-                        // view and the firmware slews the tele camera onto it. On the
-                        // tele view the backend explains the gesture needs the wide camera.
-                        readonly property bool centerEnabled: backend.previewPlaying && root.motionEnabled
-                        readonly property bool wideView: backend.selectedDevice.camera === "wide"
-                        readonly property real frameX: (width - paintedWidth) / 2
-                        readonly property real frameY: (height - paintedHeight) / 2
-
-                        function centerOn(px, py) {
-                            if (!centerEnabled || paintedWidth <= 0 || paintedHeight <= 0)
-                                return
-                            const fx = px - frameX
-                            const fy = py - frameY
-                            if (fx < 0 || fy < 0 || fx > paintedWidth || fy > paintedHeight)
-                                return
-                            if (wideView)
-                                tapMarker.showAt(px, py)
-                            backend.centerOnTap(backend.selectedDeviceId, fx / paintedWidth, fy / paintedHeight)
+                        playing: previewHost.mainPlaying
+                        wideView: previewHost.displayWide
+                        source: {
+                            backend.previewTeleGeneration
+                            backend.previewWideGeneration
+                            backend.previewTelePlaying
+                            backend.previewWidePlaying
+                            return previewHost.liveSource(previewHost.displayWide)
                         }
+                        centerEnabled: playing && root.motionEnabled
+                        showFootprint: wideView
+                        chromeShown: previewHost.chromeShown
+                        fovH: previewHost.teleFovH
+                        fovV: previewHost.teleFovV
+                        onCenterRequested: (nx, ny) => backend.centerOnTap(backend.selectedDeviceId, nx, ny)
+                    }
 
-                        TapHandler {
-                            // PointerHandler is not an Item, so it has no anchors; it
-                            // already covers its parent. Map from the scene because
-                            // eventPoint.position can sit a few pixels off the cursor.
-                            acceptedButtons: Qt.LeftButton
-                            enabled: liveFrame.centerEnabled
-                            gesturePolicy: TapHandler.ReleaseWithinBounds
-                            onDoubleTapped: (eventPoint, button) => {
-                                const p = liveFrame.mapFromItem(null, eventPoint.scenePosition.x, eventPoint.scenePosition.y)
-                                liveFrame.centerOn(p.x, p.y)
-                            }
+                    Item {
+                        id: pipBox
+                        z: 3
+                        clip: true
+                        visible: previewHost.pipAvailable
+                        width: Math.round(Math.max(168, Math.min(parent.width * 0.32, parent.height * 0.38, 300)))
+                        height: Math.round(width * pipAspect)
+                        readonly property real pipAspect: {
+                            const w = pipPane.paintedWidth
+                            const h = pipPane.paintedHeight
+                            return (w > 0 && h > 0) ? h / w : 9 / 16
                         }
-
-                        Item {
-                            id: tapMarker
-                            z: 2
-                            width: 44
-                            height: 44
-                            opacity: 0
-                            visible: opacity > 0
-                            function showAt(px, py) {
-                                x = px - width / 2
-                                y = py - height / 2
-                                tapMarkerAnim.restart()
-                            }
-                            Rectangle {
-                                anchors.fill: parent
-                                radius: width / 2
-                                color: "transparent"
-                                border.color: Theme.accent
-                                border.width: 2
-                            }
-                            Rectangle { anchors.centerIn: parent; width: 14; height: 1.5; color: Theme.accent }
-                            Rectangle { anchors.centerIn: parent; width: 1.5; height: 14; color: Theme.accent }
-                            SequentialAnimation {
-                                id: tapMarkerAnim
-                                PropertyAction { target: tapMarker; property: "opacity"; value: 1 }
-                                PauseAnimation { duration: 350 }
-                                NumberAnimation { target: tapMarker; property: "opacity"; to: 0; duration: 500 }
-                            }
-                        }
-
-                        // Official-app green frame: the tele camera's footprint on the
-                        // wide view. Dual Lenses Locating puts the tap onto this box,
-                        // not the wide-frame centre, so drawing it avoids a "slightly
-                        // off the reticle" reading of a successful slew.
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.rightMargin: 14
+                        anchors.bottomMargin: 46
                         Rectangle {
-                            id: teleFootprint
-                            enabled: false
-                            visible: liveFrame.wideView && liveFrame.paintedWidth > 0
-                            readonly property real fovH: {
-                                const tele = Number(root.scopeTelemetry.tele_fov_h)
-                                const wide = Number(root.scopeTelemetry.wide_fov_h)
-                                return (tele > 0 && wide > 0) ? tele / wide : 2.95 / 45.06
-                            }
-                            readonly property real fovV: {
-                                const tele = Number(root.scopeTelemetry.tele_fov_v)
-                                const wide = Number(root.scopeTelemetry.wide_fov_v)
-                                return (tele > 0 && wide > 0) ? tele / wide : 1.66 / 25.93
-                            }
-                            width: liveFrame.paintedWidth * fovH
-                            height: liveFrame.paintedHeight * fovV
-                            x: liveFrame.frameX + (liveFrame.paintedWidth - width) / 2
-                            y: liveFrame.frameY + (liveFrame.paintedHeight - height) / 2
-                            color: "transparent"
+                            anchors.fill: parent
+                            color: Theme.hsl(0.090, 0.375, 0.031, 0.92)
                             border.color: Theme.accent
                             border.width: 1
-                            opacity: previewHost.chromeShown ? 0.85 : 0.4
-                            Behavior on opacity { NumberAnimation { duration: Theme.slow } }
+                        }
+                        LiveViewPane {
+                            id: pipPane
+                            anchors.fill: parent
+                            anchors.margins: 1
+                            playing: previewHost.pipPlaying
+                            wideView: !previewHost.displayWide
+                            source: {
+                                backend.previewTeleGeneration
+                                backend.previewWideGeneration
+                                backend.previewTelePlaying
+                                backend.previewWidePlaying
+                                return previewHost.liveSource(!previewHost.displayWide)
+                            }
+                            centerEnabled: playing && root.motionEnabled
+                            swallowClicks: true
+                            showFootprint: wideView
+                            chromeShown: previewHost.chromeShown
+                            fovH: previewHost.teleFovH
+                            fovV: previewHost.teleFovV
+                            onCenterRequested: (nx, ny) => backend.centerOnTap(backend.selectedDeviceId, nx, ny)
+                        }
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.margins: 6
+                            width: pipLabel.implicitWidth + 12
+                            height: 18
+                            color: Theme.hsl(0.079, 0.517, 0.057, 0.82)
+                            border.color: Theme.outline
+                            Text {
+                                id: pipLabel
+                                anchors.centerIn: parent
+                                text: pipPane.wideView ? "WIDE" : "TELE"
+                                color: Theme.accent
+                                font.pixelSize: 9
+                                font.bold: true
+                                font.letterSpacing: 1
+                            }
+                        }
+                        Rectangle {
+                            id: pipSwap
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 6
+                            width: pipSwapLabel.implicitWidth + 14
+                            height: 18
+                            z: 2
+                            color: Theme.fillActive
+                            border.color: Theme.accent
+                            Text {
+                                id: pipSwapLabel
+                                anchors.centerIn: parent
+                                text: "SWAP"
+                                color: Theme.accent
+                                font.pixelSize: 9
+                                font.bold: true
+                                font.letterSpacing: 1
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onContainsMouseChanged: previewHost.holdControls(containsMouse)
+                                onClicked: previewHost.swapViews()
+                            }
                         }
                     }
                     Image {
@@ -797,7 +828,7 @@ Item {
                         RowLayout {
                             id: readoutStrip
                             readonly property var t: root.scopeTelemetry
-                            readonly property bool wide: backend.selectedDevice.camera === "wide"
+                            readonly property bool wide: previewHost.displayWide
                             readonly property string exposure: {
                                 const value = wide ? t.wide_exposure_text : t.exposure_text
                                 return root.scopeOnline && value && value !== "—" ? String(value) : liveExposure.text
@@ -920,6 +951,22 @@ Item {
                             }
                         }
                         Rectangle {
+                            visible: backend.previewPlaying
+                            width: mainCamLabel.implicitWidth + 16
+                            height: 28
+                            color: Theme.hsl(0.094, 0.333, 0.094, 0.753)
+                            border.color: Theme.outline
+                            Text {
+                                id: mainCamLabel
+                                anchors.centerIn: parent
+                                text: previewHost.displayWide ? "WIDE" : "TELE"
+                                color: Theme.accent
+                                font.pixelSize: 11
+                                font.bold: true
+                                font.letterSpacing: 1
+                            }
+                        }
+                        Rectangle {
                             id: recBadge
                             readonly property var t: root.scopeTelemetry
                             readonly property bool rec: root.scopeOnline && (root.scopeActivity === "record" || !!t.capture_active)
@@ -949,18 +996,29 @@ Item {
                             }
                         }
                     }
-                    HudButton {
-                        id: stopPreviewButton
+                    Row {
+                        id: previewActions
+                        z: 4
                         anchors.right: parent.right
                         anchors.top: parent.top
                         anchors.margins: 14
+                        spacing: 8
                         opacity: backend.previewActive && previewHost.chromeShown ? 1 : 0
                         visible: opacity > 0
                         Behavior on opacity { NumberAnimation { duration: Theme.normal } }
-                        text: "STOP PREVIEW"
-                        busyText: "STOPPING…"
-                        onHoveredChanged: previewHost.holdControls(hovered)
-                        onClicked: previewHost.stopPreview()
+                        HudButton {
+                            visible: previewHost.pipAvailable
+                            text: "SWAP VIEWS"
+                            onHoveredChanged: previewHost.holdControls(hovered)
+                            onClicked: previewHost.swapViews()
+                        }
+                        HudButton {
+                            id: stopPreviewButton
+                            text: "STOP PREVIEW"
+                            busyText: "STOPPING…"
+                            onHoveredChanged: previewHost.holdControls(hovered)
+                            onClicked: previewHost.stopPreview()
+                        }
                     }
                     Rectangle {
                         // one-time hint the first time a stream comes up
@@ -1002,7 +1060,7 @@ Item {
                             spacing: 10
                             Text { text: "\uE962"; font.family: Theme.fontIcon; font.pixelSize: 12; color: Theme.accent; anchors.verticalCenter: parent.verticalCenter }
                             Text {
-                                text: "MOVE THE POINTER OVER THE STREAM FOR CONTROLS  ·  DOUBLE-CLICK A STAR TO CENTRE IT"
+                                text: "MOVE THE POINTER OVER THE STREAM FOR CONTROLS  ·  DOUBLE-CLICK THE WIDE VIEW TO CENTRE"
                                 color: Theme.textPrimary
                                 font.pixelSize: Theme.fontSm
                                 font.letterSpacing: Theme.tracking1
@@ -1027,6 +1085,12 @@ Item {
                                 else
                                     previewHost.startPreview()
                             }
+                        }
+                        HudMenuItem {
+                            text: "Swap views"
+                            glyph: "\uE8AB"
+                            enabled: previewHost.pipAvailable
+                            onTriggered: previewHost.swapViews()
                         }
                         HudMenuItem {
                             text: "Copy stream URL"
