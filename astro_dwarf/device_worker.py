@@ -315,6 +315,71 @@ def configure(device: dict[str, Any]) -> bool:
     return True
 
 
+def _motor_position(motor_id: int) -> float | None:
+    """Read one axis via CMD 14011. Position is degrees."""
+    from dwarf_python_api.proto import motor_control_pb2
+
+    if _tap is None:
+        return None
+    before = time.monotonic()
+    message = motor_control_pb2.ReqMotorGetPosition()
+    message.id = int(motor_id)
+    send_without_response(message, 14011, 6)
+    deadline = time.monotonic() + 1.5
+    key = f"motor_pos_{int(motor_id)}"
+    stamp_key = f"{key}_at"
+    while time.monotonic() < deadline:
+        snap = _tap.snapshot()
+        stamped = snap.get(stamp_key)
+        if isinstance(stamped, (int, float)) and float(stamped) >= before - 0.05:
+            try:
+                return float(snap[key])
+            except (KeyError, TypeError, ValueError):
+                return None
+        time.sleep(0.04)
+    return None
+
+
+def _motor_run_to(motor_id: int, position: float) -> bool:
+    from dwarf_python_api.proto import motor_control_pb2
+
+    message = motor_control_pb2.ReqMotorRunTo()
+    message.id = int(motor_id)
+    message.end_position = float(position)
+    message.speed = 10
+    message.speed_ramping = 100
+    message.resolution_level = 3
+    return send_without_response(message, 14001, 6)
+
+
+def _center_wide_view(nx: float, ny: float, fov_h: float, fov_v: float) -> bool:
+    """Slew so a 0-1 wide-frame tap lands on the wide-view crosshair.
+
+    DualCameraLinkage aims at the tele camera (wrong for this gesture at close
+    range). Rotation is motor 1, pitch is motor 2; signs match the on-screen
+    joystick (right / up are positive).
+    """
+    nx = max(0.0, min(1.0, float(nx)))
+    ny = max(0.0, min(1.0, float(ny)))
+    yaw_delta = (nx - 0.5) * float(fov_h)
+    pitch_delta = (0.5 - ny) * float(fov_v)
+    az = _motor_position(1)
+    alt = _motor_position(2)
+    if az is None or alt is None:
+        raise RuntimeError("Could not read mount position for centering")
+    log(
+        f"Center wide yaw {yaw_delta:+.2f}° pitch {pitch_delta:+.2f}° "
+        f"from ({az:.2f}, {alt:.2f})",
+        "info",
+    )
+    moved = True
+    if abs(yaw_delta) >= 0.05:
+        moved = _motor_run_to(1, az + yaw_delta) and moved
+    if abs(pitch_delta) >= 0.05:
+        moved = _motor_run_to(2, alt + pitch_delta) and moved
+    return moved
+
+
 def sdk_call(operation: str, *args: Any) -> Any:
     if _api is None:
         raise RuntimeError("Telescope worker is not configured")
@@ -328,14 +393,20 @@ def sdk_call(operation: str, *args: Any) -> Any:
             return send_without_response(message, 14006, 6)
         return send_without_response(motor_control_pb2.ReqMotorServiceJoystickStop(), 14008, 6)
     if operation == "center_tap":
-        # Dual Lenses Locating (official app double-tap): 1920×1080 wide-frame
-        # pixels. CMD 14009, MODULE_MOTOR.
-        from dwarf_python_api.proto import motor_control_pb2
-
-        message = motor_control_pb2.ReqDualCameraLinkage()
-        message.x = int(args[0])
-        message.y = int(args[1])
-        return send_without_response(message, 14009, 6)
+        nx = float(args[0]) if args else 0.5
+        ny = float(args[1]) if len(args) > 1 else 0.5
+        fov_h = float(args[2]) if len(args) > 2 else 0.0
+        fov_v = float(args[3]) if len(args) > 3 else 0.0
+        if fov_h <= 0 or fov_v <= 0:
+            snap = _tap.snapshot() if _tap else {}
+            try:
+                fov_h = float(snap.get("wide_fov_h") or 0)
+                fov_v = float(snap.get("wide_fov_v") or 0)
+            except (TypeError, ValueError):
+                fov_h = fov_v = 0.0
+        if fov_h <= 0 or fov_v <= 0:
+            fov_h, fov_v = 45.06, 25.93
+        return _center_wide_view(nx, ny, fov_h, fov_v)
     if operation == "manual_focus":
         from dwarf_python_api.proto import focus_pb2
 

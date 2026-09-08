@@ -14,7 +14,8 @@ import threading
 import time
 from typing import Any, Callable
 
-# Notification command ids (dwarf_python_api/proto/protocol.proto).
+# Motor / notification command ids (dwarf_python_api/proto/protocol.proto).
+CMD_STEP_MOTOR_GET_POSITION = 14011
 CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING = 15200
 CMD_NOTIFY_ELE = 15201
 CMD_NOTIFY_CHARGE = 15202
@@ -362,6 +363,23 @@ class TelemetryTap:
     def _decode(self, cmd: int, kind: int, data: bytes) -> dict[str, Any]:
         if self._notify is None or self._base is None:
             return {}
+        if cmd == CMD_STEP_MOTOR_GET_POSITION:
+            if kind not in _RESPONSE_TYPES:
+                return {}
+            try:
+                from dwarf_python_api.proto import motor_control_pb2
+
+                message = motor_control_pb2.ResMotorPosition()
+                message.ParseFromString(data)
+            except Exception:
+                return {}
+            if int(message.code) != 0:
+                return {}
+            motor_id = int(message.id)
+            return {
+                f"motor_pos_{motor_id}": float(message.position),
+                f"motor_pos_{motor_id}_at": time.monotonic(),
+            }
         if kind != TYPE_NOTIFICATION and cmd >= CMD_NOTIFY_ELE:
             return {}
         if cmd == CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING:

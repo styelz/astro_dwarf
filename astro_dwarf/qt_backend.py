@@ -465,40 +465,6 @@ class LogListModel(QAbstractListModel):
         return entry.get("level") in allowed
 
 
-# DualCameraLinkage (cmd 14009) is always wide-camera 1920×1080, not the
-# decoded JPEG size or the still-photo resolution in telemetry.
-_LINKAGE_W = 1920
-_LINKAGE_H = 1080
-
-
-def _wide_linkage_pixels(nx: float, ny: float, telemetry: dict[str, Any] | None) -> tuple[int, int]:
-    """Map a 0-1 wide-view tap onto firmware DualCameraLinkage pixels.
-
-    The command slews the tap onto the tele footprint. When the device reports
-    that footprint, shift the command so the tap lands on the wide-frame
-    centre (the on-screen crosshair) instead.
-    """
-    nx = max(0.0, min(1.0, float(nx)))
-    ny = max(0.0, min(1.0, float(ny)))
-    x = nx * (_LINKAGE_W - 1)
-    y = ny * (_LINKAGE_H - 1)
-    telemetry = telemetry or {}
-    try:
-        tx = float(telemetry.get("tele_match_cx"))
-        ty = float(telemetry.get("tele_match_cy"))
-    except (TypeError, ValueError):
-        tx = ty = None
-    if tx is not None and ty is not None:
-        # Ignore implausible boxes (tele is a small patch near the wide centre).
-        if 0.2 * (_LINKAGE_W - 1) < tx < 0.8 * (_LINKAGE_W - 1) and 0.2 * (_LINKAGE_H - 1) < ty < 0.8 * (_LINKAGE_H - 1):
-            x += tx - (_LINKAGE_W - 1) / 2.0
-            y += ty - (_LINKAGE_H - 1) / 2.0
-    return (
-        int(round(max(0.0, min(float(_LINKAGE_W - 1), x)))),
-        int(round(max(0.0, min(float(_LINKAGE_H - 1), y)))),
-    )
-
-
 class AppBackend(QObject):
     devicesChanged = Signal()
     sessionsChanged = Signal()
@@ -1510,11 +1476,9 @@ class AppBackend(QObject):
     def centerOnTap(self, device_id: str, nx: float, ny: float) -> None:
         """Slew so the tapped wide-view spot lands on the centre crosshair.
 
-        ``nx``/``ny`` are 0-1 positions inside the painted *wide* video frame.
-        DualCameraLinkage always uses the wide camera's 1920×1080 pixel space
-        (verified on Dwarf 3). The command itself aims at the tele footprint,
-        which sits off the wide centre at close range, so the tap is shifted
-        by that footprint when the device reports it.
+        Dual Lenses Locating aims at the tele camera, which sits off the wide
+        crosshair at close range. This instead turns the tap's offset from
+        centre into a motor move using the wide camera's field of view.
         """
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
@@ -1528,15 +1492,27 @@ class AppBackend(QObject):
                 "Wait for the wide stream, then double-click the target on the wide view",
             )
             return
+        nx = max(0.0, min(1.0, float(nx)))
+        ny = max(0.0, min(1.0, float(ny)))
         telemetry = self._device_telemetry.get(device_id) or {}
-        x, y = _wide_linkage_pixels(nx, ny, telemetry)
-        self.add_log("info", f"Center tap 1920×1080 ({x}, {y})", device_id)
+        try:
+            fov_h = float(telemetry.get("wide_fov_h") or 0)
+            fov_v = float(telemetry.get("wide_fov_v") or 0)
+        except (TypeError, ValueError):
+            fov_h = fov_v = 0.0
+        if fov_h <= 0 or fov_v <= 0:
+            fov_h, fov_v = 45.06, 25.93
+        self.add_log(
+            "info",
+            f"Center tap ({nx:.3f}, {ny:.3f})  Δ{((nx - 0.5) * fov_h):+.2f}° × {((0.5 - ny) * fov_v):+.2f}°",
+            device_id,
+        )
 
         def done(ok: bool, result: Any) -> None:
             if not ok:
                 self.add_log("error", f"Center on tap failed: {result}", device_id)
 
-        worker.send("center_tap", {"args": [x, y]}, done)
+        worker.send("center_tap", {"args": [nx, ny, fov_h, fov_v]}, done)
 
     @Slot(str, int)
     def manualFocus(self, device_id: str, direction: int) -> None:
