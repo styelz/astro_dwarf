@@ -152,81 +152,117 @@ Item {
                         dim: !vitalsPanel.live
                     }
                 }
-                RowLayout {
+                Item {
+                    id: vitalsBody
                     Layout.fillWidth: true
-                    spacing: 10
-                    BatteryGauge {
-                        percent: vitalsPanel.live && vitalsPanel.t.battery_percent !== undefined ? Number(vitalsPanel.t.battery_percent) : -1
-                        charging: !!vitalsPanel.t.charging && vitalsPanel.live
-                        Layout.preferredWidth: 74
-                        Layout.preferredHeight: 74
+                    Layout.fillHeight: true
+                    Layout.preferredHeight: 0
+                    clip: true
+                    readonly property int gaugeSize: {
+                        const minGrid = 62
+                        const fromHeight = height - minGrid - 6
+                        return Math.round(Math.max(36, Math.min(74, fromHeight)))
                     }
+                    readonly property bool compact: gaugeSize < 56
                     ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 5
+                        anchors.fill: parent
+                        spacing: 6
                         RowLayout {
                             Layout.fillWidth: true
-                            Text { text: "STORAGE"; color: Theme.textSecondary; font.pixelSize: 8; font.bold: true; font.letterSpacing: 1.1; Layout.fillWidth: true }
-                            Text {
-                                text: vitalsPanel.live ? String(vitalsPanel.t.storage_text || "—") : "—"
-                                color: vitalsPanel.live && vitalsPanel.t.storage_tone && vitalsPanel.t.storage_tone !== "unknown" && vitalsPanel.t.storage_tone !== "good" ? Util.toneColor(vitalsPanel.t.storage_tone) : Theme.textPrimary
-                                font.pixelSize: 11; font.family: Theme.fontMono; font.bold: true
+                            Layout.preferredHeight: vitalsBody.gaugeSize
+                            Layout.maximumHeight: 74
+                            Layout.minimumHeight: 36
+                            spacing: 10
+                            BatteryGauge {
+                                percent: vitalsPanel.live && vitalsPanel.t.battery_percent !== undefined ? Number(vitalsPanel.t.battery_percent) : -1
+                                charging: !!vitalsPanel.t.charging && vitalsPanel.live
+                                Layout.preferredWidth: vitalsBody.gaugeSize
+                                Layout.preferredHeight: vitalsBody.gaugeSize
+                                Layout.minimumWidth: 36
+                                Layout.minimumHeight: 36
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                spacing: vitalsBody.compact ? 3 : 5
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Text { text: "STORAGE"; color: Theme.textSecondary; font.pixelSize: 8; font.bold: true; font.letterSpacing: 1.1; Layout.fillWidth: true }
+                                    Text {
+                                        text: vitalsPanel.live ? String(vitalsPanel.t.storage_text || "—") : "—"
+                                        color: vitalsPanel.live && vitalsPanel.t.storage_tone && vitalsPanel.t.storage_tone !== "unknown" && vitalsPanel.t.storage_tone !== "good" ? Util.toneColor(vitalsPanel.t.storage_tone) : Theme.textPrimary
+                                        font.pixelSize: 11; font.family: Theme.fontMono; font.bold: true
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                                StorageBar {
+                                    Layout.fillWidth: true
+                                    fraction: vitalsPanel.live ? Number(vitalsPanel.t.storage_percent || 0) : 0
+                                    tone: vitalsPanel.live ? String(vitalsPanel.t.storage_tone || "unknown") : "unknown"
+                                    valid: !vitalsPanel.live || vitalsPanel.t.storage_valid !== false
+                                }
+                                Text {
+                                    visible: !vitalsBody.compact
+                                    Layout.fillWidth: true
+                                    text: vitalsPanel.live ? (vitalsPanel.t.storage_percent ? Math.round(Number(vitalsPanel.t.storage_percent) * 100) + "% USED" : (vitalsPanel.t.storage_valid === false ? "CARD MISSING" : "")) : ""
+                                    color: Theme.textSecondary; font.pixelSize: 8; font.letterSpacing: 0.8; elide: Text.ElideRight
+                                }
+                                RowLayout {
+                                    visible: !vitalsBody.compact
+                                    Layout.fillWidth: true
+                                    spacing: 4
+                                    HudChip { label: vitalsPanel.t.charging_text || "BATT"; tone: vitalsPanel.t.charging ? Theme.warning : Theme.textSecondary; dim: !vitalsPanel.live; visible: vitalsPanel.live && !!vitalsPanel.t.charging_text }
+                                    Text { visible: !!vitalsPanel.t.battery_health_text && vitalsPanel.live; text: vitalsPanel.t.battery_health_text || ""; color: Theme.textSecondary; font.pixelSize: 8; font.letterSpacing: 0.6; elide: Text.ElideRight; Layout.fillWidth: true }
+                                    Item { Layout.fillWidth: true; visible: !vitalsPanel.t.battery_health_text }
+                                }
                             }
                         }
-                        StorageBar {
+                        GridLayout {
+                            id: vitalsGrid
                             Layout.fillWidth: true
-                            fraction: vitalsPanel.live ? Number(vitalsPanel.t.storage_percent || 0) : 0
-                            tone: vitalsPanel.live ? String(vitalsPanel.t.storage_tone || "unknown") : "unknown"
-                            valid: !vitalsPanel.live || vitalsPanel.t.storage_valid !== false
+                            Layout.fillHeight: true
+                            Layout.minimumHeight: 0
+                            readonly property int tileCount: 6
+                            columns: {
+                                if (width <= 0)
+                                    return 2
+                                const minTile = 76
+                                const fit = Math.max(1, Math.floor((width + columnSpacing) / (minTile + columnSpacing)))
+                                const minRowH = 28
+                                const rowsOk = (cols) => {
+                                    const rows = Math.ceil(tileCount / cols)
+                                    return rows * minRowH + (rows - 1) * rowSpacing <= height + 0.5
+                                }
+                                if (fit >= 3 && !rowsOk(2))
+                                    return 3
+                                if (fit >= 2)
+                                    return 2
+                                return 1
+                            }
+                            columnSpacing: height > 0 && height < 90 ? 4 : 6
+                            rowSpacing: height > 0 && height < 90 ? 4 : 6
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "♨"; label: "BODY TEMP"; value: vitalsPanel.live ? String(vitalsPanel.t.temperature_c_text || "—") : "—"; unit: vitalsPanel.live ? String(vitalsPanel.t.temperature_f_text || "") : ""; tone: Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "◉"; label: backend.selectedDevice.camera === "wide" ? "WIDE SENSOR" : "TELE SENSOR"; value: vitalsPanel.live ? String((backend.selectedDevice.camera === "wide" ? vitalsPanel.t.cmos_wide_c_text : vitalsPanel.t.cmos_tele_c_text) || "—") : "—"; unit: vitalsPanel.live ? String((backend.selectedDevice.camera === "wide" ? vitalsPanel.t.cmos_wide_f_text : vitalsPanel.t.cmos_tele_f_text) || "") : ""; tone: Theme.notice; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "⌾"; label: "FOCUS"; value: vitalsPanel.live ? String(vitalsPanel.t.focus_text || "—") : "—"; unit: "STEPS"; tone: root.scopeActivity === "autofocus" ? Theme.notice : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "⛭"; label: "MOUNT"; value: vitalsPanel.live ? String(vitalsPanel.t.mount_text || "—") : "—"; unit: vitalsPanel.t.mount_mode === "EQ" ? "EQUATORIAL" : vitalsPanel.t.mount_mode === "AZ" ? "ALT-AZ" : ""; tone: vitalsPanel.t.mount_mode === "EQ" ? Theme.success : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "▶"; label: "STREAM"; value: vitalsPanel.live ? String(vitalsPanel.t.stream_text || "—") : "—"; unit: vitalsPanel.t.shooting_mode_text && vitalsPanel.t.shooting_mode_text !== "—" ? vitalsPanel.t.shooting_mode_text : ""; tone: backend.previewPlaying ? Theme.danger : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "✦"; label: "LIGHTS"; value: vitalsPanel.live ? (vitalsPanel.t.lights_on ? "RING ON" : "RING OFF") : "—"; unit: vitalsPanel.live ? (vitalsPanel.t.indicator_on ? "· LED ON" : "· LED OFF") : ""; tone: vitalsPanel.t.lights_on ? Theme.warning : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
                         }
                         Text {
+                            visible: !root.scopeOnline
                             Layout.fillWidth: true
-                            text: vitalsPanel.live ? (vitalsPanel.t.storage_percent ? Math.round(Number(vitalsPanel.t.storage_percent) * 100) + "% USED" : (vitalsPanel.t.storage_valid === false ? "CARD MISSING" : "")) : ""
-                            color: Theme.textSecondary; font.pixelSize: 8; font.letterSpacing: 0.8; elide: Text.ElideRight
+                            text: "Connect the telescope to stream battery, storage and sensor telemetry."
+                            color: Theme.textSecondary; font.pixelSize: 9; elide: Text.ElideRight; maximumLineCount: 1
                         }
-                        RowLayout {
+                        Text {
+                            id: vitalsWaiting
+                            visible: root.scopeOnline && !vitalsPanel.live
                             Layout.fillWidth: true
-                            spacing: 4
-                            HudChip { label: vitalsPanel.t.charging_text || "BATT"; tone: vitalsPanel.t.charging ? Theme.warning : Theme.textSecondary; dim: !vitalsPanel.live; visible: vitalsPanel.live && !!vitalsPanel.t.charging_text }
-                            Text { visible: !!vitalsPanel.t.battery_health_text && vitalsPanel.live; text: vitalsPanel.t.battery_health_text || ""; color: Theme.textSecondary; font.pixelSize: 8; font.letterSpacing: 0.6; elide: Text.ElideRight; Layout.fillWidth: true }
-                            Item { Layout.fillWidth: true; visible: !vitalsPanel.t.battery_health_text }
+                            text: "Waiting for the first device report…"
+                            color: Theme.textSecondary; font.pixelSize: 9
+                            SequentialAnimation on opacity { running: vitalsWaiting.visible; loops: Animation.Infinite; NumberAnimation { to: 0.4; duration: 700 } NumberAnimation { to: 1; duration: 700 } }
                         }
                     }
-                }
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: width >= 250 ? 2 : 1
-                    columnSpacing: 6
-                    rowSpacing: 6
-                    VitalTile { Layout.fillWidth: true; glyph: "♨"; label: "BODY TEMP"; value: vitalsPanel.live ? String(vitalsPanel.t.temperature_c_text || "—") : "—"; unit: vitalsPanel.live ? String(vitalsPanel.t.temperature_f_text || "") : ""; tone: Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
-                    VitalTile { Layout.fillWidth: true; glyph: "◉"; label: backend.selectedDevice.camera === "wide" ? "WIDE SENSOR" : "TELE SENSOR"; value: vitalsPanel.live ? String((backend.selectedDevice.camera === "wide" ? vitalsPanel.t.cmos_wide_c_text : vitalsPanel.t.cmos_tele_c_text) || "—") : "—"; unit: vitalsPanel.live ? String((backend.selectedDevice.camera === "wide" ? vitalsPanel.t.cmos_wide_f_text : vitalsPanel.t.cmos_tele_f_text) || "") : ""; tone: Theme.notice; stale: vitalsPanel.stale; live: vitalsPanel.live }
-                    VitalTile { Layout.fillWidth: true; glyph: "⌾"; label: "FOCUS"; value: vitalsPanel.live ? String(vitalsPanel.t.focus_text || "—") : "—"; unit: "STEPS"; tone: root.scopeActivity === "autofocus" ? Theme.notice : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
-                    VitalTile { Layout.fillWidth: true; glyph: "⛭"; label: "MOUNT"; value: vitalsPanel.live ? String(vitalsPanel.t.mount_text || "—") : "—"; unit: vitalsPanel.t.mount_mode === "EQ" ? "EQUATORIAL" : vitalsPanel.t.mount_mode === "AZ" ? "ALT-AZ" : ""; tone: vitalsPanel.t.mount_mode === "EQ" ? Theme.success : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
-                    VitalTile { Layout.fillWidth: true; glyph: "▶"; label: "STREAM"; value: vitalsPanel.live ? String(vitalsPanel.t.stream_text || "—") : "—"; unit: vitalsPanel.t.shooting_mode_text && vitalsPanel.t.shooting_mode_text !== "—" ? vitalsPanel.t.shooting_mode_text : ""; tone: backend.previewPlaying ? Theme.danger : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
-                    VitalTile {
-                        Layout.fillWidth: true
-                        glyph: "✦"
-                        label: "LIGHTS"
-                        value: vitalsPanel.live ? (vitalsPanel.t.lights_on ? "RING ON" : "RING OFF") : "—"
-                        unit: vitalsPanel.live ? (vitalsPanel.t.indicator_on ? "· LED ON" : "· LED OFF") : ""
-                        tone: vitalsPanel.t.lights_on ? Theme.warning : Theme.accent
-                        stale: vitalsPanel.stale
-                        live: vitalsPanel.live
-                    }
-                }
-                Text {
-                    visible: !root.scopeOnline
-                    Layout.fillWidth: true
-                    text: "Connect the telescope to stream battery, storage and sensor telemetry."
-                    color: Theme.textSecondary; font.pixelSize: 9; wrapMode: Text.Wrap
-                }
-                Text {
-                    id: vitalsWaiting
-                    visible: root.scopeOnline && !vitalsPanel.live
-                    Layout.fillWidth: true
-                    text: "Waiting for the first device report…"
-                    color: Theme.textSecondary; font.pixelSize: 9
-                    SequentialAnimation on opacity { running: vitalsWaiting.visible; loops: Animation.Infinite; NumberAnimation { to: 0.4; duration: 700 } NumberAnimation { to: 1; duration: 700 } }
                 }
             }
 

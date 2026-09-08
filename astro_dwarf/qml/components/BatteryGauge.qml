@@ -59,7 +59,7 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             text: gauge.percent >= 0 ? gauge.percent + "%" : "—"
             color: gauge.percent >= 0 ? Theme.textPrimary : Theme.muted
-            font.pixelSize: gauge.width >= 70 ? 16 : 13
+            font.pixelSize: Math.max(11, Math.min(16, Math.round(gauge.width * 0.22)))
             font.family: Theme.fontMono
             font.bold: true
         }
@@ -67,7 +67,7 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             text: gauge.charging ? "⚡ CHG" : "BATT"
             color: gauge.charging ? Theme.warning : Theme.textSecondary
-            font.pixelSize: 8
+            font.pixelSize: gauge.width >= 52 ? 8 : 7
             font.letterSpacing: 1
             font.bold: true
             SequentialAnimation on opacity {
