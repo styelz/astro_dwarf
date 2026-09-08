@@ -1,6 +1,6 @@
 # Astro Dwarf
 
-<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/b658353d-5d8d-4027-aa38-cf6498fea76c" />
+<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/1a434b1d-461b-4b85-a7ae-241169c6b9d9" />
 
 Desktop app for controlling and scheduling [Dwarf II](https://dwarflab.com/), Dwarf 3, and Dwarf Mini telescopes. Each telescope is a separate profile with its own IP, location, and session queue.
 
