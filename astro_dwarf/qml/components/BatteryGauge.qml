@@ -19,8 +19,12 @@ Item {
         anchors.fill: parent
         readonly property real value: gauge.shown
         readonly property color ring: gauge.toneColor
+        readonly property color track: Theme.hsl(0.062, 0.450, 0.157)
+        readonly property color ticks: Theme.hsl(0.050, 0.400, 0.275)
         onValueChanged: requestPaint()
         onRingChanged: requestPaint()
+        onTrackChanged: requestPaint()
+        onTicksChanged: requestPaint()
         onPaint: {
             const ctx = getContext("2d")
             ctx.reset()
@@ -28,11 +32,11 @@ Item {
             const start = Math.PI * 0.75, span = Math.PI * 1.5
             ctx.lineCap = "round"
             ctx.lineWidth = 5
-            ctx.strokeStyle = Theme.hsl(0.062, 0.450, 0.157)
+            ctx.strokeStyle = track
             ctx.beginPath(); ctx.arc(cx, cy, r, start, start + span); ctx.stroke()
             // tick marks
             ctx.lineWidth = 1
-            ctx.strokeStyle = Theme.hsl(0.050, 0.400, 0.275)
+            ctx.strokeStyle = ticks
             for (let i = 0; i <= 10; i++) {
                 const a = start + span * i / 10
                 ctx.beginPath()

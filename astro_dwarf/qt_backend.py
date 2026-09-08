@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -61,7 +63,7 @@ from .services import (
 from .location import match_timezone, resolve_location, timezone_locations
 from .runtime import prepare_worker_environment, worker_command
 from .storage import SessionStore
-from .stream_preview import LiveImageProvider, StreamPlayer, port_is_open, stream_port
+from .stream_preview import CREATE_NO_WINDOW, LiveImageProvider, StreamPlayer, port_is_open, stream_port
 from .telemetry_view import AlertEngine, derive_activity, format_telemetry
 
 
@@ -76,6 +78,10 @@ class TelescopeProcess(QObject):
         self.device = device
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+        if sys.platform == "win32" and hasattr(self.process, "setCreateProcessArgumentsModifier"):
+            self.process.setCreateProcessArgumentsModifier(
+                lambda args: args.setCreateFlags(int(args.createFlags()) | CREATE_NO_WINDOW)
+            )
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("PYTHONUNBUFFERED", "1")
         prepare_worker_environment(environment)
@@ -176,10 +182,16 @@ class TelescopeProcess(QObject):
         ))
 
     def shutdown(self) -> None:
-        if self.running:
+        if not self.running:
+            return
+        try:
             self.process.closeWriteChannel()
-            self.process.terminate()
-            QTimer.singleShot(1000, lambda: self.process.kill() if self.running else None)
+        except RuntimeError:
+            return
+        self.process.terminate()
+        if not self.process.waitForFinished(800):
+            self.process.kill()
+            self.process.waitForFinished(800)
 
     def _read_stdout(self) -> None:
         self._stdout += bytes(self.process.readAllStandardOutput()).decode(errors="replace")
@@ -521,6 +533,7 @@ class AppBackend(QObject):
         self._preview_status = ""
         self._preview_generation = 0
         self._last_preview_ui = 0.0
+        self._shut_down = False
         self._preview_thread = QThread(self)
         self._stream_player = StreamPlayer()
         self._stream_player.moveToThread(self._preview_thread)
@@ -531,6 +544,8 @@ class AppBackend(QObject):
         self._closePreviewStream.connect(self._stream_player.closeStream, Qt.QueuedConnection)
         self._previewReady.connect(self._open_ready_stream)
         self._preview_thread.start()
+        self._window_frame_hook = None
+        self._pending_window_frame = None
 
     def _create_worker(self, device: Device) -> TelescopeProcess:
         old = self._workers.pop(device.id, None)
@@ -1371,16 +1386,22 @@ class AppBackend(QObject):
         QGuiApplication.clipboard().setText(text)
         self._toast("Copied to clipboard", "success")
 
-    # Set by app.run() once the window exists; lets QML re-tint the native frame.
-    window_frame_hook = None
+    def bindWindowFrame(self, hook) -> None:
+        self._window_frame_hook = hook
+        self._flush_window_frame()
 
     @Slot(str, str, str)
     def applyWindowFrame(self, caption: str, border: str, text: str) -> None:
-        hook = self.window_frame_hook
-        if hook is None:
+        self._pending_window_frame = (caption, border, text)
+        self._flush_window_frame()
+
+    def _flush_window_frame(self) -> None:
+        hook = self._window_frame_hook
+        colors = self._pending_window_frame
+        if hook is None or not colors:
             return
         try:
-            hook(caption, border, text)
+            hook(*colors)
         except Exception:
             pass
 
@@ -2202,11 +2223,17 @@ class AppBackend(QObject):
         self.historyChanged.emit()
 
     def shutdown(self) -> None:
+        if self._shut_down:
+            return
+        self._shut_down = True
+        self.timer.stop()
         self.stopPreview()
-        self._preview_thread.quit()
-        self._preview_thread.wait(2000)
-        for worker in self._workers.values():
+        for worker in list(self._workers.values()):
             worker.shutdown()
+        if self._preview_thread.isRunning():
+            self._preview_thread.quit()
+            if not self._preview_thread.wait(3000):
+                os._exit(0)
 
     def _sequence_colliding_mosaics(self) -> None:
         groups: dict[tuple[str, str], list[Session]] = {}

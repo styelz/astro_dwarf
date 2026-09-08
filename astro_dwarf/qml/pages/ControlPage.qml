@@ -632,6 +632,12 @@ Item {
                                 firstRunHint.show()
                             else
                                 firstRunHint.hide()
+                            liveFrame.source = backend.previewPlaying
+                                ? ("image://live/frame/" + backend.previewGeneration) : ""
+                        }
+                        function onPreviewGenerationChanged() {
+                            liveFrame.source = backend.previewPlaying
+                                ? ("image://live/frame/" + backend.previewGeneration) : ""
                         }
                     }
 
@@ -641,7 +647,6 @@ Item {
                         visible: backend.previewPlaying
                         cache: false
                         fillMode: Image.PreserveAspectFit
-                        source: backend.previewPlaying ? ("image://live/frame/" + backend.previewGeneration) : ""
 
                         // Dual Lenses Locating: double-click a spot on the wide live
                         // view and the firmware slews the tele camera onto it. On the
@@ -718,10 +723,12 @@ Item {
                         visible: opacity > 0
                         opacity: !backend.previewPlaying ? 0.22 : (previewHost.chromeShown ? 0.10 : 0)
                         Behavior on opacity { NumberAnimation { duration: 220 } }
+                        readonly property color ink: Theme.accent
+                        onInkChanged: requestPaint()
                         onPaint: {
                             const ctx = getContext("2d")
                             ctx.reset()
-                            ctx.strokeStyle = Theme.accent
+                            ctx.strokeStyle = ink
                             ctx.lineWidth = 1
                             ctx.globalAlpha = 0.35
                             for (let y = 0.5; y < height; y += 4) {
@@ -796,14 +803,16 @@ Item {
                         visible: opacity > 0
                         Behavior on opacity { NumberAnimation { duration: Theme.slow } }
                         readonly property bool reticle: backend.previewPlaying
+                        readonly property color ink: Theme.hsl(-0.021, 1.000, 0.955, 0.533)
                         onReticleChanged: requestPaint()
+                        onInkChanged: requestPaint()
                         onPaint: {
                             const ctx = getContext("2d")
                             ctx.reset()
                             if (!reticle)
                                 return
                             const cx = width / 2, cy = height / 2
-                            ctx.strokeStyle = Theme.hsl(-0.021, 1.000, 0.955, 0.533)
+                            ctx.strokeStyle = ink
                             ctx.lineWidth = 1.2
                             ctx.beginPath()
                             ctx.moveTo(cx - 80, cy); ctx.lineTo(cx - 16, cy)
@@ -1166,6 +1175,10 @@ Item {
                             // bearing ticks around the ring
                             anchors.fill: parent
                             anchors.margins: -10
+                            readonly property color majorInk: Theme.accent
+                            readonly property color minorInk: Theme.outlineStrong
+                            onMajorInkChanged: requestPaint()
+                            onMinorInkChanged: requestPaint()
                             onPaint: {
                                 const ctx = getContext("2d")
                                 ctx.reset()
@@ -1175,7 +1188,7 @@ Item {
                                     const major = i % 9 === 0
                                     const a = i * Math.PI * 2 / 36
                                     const len = major ? 8 : 4
-                                    ctx.strokeStyle = major ? Theme.accent : Theme.outlineStrong
+                                    ctx.strokeStyle = major ? majorInk : minorInk
                                     ctx.lineWidth = major ? 2 : 1
                                     ctx.beginPath()
                                     ctx.moveTo(cx + Math.cos(a) * (rOuter - len), cy + Math.sin(a) * (rOuter - len))

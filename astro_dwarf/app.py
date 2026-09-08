@@ -22,7 +22,12 @@ _DWMWA_TEXT_COLOR = 36
 
 
 def _colorref(hex_color: str) -> ctypes.c_int:
-    value = hex_color.removeprefix("#")
+    value = str(hex_color).strip().removeprefix("#")
+    if len(value) == 8:
+        # Qt QML String(color) is typically #AARRGGBB.
+        value = value[2:]
+    elif len(value) == 3:
+        value = "".join(ch * 2 for ch in value)
     red, green, blue = int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
     return ctypes.c_int(red | (green << 8) | (blue << 16))
 
@@ -94,18 +99,47 @@ def run() -> int:
     window = engine.rootObjects()[0]
     if not icon.isNull() and hasattr(window, "setIcon"):
         window.setIcon(icon)
-    _apply_windows_frame(window)
-    backend.window_frame_hook = lambda caption, border, text: _apply_windows_frame(window, caption, border, text)
+    # Wire the hook after load: QML already queued the saved theme during onCompleted.
+    backend.bindWindowFrame(lambda caption, border, text: _apply_windows_frame(window, caption, border, text))
+
+    quitting = {"done": False}
+
+    def _mark_quit() -> None:
+        quitting["done"] = True
+
+    def _handle_interrupt(*_args) -> None:
+        if quitting["done"]:
+            os._exit(1)
+        quitting["done"] = True
+        application.quit()
+
+    application.aboutToQuit.connect(_mark_quit)
     application.aboutToQuit.connect(backend.shutdown)
 
     # Let Ctrl-C in the launching console close the app cleanly. Qt's event loop
     # otherwise swallows SIGINT, so route it to a clean quit and run a lightweight
     # timer that keeps giving the Python interpreter a chance to service signals.
-    signal.signal(signal.SIGINT, lambda *_: application.quit())
+    signal.signal(signal.SIGINT, _handle_interrupt)
+    signal.signal(signal.SIGTERM, _handle_interrupt)
     sigint_heartbeat = QTimer()
     sigint_heartbeat.setInterval(200)
     sigint_heartbeat.timeout.connect(lambda: None)
     sigint_heartbeat.start()
+
+    if sys.platform == "win32":
+        # Ctrl-C during a blocking Qt wait (worker/ffmpeg teardown) never reaches
+        # Python's signal handler. A console handler can still force-exit.
+        handler_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ulong)
+
+        def _console_ctrl(ctrl_type: int) -> bool:
+            if ctrl_type in (0, 1, 2):  # CTRL_C, CTRL_BREAK, CTRL_CLOSE
+                _handle_interrupt()
+                return True
+            return False
+
+        console_handler = handler_type(_console_ctrl)
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(console_handler, True)
+        application._console_ctrl_handler = console_handler
 
     test_exit_ms = int(os.getenv("ASTRO_DWARF_TEST_EXIT_MS", "0"))
     if test_exit_ms:
