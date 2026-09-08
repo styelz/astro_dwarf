@@ -38,6 +38,34 @@ Dialog {
             labels.push(sessionDialog.paneLabel(items[i], i))
         return labels
     }
+    function flagOn(value, fallback) {
+        if (value === undefined || value === null)
+            return fallback
+        return !!value
+    }
+    function setChecked(box, value) {
+        box.checkState = value ? Qt.Checked : Qt.Unchecked
+    }
+    function applyWorkflowChecks(workflow) {
+        const w = workflow || {}
+        setChecked(calibrate, sessionDialog.flagOn(w.calibrate, true))
+        setChecked(autofocus, sessionDialog.flagOn(w.autofocus, true))
+        setChecked(infiniteFocus, sessionDialog.flagOn(w.infinite_focus, false))
+        setChecked(polar, sessionDialog.flagOn(w.polar_align, false))
+        setChecked(doGoto, sessionDialog.flagOn(w.goto, true))
+    }
+    function workflowFromForm(existing) {
+        const current = existing || {}
+        return {
+            calibrate: calibrate.checked,
+            autofocus: autofocus.checked,
+            infinite_focus: infiniteFocus.checked,
+            polar_align: polar.checked,
+            goto: doGoto.checked,
+            wait_before_seconds: current.wait_before_seconds,
+            wait_after_seconds: current.wait_after_seconds
+        }
+    }
     function loadPaneCoordinates(data) {
         sessionName.text = data.pane_name || data.name || ""
         const target = data.target || {}
@@ -46,6 +74,7 @@ Dialog {
         targetType.currentIndex = Math.max(0, ["equatorial", "solar", "none"].indexOf(kind))
         ra.text = target.ra_hours != null && target.ra_hours !== "" ? target.ra_hours : ""
         dec.text = target.dec_degrees != null && target.dec_degrees !== "" ? target.dec_degrees : ""
+        sessionDialog.applyWorkflowChecks(data.workflow)
     }
     function stashCurrentPane() {
         if (!editingTemplate || paneCount === 0)
@@ -61,6 +90,7 @@ Dialog {
             ra_hours: ra.text,
             dec_degrees: dec.text
         }
+        current.workflow = sessionDialog.workflowFromForm(current.workflow)
         members[paneIndex] = current
         templateMembers = members
     }
@@ -83,13 +113,19 @@ Dialog {
         for (let i = 0; i < items.length; i++) {
             const pane = items[i] || {}
             const target = pane.target || {}
+            const workflow = pane.workflow || {}
             result.push(Object.assign({}, shared, {
                 id: pane.id || "",
                 name: pane.pane_name || pane.name || shared.name,
                 target: target.name || shared.target,
                 target_kind: target.kind || shared.target_kind,
                 ra: target.ra_hours != null ? String(target.ra_hours) : "",
-                dec: target.dec_degrees != null ? String(target.dec_degrees) : ""
+                dec: target.dec_degrees != null ? String(target.dec_degrees) : "",
+                calibrate: sessionDialog.flagOn(workflow.calibrate, shared.calibrate),
+                autofocus: sessionDialog.flagOn(workflow.autofocus, shared.autofocus),
+                infinite_focus: sessionDialog.flagOn(workflow.infinite_focus, shared.infinite_focus),
+                polar_align: sessionDialog.flagOn(workflow.polar_align, shared.polar_align),
+                goto: sessionDialog.flagOn(workflow.goto, shared.goto)
             }))
         }
         return result
@@ -117,11 +153,7 @@ Dialog {
         waitBefore.text = data.workflow.wait_before_seconds
         waitAfter.text = data.workflow.wait_after_seconds
         notes.text = data.notes || ""
-        calibrate.checked = data.workflow.calibrate
-        autofocus.checked = data.workflow.autofocus
-        infiniteFocus.checked = data.workflow.infinite_focus
-        polar.checked = data.workflow.polar_align
-        doGoto.checked = data.workflow.goto
+        sessionDialog.applyWorkflowChecks(data.workflow)
         saveTemplate.checked = false
     }
     function formPayload() {
@@ -234,7 +266,7 @@ Dialog {
         }
         Text {
             visible: sessionDialog.multiPaneTemplate
-            text: "Each pane has its own name and coordinates. Camera, mosaic, wait, and workflow apply to every pane."
+            text: "Each pane has its own name, coordinates, and workflow. Camera, mosaic, and wait apply to every pane."
             color: Theme.textSecondary
             font.pixelSize: 12
             wrapMode: Text.Wrap
