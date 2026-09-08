@@ -24,6 +24,15 @@ Dialog {
     readonly property bool multiPaneTemplate: editingTemplate && paneCount > 1
     padding: 0
 
+    QtObject {
+        id: paneFlags
+        property bool calibrate: true
+        property bool autofocus: true
+        property bool infiniteFocus: false
+        property bool polar: false
+        property bool doGoto: true
+    }
+
     function cloneValue(value) {
         return JSON.parse(JSON.stringify(value || {}))
     }
@@ -43,25 +52,62 @@ Dialog {
             return fallback
         return !!value
     }
-    function setChecked(box, value) {
-        box.checkState = value ? Qt.Checked : Qt.Unchecked
+    function workflowOf(item) {
+        const w = (item && item.workflow) || {}
+        return {
+            calibrate: sessionDialog.flagOn(w.calibrate, true),
+            autofocus: sessionDialog.flagOn(w.autofocus, true),
+            infinite_focus: sessionDialog.flagOn(w.infinite_focus, false),
+            polar_align: sessionDialog.flagOn(w.polar_align, false),
+            goto: sessionDialog.flagOn(w.goto, true),
+            wait_before_seconds: w.wait_before_seconds,
+            wait_after_seconds: w.wait_after_seconds
+        }
+    }
+    function cloneMember(item) {
+        const cloned = sessionDialog.cloneValue(item)
+        cloned.workflow = sessionDialog.workflowOf(item)
+        cloned.target = sessionDialog.cloneValue((item && item.target) || cloned.target || {})
+        cloned.pane_name = (item && (item.pane_name || item.name)) || cloned.name || ""
+        cloned.name = cloned.pane_name
+        cloned.id = (item && item.id) || cloned.id || ""
+        return cloned
+    }
+    function staggerImportedWorkflows(members) {
+        if (members.length < 2)
+            return
+        for (let i = 1; i < members.length; i++) {
+            if (!sessionDialog.flagOn((members[i].workflow || {}).calibrate, true))
+                return
+        }
+        for (let i = 1; i < members.length; i++) {
+            members[i].workflow = Object.assign({}, members[i].workflow || {}, {
+                calibrate: false,
+                polar_align: false
+            })
+        }
     }
     function applyWorkflowChecks(workflow) {
         const w = workflow || {}
-        setChecked(calibrate, sessionDialog.flagOn(w.calibrate, true))
-        setChecked(autofocus, sessionDialog.flagOn(w.autofocus, true))
-        setChecked(infiniteFocus, sessionDialog.flagOn(w.infinite_focus, false))
-        setChecked(polar, sessionDialog.flagOn(w.polar_align, false))
-        setChecked(doGoto, sessionDialog.flagOn(w.goto, true))
+        paneFlags.calibrate = sessionDialog.flagOn(w.calibrate, true)
+        paneFlags.autofocus = sessionDialog.flagOn(w.autofocus, true)
+        paneFlags.infiniteFocus = sessionDialog.flagOn(w.infinite_focus, false)
+        paneFlags.polar = sessionDialog.flagOn(w.polar_align, false)
+        paneFlags.doGoto = sessionDialog.flagOn(w.goto, true)
+        calibrate.setOn(paneFlags.calibrate)
+        autofocus.setOn(paneFlags.autofocus)
+        infiniteFocus.setOn(paneFlags.infiniteFocus)
+        polar.setOn(paneFlags.polar)
+        doGoto.setOn(paneFlags.doGoto)
     }
     function workflowFromForm(existing) {
         const current = existing || {}
         return {
-            calibrate: calibrate.checked,
-            autofocus: autofocus.checked,
-            infinite_focus: infiniteFocus.checked,
-            polar_align: polar.checked,
-            goto: doGoto.checked,
+            calibrate: paneFlags.calibrate,
+            autofocus: paneFlags.autofocus,
+            infinite_focus: paneFlags.infiniteFocus,
+            polar_align: paneFlags.polar,
+            goto: paneFlags.doGoto,
             wait_before_seconds: current.wait_before_seconds,
             wait_after_seconds: current.wait_after_seconds
         }
@@ -166,8 +212,8 @@ Dialog {
             ir_filter: irFilter.currentText, rows: Number(rows.text), columns: Number(columns.text),
             rotation: Number(rotation.text), horizontal_scale: Number(hScale.text), vertical_scale: Number(vScale.text),
             wait_before: Number(waitBefore.text), wait_after: Number(waitAfter.text), notes: notes.text,
-            calibrate: calibrate.checked, autofocus: autofocus.checked, infinite_focus: infiniteFocus.checked,
-            polar_align: polar.checked, goto: doGoto.checked, save_template: saveTemplate.checked
+            calibrate: paneFlags.calibrate, autofocus: paneFlags.autofocus, infinite_focus: paneFlags.infiniteFocus,
+            polar_align: paneFlags.polar, goto: paneFlags.doGoto, save_template: saveTemplate.checked
         }
     }
     function openForDate(day) {
@@ -195,11 +241,9 @@ Dialog {
         waitBefore.text = "0"
         waitAfter.text = "10"
         notes.text = ""
-        calibrate.checked = true
-        autofocus.checked = true
-        infiniteFocus.checked = false
-        polar.checked = false
-        doGoto.checked = true
+        sessionDialog.applyWorkflowChecks({
+            calibrate: true, autofocus: true, infinite_focus: false, polar_align: false, goto: true
+        })
         saveTemplate.checked = false
         open()
     }
@@ -216,15 +260,16 @@ Dialog {
         const members = data.members && data.members.length ? data.members : [data]
         const cloned = []
         for (let i = 0; i < members.length; i++)
-            cloned.push(sessionDialog.cloneValue(members[i]))
+            cloned.push(sessionDialog.cloneMember(members[i]))
+        sessionDialog.staggerImportedWorkflows(cloned)
         editingTemplate = true
         templateMembers = cloned
         paneIndex = 0
         editingId = cloned[0].id || data.id
+        syncingPane = true
         fillForm(data)
         loadPaneCoordinates(cloned[0])
         startTime.text = ""
-        syncingPane = true
         panePicker.model = sessionDialog.paneChoices()
         panePicker.currentIndex = 0
         syncingPane = false
@@ -321,11 +366,56 @@ Dialog {
                 Layout.columnSpan: 2
                 Layout.topMargin: 4
                 spacing: 22
-                HudCheck { id: calibrate; text: "Calibrate" }
-                HudCheck { id: autofocus; text: "Auto focus" }
-                HudCheck { id: infiniteFocus; text: "Infinity focus" }
-                HudCheck { id: polar; text: "Polar / EQ" }
-                HudCheck { id: doGoto; text: "GOTO" }
+                HudCheck {
+                    id: calibrate
+                    text: "Calibrate"
+                    onToggled: if (!sessionDialog.syncingPane) paneFlags.calibrate = checked
+                    Binding on checked {
+                        value: paneFlags.calibrate
+                        when: !calibrate.pressed
+                        restoreMode: Binding.RestoreNone
+                    }
+                }
+                HudCheck {
+                    id: autofocus
+                    text: "Auto focus"
+                    onToggled: if (!sessionDialog.syncingPane) paneFlags.autofocus = checked
+                    Binding on checked {
+                        value: paneFlags.autofocus
+                        when: !autofocus.pressed
+                        restoreMode: Binding.RestoreNone
+                    }
+                }
+                HudCheck {
+                    id: infiniteFocus
+                    text: "Infinity focus"
+                    onToggled: if (!sessionDialog.syncingPane) paneFlags.infiniteFocus = checked
+                    Binding on checked {
+                        value: paneFlags.infiniteFocus
+                        when: !infiniteFocus.pressed
+                        restoreMode: Binding.RestoreNone
+                    }
+                }
+                HudCheck {
+                    id: polar
+                    text: "Polar / EQ"
+                    onToggled: if (!sessionDialog.syncingPane) paneFlags.polar = checked
+                    Binding on checked {
+                        value: paneFlags.polar
+                        when: !polar.pressed
+                        restoreMode: Binding.RestoreNone
+                    }
+                }
+                HudCheck {
+                    id: doGoto
+                    text: "GOTO"
+                    onToggled: if (!sessionDialog.syncingPane) paneFlags.doGoto = checked
+                    Binding on checked {
+                        value: paneFlags.doGoto
+                        when: !doGoto.pressed
+                        restoreMode: Binding.RestoreNone
+                    }
+                }
                 HudCheck { id: saveTemplate; text: "Save template"; visible: !sessionDialog.editingTemplate }
             }
         }

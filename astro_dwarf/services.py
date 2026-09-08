@@ -87,13 +87,17 @@ def observing_date(scheduled_start: str, cutoff_hour: int = 12, tz: ZoneInfo | s
     return value.date().isoformat()
 
 
+def mosaic_pane_workflow(workflow: Workflow, index: int) -> Workflow:
+    if index <= 0:
+        return workflow
+    return replace(workflow, calibrate=False, polar_align=False)
+
+
 def stagger_mosaic_sessions(sessions: list[Session], start: datetime, profile: HardwareProfile) -> list[Session]:
     cursor = start.replace(second=0, microsecond=0)
     result: list[Session] = []
     for index, session in enumerate(sorted(sessions, key=lambda item: pane_sort_key(item.name))):
-        workflow = session.workflow
-        if index > 0:
-            workflow = replace(workflow, calibrate=False, polar_align=False)
+        workflow = mosaic_pane_workflow(session.workflow, index)
         duration = DurationEngine.calculate(replace(session, workflow=workflow), profile)
         result.append(replace(
             session,
@@ -724,7 +728,11 @@ def import_telescopius(path: Path) -> list[SessionTemplate]:
                     notes=f"Imported from Telescopius: {path.name}",
                 )
             )
-    return templates
+    templates.sort(key=lambda item: pane_sort_key(item.name))
+    return [
+        replace(template, workflow=mosaic_pane_workflow(template.workflow, index))
+        for index, template in enumerate(templates)
+    ]
 
 
 class MemoryLogHandler(logging.Handler):

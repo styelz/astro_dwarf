@@ -11,9 +11,16 @@ CheckBox {
     opacity: enabled ? 1 : 0.5
     Behavior on opacity { NumberAnimation { duration: Theme.quick } }
 
-    readonly property bool lit: checked || checkState === Qt.PartiallyChecked
+    readonly property bool ticked: checkState === Qt.Checked
+    readonly property bool lit: ticked || checkState === Qt.PartiallyChecked
     readonly property color lineColor: !box.enabled ? Theme.disabledOutline
                                      : box.lit || box.hovered || box.visualFocus ? Theme.accent : Theme.outline
+
+    function setOn(value) {
+        const on = !!value
+        checked = on
+        checkState = on ? Qt.Checked : Qt.Unchecked
+    }
 
     indicator: Item {
         implicitWidth: 20
@@ -47,13 +54,13 @@ CheckBox {
             anchors.fill: parent
             anchors.margins: 3
             color: Theme.accent
-            opacity: box.checked ? 0.10 : 0
+            opacity: box.ticked ? 0.10 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.normal } }
         }
         HudCheckMark {
             anchors.fill: parent
             anchors.margins: 3
-            on: box.checked
+            on: box.ticked
             color: box.enabled ? Theme.accent : Theme.textSecondary
         }
         Rectangle {
