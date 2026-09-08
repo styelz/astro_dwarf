@@ -306,6 +306,7 @@ ApplicationWindow {
                 HudButton {
                     text: backend.schedulerEnabled ? "SCHEDULER ON" : "SCHEDULER OFF"
                     busyText: "UPDATING…"
+                    enabled: backend.schedulerEnabled || backend.anyDeviceConnected
                     buttonColor: backend.schedulerEnabled ? Theme.fillSuccess : Theme.surfaceHigh
                     foregroundColor: backend.schedulerEnabled ? Theme.success : Theme.textPrimary
                     onClicked: backend.setSchedulerEnabled(!backend.schedulerEnabled)

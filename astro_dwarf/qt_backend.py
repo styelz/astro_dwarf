@@ -568,6 +568,7 @@ class AppBackend(QObject):
             self._device_activity.pop(device_id, None)
             self._device_telemetry.pop(device_id, None)
             self._telemetry_updated.pop(device_id, None)
+        self._disarm_scheduler_if_offline()
         self._notify_devices()
 
     def _notify_devices(self) -> None:
@@ -600,6 +601,7 @@ class AppBackend(QObject):
             worker = self._workers.get(device_id)
             if worker:
                 worker.connected = False
+            self._disarm_scheduler_if_offline()
         self._track_session_capture(device_id, current)
         self._notify_devices()
 
@@ -986,13 +988,35 @@ class AppBackend(QObject):
     def schedulerEnabled(self) -> bool:
         return self._scheduler_enabled
 
+    @Property(bool, notify=devicesChanged)
+    def anyDeviceConnected(self) -> bool:
+        return self._any_device_connected()
+
+    def _any_device_connected(self) -> bool:
+        return any(worker.connected for worker in self._workers.values())
+
     @Slot(bool)
     def setSchedulerEnabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._scheduler_enabled:
+            return
+        if enabled and not self._any_device_connected():
+            self._toast("Connect a telescope before starting the scheduler", "warning")
+            return
         self._scheduler_enabled = enabled
         self.schedulerEnabledChanged.emit()
         self.add_log("info", "Scheduler started" if enabled else "Scheduler stopped")
         if enabled:
             QTimer.singleShot(0, self._scheduler_tick)
+
+    def _disarm_scheduler_if_offline(self) -> None:
+        """Drop the scheduler once the last telescope link is gone."""
+        if not self._scheduler_enabled or self._any_device_connected():
+            return
+        self._scheduler_enabled = False
+        self.schedulerEnabledChanged.emit()
+        self.add_log("warning", "Scheduler disarmed: no telescope is connected")
+        self._toast("Scheduler disarmed", "warning", "Connect a telescope and re-arm it to resume the queue")
 
     @Property("QVariantList", notify=sessionsChanged)
     def upcomingSessions(self) -> list[dict[str, Any]]:
@@ -1212,6 +1236,7 @@ class AppBackend(QObject):
                 self._on_telemetry(device_id, telemetry)
         else:
             self._toast("Connection failed", "error", str(result))
+            self._disarm_scheduler_if_offline()
         self._notify_devices()
 
     def _abort_active_session(self, device_id: str, reason: str) -> bool:
@@ -1254,6 +1279,7 @@ class AppBackend(QObject):
             self._device_lights.pop(device_id, None)
             self.add_log("info" if ok else "error", "Disconnected" if ok else str(result), device_id)
             self._toast("Telescope disconnected" if ok else "Disconnect failed", "info" if ok else "error", "" if ok else str(result))
+            self._disarm_scheduler_if_offline()
             self._notify_devices()
 
         worker.disconnect_device(done)
@@ -2125,7 +2151,7 @@ class AppBackend(QObject):
             if device.id in self._disconnecting_ids or device.id in self._connecting_ids:
                 continue
             worker = self._workers[device.id]
-            if worker.busy:
+            if worker.busy or not worker.connected:
                 continue
             sessions = self.store.upcoming(device.id)
             if not sessions:
