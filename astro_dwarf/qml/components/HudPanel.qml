@@ -90,7 +90,9 @@ Item {
                 font.pixelSize: 11
                 font.letterSpacing: 1.6
                 font.bold: true
+                elide: Text.ElideRight
                 Layout.fillWidth: true
+                Layout.minimumWidth: 0
             }
             Row {
                 id: headerExtraRow

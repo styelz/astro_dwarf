@@ -1387,24 +1387,26 @@ Item {
 
             HudPanel {
                 id: logPanel
-                title: "LIVE LOG"
+                readonly property bool compactChrome: width < 420
+                title: width < 280 ? "" : "LIVE LOG"
                 SplitView.fillHeight: true
                 SplitView.minimumHeight: 80
                 headerExtra: Row {
-                    spacing: 3
+                    id: logToolbar
+                    spacing: logPanel.compactChrome ? 2 : 3
                     Repeater {
                         model: [
-                            {key: "all", label: "ALL"},
-                            {key: "device", label: "DEVICE"},
-                            {key: "alerts", label: "ALERTS"},
-                            {key: "debug", label: "DEBUG"}
+                            {key: "all", label: "ALL", icon: "\uE71D"},
+                            {key: "device", label: "DEVICE", icon: "\uE8CD"},
+                            {key: "alerts", label: "ALERTS", icon: "\uE7BA"},
+                            {key: "debug", label: "DEBUG", icon: "\uE90F"}
                         ]
                         delegate: Rectangle {
                             id: pill
                             required property var modelData
                             readonly property bool active: backend.logFilter === modelData.key
                             readonly property int badge: modelData.key === "alerts" ? backend.logWarningCount + backend.logErrorCount : 0
-                            width: pillRow.implicitWidth + 12
+                            width: logPanel.compactChrome ? 22 : pillRow.implicitWidth + 12
                             height: 20
                             radius: 3
                             color: active ? (modelData.key === "debug" ? Theme.fillSuccess : Theme.fillActive) : pillHover.hovered ? Theme.hsl(0.054, 0.526, 0.149) : "transparent"
@@ -1415,48 +1417,77 @@ Item {
                                 anchors.centerIn: parent
                                 spacing: 4
                                 Text {
-                                    text: pill.modelData.label
+                                    text: logPanel.compactChrome ? pill.modelData.icon : pill.modelData.label
                                     color: pill.active ? (pill.modelData.key === "debug" ? Theme.success : Theme.accent) : Theme.textSecondary
-                                    font.pixelSize: 8; font.bold: true; font.letterSpacing: 1
+                                    font.family: logPanel.compactChrome ? Theme.fontIcon : Theme.fontUi
+                                    font.pixelSize: logPanel.compactChrome ? 11 : 8
+                                    font.bold: !logPanel.compactChrome
+                                    font.letterSpacing: logPanel.compactChrome ? 0 : 1
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
                                 Rectangle {
-                                    visible: pill.badge > 0
+                                    visible: pill.badge > 0 && !logPanel.compactChrome
                                     width: badgeText.implicitWidth + 6; height: 12; radius: 6
                                     color: backend.logErrorCount > 0 ? Theme.danger : Theme.warning
                                     anchors.verticalCenter: parent.verticalCenter
                                     Text { id: badgeText; anchors.centerIn: parent; text: pill.badge > 99 ? "99+" : pill.badge; color: Theme.windowBase; font.pixelSize: 8; font.bold: true }
                                 }
                             }
+                            Rectangle {
+                                visible: pill.badge > 0 && logPanel.compactChrome
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.rightMargin: -3
+                                anchors.topMargin: -3
+                                width: Math.max(12, compactBadgeText.implicitWidth + 4)
+                                height: 12
+                                radius: 6
+                                z: 1
+                                color: backend.logErrorCount > 0 ? Theme.danger : Theme.warning
+                                Text { id: compactBadgeText; anchors.centerIn: parent; text: pill.badge > 99 ? "99+" : pill.badge; color: Theme.windowBase; font.pixelSize: 7; font.bold: true }
+                            }
                             HoverHandler { id: pillHover; cursorShape: Qt.PointingHandCursor }
                             TapHandler { onTapped: backend.setLogFilter(pill.modelData.key) }
+                            ToolTip.visible: pillHover.hovered && logPanel.compactChrome
+                            ToolTip.delay: 400
+                            ToolTip.text: pill.modelData.label
                         }
                     }
                     Rectangle { width: 1; height: 16; color: Theme.outline; anchors.verticalCenter: parent.verticalCenter }
                     HudButton {
-                        text: "COPY"
+                        text: logPanel.compactChrome ? "\uE8C8" : "COPY"
                         implicitHeight: 20
-                        implicitWidth: 46
-                        font.pixelSize: 8
-                        font.letterSpacing: 1
-                        leftPadding: 6; rightPadding: 6
-                        busyText: "COPIED"
+                        implicitWidth: logPanel.compactChrome ? 22 : 46
+                        font.family: logPanel.compactChrome ? Theme.fontIcon : Theme.fontUi
+                        font.pixelSize: logPanel.compactChrome ? 11 : 8
+                        font.letterSpacing: logPanel.compactChrome ? 0 : 1
+                        leftPadding: logPanel.compactChrome ? 0 : 6
+                        rightPadding: logPanel.compactChrome ? 0 : 6
+                        busyText: logPanel.compactChrome ? "\uE73E" : "COPIED"
                         busyMs: 900
                         enabled: logList.count > 0
                         buttonColor: "transparent"
                         foregroundColor: Theme.textSecondary
+                        ToolTip.visible: hovered && logPanel.compactChrome
+                        ToolTip.delay: 400
+                        ToolTip.text: "COPY"
                         onClicked: backend.copyText(root.allLogText())
                     }
                     HudButton {
-                        text: "CLEAR"
+                        text: logPanel.compactChrome ? "\uE74D" : "CLEAR"
                         implicitHeight: 20
-                        implicitWidth: 50
-                        font.pixelSize: 8
-                        font.letterSpacing: 1
-                        leftPadding: 6; rightPadding: 6
+                        implicitWidth: logPanel.compactChrome ? 22 : 50
+                        font.family: logPanel.compactChrome ? Theme.fontIcon : Theme.fontUi
+                        font.pixelSize: logPanel.compactChrome ? 11 : 8
+                        font.letterSpacing: logPanel.compactChrome ? 0 : 1
+                        leftPadding: logPanel.compactChrome ? 0 : 6
+                        rightPadding: logPanel.compactChrome ? 0 : 6
                         enabled: logList.count > 0
                         buttonColor: "transparent"
                         foregroundColor: Theme.textSecondary
+                        ToolTip.visible: hovered && logPanel.compactChrome
+                        ToolTip.delay: 400
+                        ToolTip.text: "CLEAR"
                         onClicked: backend.clearLog()
                     }
                 }
