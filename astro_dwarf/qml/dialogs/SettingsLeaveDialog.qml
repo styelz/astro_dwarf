@@ -16,7 +16,7 @@ Dialog {
     width: 480
     height: 176
     padding: 16
-    background: Rectangle { color: Theme.surface; border.color: Theme.warning }
+    background: DialogFrame { tone: Theme.warning }
     contentItem: ColumnLayout {
         spacing: 12
         Text { text: "UNSAVED SETTINGS"; color: Theme.warning; font.pixelSize: 16; font.letterSpacing: 1.4 }

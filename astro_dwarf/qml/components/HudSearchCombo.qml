@@ -210,7 +210,14 @@ Item {
         palette.windowText: Theme.textPrimary
         palette.base: Theme.popupBg
         palette.text: Theme.textPrimary
-        background: Rectangle { color: Theme.popupBg; border.color: Theme.accent }
+        background: HudFrame {
+            topLeft: 0
+            topRight: 0
+            bottomRight: Theme.notchSmall
+            bottomLeft: 0
+            fillColor: Theme.popupBg
+            strokeColor: Theme.accent
+        }
         onOpened: searchCombo.listOpen = true
         onClosed: searchCombo.listOpen = false
         contentItem: Item {

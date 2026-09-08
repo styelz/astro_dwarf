@@ -18,11 +18,28 @@ ComboBox {
     palette.highlight: Theme.fillChecked
     palette.highlightedText: Theme.accent
     opacity: combo.enabled ? 1 : 0.45
-    background: Rectangle {
-        color: combo.enabled ? Theme.inputBg : Theme.disabledBg
-        border.color: !combo.enabled ? Theme.disabledOutline : combo.hovered || combo.down ? Theme.accent : Theme.outline
-        border.width: 1
-        radius: 2
+    background: Item {
+        implicitHeight: 34
+        implicitWidth: 120
+        HudFrame {
+            anchors.fill: parent
+            anchors.margins: -2
+            topLeft: Theme.notchSmall + 1
+            bottomRight: Theme.notchSmall + 1
+            strokeColor: Theme.accent
+            opacity: combo.popup.visible || combo.visualFocus ? 0.35 : 0
+            Behavior on opacity { NumberAnimation { duration: Theme.quick } }
+        }
+        HudFrame {
+            anchors.fill: parent
+            topLeft: Theme.notchSmall
+            bottomRight: Theme.notchSmall
+            fillColor: combo.enabled ? (combo.down ? Theme.fillActive : Theme.inputBg) : Theme.disabledBg
+            strokeColor: !combo.enabled ? Theme.disabledOutline : combo.hovered || combo.down || combo.popup.visible ? Theme.accent : Theme.outline
+            strokeWidth: combo.popup.visible ? 1.5 : 1
+            Behavior on strokeColor { ColorAnimation { duration: Theme.quick } }
+            Behavior on fillColor { ColorAnimation { duration: Theme.quick } }
+        }
     }
     contentItem: Text {
         leftPadding: 10
@@ -39,6 +56,8 @@ ComboBox {
         anchors.right: parent.right
         anchors.rightMargin: 8
         anchors.verticalCenter: parent.verticalCenter
+        rotation: combo.popup.visible ? 180 : 0
+        Behavior on rotation { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
     }
     delegate: ItemDelegate {
         width: combo.width
@@ -65,7 +84,14 @@ ComboBox {
         palette.windowText: Theme.textPrimary
         palette.base: Theme.popupBg
         palette.text: Theme.textPrimary
-        background: Rectangle { color: Theme.popupBg; border.color: Theme.accent }
+        background: HudFrame {
+            topLeft: 0
+            topRight: 0
+            bottomRight: Theme.notchSmall
+            bottomLeft: 0
+            fillColor: Theme.popupBg
+            strokeColor: Theme.accent
+        }
         contentItem: ListView {
             clip: true
             implicitHeight: Math.min(contentHeight, 240)

@@ -13,7 +13,8 @@ Dialog {
     modal: true
     anchors.centerIn: Overlay.overlay
     width: Math.min(root.width - 80, 900)
-    height: Math.min(root.height - 80, 720)
+    // size to the form so the dialog doesn't float in a sea of empty surface
+    height: Math.min(root.height - 80, Math.max(420, contentItem.implicitHeight + 40))
     property string editingId: ""
     property bool editingTemplate: false
     property var templateMembers: []
@@ -198,7 +199,7 @@ Dialog {
         open()
     }
 
-    background: Rectangle { color: Theme.surface; border.color: Theme.accent }
+    background: DialogFrame {}
     contentItem: ColumnLayout {
         anchors.fill: parent
         anchors.margins: 20
@@ -282,14 +283,19 @@ Dialog {
             HudField { id: waitAfter; placeholderText: "After"; Layout.fillWidth: true }
             FieldLabel { text: "NOTES" }
             HudField { id: notes; Layout.fillWidth: true; Layout.columnSpan: 2 }
-        }
-        RowLayout {
-            HudCheck { id: calibrate; text: "Calibrate" }
-            HudCheck { id: autofocus; text: "Auto focus" }
-            HudCheck { id: infiniteFocus; text: "Infinity focus" }
-            HudCheck { id: polar; text: "Polar / EQ" }
-            HudCheck { id: doGoto; text: "GOTO" }
-            HudCheck { id: saveTemplate; text: "Save template"; visible: !sessionDialog.editingTemplate }
+            FieldLabel { text: "WORKFLOW"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 8 }
+            Flow {
+                Layout.fillWidth: true
+                Layout.columnSpan: 2
+                Layout.topMargin: 4
+                spacing: 22
+                HudCheck { id: calibrate; text: "Calibrate" }
+                HudCheck { id: autofocus; text: "Auto focus" }
+                HudCheck { id: infiniteFocus; text: "Infinity focus" }
+                HudCheck { id: polar; text: "Polar / EQ" }
+                HudCheck { id: doGoto; text: "GOTO" }
+                HudCheck { id: saveTemplate; text: "Save template"; visible: !sessionDialog.editingTemplate }
+            }
         }
         Item { Layout.fillHeight: true }
         RowLayout {

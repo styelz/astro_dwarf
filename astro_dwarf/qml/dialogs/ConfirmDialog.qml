@@ -21,7 +21,7 @@ Dialog {
     width: 420
     height: 196
     padding: 16
-    background: Rectangle { color: Theme.surface; border.color: Theme.danger }
+    background: DialogFrame { tone: Theme.danger }
     contentItem: ColumnLayout {
         spacing: 12
         Text { text: confirmDialog.headingText; color: Theme.danger; font.pixelSize: 16; font.letterSpacing: 1.4 }

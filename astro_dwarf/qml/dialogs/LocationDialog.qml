@@ -16,7 +16,7 @@ Dialog {
     width: 520
     padding: 18
     height: Math.min(root.height - 60, locationColumn.implicitHeight + padding * 2)
-    background: Rectangle { color: Theme.surface; border.color: Theme.accent }
+    background: DialogFrame {}
     function applyLocation(item) {
         if (!item)
             return
