@@ -190,13 +190,77 @@ Item {
                         HudButton {
                             text: "RESET"
                             implicitHeight: 28
-                            enabled: Math.abs(Theme.hue - Theme.defaultHue) > 0.002
-                            onClicked: Theme.hue = Theme.defaultHue
+                            enabled: Math.abs(Theme.hue - Theme.defaultHue) > 0.002 || Math.abs(Theme.brightness) > 0.002
+                            onClicked: {
+                                Theme.hue = Theme.defaultHue
+                                Theme.brightness = 0
+                            }
                         }
+                    }
+                    Item { implicitWidth: 1; implicitHeight: 1 }
+                    Item { implicitWidth: 1; implicitHeight: 1 }
+                    FieldLabel { text: "BRIGHTNESS" }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Slider {
+                            id: brightSlider
+                            Layout.fillWidth: true
+                            from: -1
+                            to: 1
+                            stepSize: 0.01
+                            value: Theme.brightness
+                            onMoved: Theme.brightness = value
+                            implicitHeight: 28
+                            background: Rectangle {
+                                x: brightSlider.leftPadding
+                                y: brightSlider.topPadding + brightSlider.availableHeight / 2 - height / 2
+                                width: brightSlider.availableWidth
+                                height: 10
+                                radius: 5
+                                border.color: Theme.outline
+                                border.width: 1
+                                gradient: Gradient {
+                                    // deep → stock → bright, in the current hue
+                                    orientation: Gradient.Horizontal
+                                    GradientStop { position: 0.0; color: Qt.hsla(Theme.hue, 1, 0.40, 1) }
+                                    GradientStop { position: 0.5; color: Qt.hsla(Theme.hue, 1, 0.651, 1) }
+                                    GradientStop { position: 1.0; color: Qt.hsla(Theme.hue, 1, 0.90, 1) }
+                                }
+                                Rectangle {
+                                    // stock mark
+                                    x: parent.width / 2 - 1
+                                    y: -3
+                                    width: 2
+                                    height: parent.height + 6
+                                    color: Theme.textPrimary
+                                    opacity: 0.5
+                                }
+                            }
+                            handle: Rectangle {
+                                x: brightSlider.leftPadding + brightSlider.visualPosition * (brightSlider.availableWidth - width)
+                                y: brightSlider.topPadding + brightSlider.availableHeight / 2 - height / 2
+                                width: 20
+                                height: 20
+                                radius: 10
+                                color: Theme.accent
+                                border.color: brightSlider.pressed || brightSlider.hovered ? Theme.textPrimary : Theme.surface
+                                border.width: 2
+                            }
+                        }
+                        Text {
+                            text: (Theme.brightness > 0 ? "+" : "") + Math.round(Theme.brightness * 100)
+                            color: Theme.textSecondary
+                            font.family: Theme.fontMono
+                            font.pixelSize: 11
+                            Layout.preferredWidth: 36
+                            horizontalAlignment: Text.AlignRight
+                        }
+                        Item { implicitWidth: 60; implicitHeight: 1 }
                     }
                 }
                 Text {
-                    text: "Applies immediately. Choose where the page buttons sit, and drag the hue slider to re-tint the whole console; the tick marks the stock cyan."
+                    text: "Applies immediately. Choose where the page buttons sit, drag the hue slider to re-tint the whole console (the tick marks the stock cyan), and pull brightness down for deep, saturated tints or up for a lighter glow."
                     color: Theme.textSecondary
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true

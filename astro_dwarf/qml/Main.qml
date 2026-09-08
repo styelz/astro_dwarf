@@ -194,13 +194,11 @@ ApplicationWindow {
     function syncWindowFrame() {
         backend.applyWindowFrame(String(Theme.surface), String(Theme.outlineStrong), String(Theme.accent))
     }
-    readonly property real hueDistance: {
-        const d = Math.abs(Theme.hue - Theme.defaultHue)
-        return Math.min(d, 1 - d)
-    }
+    readonly property real hueDistance: Theme.hueDistance
     Connections {
         target: Theme
         function onHueChanged() { frameSyncTimer.restart() }
+        function onBrightnessChanged() { frameSyncTimer.restart() }
     }
     Timer {
         id: frameSyncTimer
