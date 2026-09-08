@@ -32,13 +32,24 @@ QtObject {
     readonly property real spread: 1 - (theme.hueDistance / 0.5) * 0.7
     readonly property real lift: theme.brightness * 0.25
 
-    // weight: how strongly the brightness slider moves this token's lightness (0 = fixed).
+    // weight: how strongly the brightness slider moves this token (0 = fixed).
+    // Positive brightness adds a flat lift so the glow side reads lighter. Negative
+    // brightness scales lightness instead (an additive drop leaves near-white text
+    // almost untouched). Saturation is never touched: dimming should darken the
+    // colour, not grey it out.
     function hsl(offset, sat, light, alpha, weight) {
         let h = (theme.hue + offset * theme.spread) % 1
         if (h < 0)
             h += 1
         const w = weight === undefined ? 0 : weight
-        const l = Math.min(0.97, Math.max(0.02, light + theme.lift * w))
+        let l = light
+        if (theme.brightness >= 0) {
+            l = light + theme.lift * w
+        } else {
+            // 0.75: at -1 a weight-1 token keeps a quarter of its lightness (text ~0.24, accent ~0.16).
+            l = light * (1 + theme.brightness * 0.75 * w)
+        }
+        l = Math.min(0.97, Math.max(0.02, l))
         return Qt.hsla(h, sat, l, alpha === undefined ? 1 : alpha)
     }
 
@@ -49,11 +60,11 @@ QtObject {
     readonly property color outline: hsl(0.039, 0.535, 0.253, 1, 0.60)
     readonly property color outlineSoft: hsl(0.047, 0.509, 0.208, 1, 0.60)
     readonly property color outlineStrong: hsl(0.058, 0.402, 0.341, 1, 0.60)
-    readonly property color textPrimary: hsl(0.037, 1.000, 0.955)
-    readonly property color textSecondary: hsl(0.037, 0.286, 0.610, 1, 0.25)
-    readonly property color muted: hsl(0.046, 0.255, 0.400, 1, 0.30)
+    readonly property color textPrimary: hsl(0.037, 1.000, 0.955, 1, 1.00)
+    readonly property color textSecondary: hsl(0.037, 0.286, 0.610, 1, 0.60)
+    readonly property color muted: hsl(0.046, 0.255, 0.400, 1, 0.50)
     readonly property color accent: hsl(0.000, 1.000, 0.651, 1, 1.00)
-    readonly property color accentSoft: hsl(0.000, 1.000, 0.955)
+    readonly property color accentSoft: hsl(0.000, 1.000, 0.955, 1, 1.00)
     readonly property color glowAccent: hsl(0.000, 1.000, 0.651, 0.2, 1.00)
     readonly property color inputBg: hsl(0.075, 0.565, 0.090, 1, 0.20)
     readonly property color popupBg: hsl(0.079, 0.714, 0.027, 1, 0.10)

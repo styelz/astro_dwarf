@@ -80,11 +80,14 @@ ComboBox {
         y: combo.height + 3
         width: combo.width
         padding: 1
+        height: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, 242)
         palette.window: Theme.popupBg
         palette.windowText: Theme.textPrimary
         palette.base: Theme.popupBg
         palette.text: Theme.textPrimary
         background: HudFrame {
+            implicitWidth: combo.width
+            implicitHeight: 32
             topLeft: 0
             topRight: 0
             bottomRight: Theme.notchSmall
@@ -94,9 +97,10 @@ ComboBox {
         }
         contentItem: ListView {
             clip: true
-            implicitHeight: Math.min(contentHeight, 240)
+            implicitHeight: contentHeight
             model: combo.popup.visible ? combo.delegateModel : null
             currentIndex: combo.highlightedIndex
+            boundsBehavior: Flickable.StopAtBounds
         }
     }
 }
