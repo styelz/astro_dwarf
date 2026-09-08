@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -96,6 +97,16 @@ def run() -> int:
     _apply_windows_frame(window)
     backend.window_frame_hook = lambda caption, border, text: _apply_windows_frame(window, caption, border, text)
     application.aboutToQuit.connect(backend.shutdown)
+
+    # Let Ctrl-C in the launching console close the app cleanly. Qt's event loop
+    # otherwise swallows SIGINT, so route it to a clean quit and run a lightweight
+    # timer that keeps giving the Python interpreter a chance to service signals.
+    signal.signal(signal.SIGINT, lambda *_: application.quit())
+    sigint_heartbeat = QTimer()
+    sigint_heartbeat.setInterval(200)
+    sigint_heartbeat.timeout.connect(lambda: None)
+    sigint_heartbeat.start()
+
     test_exit_ms = int(os.getenv("ASTRO_DWARF_TEST_EXIT_MS", "0"))
     if test_exit_ms:
         QTimer.singleShot(test_exit_ms, application.quit)

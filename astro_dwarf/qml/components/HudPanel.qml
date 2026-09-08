@@ -131,7 +131,7 @@ Item {
                     spacing: 8
                 }
             }
-            ScrollHint { flick: panelFlick }
+            ScrollHint { flick: panelFlick; active: panelHover.hovered }
         }
     }
     Item {
