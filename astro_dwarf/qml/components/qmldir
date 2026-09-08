@@ -27,6 +27,7 @@ PageNavBar 1.0 PageNavBar.qml
 DeviceCombo 1.0 DeviceCombo.qml
 HudSplitView 1.0 HudSplitView.qml
 
+ScrollHint 1.0 ScrollHint.qml
 HudFrame 1.0 HudFrame.qml
 HudCheckMark 1.0 HudCheckMark.qml
 RowGutter 1.0 RowGutter.qml

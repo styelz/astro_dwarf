@@ -131,6 +131,7 @@ Item {
                     spacing: 8
                 }
             }
+            ScrollHint { flick: panelFlick }
         }
     }
     Item {
