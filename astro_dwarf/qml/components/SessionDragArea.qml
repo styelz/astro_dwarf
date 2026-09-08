@@ -5,51 +5,56 @@ import QtQuick.Shapes
 import QtCore
 import ".."
 
-DragHandler {
-    id: drag
+Item {
+    id: root
     required property var dragItem
     property var pressedAction: null
     signal editRequested(var session)
-    target: null
-    acceptedButtons: Qt.LeftButton
-    acceptedModifiers: Qt.NoModifier
-    cursorShape: Qt.ClosedHandCursor
-    enabled: String((dragItem && dragItem.status) || "") !== "running"
-    property bool started: false
+    readonly property bool canEdit: String((dragItem && dragItem.status) || "") !== "running"
 
     TapHandler {
-        id: editTap
-        parent: drag.parent
+        parent: root.parent
         acceptedButtons: Qt.LeftButton
         acceptedModifiers: Qt.NoModifier
-        enabled: drag.enabled
+        enabled: root.canEdit
         grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
-        onDoubleTapped: drag.editRequested(drag.dragItem)
+        onDoubleTapped: root.editRequested(root.dragItem)
     }
 
-    function mappedPos() {
-        return parent.mapToItem(DragCoordinator.contentItem, centroid.position.x, centroid.position.y)
-    }
+    DragHandler {
+        id: drag
+        parent: root.parent
+        target: null
+        acceptedButtons: Qt.LeftButton
+        acceptedModifiers: Qt.NoModifier
+        cursorShape: Qt.ClosedHandCursor
+        enabled: root.canEdit
+        property bool started: false
 
-    onActiveChanged: {
-        if (active) {
-            started = true
-            if (pressedAction)
-                pressedAction()
-            DragCoordinator.startDrag(dragItem, mappedPos(), centroid.position.y)
-        } else if (started) {
-            started = false
-            DragCoordinator.completeDrag(mappedPos())
+        function mappedPos() {
+            return parent.mapToItem(DragCoordinator.contentItem, centroid.position.x, centroid.position.y)
         }
-    }
-    onTranslationChanged: {
-        if (active)
-            DragCoordinator.moveDrag(mappedPos())
-    }
-    onCanceled: {
-        if (started) {
-            started = false
-            DragCoordinator.cancelDrag()
+
+        onActiveChanged: {
+            if (active) {
+                started = true
+                if (root.pressedAction)
+                    root.pressedAction()
+                DragCoordinator.startDrag(root.dragItem, mappedPos(), centroid.position.y)
+            } else if (started) {
+                started = false
+                DragCoordinator.completeDrag(mappedPos())
+            }
+        }
+        onTranslationChanged: {
+            if (active)
+                DragCoordinator.moveDrag(mappedPos())
+        }
+        onCanceled: {
+            if (started) {
+                started = false
+                DragCoordinator.cancelDrag()
+            }
         }
     }
 }
