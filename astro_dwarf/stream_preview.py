@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import socket
 import sys
+import threading
 from typing import Optional
 
-from PySide6.QtCore import QObject, QProcess, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QProcess, QTimer, Signal, Slot
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickImageProvider
 
@@ -30,28 +31,34 @@ def stream_port(url: str) -> int:
 class LiveImageProvider(QQuickImageProvider):
     def __init__(self):
         super().__init__(QQuickImageProvider.Image)
+        self._lock = threading.Lock()
         self._image = QImage()
+        self._empty = QImage(1, 1, QImage.Format_ARGB32)
+        self._empty.fill(0)
 
-    def requestImage(self, _id, _size, requested_size):
-        image = self._image
-        if image.isNull():
-            return QImage()
-        if requested_size.isValid():
-            return image.scaled(requested_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    def requestImage(self, _id, size, _requested_size):
+        with self._lock:
+            image = QImage(self._image) if not self._image.isNull() else QImage(self._empty)
+        if size is not None:
+            size.setWidth(image.width())
+            size.setHeight(image.height())
         return image
 
     def update(self, image: QImage) -> None:
-        self._image = image
+        with self._lock:
+            self._image = image
 
     def clear(self) -> None:
-        self._image = QImage()
+        with self._lock:
+            self._image = QImage()
 
     def frame_size(self) -> tuple[int, int]:
         """Native (width, height) of the latest decoded frame; (0, 0) when empty."""
-        image = self._image
-        if image.isNull():
-            return (0, 0)
-        return (image.width(), image.height())
+        with self._lock:
+            image = self._image
+            if image.isNull():
+                return (0, 0)
+            return (image.width(), image.height())
 
 
 class StreamPlayer(QObject):
@@ -143,7 +150,9 @@ class StreamPlayer(QObject):
                 pass
         if process.state() != QProcess.ProcessState.NotRunning:
             process.kill()
-            process.waitForFinished(1500)
+            if not process.waitForFinished(1500):
+                process.terminate()
+                process.waitForFinished(500)
         process.deleteLater()
 
     def _on_stdout(self) -> None:

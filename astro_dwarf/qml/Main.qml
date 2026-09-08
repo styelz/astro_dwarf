@@ -237,9 +237,11 @@ ApplicationWindow {
         Rectangle { anchors.fill: parent; color: root.dataPage ? Theme.hsl(0.082, 0.684, 0.037, 0.800) : Theme.hsl(0.082, 0.684, 0.037, 0.600) }
         Rectangle {
             // Tints the (cyan) background art toward the chosen hue; stronger the further from default.
+            // Eases off as brightness drops so a dimmed HUD isn't still flooded by the wash.
             anchors.fill: parent
             color: Theme.accent
-            opacity: (root.dataPage ? 0.03 : 0.07) + root.hueDistance * (root.dataPage ? 0.25 : 0.5)
+            opacity: ((root.dataPage ? 0.03 : 0.07) + root.hueDistance * (root.dataPage ? 0.25 : 0.5))
+                     * (Theme.brightness < 0 ? 1 + Theme.brightness * 0.85 : 1)
             Behavior on opacity { NumberAnimation { duration: Theme.normal } }
         }
 

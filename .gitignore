@@ -8,7 +8,7 @@ dist/
 .cursor/
 
 # Runtime telescope data and SDK worker files
-data/
+data*/
 config.py
 config.ini
 config.lock

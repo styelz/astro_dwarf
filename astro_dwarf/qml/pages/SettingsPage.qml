@@ -221,9 +221,9 @@ Item {
                                 border.color: Theme.outline
                                 border.width: 1
                                 gradient: Gradient {
-                                    // deep → stock → bright, in the current hue
+                                    // dim → stock → bright, in the current hue (ends match Theme.accent at ±1)
                                     orientation: Gradient.Horizontal
-                                    GradientStop { position: 0.0; color: Qt.hsla(Theme.hue, 1, 0.40, 1) }
+                                    GradientStop { position: 0.0; color: Qt.hsla(Theme.hue, 1, 0.16, 1) }
                                     GradientStop { position: 0.5; color: Qt.hsla(Theme.hue, 1, 0.651, 1) }
                                     GradientStop { position: 1.0; color: Qt.hsla(Theme.hue, 1, 0.90, 1) }
                                 }
@@ -260,7 +260,7 @@ Item {
                     }
                 }
                 Text {
-                    text: "Applies immediately. Choose where the page buttons sit, drag the hue slider to re-tint the whole console (the tick marks the stock cyan), and pull brightness down for deep, saturated tints or up for a lighter glow."
+                    text: "Applies immediately. Choose where the page buttons sit, drag the hue slider to re-tint the whole console (the tick marks the stock cyan), and pull brightness down to dim the text, accents and glow for night use, or up for a lighter glow."
                     color: Theme.textSecondary
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
