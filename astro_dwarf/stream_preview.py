@@ -9,9 +9,7 @@ from PySide6.QtCore import QObject, QProcess, QTimer, Signal, Slot
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickImageProvider
 
-from .runtime import ffmpeg_mjpeg_command, ffmpeg_path
-
-CREATE_NO_WINDOW = 0x08000000
+from .runtime import PROCESS_CREATION_FLAGS, ffmpeg_mjpeg_command, ffmpeg_path, kill_pid_tree
 
 
 def port_is_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -78,6 +76,8 @@ class StreamPlayer(QObject):
         self._got_frame = False
         self._buffer = b""
         self._stderr = ""
+        self._pid = 0
+        self._pid_lock = threading.Lock()
         self._watchdog = QTimer(self)
         self._watchdog.setSingleShot(True)
         self._watchdog.timeout.connect(self._on_watchdog)
@@ -119,7 +119,7 @@ class StreamPlayer(QObject):
             process, "setCreateProcessArgumentsModifier"
         ):
             process.setCreateProcessArgumentsModifier(
-                lambda args: args.setCreateFlags(int(args.createFlags()) | CREATE_NO_WINDOW)
+                lambda args: args.setCreateFlags(int(args.createFlags()) | PROCESS_CREATION_FLAGS)
             )
         process.readyReadStandardOutput.connect(self._on_stdout)
         process.readyReadStandardError.connect(self._on_stderr)
@@ -134,7 +134,17 @@ class StreamPlayer(QObject):
             if not self._cancelled:
                 self._retry_or_fail(f"Could not start ffmpeg ({ffmpeg_path()})")
             return
+        with self._pid_lock:
+            self._pid = int(process.processId() or 0)
         self._watchdog.start(8000)
+
+    def abort(self) -> None:
+        """Kill ffmpeg from any thread without waiting on Qt."""
+        with self._pid_lock:
+            pid = self._pid
+            self._pid = 0
+        if pid:
+            kill_pid_tree(pid)
 
     def _teardown(self) -> None:
         self._watchdog.stop()
@@ -148,11 +158,13 @@ class StreamPlayer(QObject):
                 getattr(process, signal_name).disconnect()
             except (RuntimeError, TypeError):
                 pass
+        pid = int(process.processId() or 0)
+        with self._pid_lock:
+            self._pid = 0
         if process.state() != QProcess.ProcessState.NotRunning:
             process.kill()
-            if not process.waitForFinished(1500):
-                process.terminate()
-                process.waitForFinished(500)
+        if pid:
+            kill_pid_tree(pid)
         process.deleteLater()
 
     def _on_stdout(self) -> None:

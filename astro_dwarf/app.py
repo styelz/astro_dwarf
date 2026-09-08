@@ -4,6 +4,8 @@ import ctypes
 import os
 import signal
 import sys
+import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl
@@ -11,7 +13,7 @@ from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine
 
 from .qt_backend import AppBackend
-from .runtime import configure_qml_import_path, data_root, is_frozen, package_root
+from .runtime import configure_qml_import_path, data_root, is_frozen, kill_pid_tree, package_root
 from .version import __version__
 
 _DWMWA_USE_IMMERSIVE_DARK_MODE = 20
@@ -102,19 +104,39 @@ def run() -> int:
     # Wire the hook after load: QML already queued the saved theme during onCompleted.
     backend.bindWindowFrame(lambda caption, border, text: _apply_windows_frame(window, caption, border, text))
 
+    interrupt = threading.Event()
     quitting = {"done": False}
 
     def _mark_quit() -> None:
         quitting["done"] = True
 
-    def _handle_interrupt(*_args) -> None:
+    def _request_quit() -> None:
         if quitting["done"]:
-            os._exit(1)
+            return
         quitting["done"] = True
         application.quit()
 
+    def _watchdog() -> None:
+        interrupt.wait()
+        time.sleep(2.0)
+        try:
+            kill_pid_tree(os.getpid())
+        except Exception:
+            pass
+        os._exit(1)
+
+    def _handle_interrupt(*_args) -> None:
+        interrupt.set()
+        if threading.current_thread() is threading.main_thread():
+            _request_quit()
+
+    def _poll_interrupt() -> None:
+        if interrupt.is_set():
+            _request_quit()
+
     application.aboutToQuit.connect(_mark_quit)
     application.aboutToQuit.connect(backend.shutdown)
+    threading.Thread(target=_watchdog, daemon=True, name="force-exit").start()
 
     # Let Ctrl-C in the launching console close the app cleanly. Qt's event loop
     # otherwise swallows SIGINT, so route it to a clean quit and run a lightweight
@@ -123,17 +145,18 @@ def run() -> int:
     signal.signal(signal.SIGTERM, _handle_interrupt)
     sigint_heartbeat = QTimer()
     sigint_heartbeat.setInterval(200)
-    sigint_heartbeat.timeout.connect(lambda: None)
+    sigint_heartbeat.timeout.connect(_poll_interrupt)
     sigint_heartbeat.start()
 
     if sys.platform == "win32":
-        # Ctrl-C during a blocking Qt wait (worker/ffmpeg teardown) never reaches
-        # Python's signal handler. A console handler can still force-exit.
+        # Only set a flag here. Calling Qt or ExitProcess from the console control
+        # thread closes the window but deadlocks the process, which leaves the
+        # launching terminal stuck after Ctrl-C.
         handler_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ulong)
 
         def _console_ctrl(ctrl_type: int) -> bool:
             if ctrl_type in (0, 1, 2):  # CTRL_C, CTRL_BREAK, CTRL_CLOSE
-                _handle_interrupt()
+                interrupt.set()
                 return True
             return False
 
@@ -144,7 +167,12 @@ def run() -> int:
     test_exit_ms = int(os.getenv("ASTRO_DWARF_TEST_EXIT_MS", "0"))
     if test_exit_ms:
         QTimer.singleShot(test_exit_ms, application.quit)
-    return application.exec()
+    code = application.exec()
+    try:
+        backend.shutdown()
+    except Exception:
+        pass
+    os._exit(int(code or 0))
 
 
 def _ensure_standard_streams() -> None:

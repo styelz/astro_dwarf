@@ -1510,22 +1510,27 @@ def main() -> None:
             execute(message)
 
     threading.Thread(target=command_loop, daemon=True).start()
-    for raw in sys.stdin:
-        try:
-            message = json.loads(raw)
-        except json.JSONDecodeError:
-            log(f"Invalid worker message: {raw!r}", "error")
-            continue
-        command = message.get("command")
-        if command in _URGENT_COMMANDS:
-            # The SDK is not thread-safe, so stop/disconnect never run alongside
-            # another SDK call. Instead they wake the blocked call (which then
-            # fails fast) and jump ahead of everything else in the queue.
-            if command == "stop_all" or _session_active.is_set() or _in_flight is not None:
-                request_stop("Session stopped" if command == "stop_all" else "Telescope disconnected")
-            enqueue_command(message, _PRIORITY_URGENT)
-        else:
-            enqueue_command(message)
+    try:
+        for raw in sys.stdin:
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError:
+                log(f"Invalid worker message: {raw!r}", "error")
+                continue
+            command = message.get("command")
+            if command in _URGENT_COMMANDS:
+                # The SDK is not thread-safe, so stop/disconnect never run alongside
+                # another SDK call. Instead they wake the blocked call (which then
+                # fails fast) and jump ahead of everything else in the queue.
+                if command == "stop_all" or _session_active.is_set() or _in_flight is not None:
+                    request_stop("Session stopped" if command == "stop_all" else "Telescope disconnected")
+                enqueue_command(message, _PRIORITY_URGENT)
+            else:
+                enqueue_command(message)
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    finally:
+        os._exit(0)
 
 
 if __name__ == "__main__":

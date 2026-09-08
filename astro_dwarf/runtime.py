@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
+import subprocess
 import sys
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
+
+CREATE_NO_WINDOW = 0x08000000
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+# Hidden child processes that must not receive the parent's Ctrl-C.
+PROCESS_CREATION_FLAGS = (
+    CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+)
 
 
 def is_frozen() -> bool:
@@ -99,6 +108,25 @@ def ffmpeg_mjpeg_command(url: str, rtsp_transport: str | None = None) -> list[st
         ]
     )
     return command
+
+
+def kill_pid_tree(pid: int) -> None:
+    """Force-kill a process and its descendants. Safe if the pid is already gone."""
+    if pid <= 0:
+        return
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
 
 
 def worker_command() -> tuple[str, list[str]]:

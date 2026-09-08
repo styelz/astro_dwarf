@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 import threading
 import time
@@ -61,9 +60,9 @@ from .services import (
     zoneinfo_from_name,
 )
 from .location import match_timezone, resolve_location, timezone_locations
-from .runtime import prepare_worker_environment, worker_command
+from .runtime import PROCESS_CREATION_FLAGS, kill_pid_tree, prepare_worker_environment, worker_command
 from .storage import SessionStore
-from .stream_preview import CREATE_NO_WINDOW, LiveImageProvider, StreamPlayer, port_is_open, stream_port
+from .stream_preview import LiveImageProvider, StreamPlayer, port_is_open, stream_port
 from .telemetry_view import AlertEngine, derive_activity, format_telemetry
 
 
@@ -80,7 +79,7 @@ class TelescopeProcess(QObject):
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
         if sys.platform == "win32" and hasattr(self.process, "setCreateProcessArgumentsModifier"):
             self.process.setCreateProcessArgumentsModifier(
-                lambda args: args.setCreateFlags(int(args.createFlags()) | CREATE_NO_WINDOW)
+                lambda args: args.setCreateFlags(int(args.createFlags()) | PROCESS_CREATION_FLAGS)
             )
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("PYTHONUNBUFFERED", "1")
@@ -181,17 +180,24 @@ class TelescopeProcess(QObject):
             "warning" if ok else "error", "Stop commands sent" if ok else str(result)
         ))
 
-    def shutdown(self) -> None:
+    def shutdown(self, wait: bool = True) -> None:
         if not self.running:
             return
+        pid = int(self.process.processId() or 0)
         try:
             self.process.closeWriteChannel()
         except RuntimeError:
-            return
-        self.process.terminate()
-        if not self.process.waitForFinished(800):
+            pass
+        try:
             self.process.kill()
-            self.process.waitForFinished(800)
+        except RuntimeError:
+            pass
+        kill_pid_tree(pid)
+        if wait:
+            try:
+                self.process.waitForFinished(400)
+            except RuntimeError:
+                pass
 
     def _read_stdout(self) -> None:
         self._stdout += bytes(self.process.readAllStandardOutput()).decode(errors="replace")
@@ -2289,14 +2295,16 @@ class AppBackend(QObject):
         if self._shut_down:
             return
         self._shut_down = True
-        self.timer.stop()
+        try:
+            self.timer.stop()
+        except RuntimeError:
+            pass
         self.stopPreview()
+        self._stream_player.abort()
         for worker in list(self._workers.values()):
-            worker.shutdown()
+            worker.shutdown(wait=False)
         if self._preview_thread.isRunning():
             self._preview_thread.quit()
-            if not self._preview_thread.wait(3000):
-                os._exit(0)
 
     def _sequence_colliding_mosaics(self) -> None:
         groups: dict[tuple[str, str], list[Session]] = {}
