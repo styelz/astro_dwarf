@@ -1036,15 +1036,15 @@ _CONTINUE_SHOOTING_TIMEOUT_S = 30.0
 
 
 def _ir_index(name: Any) -> int:
-    """Map the session filter name to the ReqCaptureRawLiveStacking ir_index (VIS 0, Astro 1, Duo-Band 2)."""
+    """IR index on START_CAPTURE: Duo-Band is 2, everything else is 1.
+
+    VIS is applied with ``set_ir``; the capture command itself matches the
+    SDK/session-app default (``perform_takeAstroPhoto(ir_index=1)``).
+    """
     text = str(name or "").strip().lower()
-    if text.startswith("duo"):
+    if text.startswith("duo") or text == "2":
         return 2
-    if text.startswith("astro"):
-        return 1
-    if text.isdigit():
-        return int(text)
-    return 0
+    return 1
 
 
 def _capture_request(operation: str, args: list[Any], force_start: bool) -> Any:
@@ -1214,6 +1214,45 @@ def run_session(session: dict[str, Any]) -> bool:
                 log(f"Could not stop leftover activity: {exc}", "debug")
 
 
+def _wait_seconds(seconds: float, message: str | None = None) -> None:
+    seconds = max(0.0, float(seconds or 0))
+    if seconds <= 0:
+        return
+    if message:
+        log(message)
+    if _stop.wait(seconds):
+        raise InterruptedError("Session stopped")
+
+
+def _clear_tracking() -> None:
+    """Stop leftover GOTO/tracking so calibration or EQ can own the astro engine."""
+    log("Stopping leftover GOTO/tracking")
+    try:
+        sdk_call("stop_goto")
+    except Exception as exc:
+        log(f"Stop GOTO skipped: {exc}", "debug")
+    _wait_seconds(5)
+
+
+def _engine_busy_error(exc: BaseException) -> bool:
+    text = str(exc)
+    return any(token in text for token in ("FUNCTION_BUSY", "GOTO_RUNNING", "-11501", "-11508"))
+
+
+def _run_v3_until_ready(name: str, operation: str, step: Any, *args: Any) -> None:
+    """Start a V3 astro operation, retrying if the engine is still busy."""
+    deadline = time.monotonic() + _CAPTURE_BUSY_TIMEOUT_S
+    while True:
+        try:
+            step(name, operation, *args)
+            return
+        except RuntimeError as exc:
+            if not _engine_busy_error(exc) or time.monotonic() >= deadline:
+                raise
+            log(f"{name}: astro engine still busy; clearing GOTO and retrying", "warning")
+            _clear_tracking()
+
+
 def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     target = session["target"]
     camera = session["camera"]
@@ -1231,14 +1270,27 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         step("Entering solar mode", "shooting_mode", 8 if solar_name == "sun" else 9 if solar_name == "moon" else 10, 2)
     else:
         step("Entering astro mode", "astro_mode")
-    if workflow.get("polar_align"):
-        step("Polar alignment", "polar")
-    if workflow.get("calibrate"):
-        step("Calibration", "calibrate")
+    _wait_seconds(workflow.get("wait_before_seconds", 0))
+    # Match astro_dwarf_session: focus, then EQ, then calibration (after stop_goto).
     if workflow.get("autofocus"):
         step("Auto focus", "autofocus", False)
-    elif workflow.get("infinite_focus"):
+    if workflow.get("infinite_focus"):
         step("Infinity focus", "autofocus", True)
+    if workflow.get("polar_align"):
+        if not workflow.get("infinite_focus"):
+            step("Infinity focus before polar alignment", "autofocus", True)
+            _wait_seconds(5)
+        _clear_tracking()
+        _run_v3_until_ready("Polar alignment", "polar", step)
+    if workflow.get("calibrate"):
+        step("Calibration exposure", "set_exposure", "1", model_id, camera["camera"])
+        step("Calibration gain", "set_gain", 80, camera["camera"])
+        if camera["camera"] != "wide":
+            step("Calibration filter", "set_ir", "1")
+        step("Calibration binning", "set_binning", 0)
+        _wait_seconds(5, "Waiting for calibration camera settings to apply…")
+        _clear_tracking()
+        _run_v3_until_ready("Calibration", "calibrate", step)
     if workflow.get("goto") and target.get("ra_hours") is not None:
         # goto_only=True: we start stacking ourselves after GOTO finishes.
         step("GOTO target", "goto", target["ra_hours"], target["dec_degrees"], target["name"], True)
@@ -1252,6 +1304,9 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         step("Set filter", "set_ir", camera["ir_filter"])
     step("Set count", "set_count", camera["frame_count"], camera["camera"])
     step("Set binning", "set_binning", camera["binning"])
+    _wait_seconds(5, "Waiting for capture camera settings to apply…")
+    _wait_seconds(workflow.get("wait_after_seconds", 10))
+    _wait_seconds(2)
     _wait_for_capture_slot()
     ir_index = _ir_index(camera.get("ir_filter"))
     if max(1, mosaic["rows"] * mosaic["columns"]) > 1:
