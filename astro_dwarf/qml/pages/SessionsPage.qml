@@ -367,10 +367,18 @@ Item {
                                 onTapped: templatesPage.selectClick(templateCard.modelData.id, true)
                             },
                             TapHandler {
-                                acceptedButtons: Qt.LeftButton
-                                acceptedModifiers: Qt.NoModifier
-                                grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
-                                onDoubleTapped: sessionDialog.openTemplate(templateCard.modelData)
+                                acceptedButtons: Qt.RightButton
+                                onTapped: templateMenu.popup()
+                            },
+                            Item {
+                                anchors.fill: parent
+                                anchors.bottomMargin: 52
+                                TapHandler {
+                                    acceptedButtons: Qt.LeftButton
+                                    acceptedModifiers: Qt.NoModifier
+                                    grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
+                                    onDoubleTapped: sessionDialog.openTemplate(templateCard.modelData)
+                                }
                             },
                             SelectBox {
                                 anchors.right: parent.right
@@ -379,6 +387,51 @@ Item {
                                 checked: Util.idSetHas(templatesPage.selectedIds, templateCard.modelData.id)
                                 revealed: templateHover.hovered || templatesPage.selectedCount > 0
                                 onToggled: (shiftHeld) => templatesPage.selectClick(templateCard.modelData.id, shiftHeld)
+                            },
+                            RowLayout {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                anchors.margins: 12
+                                HudButton { text: "EDIT"; busyText: "OPENING…"; onClicked: sessionDialog.openTemplate(templateCard.modelData) }
+                                HudButton { text: "SCHEDULE"; Layout.fillWidth: true; busyText: "SCHEDULING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: backend.scheduleTemplate(templateCard.modelData.id) }
+                                HudButton { text: "DELETE"; busyText: "DELETING…"; onClicked: backend.deleteTemplate(templateCard.modelData.id) }
+                            },
+                            HudMenu {
+                                id: templateMenu
+                                HudMenuItem {
+                                    text: "Edit"
+                                    glyph: "\uE70F"
+                                    onTriggered: sessionDialog.openTemplate(templateCard.modelData)
+                                }
+                                HudMenuItem {
+                                    text: "Schedule"
+                                    glyph: "\uE768"
+                                    onTriggered: backend.scheduleTemplate(templateCard.modelData.id)
+                                }
+                                HudMenuSeparator {}
+                                HudMenuItem {
+                                    text: "Select all"
+                                    glyph: "\uE8A5"
+                                    enabled: backend.templates.length > 0
+                                    onTriggered: templatesPage.selectedIds = Util.idSetAll(backend.templates, true)
+                                }
+                                HudMenuItem {
+                                    text: "Unselect all"
+                                    glyph: "\uE711"
+                                    enabled: templatesPage.selectedCount > 0
+                                    onTriggered: {
+                                        templatesPage.selectedIds = ({})
+                                        templatesPage.selectionAnchorId = ""
+                                    }
+                                }
+                                HudMenuSeparator {}
+                                HudMenuItem {
+                                    text: "Delete"
+                                    glyph: "\uE74D"
+                                    destructive: true
+                                    onTriggered: backend.deleteTemplate(templateCard.modelData.id)
+                                }
                             }
                         ]
                         Text {
@@ -390,52 +443,7 @@ Item {
                             wrapMode: Text.WordWrap
                         }
                         Text { text: modelData.summary; color: Theme.textSecondary; Layout.fillWidth: true }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            HudButton { text: "EDIT"; busyText: "OPENING…"; onClicked: sessionDialog.openTemplate(templateCard.modelData) }
-                            HudButton { text: "SCHEDULE"; Layout.fillWidth: true; busyText: "SCHEDULING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: backend.scheduleTemplate(modelData.id) }
-                            HudButton { text: "DELETE"; busyText: "DELETING…"; onClicked: backend.deleteTemplate(modelData.id) }
-                        }
-                        TapHandler {
-                            acceptedButtons: Qt.RightButton
-                            onTapped: templateMenu.popup()
-                        }
-                        HudMenu {
-                            id: templateMenu
-                            HudMenuItem {
-                                text: "Edit"
-                                glyph: "\uE70F"
-                                onTriggered: sessionDialog.openTemplate(templateCard.modelData)
-                            }
-                            HudMenuItem {
-                                text: "Schedule"
-                                glyph: "\uE768"
-                                onTriggered: backend.scheduleTemplate(templateCard.modelData.id)
-                            }
-                            HudMenuSeparator {}
-                            HudMenuItem {
-                                text: "Select all"
-                                glyph: "\uE8A5"
-                                enabled: backend.templates.length > 0
-                                onTriggered: templatesPage.selectedIds = Util.idSetAll(backend.templates, true)
-                            }
-                            HudMenuItem {
-                                text: "Unselect all"
-                                glyph: "\uE711"
-                                enabled: templatesPage.selectedCount > 0
-                                onTriggered: {
-                                    templatesPage.selectedIds = ({})
-                                    templatesPage.selectionAnchorId = ""
-                                }
-                            }
-                            HudMenuSeparator {}
-                            HudMenuItem {
-                                text: "Delete"
-                                glyph: "\uE74D"
-                                destructive: true
-                                onTriggered: backend.deleteTemplate(templateCard.modelData.id)
-                            }
-                        }
+                        Item { Layout.fillWidth: true; Layout.preferredHeight: 34 }
                     }
                 }
                 }
