@@ -108,8 +108,8 @@ Item {
                 title: "SETTINGS"
                 subtitle: "Device, connection and timing profiles  ·  Astro Dwarf v" + backend.appVersion
                 DeviceCombo {}
-                HudButton { text: "+ ADD DEVICE"; busyText: "ADDING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: backend.addDevice() }
-                HudButton { text: "REMOVE DEVICE"; busyText: "REMOVING…"; buttonColor: Theme.fillDanger; foregroundColor: Theme.danger; onClicked: backend.deleteDevice(backend.selectedDeviceId) }
+                HudButton { text: "+ ADD DEVICE"; busyText: "ADDING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: locationDialog.openForAdd() }
+                HudButton { text: "REMOVE DEVICE"; busyText: "REMOVING…"; buttonColor: Theme.fillDanger; foregroundColor: Theme.danger; onClicked: root.confirmRemoveDevice(backend.selectedDeviceId) }
             }
             HudPanel {
                 title: "◫  INTERFACE"

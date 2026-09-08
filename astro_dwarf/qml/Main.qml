@@ -70,6 +70,29 @@ ApplicationWindow {
             : "Delete " + ids.length + " " + plural + "? This cannot be undone."
         confirmDialog.open()
     }
+    function confirmRemoveDevice(deviceId) {
+        const id = String(deviceId || backend.selectedDeviceId || "")
+        if (!id)
+            return
+        if (!backend.devices || backend.devices.length <= 1) {
+            backend.deleteDevice(id)
+            return
+        }
+        let name = "this telescope"
+        const devices = backend.devices
+        for (let i = 0; i < devices.length; i++) {
+            if (devices[i].id === id) {
+                name = devices[i].name || name
+                break
+            }
+        }
+        confirmDialog.kind = "deleteDevice"
+        confirmDialog.pendingIds = [id]
+        confirmDialog.headingText = "REMOVE DEVICE"
+        confirmDialog.confirmLabel = "REMOVE"
+        confirmDialog.summary = "Remove " + name + "? This cannot be undone."
+        confirmDialog.open()
+    }
     function scopeActivityText() {
         if (root.scopePending)
             return "SENDING · " + root.scopePending.replace(/_/g, " ").toUpperCase()
@@ -215,6 +238,8 @@ ApplicationWindow {
     }
 
     function maybeAskLocation() {
+        if (locationDialog.addingDevice)
+            return
         const configured = !!backend.selectedDevice.location_configured
         if (!configured) {
             if (!locationDialog.visible)
@@ -572,7 +597,7 @@ ApplicationWindow {
                                 glyph: "\uE74D"
                                 destructive: true
                                 visible: backend.devices.length > 1
-                                onTriggered: backend.deleteDevice(deviceCard.modelData.id)
+                                onTriggered: root.confirmRemoveDevice(deviceCard.modelData.id)
                             }
                         }
                     }

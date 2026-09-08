@@ -43,6 +43,8 @@ Dialog {
                         backend.deleteTemplates(confirmDialog.pendingIds)
                     else if (confirmDialog.kind === "deleteHistory")
                         backend.deleteHistoryRecords(confirmDialog.pendingIds)
+                    else if (confirmDialog.kind === "deleteDevice")
+                        backend.deleteDevice((confirmDialog.pendingIds && confirmDialog.pendingIds[0]) || backend.selectedDeviceId)
                     else
                         backend.deviceAction(backend.selectedDeviceId, confirmDialog.operation)
                     confirmDialog.close()

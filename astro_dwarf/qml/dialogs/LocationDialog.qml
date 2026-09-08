@@ -10,6 +10,7 @@ import "../components"
 
 Dialog {
     id: locationDialog
+    property bool addingDevice: false
     modal: true
     closePolicy: Popup.NoAutoClose
     anchors.centerIn: Overlay.overlay
@@ -17,6 +18,10 @@ Dialog {
     padding: 18
     height: Math.min(root.height - 60, locationColumn.implicitHeight + padding * 2)
     background: DialogFrame {}
+    function openForAdd() {
+        addingDevice = true
+        open()
+    }
     function applyLocation(item) {
         if (!item)
             return
@@ -27,13 +32,14 @@ Dialog {
             locationLon.text = Number(item.longitude).toFixed(5)
     }
     readonly property var modelOptions: ["Dwarf II", "Dwarf 3", "Dwarf Mini"]
+    onClosed: addingDevice = false
     onOpened: {
         const d = backend.selectedDevice
         const tz = String(d.timezone_name || "")
         const configured = !!d.location_configured
         const inherited = !configured && tz !== "" && tz !== "UTC" && tz !== "Etc/UTC"
         locationModel.currentIndex = Math.max(0, locationDialog.modelOptions.indexOf(d.model || "Dwarf 3"))
-        if (configured || inherited) {
+        if (addingDevice || configured || inherited) {
             locationTimezone.setFromName(tz)
             locationLat.text = d.latitude
             locationLon.text = d.longitude
@@ -46,9 +52,11 @@ Dialog {
     contentItem: ColumnLayout {
         id: locationColumn
         spacing: 12
-        Text { text: "OBSERVING LOCATION"; color: Theme.accent; font.pixelSize: 16; font.letterSpacing: 1.4 }
+        Text { text: locationDialog.addingDevice ? "ADD DEVICE" : "OBSERVING LOCATION"; color: Theme.accent; font.pixelSize: 16; font.letterSpacing: 1.4 }
         Text {
-            text: "Choose the telescope model and a timezone or city so Astro Dwarf can set longitude and latitude. A location is required before connecting or running sessions."
+            text: locationDialog.addingDevice
+                ? "Choose the telescope model and a timezone or city. Nothing is created until you save."
+                : "Choose the telescope model and a timezone or city so Astro Dwarf can set longitude and latitude. A location is required before connecting or running sessions."
             color: Theme.textPrimary
             wrapMode: Text.Wrap
             Layout.fillWidth: true
@@ -78,18 +86,26 @@ Dialog {
             Layout.alignment: Qt.AlignRight
             HudButton { text: "CANCEL"; onClicked: locationDialog.close() }
             HudButton {
-                text: "SAVE LOCATION"
+                text: locationDialog.addingDevice ? "ADD DEVICE" : "SAVE LOCATION"
                 enabled: locationTimezone.selectedName.length > 0 || locationTimezone.editText.length > 0
-                busyText: "SAVING…"
+                busyText: locationDialog.addingDevice ? "ADDING…" : "SAVING…"
                 buttonColor: Theme.fillActive
                 foregroundColor: Theme.accent
-                onClicked: backend.saveObservingLocation(JSON.stringify({
-                    id: backend.selectedDeviceId,
-                    model: locationModel.currentText,
-                    timezone_name: locationTimezone.selectedName || locationTimezone.editText,
-                    latitude: Number(locationLat.text),
-                    longitude: Number(locationLon.text)
-                }))
+                onClicked: {
+                    const payload = JSON.stringify({
+                        id: locationDialog.addingDevice ? "" : backend.selectedDeviceId,
+                        model: locationModel.currentText,
+                        timezone_name: locationTimezone.selectedName || locationTimezone.editText,
+                        latitude: Number(locationLat.text),
+                        longitude: Number(locationLon.text)
+                    })
+                    if (locationDialog.addingDevice) {
+                        if (backend.addDevice(payload))
+                            locationDialog.close()
+                    } else {
+                        backend.saveObservingLocation(payload)
+                    }
+                }
             }
         }
     }

@@ -1431,24 +1431,45 @@ class AppBackend(QObject):
         except Exception:
             pass
 
-    @Slot()
-    def addDevice(self) -> None:
+    @Slot(str, result=bool)
+    def addDevice(self, payload: str) -> bool:
         colors = ["#62A0FF", "#E879F9", "#34D399", "#FBBF24", "#FB7185"]
         current = next((item for item in self._devices if item.id == self._selected_device_id), None)
-        device = Device(
-            name=f"Dwarf {len(self._devices) + 1}",
-            color=colors[len(self._devices) % len(colors)],
-            model=current.model if current else DeviceModel.DWARF_3,
-            timezone_name=current.timezone_name if current else "UTC",
-            latitude=current.latitude if current else 0,
-            longitude=current.longitude if current else 0,
-        )
-        self.store.devices.save(device)
-        self._devices.append(device)
-        self._create_worker(device)
-        self._selected_device_id = device.id
-        self.devicesChanged.emit()
-        self.selectedDeviceChanged.emit()
+        try:
+            values = json.loads(payload or "{}")
+            timezone_name, latitude, longitude = self._resolved_location(
+                values.get("timezone_name", current.timezone_name if current else "UTC"),
+                values.get("latitude", current.latitude if current else 0),
+                values.get("longitude", current.longitude if current else 0),
+            )
+            if not timezone_name:
+                raise ValueError("A timezone is required")
+            if abs(latitude) < 1e-9 and abs(longitude) < 1e-9 and timezone_name not in {"UTC", "Etc/UTC"}:
+                raise ValueError("Choose a timezone from the list, or press Enter to look up a city")
+            model = current.model if current else DeviceModel.DWARF_3
+            if values.get("model"):
+                model = DeviceModel(values["model"])
+            device = Device(
+                name=f"Dwarf {len(self._devices) + 1}",
+                color=colors[len(self._devices) % len(colors)],
+                model=model,
+                timezone_name=timezone_name,
+                latitude=latitude,
+                longitude=longitude,
+                location_configured=True,
+            )
+            self.store.devices.save(device)
+            self._devices.append(device)
+            self._create_worker(device)
+            self._selected_device_id = device.id
+            self.devicesChanged.emit()
+            self.selectedDeviceChanged.emit()
+            self.clockChanged.emit()
+            self._toast("Device added", "success")
+            return True
+        except Exception as exc:
+            self._toast(f"Could not add device: {exc}", "error")
+            return False
 
     @Slot(str)
     def deleteDevice(self, device_id: str) -> None:
