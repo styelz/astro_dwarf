@@ -593,7 +593,7 @@ Item {
                     }
 
                     // Chrome model: status (LIVE/REC badges, readout strip) is always on
-                    // while streaming; controls (stop button, reticle, grid) appear on
+                    // while streaming; controls (stop button, grid) appear on
                     // pointer motion or a touch tap and fade after a short idle, unless
                     // the pointer is resting on a control. First stream ever shows a hint.
                     property bool controlsVisible: false
@@ -881,38 +881,6 @@ Item {
                             Text { visible: !root.scopeOnline; text: backend.selectedDevice.ip_address || "—"; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono }
                             Text { text: backend.clockText; color: Theme.accent; font.pixelSize: 10; font.family: Theme.fontMono }
                         }
-                    }
-                    Canvas {
-                        anchors.fill: parent
-                        opacity: previewHost.chromeShown ? 0.9 : 0
-                        visible: opacity > 0
-                        Behavior on opacity { NumberAnimation { duration: Theme.slow } }
-                        readonly property bool reticle: backend.previewPlaying
-                        readonly property color ink: Theme.hsl(-0.021, 1.000, 0.955, 0.533)
-                        onReticleChanged: requestPaint()
-                        onInkChanged: requestPaint()
-                        readonly property real paintedCX: liveFrame.visible ? liveFrame.frameX + liveFrame.paintedWidth / 2 : width / 2
-                        readonly property real paintedCY: liveFrame.visible ? liveFrame.frameY + liveFrame.paintedHeight / 2 : height / 2
-                        onPaintedCXChanged: requestPaint()
-                        onPaintedCYChanged: requestPaint()
-                        onPaint: {
-                            const ctx = getContext("2d")
-                            ctx.reset()
-                            if (!reticle)
-                                return
-                            const cx = paintedCX, cy = paintedCY
-                            ctx.strokeStyle = ink
-                            ctx.lineWidth = 1.2
-                            ctx.beginPath()
-                            ctx.moveTo(cx - 80, cy); ctx.lineTo(cx - 16, cy)
-                            ctx.moveTo(cx + 16, cy); ctx.lineTo(cx + 80, cy)
-                            ctx.moveTo(cx, cy - 80); ctx.lineTo(cx, cy - 16)
-                            ctx.moveTo(cx, cy + 16); ctx.lineTo(cx, cy + 80)
-                            ctx.stroke()
-                            ctx.beginPath(); ctx.arc(cx, cy, 52, 0, Math.PI * 2); ctx.stroke()
-                        }
-                        onWidthChanged: requestPaint()
-                        onHeightChanged: requestPaint()
                     }
                     Column {
                         anchors.centerIn: parent
@@ -1384,7 +1352,7 @@ Item {
                         id: speedSlider
                         Layout.fillWidth: true
                         enabled: root.motionEnabled
-                        from: 0.2
+                        from: 0.03
                         to: 1
                         value: 1
                         onMoved: root.joySpeed = value
