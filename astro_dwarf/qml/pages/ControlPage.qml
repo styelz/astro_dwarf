@@ -271,6 +271,19 @@ Item {
                 title: "TARGET"
                 SplitView.preferredHeight: 140
                 SplitView.minimumHeight: 80
+                overlay: [
+                    TapHandler {
+                        acceptedButtons: Qt.LeftButton
+                        enabled: !!backend.currentSession.id && backend.currentSession.status !== "running"
+                        grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
+                        onDoubleTapped: sessionDialog.openExisting(backend.currentSession)
+                    },
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        enabled: !!backend.currentSession.id
+                        onTapped: targetMenu.popup()
+                    }
+                ]
                 headerExtra: Row {
                     spacing: 4
                     HudChip {
@@ -378,11 +391,6 @@ Item {
                             }
                         }
                     }
-                }
-                TapHandler {
-                    acceptedButtons: Qt.RightButton
-                    enabled: !!backend.currentSession.id
-                    onTapped: targetMenu.popup()
                 }
                 HudMenu {
                     id: targetMenu
@@ -1438,6 +1446,7 @@ Item {
                                 opacity: DragCoordinator.active && DragCoordinator.data.id === modelData.id ? 0.35 : 1
                                 SessionDragArea {
                                     dragItem: upcomingRow.modelData
+                                    onEditRequested: session => sessionDialog.openExisting(session)
                                 }
                                 HoverHandler { id: upcomingHover }
                                 TapHandler {

@@ -144,6 +144,7 @@ Item {
                                         anchors.rightMargin: scheduledPage.rowInset + scheduledPage.actionsWidth
                                         SessionDragArea {
                                             dragItem: scheduledRow.modelData
+                                            onEditRequested: session => sessionDialog.openExisting(session)
                                         }
                                     },
                                     SelectBox {
@@ -364,6 +365,12 @@ Item {
                                 acceptedButtons: Qt.LeftButton
                                 acceptedModifiers: Qt.ShiftModifier
                                 onTapped: templatesPage.selectClick(templateCard.modelData.id, true)
+                            },
+                            TapHandler {
+                                acceptedButtons: Qt.LeftButton
+                                acceptedModifiers: Qt.NoModifier
+                                grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
+                                onDoubleTapped: sessionDialog.openTemplate(templateCard.modelData)
                             },
                             SelectBox {
                                 anchors.right: parent.right

@@ -6,14 +6,26 @@ import QtCore
 import ".."
 
 DragHandler {
+    id: drag
     required property var dragItem
     property var pressedAction: null
+    signal editRequested(var session)
     target: null
     acceptedButtons: Qt.LeftButton
     acceptedModifiers: Qt.NoModifier
     cursorShape: Qt.ClosedHandCursor
     enabled: String((dragItem && dragItem.status) || "") !== "running"
     property bool started: false
+
+    TapHandler {
+        id: editTap
+        parent: drag.parent
+        acceptedButtons: Qt.LeftButton
+        acceptedModifiers: Qt.NoModifier
+        enabled: drag.enabled
+        grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
+        onDoubleTapped: drag.editRequested(drag.dragItem)
+    }
 
     function mappedPos() {
         return parent.mapToItem(DragCoordinator.contentItem, centroid.position.x, centroid.position.y)

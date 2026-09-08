@@ -272,6 +272,7 @@ Item {
                             spacing: 3
                             Text { text: dayCell.cellDate.getDate(); color: dayCell.isToday ? Theme.accent : dayCell.inMonth ? Theme.textPrimary : Theme.hsl(0.040, 0.262, 0.329); font.pixelSize: 11; font.bold: dayCell.isToday; font.family: Theme.fontMono }
                             Repeater {
+                                id: chipRepeater
                                 model: dayCell.daySessions.slice(0, 3)
                                 delegate: Rectangle {
                                     id: sessionChip
@@ -295,6 +296,7 @@ Item {
                                     SessionDragArea {
                                         dragItem: sessionChip.modelData
                                         pressedAction: function() { calendarPage.selectedDate = dayCell.cellDate }
+                                        onEditRequested: session => sessionDialog.openExisting(session)
                                     }
                                     TapHandler { acceptedButtons: Qt.RightButton; onTapped: sessionMenu.open() }
                                     SessionContextMenu {
@@ -326,7 +328,18 @@ Item {
                         }
                         TapHandler {
                             onTapped: calendarPage.selectedDate = dayCell.cellDate
-                            onDoubleTapped: calendarPage.openNight(dayCell.cellDate)
+                            onDoubleTapped: (eventPoint) => {
+                                const scene = eventPoint.scenePosition
+                                for (let i = 0; i < chipRepeater.count; i++) {
+                                    const chip = chipRepeater.itemAt(i)
+                                    if (!chip)
+                                        continue
+                                    const local = chip.mapFromItem(null, scene.x, scene.y)
+                                    if (local.x >= 0 && local.y >= 0 && local.x < chip.width && local.y < chip.height)
+                                        return
+                                }
+                                calendarPage.openNight(dayCell.cellDate)
+                            }
                         }
                         TapHandler {
                             acceptedButtons: Qt.RightButton
@@ -432,6 +445,7 @@ Item {
                                 opacity: DragCoordinator.active && DragCoordinator.data.id === sessionId ? 0.35 : 0.96
                                 SessionDragArea {
                                     dragItem: timelineSession.modelData
+                                    onEditRequested: session => sessionDialog.openExisting(session)
                                 }
                                 HoverHandler { id: timelineHover }
                                 TapHandler {
@@ -627,6 +641,7 @@ Item {
                             opacity: DragCoordinator.active && DragCoordinator.data.id === sessionId ? 0.35 : 1
                             SessionDragArea {
                                 dragItem: daySessionRow.modelData
+                                onEditRequested: session => sessionDialog.openExisting(session)
                             }
                             HoverHandler { id: daySessionHover }
                             TapHandler {
