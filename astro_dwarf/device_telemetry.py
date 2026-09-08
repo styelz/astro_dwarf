@@ -16,6 +16,8 @@ from typing import Any, Callable
 
 # Motor / notification command ids (dwarf_python_api/proto/protocol.proto).
 CMD_STEP_MOTOR_GET_POSITION = 14011
+# Steppers refuse absolute position reads/moves until they have been homed.
+CODE_STEP_MOTOR_NEED_RESET = -14520
 CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING = 15200
 CMD_NOTIFY_ELE = 15201
 CMD_NOTIFY_CHARGE = 15202
@@ -373,13 +375,19 @@ class TelemetryTap:
                 message.ParseFromString(data)
             except Exception:
                 return {}
-            if int(message.code) != 0:
-                return {}
+            code = int(message.code)
             motor_id = int(message.id)
-            return {
-                f"motor_pos_{motor_id}": float(message.position),
-                f"motor_pos_{motor_id}_at": time.monotonic(),
+            now = time.monotonic()
+            # Always stamp the reply (including errors such as NEED_RESET) so the
+            # worker can stop waiting instead of timing out on every axis.
+            changes: dict[str, Any] = {
+                "motor_pos_last_code": code,
+                "motor_pos_last_at": now,
             }
+            if code == 0:
+                changes[f"motor_pos_{motor_id}"] = float(message.position)
+                changes[f"motor_pos_{motor_id}_at"] = now
+            return changes
         if kind != TYPE_NOTIFICATION and cmd >= CMD_NOTIFY_ELE:
             return {}
         if cmd == CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING:
@@ -818,6 +826,15 @@ _DEMOTE_PREFIXES = (
     "disconnected",  # the app logs its own "Disconnected" line
     "dwarf stream video type is unknown",  # stream_type 0 = camera not streaming yet
     "skipping malformed astrogotostate",
+    # Centre-tap probes the encoders; on an unhomed mount the firmware answers
+    # NEED_RESET and the worker falls back to Dual Lenses Locating itself.
+    "error motor need reset",
+    "error cmd_step_motor_get_position code code_step_motor_need_reset",
+    "receive id data >>",
+    "receive code data >>",
+    "receive position data >>",
+    ">> code_step_motor_need_reset",
+    "success cmd_step_motor_get_position",
 )
 _MAX_LOG_CHARS = 400
 

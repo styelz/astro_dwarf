@@ -23,7 +23,7 @@ import queue
 from pathlib import Path
 from typing import Any
 
-from .device_telemetry import TelemetryTap, install_sdk_logging
+from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_sdk_logging
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -48,6 +48,12 @@ _QUIET_OPERATIONS = {"device_state", "stack_status"}
 _STATE_REFRESH_SECONDS = 30.0
 _STATUS_POLL_SECONDS = 2.0
 _MODEL_IDS = {"Dwarf II": "2", "Dwarf 3": "3", "Dwarf Mini": "5"}
+# Set once the steppers answer CODE_STEP_MOTOR_NEED_RESET: absolute position
+# reads keep failing until the mount is homed, so stop probing this session.
+_motors_unhomed = False
+# Dual Lenses Locating (cmd 14009) always works in wide-camera 1920x1080 pixels.
+_LINKAGE_W = 1920
+_LINKAGE_H = 1080
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -316,10 +322,16 @@ def configure(device: dict[str, Any]) -> bool:
 
 
 def _motor_position(motor_id: int) -> float | None:
-    """Read one axis via CMD 14011. Position is degrees."""
+    """Read one axis via CMD 14011. Position is degrees.
+
+    Returns None straight away when the firmware replies with an error (most
+    often NEED_RESET on a mount that has not been homed) instead of waiting
+    for the timeout, and remembers NEED_RESET so later taps skip the probe.
+    """
+    global _motors_unhomed
     from dwarf_python_api.proto import motor_control_pb2
 
-    if _tap is None:
+    if _tap is None or _motors_unhomed:
         return None
     before = time.monotonic()
     message = motor_control_pb2.ReqMotorGetPosition()
@@ -335,6 +347,16 @@ def _motor_position(motor_id: int) -> float | None:
             try:
                 return float(snap[key])
             except (KeyError, TypeError, ValueError):
+                return None
+        last_at = snap.get("motor_pos_last_at")
+        if isinstance(last_at, (int, float)) and float(last_at) >= before - 0.05:
+            try:
+                code = int(snap.get("motor_pos_last_code") or 0)
+            except (TypeError, ValueError):
+                code = 0
+            if code != 0:
+                if code == CODE_STEP_MOTOR_NEED_RESET:
+                    _motors_unhomed = True
                 return None
         time.sleep(0.04)
     return None
@@ -352,21 +374,71 @@ def _motor_run_to(motor_id: int, position: float) -> bool:
     return send_without_response(message, 14001, 6)
 
 
+def _wide_linkage_pixels(nx: float, ny: float) -> tuple[int, int]:
+    """Map a 0-1 wide-view tap onto firmware DualCameraLinkage pixels.
+
+    The command slews the tap onto the tele footprint. When the device has
+    reported that footprint (tele-in-wide PictureMatching), shift the command
+    so the tap lands on the wide-frame centre (the on-screen crosshair).
+    """
+    x = nx * (_LINKAGE_W - 1)
+    y = ny * (_LINKAGE_H - 1)
+    snap = _tap.snapshot() if _tap else {}
+    try:
+        tx = float(snap.get("tele_match_cx"))
+        ty = float(snap.get("tele_match_cy"))
+    except (TypeError, ValueError):
+        tx = ty = None
+    if tx is not None and ty is not None:
+        # Ignore implausible boxes (tele is a small patch near the wide centre).
+        if 0.2 * (_LINKAGE_W - 1) < tx < 0.8 * (_LINKAGE_W - 1) and 0.2 * (_LINKAGE_H - 1) < ty < 0.8 * (_LINKAGE_H - 1):
+            x += tx - (_LINKAGE_W - 1) / 2.0
+            y += ty - (_LINKAGE_H - 1) / 2.0
+    return (
+        int(round(max(0.0, min(float(_LINKAGE_W - 1), x)))),
+        int(round(max(0.0, min(float(_LINKAGE_H - 1), y)))),
+    )
+
+
+def _dual_camera_linkage(nx: float, ny: float) -> bool:
+    """Dual Lenses Locating (official app double-tap). CMD 14009, MODULE_MOTOR.
+
+    Works on an unhomed mount, unlike RunTo / GetPosition.
+    """
+    from dwarf_python_api.proto import motor_control_pb2
+
+    x, y = _wide_linkage_pixels(nx, ny)
+    message = motor_control_pb2.ReqDualCameraLinkage()
+    message.x = x
+    message.y = y
+    return send_without_response(message, 14009, 6)
+
+
 def _center_wide_view(nx: float, ny: float, fov_h: float, fov_v: float) -> bool:
     """Slew so a 0-1 wide-frame tap lands on the wide-view crosshair.
 
-    DualCameraLinkage aims at the tele camera (wrong for this gesture at close
-    range). Rotation is motor 1, pitch is motor 2; signs match the on-screen
-    joystick (right / up are positive).
+    Preferred path: read both axes and RunTo by the tap's offset from centre
+    using the wide FOV. Rotation is motor 1, pitch is motor 2; signs match the
+    on-screen joystick (right / up are positive). That needs homed steppers,
+    so on NEED_RESET (or any failed read) fall back to Dual Lenses Locating,
+    which the firmware accepts unhomed.
     """
     nx = max(0.0, min(1.0, float(nx)))
     ny = max(0.0, min(1.0, float(ny)))
     yaw_delta = (nx - 0.5) * float(fov_h)
     pitch_delta = (0.5 - ny) * float(fov_v)
+    already_unhomed = _motors_unhomed
     az = _motor_position(1)
-    alt = _motor_position(2)
+    alt = _motor_position(2) if az is not None else None
     if az is None or alt is None:
-        raise RuntimeError("Could not read mount position for centering")
+        reason = "motors not homed" if _motors_unhomed else "mount position unavailable"
+        x, y = _wide_linkage_pixels(nx, ny)
+        # Say why once per session; later taps only leave a debug trace.
+        log(
+            f"Centering via Dual Lenses Locating ({reason}) at ({x}, {y}) of {_LINKAGE_W}×{_LINKAGE_H}",
+            "debug" if already_unhomed else "info",
+        )
+        return _dual_camera_linkage(nx, ny)
     log(
         f"Center wide yaw {yaw_delta:+.2f}° pitch {pitch_delta:+.2f}° "
         f"from ({az:.2f}, {alt:.2f})",
@@ -381,8 +453,12 @@ def _center_wide_view(nx: float, ny: float, fov_h: float, fov_v: float) -> bool:
 
 
 def sdk_call(operation: str, *args: Any) -> Any:
+    global _motors_unhomed
     if _api is None:
         raise RuntimeError("Telescope worker is not configured")
+    if operation in ("calibrate", "polar", "goto", "goto_solar"):
+        # These home the steppers, so let the next centre tap probe positions again.
+        _motors_unhomed = False
     if operation in ("joystick", "stop_motors"):
         from dwarf_python_api.proto import motor_control_pb2
 
@@ -859,7 +935,10 @@ async def _ble_wifi_session(
 
 
 def _mark_disconnected() -> None:
+    global _motors_unhomed
     _connected.clear()
+    # A reconnect may follow a calibration/home; probe the encoders again.
+    _motors_unhomed = False
     if _tap is not None:
         _tap.reset()
 
