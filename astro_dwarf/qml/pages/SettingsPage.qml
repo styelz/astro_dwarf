@@ -68,7 +68,7 @@ Item {
     Connections {
         target: backend
         function onSelectedDeviceChanged() {
-            if (settingsPage.loadedDeviceId !== backend.selectedDeviceId)
+            if (settingsPage.loadedDeviceId !== backend.selectedDeviceId || !settingsPage.dirty)
                 settingsPage.load()
             else if (!ipField.text && backend.selectedDevice.ip_address)
                 ipField.text = backend.selectedDevice.ip_address

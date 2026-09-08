@@ -26,21 +26,38 @@ Dialog {
         if (item.longitude !== undefined && item.longitude !== null)
             locationLon.text = Number(item.longitude).toFixed(5)
     }
+    readonly property var modelOptions: ["Dwarf II", "Dwarf 3", "Dwarf Mini"]
     onOpened: {
         const d = backend.selectedDevice
-        locationTimezone.setFromName(d.timezone_name && d.location_configured ? d.timezone_name : "")
-        locationLat.text = d.location_configured ? d.latitude : ""
-        locationLon.text = d.location_configured ? d.longitude : ""
+        const tz = String(d.timezone_name || "")
+        const configured = !!d.location_configured
+        const inherited = !configured && tz !== "" && tz !== "UTC" && tz !== "Etc/UTC"
+        locationModel.currentIndex = Math.max(0, locationDialog.modelOptions.indexOf(d.model || "Dwarf 3"))
+        if (configured || inherited) {
+            locationTimezone.setFromName(tz)
+            locationLat.text = d.latitude
+            locationLon.text = d.longitude
+        } else {
+            locationTimezone.setFromName("")
+            locationLat.text = ""
+            locationLon.text = ""
+        }
     }
     contentItem: ColumnLayout {
         id: locationColumn
         spacing: 12
         Text { text: "OBSERVING LOCATION"; color: Theme.accent; font.pixelSize: 16; font.letterSpacing: 1.4 }
         Text {
-            text: "Choose a timezone or city so Astro Dwarf can set longitude and latitude for this telescope. A location is required before connecting or running sessions."
+            text: "Choose the telescope model and a timezone or city so Astro Dwarf can set longitude and latitude. A location is required before connecting or running sessions."
             color: Theme.textPrimary
             wrapMode: Text.Wrap
             Layout.fillWidth: true
+        }
+        FieldLabel { text: "MODEL" }
+        HudCombo {
+            id: locationModel
+            Layout.fillWidth: true
+            model: locationDialog.modelOptions
         }
         FieldLabel { text: "TIMEZONE / CITY" }
         HudSearchCombo {
@@ -59,6 +76,7 @@ Dialog {
         }
         RowLayout {
             Layout.alignment: Qt.AlignRight
+            HudButton { text: "CANCEL"; onClicked: locationDialog.close() }
             HudButton {
                 text: "SAVE LOCATION"
                 enabled: locationTimezone.selectedName.length > 0 || locationTimezone.editText.length > 0
@@ -67,6 +85,7 @@ Dialog {
                 foregroundColor: Theme.accent
                 onClicked: backend.saveObservingLocation(JSON.stringify({
                     id: backend.selectedDeviceId,
+                    model: locationModel.currentText,
                     timezone_name: locationTimezone.selectedName || locationTimezone.editText,
                     latitude: Number(locationLat.text),
                     longitude: Number(locationLon.text)

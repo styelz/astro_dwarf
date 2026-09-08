@@ -1434,7 +1434,15 @@ class AppBackend(QObject):
     @Slot()
     def addDevice(self) -> None:
         colors = ["#62A0FF", "#E879F9", "#34D399", "#FBBF24", "#FB7185"]
-        device = Device(name=f"Dwarf {len(self._devices) + 1}", color=colors[len(self._devices) % len(colors)])
+        current = next((item for item in self._devices if item.id == self._selected_device_id), None)
+        device = Device(
+            name=f"Dwarf {len(self._devices) + 1}",
+            color=colors[len(self._devices) % len(colors)],
+            model=current.model if current else DeviceModel.DWARF_3,
+            timezone_name=current.timezone_name if current else "UTC",
+            latitude=current.latitude if current else 0,
+            longitude=current.longitude if current else 0,
+        )
         self.store.devices.save(device)
         self._devices.append(device)
         self._create_worker(device)
@@ -1650,8 +1658,12 @@ class AppBackend(QObject):
                 raise ValueError("A timezone is required")
             if abs(latitude) < 1e-9 and abs(longitude) < 1e-9 and timezone_name not in {"UTC", "Etc/UTC"}:
                 raise ValueError("Choose a timezone from the list, or press Enter to look up a city")
+            model = current.model
+            if values.get("model"):
+                model = DeviceModel(values["model"])
             updated = replace(
                 current,
+                model=model,
                 latitude=latitude,
                 longitude=longitude,
                 timezone_name=timezone_name,
