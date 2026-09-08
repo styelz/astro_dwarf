@@ -39,7 +39,7 @@ Rectangle {
                     text: tile.value
                     color: tile.dimmed ? Theme.muted : Theme.textPrimary
                     font.pixelSize: 14
-                    font.family: "Cascadia Mono"
+                    font.family: Theme.fontMono
                     font.bold: true
                     elide: Text.ElideRight
                     Layout.maximumWidth: tile.width - 60

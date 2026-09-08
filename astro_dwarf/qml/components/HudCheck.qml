@@ -1,27 +1,78 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Layouts
-import QtQuick.Shapes
-import QtCore
 import ".."
 
 CheckBox {
     id: box
-    font.pixelSize: 13
+    font.pixelSize: Theme.fontBase
+    hoverEnabled: true
+    spacing: 10
+    padding: 0
+    opacity: enabled ? 1 : 0.5
+    Behavior on opacity { NumberAnimation { duration: Theme.quick } }
+
+    readonly property bool lit: checked || checkState === Qt.PartiallyChecked
+    readonly property color lineColor: !box.enabled ? Theme.disabledOutline
+                                     : box.lit || box.hovered || box.visualFocus ? Theme.accent : Theme.outline
+
+    indicator: Item {
+        implicitWidth: 20
+        implicitHeight: 20
+        x: box.leftPadding
+        y: box.height / 2 - height / 2
+
+        // soft glow that breathes in on hover / focus
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: -4
+            radius: 4
+            color: "transparent"
+            border.color: Theme.accent
+            border.width: 1
+            opacity: box.visualFocus ? 0.9 : box.hovered && box.enabled ? 0.35 : 0
+            Behavior on opacity { NumberAnimation { duration: Theme.quick } }
+        }
+        HudFrame {
+            anchors.fill: parent
+            topLeft: 5
+            bottomRight: 5
+            strokeWidth: box.lit ? 1.5 : 1
+            strokeColor: box.lineColor
+            fillColor: !box.enabled ? Theme.disabledBg : box.lit ? Theme.fillChecked : box.down ? Theme.fillActive : Theme.inputBg
+            Behavior on strokeColor { ColorAnimation { duration: Theme.quick } }
+            Behavior on fillColor { ColorAnimation { duration: Theme.quick } }
+        }
+        // inner lit fill pulse when checked
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: 3
+            color: Theme.accent
+            opacity: box.checked ? 0.10 : 0
+            Behavior on opacity { NumberAnimation { duration: Theme.normal } }
+        }
+        HudCheckMark {
+            anchors.fill: parent
+            anchors.margins: 3
+            on: box.checked
+            color: box.enabled ? Theme.accent : Theme.textSecondary
+        }
+        Rectangle {
+            // partial state dash
+            anchors.centerIn: parent
+            width: parent.width - 10
+            height: 2
+            color: Theme.accent
+            visible: box.checkState === Qt.PartiallyChecked
+        }
+    }
+
     contentItem: Text {
         text: box.text
-        color: Theme.textPrimary
+        color: box.enabled ? Theme.textPrimary : Theme.textSecondary
         font: box.font
-        leftPadding: box.indicator.width + 8
+        leftPadding: box.indicator.width + box.spacing
         verticalAlignment: Text.AlignVCenter
-    }
-    indicator: Rectangle {
-        implicitWidth: 18
-        implicitHeight: 18
-        x: box.leftPadding
-        y: parent.height / 2 - height / 2
-        color: box.checked ? Theme.fillChecked : Theme.inputBg
-        border.color: Theme.accent
-        Text { anchors.centerIn: parent; text: box.checked ? "✓" : ""; color: Theme.accent; font.pixelSize: 12 }
+        elide: Text.ElideRight
+        wrapMode: Text.NoWrap
     }
 }

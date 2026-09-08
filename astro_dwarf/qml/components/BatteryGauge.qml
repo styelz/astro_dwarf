@@ -60,7 +60,7 @@ Item {
             text: gauge.percent >= 0 ? gauge.percent + "%" : "—"
             color: gauge.percent >= 0 ? Theme.textPrimary : Theme.muted
             font.pixelSize: gauge.width >= 70 ? 16 : 13
-            font.family: "Cascadia Mono"
+            font.family: Theme.fontMono
             font.bold: true
         }
         Text {

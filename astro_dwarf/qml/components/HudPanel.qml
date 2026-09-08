@@ -16,16 +16,33 @@ Item {
     implicitHeight: (headerRow.visible ? headerRow.implicitHeight + 17 : 0) + body.implicitHeight + 24
     clip: true
 
+    property bool hot: false          // set by callers for the "active" panel; hover also lights it
+    readonly property bool lit: hot || panelHover.hovered
+    HoverHandler { id: panelHover }
+
     Rectangle { anchors.fill: parent; color: panel.fill }
+    // inner vignette: a lit top edge fading into the body
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: 2
+        height: Math.min(64, parent.height * 0.35)
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, panel.lit ? 0.10 : 0.05) }
+            GradientStop { position: 1.0; color: "transparent" }
+        }
+        Behavior on opacity { NumberAnimation { duration: Theme.normal } }
+    }
     Shape {
         id: frame
         anchors.fill: parent
         preferredRendererType: Shape.CurveRenderer
-        readonly property real n: 11
+        readonly property real n: Theme.notch
         readonly property real o: 1.5
         readonly property real t: 14
         ShapePath {
-            strokeColor: Theme.hsl(-0.021, 1.000, 0.955, 0.400)
+            strokeColor: Theme.hsl(-0.021, 1.000, 0.955, panel.lit ? 0.55 : 0.40)
             strokeWidth: 1.25
             fillColor: "transparent"
             capStyle: ShapePath.FlatCap
@@ -42,8 +59,8 @@ Item {
             PathLine { x: frame.n; y: frame.o }
         }
         ShapePath {
-            strokeColor: Theme.hsl(0.001, 1.000, 0.651, 0.800)
-            strokeWidth: 2
+            strokeColor: Theme.hsl(0.001, 1.000, 0.651, panel.lit ? 1.0 : 0.8)
+            strokeWidth: panel.lit ? 2.5 : 2
             fillColor: "transparent"
             capStyle: ShapePath.FlatCap
             startX: frame.n

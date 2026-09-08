@@ -29,6 +29,6 @@ Rectangle {
         anchors.centerIn: parent
         spacing: 5
         Text { visible: chip.label !== ""; text: chip.label; color: chip.tone; font.pixelSize: 8; font.bold: true; font.letterSpacing: 1 }
-        Text { visible: chip.value !== ""; text: chip.value; color: Theme.textPrimary; font.pixelSize: 10; font.family: "Cascadia Mono" }
+        Text { visible: chip.value !== ""; text: chip.value; color: Theme.textPrimary; font.pixelSize: 10; font.family: Theme.fontMono }
     }
 }

@@ -1371,6 +1371,19 @@ class AppBackend(QObject):
         QGuiApplication.clipboard().setText(text)
         self._toast("Copied to clipboard", "success")
 
+    # Set by app.run() once the window exists; lets QML re-tint the native frame.
+    window_frame_hook = None
+
+    @Slot(str, str, str)
+    def applyWindowFrame(self, caption: str, border: str, text: str) -> None:
+        hook = self.window_frame_hook
+        if hook is None:
+            return
+        try:
+            hook(caption, border, text)
+        except Exception:
+            pass
+
     @Slot()
     def addDevice(self) -> None:
         colors = ["#62A0FF", "#E879F9", "#34D399", "#FBBF24", "#FB7185"]

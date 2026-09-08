@@ -1,10 +1,9 @@
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
-import QtQuick.Shapes
-import QtCore
 import ".."
 
+// Floating row selector. Floats above a row instead of taking layout space, so
+// revealing it never shifts content. Same silhouette as HudCheck so selection reads
+// as one system.
 Item {
     id: selectBox
     property bool checked: false
@@ -12,30 +11,45 @@ Item {
     readonly property bool shown: revealed || checked
     signal toggled(bool shiftHeld)
     z: 30
-    implicitWidth: 13
-    implicitHeight: 13
-    width: 13
-    height: 13
+    implicitWidth: 14
+    implicitHeight: 14
+    width: 14
+    height: 14
     opacity: shown ? 1 : 0
+    scale: shown ? 1 : 0.7
     enabled: shown
-    Behavior on opacity { NumberAnimation { duration: 90 } }
+    Behavior on opacity { NumberAnimation { duration: Theme.quick } }
+    Behavior on scale { NumberAnimation { duration: Theme.quick; easing.type: Easing.OutCubic } }
+
+    // scrim so the box stays legible over text or colour bars
     Rectangle {
         anchors.fill: parent
-        color: selectBox.checked ? Theme.hsl(0.036, 0.640, 0.196, 0.941) : Theme.hsl(0.083, 0.571, 0.055, 0.878)
-        border.color: Theme.accent
-        border.width: 1
-        radius: 2
-        Text {
-            anchors.centerIn: parent
-            text: selectBox.checked ? "✓" : ""
-            color: Theme.accent
-            font.pixelSize: 9
-            font.bold: true
-        }
+        anchors.margins: -3
+        radius: 3
+        color: Theme.popupBg
+        opacity: 0.85
+    }
+    HudFrame {
+        anchors.fill: parent
+        topLeft: 4
+        bottomRight: 4
+        strokeWidth: 1
+        strokeColor: selectBox.checked || hoverArea.containsMouse ? Theme.accent : Theme.outlineStrong
+        fillColor: selectBox.checked ? Theme.fillChecked : Theme.inputBg
+        Behavior on strokeColor { ColorAnimation { duration: Theme.quick } }
+        Behavior on fillColor { ColorAnimation { duration: Theme.quick } }
+    }
+    HudCheckMark {
+        anchors.fill: parent
+        anchors.margins: 2
+        on: selectBox.checked
+        strokeWidth: 1.6
     }
     MouseArea {
+        id: hoverArea
         anchors.fill: parent
-        anchors.margins: -4
+        anchors.margins: -5
+        hoverEnabled: true
         acceptedButtons: Qt.LeftButton
         preventStealing: true
         propagateComposedEvents: false

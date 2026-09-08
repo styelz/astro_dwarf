@@ -69,7 +69,7 @@ Button {
         ColumnLayout {
             Layout.fillWidth: true; spacing: 0
             Text { text: commandPad.text; color: commandPad.enabled || commandPad.activeState ? Theme.textPrimary : Theme.textSecondary; font.pixelSize: 10; font.bold: true; font.letterSpacing: 0.7; elide: Text.ElideRight; Layout.fillWidth: true }
-            Text { text: commandPad.flash === "success" ? "DONE" : commandPad.flash === "error" ? "FAILED" : commandPad.pending ? "SENDING…" : commandPad.detail; color: commandPad.flash !== "" ? commandPad.flashColor : commandPad.activeState ? Theme.success : commandPad.pending ? Theme.accent : Theme.textSecondary; font.pixelSize: 8; font.family: commandPad.activeState ? "Cascadia Mono" : Theme.fontUi; elide: Text.ElideRight; Layout.fillWidth: true }
+            Text { text: commandPad.flash === "success" ? "DONE" : commandPad.flash === "error" ? "FAILED" : commandPad.pending ? "SENDING…" : commandPad.detail; color: commandPad.flash !== "" ? commandPad.flashColor : commandPad.activeState ? Theme.success : commandPad.pending ? Theme.accent : Theme.textSecondary; font.pixelSize: 8; font.family: commandPad.activeState ? Theme.fontMono : Theme.fontUi; elide: Text.ElideRight; Layout.fillWidth: true }
         }
     }
 }

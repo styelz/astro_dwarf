@@ -28,7 +28,7 @@ MenuItem {
             Layout.preferredWidth: 18
             text: hudMenuItem.glyph
             color: hudMenuItem.destructive ? Theme.danger : Theme.textSecondary
-            font.family: "Segoe MDL2 Assets"
+            font.family: Theme.fontIcon
             font.pixelSize: 14
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter

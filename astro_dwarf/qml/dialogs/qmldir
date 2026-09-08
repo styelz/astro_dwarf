@@ -1,0 +1,4 @@
+LocationDialog 1.0 LocationDialog.qml
+SettingsLeaveDialog 1.0 SettingsLeaveDialog.qml
+ConfirmDialog 1.0 ConfirmDialog.qml
+SessionDialog 1.0 SessionDialog.qml

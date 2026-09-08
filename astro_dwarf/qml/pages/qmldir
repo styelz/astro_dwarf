@@ -1,0 +1,5 @@
+ControlPage 1.0 ControlPage.qml
+CalendarPage 1.0 CalendarPage.qml
+SessionsPage 1.0 SessionsPage.qml
+HistoryPage 1.0 HistoryPage.qml
+SettingsPage 1.0 SettingsPage.qml

@@ -47,8 +47,8 @@ def _app_icon(resources: Path) -> QIcon:
     return QIcon()
 
 
-def _apply_windows_frame(window) -> None:
-    """Color the native caption to match the HUD chrome."""
+def _apply_windows_frame(window, caption_hex: str = "#0B1520", border_hex: str = "#3F6E82", text_hex: str = "#4DE8FF") -> None:
+    """Color the native caption to match the HUD chrome. QML re-calls this when the theme hue changes."""
     if sys.platform != "win32":
         return
     try:
@@ -57,9 +57,9 @@ def _apply_windows_frame(window) -> None:
         dark = ctypes.c_int(1)
         for attribute in (_DWMWA_USE_IMMERSIVE_DARK_MODE, _DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1):
             dwm.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(dark), ctypes.sizeof(dark))
-        caption = _colorref("#0B1520")
-        border = _colorref("#3F6E82")
-        text = _colorref("#4DE8FF")
+        caption = _colorref(caption_hex)
+        border = _colorref(border_hex)
+        text = _colorref(text_hex)
         dwm.DwmSetWindowAttribute(hwnd, _DWMWA_CAPTION_COLOR, ctypes.byref(caption), ctypes.sizeof(caption))
         dwm.DwmSetWindowAttribute(hwnd, _DWMWA_BORDER_COLOR, ctypes.byref(border), ctypes.sizeof(border))
         dwm.DwmSetWindowAttribute(hwnd, _DWMWA_TEXT_COLOR, ctypes.byref(text), ctypes.sizeof(text))
@@ -94,6 +94,7 @@ def run() -> int:
     if not icon.isNull() and hasattr(window, "setIcon"):
         window.setIcon(icon)
     _apply_windows_frame(window)
+    backend.window_frame_hook = lambda caption, border, text: _apply_windows_frame(window, caption, border, text)
     application.aboutToQuit.connect(backend.shutdown)
     test_exit_ms = int(os.getenv("ASTRO_DWARF_TEST_EXIT_MS", "0"))
     if test_exit_ms:
