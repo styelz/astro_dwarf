@@ -92,6 +92,8 @@ Item {
                         selectedCount: scheduledPage.selectedCount
                         totalCount: backend.sessions.length
                         noun: "session"
+                        allowMove: true
+                        sessionIds: Util.idSetKeys(scheduledPage.selectedIds)
                         onSelectAllRequested: scheduledPage.selectedIds = Util.idSetAll(backend.sessions, true)
                         onClearRequested: scheduledPage.selectedIds = ({})
                         onDeleteRequested: root.confirmBulkDelete("deleteSessions", scheduledPage.selectedIds, "session")

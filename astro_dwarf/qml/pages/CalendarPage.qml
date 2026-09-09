@@ -16,6 +16,12 @@ Item {
     property var selectedIds: ({})
     property string selectionAnchorId: ""
     property int nowLineScrollTries: 0
+    Settings {
+        id: calendarStore
+        category: "calendar"
+        property bool showAllDevices: true
+    }
+    property alias showAllDevices: calendarStore.showAllDevices
     readonly property int selectedCount: Util.idSetCount(selectedIds)
     function selectClick(id, shift, items) {
         const result = Util.clickSelect(selectedIds, items || backend.sessions, id, shift, selectionAnchorId)
@@ -45,19 +51,135 @@ Item {
         const mondayIndex = (first.getDay() + 6) % 7
         return new Date(first.getFullYear(), first.getMonth(), 1 - mondayIndex)
     }
+    function matchesScope(item) {
+        return calendarPage.showAllDevices || item.device_id === backend.selectedDeviceId
+    }
     function sessionsForDay(key) {
-        return backend.sessions.filter(item => item.observing_date === key)
+        return backend.sessions.filter(item => item.observing_date === key && calendarPage.matchesScope(item))
+    }
+    readonly property var nightSessions: {
+        const _sessions = backend.sessions
+        const _all = calendarPage.showAllDevices
+        const _device = backend.selectedDeviceId
+        return calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+    }
+    readonly property var nightLayout: calendarPage.layoutNight(calendarPage.nightSessions)
+    function nightDeviceIds(items) {
+        const present = {}
+        for (let i = 0; i < items.length; i++)
+            present[items[i].device_id] = true
+        const ids = []
+        const devices = backend.devices || []
+        for (let i = 0; i < devices.length; i++) {
+            const id = devices[i].id
+            if (present[id])
+                ids.push(id)
+        }
+        for (let i = 0; i < items.length; i++) {
+            const id = items[i].device_id
+            if (ids.indexOf(id) < 0)
+                ids.push(id)
+        }
+        return ids
+    }
+    function sessionEndMs(item) {
+        return Number(item.start_epoch_ms || 0) + Number(item.planned_duration_seconds || 0) * 1000
+    }
+    function layoutNight(items) {
+        const deviceIds = calendarPage.showAllDevices ? calendarPage.nightDeviceIds(items) : [backend.selectedDeviceId]
+        const columns = Math.max(1, deviceIds.length)
+        const byDevice = {}
+        for (let i = 0; i < items.length; i++) {
+            const id = items[i].device_id || backend.selectedDeviceId
+            if (!byDevice[id])
+                byDevice[id] = []
+            byDevice[id].push(items[i])
+        }
+        const layout = {}
+        for (let d = 0; d < deviceIds.length; d++) {
+            const group = (byDevice[deviceIds[d]] || []).slice().sort(function(a, b) {
+                return Number(a.start_epoch_ms) - Number(b.start_epoch_ms)
+            })
+            const laneEnds = []
+            const assigned = []
+            for (let i = 0; i < group.length; i++) {
+                const start = Number(group[i].start_epoch_ms)
+                const end = calendarPage.sessionEndMs(group[i])
+                let lane = 0
+                while (lane < laneEnds.length && start < laneEnds[lane] - 500)
+                    lane += 1
+                if (lane === laneEnds.length)
+                    laneEnds.push(end)
+                else
+                    laneEnds[lane] = Math.max(laneEnds[lane], end)
+                assigned.push({ id: group[i].id, lane: lane })
+            }
+            const lanes = Math.max(1, laneEnds.length)
+            for (let i = 0; i < assigned.length; i++)
+                layout[assigned[i].id] = { column: d, columns: columns, lane: assigned[i].lane, lanes: lanes }
+        }
+        return layout
+    }
+    function timelineSlot(item) {
+        const layout = (calendarPage.nightLayout && item && calendarPage.nightLayout[item.id]) || { column: 0, columns: 1, lane: 0, lanes: 1 }
+        const inner = Math.max(80, timelineTrack.width - 82)
+        const colGap = 6
+        const laneGap = 4
+        const columns = Math.max(1, layout.columns)
+        const lanes = Math.max(1, layout.lanes)
+        const colW = (inner - colGap * (columns - 1)) / columns
+        const laneW = (colW - laneGap * (lanes - 1)) / lanes
+        return {
+            x: 66 + layout.column * (colW + colGap) + layout.lane * (laneW + laneGap),
+            width: Math.max(56, laneW)
+        }
+    }
+    function deviceName(deviceId) {
+        const devices = backend.devices || []
+        for (let i = 0; i < devices.length; i++) {
+            if (devices[i].id === deviceId)
+                return devices[i].name
+        }
+        return "Unknown"
+    }
+    function deviceColor(deviceId) {
+        const devices = backend.devices || []
+        for (let i = 0; i < devices.length; i++) {
+            if (devices[i].id === deviceId)
+                return devices[i].color
+        }
+        return Theme.accent
     }
     function chipText(item) {
         return item.start_time + "  " + (item.pane_index < 1000000 ? "pane " + item.pane_index : item.target_name)
     }
     readonly property int cutoffHour: Number(backend.selectedDevice.observing_day_cutoff_hour || 12)
+    readonly property real nightOriginMs: {
+        const _id = backend.selectedDeviceId
+        const _cutoff = calendarPage.cutoffHour
+        const _tz = backend.selectedDevice.timezone_name
+        return Number(backend.nightStartEpochMs(calendarPage.nightKey()))
+    }
+    function nightKey() {
+        return calendarPage.dateKey(calendarPage.selectedDate)
+    }
+    function nightStartMs(key) {
+        if (!key || key === calendarPage.nightKey())
+            return calendarPage.nightOriginMs
+        return Number(backend.nightStartEpochMs(key))
+    }
     function timelineMinutes(timeText) {
         const bits = String(timeText || "00:00").split(":")
         let minutes = Number(bits[0]) * 60 + Number(bits[1]) - cutoffHour * 60
         if (minutes < 0)
             minutes += 1440
         return minutes
+    }
+    function timelineMinutesFromEpoch(epochMs, key) {
+        const start = calendarPage.nightStartMs(key)
+        if (!start)
+            return 0
+        return (Number(epochMs) - start) / 60000
     }
     function snapTimelineMinutes(minutes) {
         return Math.max(0, Math.min(1435, Math.round(Number(minutes) / 5) * 5))
@@ -77,9 +199,7 @@ Item {
         return calendarPage.snapTimelineMinutes((local.y - DragCoordinator.grabOffsetY - nightTimeline.itemOffset) / nightTimeline.hourHeight * 60)
     }
     function timelineDate(minutes) {
-        const value = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), cutoffHour, 0, 0, 0)
-        value.setMinutes(value.getMinutes() + calendarPage.snapTimelineMinutes(minutes))
-        return dateKey(value) + "T" + String(value.getHours()).padStart(2, "0") + ":" + String(value.getMinutes()).padStart(2, "0")
+        return backend.nightTimelineIso(calendarPage.nightKey(), calendarPage.snapTimelineMinutes(minutes))
     }
     function currentObservingKey() {
         return String(calendarPage.observingNow().observing_date || calendarPage.dateKey(new Date()))
@@ -137,12 +257,27 @@ Item {
                     ? Qt.formatDate(calendarPage.shownMonth, "MMMM yyyy").toUpperCase()
                     : Qt.formatDate(calendarPage.selectedDate, "dddd d MMMM").toUpperCase()
                 subtitle: {
-                    const total = backend.sessions.filter(item => item.status === "planned").length
-                    const night = calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).length
-                    return total + " planned session" + (total === 1 ? "" : "s") + "  ·  " + night + " on the selected night  ·  night rolls over at " + String(calendarPage.cutoffHour).padStart(2, "0") + ":00  ·  " + (backend.selectedDevice.timezone_name || "UTC")
+                    const planned = backend.sessions.filter(item => item.status === "planned" && calendarPage.matchesScope(item)).length
+                    const night = calendarPage.nightSessions.length
+                    const scope = calendarPage.showAllDevices ? "all telescopes" : (backend.selectedDevice.name || "this telescope")
+                    return planned + " planned session" + (planned === 1 ? "" : "s") + "  ·  " + night + " on the selected night  ·  " + scope + "  ·  night rolls over at " + String(calendarPage.cutoffHour).padStart(2, "0") + ":00  ·  " + (backend.selectedDevice.timezone_name || "UTC")
                 }
                 HudButton { text: "MONTH"; buttonColor: calendarPage.viewMode === 0 ? Theme.fillActive : Theme.surfaceHigh; foregroundColor: calendarPage.viewMode === 0 ? Theme.accent : Theme.textSecondary; onClicked: calendarPage.viewMode = 0 }
                 HudButton { text: "NIGHT"; buttonColor: calendarPage.viewMode === 1 ? Theme.fillActive : Theme.surfaceHigh; foregroundColor: calendarPage.viewMode === 1 ? Theme.accent : Theme.textSecondary; onClicked: calendarPage.openNight(calendarPage.selectedDate) }
+                HudButton {
+                    visible: (backend.devices || []).length > 1
+                    text: "ALL DEVICES"
+                    buttonColor: calendarPage.showAllDevices ? Theme.fillActive : Theme.surfaceHigh
+                    foregroundColor: calendarPage.showAllDevices ? Theme.accent : Theme.textSecondary
+                    onClicked: calendarPage.showAllDevices = true
+                }
+                HudButton {
+                    visible: (backend.devices || []).length > 1
+                    text: "THIS DEVICE"
+                    buttonColor: !calendarPage.showAllDevices ? Theme.fillActive : Theme.surfaceHigh
+                    foregroundColor: !calendarPage.showAllDevices ? Theme.accent : Theme.textSecondary
+                    onClicked: calendarPage.showAllDevices = false
+                }
                 HudButton {
                     text: "‹"; implicitWidth: 40
                     onClicked: {
@@ -178,14 +313,16 @@ Item {
             }
             SelectionBar {
                 active: calendarPage.viewMode === 1
-                selectedCount: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).length
-                totalCount: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).length
+                selectedCount: calendarPage.nightSessions.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).length
+                totalCount: calendarPage.nightSessions.length
                 noun: "session"
-                onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)), true)
+                allowMove: true
+                sessionIds: calendarPage.nightSessions.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).map(item => item.id)
+                onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(calendarPage.nightSessions, true)
                 onClearRequested: calendarPage.selectedIds = ({})
                 onDeleteRequested: {
                     const chosen = {}
-                    const items = calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+                    const items = calendarPage.nightSessions
                     for (let i = 0; i < items.length; i++) {
                         const id = items[i] && items[i].id
                         if (id && Util.idSetHas(calendarPage.selectedIds, id))
@@ -219,7 +356,12 @@ Item {
                             return value
                         }
                         property string key: calendarPage.dateKey(cellDate)
-                        property var daySessions: calendarPage.sessionsForDay(key)
+                        property var daySessions: {
+                            const _sessions = backend.sessions
+                            const _all = calendarPage.showAllDevices
+                            const _device = backend.selectedDeviceId
+                            return calendarPage.sessionsForDay(dayCell.key)
+                        }
                         readonly property bool isToday: key === calendarPage.currentObservingKey()
                         readonly property bool isSelected: key === calendarPage.dateKey(calendarPage.selectedDate)
                         readonly property bool inMonth: cellDate.getMonth() === calendarPage.shownMonth.getMonth()
@@ -382,13 +524,42 @@ Item {
                 Layout.fillHeight: true
                 property real hourHeight: 64
                 property real itemOffset: 5
+                readonly property var columnIds: calendarPage.showAllDevices ? calendarPage.nightDeviceIds(calendarPage.nightSessions) : []
                 onVisibleChanged: {
                     if (visible)
                         calendarPage.requestNowLineScroll()
                 }
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: 4
+                    Row {
+                        visible: nightTimeline.columnIds.length > 1
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 18
+                        spacing: 6
+                        Item { width: 60; height: 1 }
+                        Repeater {
+                            model: nightTimeline.columnIds
+                            delegate: Text {
+                                required property var modelData
+                                width: {
+                                    const cols = Math.max(1, nightTimeline.columnIds.length)
+                                    const inner = Math.max(80, timelineTrack.width - 82)
+                                    return (inner - 6 * (cols - 1)) / cols
+                                }
+                                text: calendarPage.deviceName(modelData)
+                                color: calendarPage.deviceColor(modelData)
+                                font.pixelSize: 10
+                                font.bold: true
+                                font.letterSpacing: 0.6
+                                elide: Text.ElideRight
+                            }
+                        }
+                    }
                 Flickable {
                     id: timelineFlick
-                    anchors.fill: parent
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
                     clip: true
                     contentWidth: width
                     contentHeight: 24 * nightTimeline.hourHeight + 24
@@ -429,14 +600,22 @@ Item {
                             }
                         }
                         Repeater {
-                            model: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+                            model: calendarPage.nightSessions
                             delegate: Rectangle {
                                 id: timelineSession
                                 required property var modelData
                                 property string sessionId: modelData.id
-                                x: 66
-                                y: calendarPage.timelineMinutes(modelData.start_time) / 60 * nightTimeline.hourHeight + nightTimeline.itemOffset
-                                width: timelineTrack.width - 82
+                                readonly property var slot: {
+                                    const _layout = calendarPage.nightLayout
+                                    const _width = timelineTrack.width
+                                    return calendarPage.timelineSlot(modelData)
+                                }
+                                x: slot.x
+                                y: {
+                                    const minutes = Math.max(0, Math.min(1435, calendarPage.timelineMinutesFromEpoch(modelData.start_epoch_ms)))
+                                    return minutes / 60 * nightTimeline.hourHeight + nightTimeline.itemOffset
+                                }
+                                width: slot.width
                                 height: Math.max(36, Number(modelData.planned_duration_seconds || 0) / 3600 * nightTimeline.hourHeight - 6)
                                 radius: 3
                                 color: Util.statusFill(modelData.status)
@@ -451,7 +630,7 @@ Item {
                                 TapHandler {
                                     acceptedButtons: Qt.LeftButton
                                     acceptedModifiers: Qt.ShiftModifier
-                                    onTapped: calendarPage.selectClick(timelineSession.modelData.id, true, calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)))
+                                    onTapped: calendarPage.selectClick(timelineSession.modelData.id, true, calendarPage.nightSessions)
                                 }
                                 RowLayout {
                                     anchors.fill: parent
@@ -466,7 +645,7 @@ Item {
                                         spineColor: timelineSession.modelData.device_color || Theme.accent
                                         checked: Util.idSetHas(calendarPage.selectedIds, timelineSession.modelData.id)
                                         revealed: timelineHover.hovered || calendarPage.selectedCount > 0
-                                        onToggled: (shiftHeld) => calendarPage.selectClick(timelineSession.modelData.id, shiftHeld, calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)))
+                                        onToggled: (shiftHeld) => calendarPage.selectClick(timelineSession.modelData.id, shiftHeld, calendarPage.nightSessions)
                                     }
                                     ColumnLayout {
                                         Layout.fillWidth: true; spacing: 0
@@ -475,21 +654,21 @@ Item {
                                             spacing: 8
                                             Text { text: modelData.start_time; color: Theme.accent; font.family: Theme.fontMono; font.pixelSize: 12; font.bold: true }
                                             Text { text: modelData.target_name; color: Theme.textPrimary; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
-                                            StatusChip { status: modelData.status; visible: modelData.status !== "planned" }
+                                            StatusChip { status: modelData.status; visible: modelData.status !== "planned" && timelineSession.width > 160 }
                                         }
-                                        Text { text: modelData.duration_text + "  ·  " + modelData.device_name; color: Theme.textSecondary; font.pixelSize: 10; visible: timelineSession.height > 48 }
+                                        Text { text: modelData.duration_text + "  ·  " + modelData.device_name; color: Theme.textSecondary; font.pixelSize: 10; visible: timelineSession.height > 40; elide: Text.ElideRight; Layout.fillWidth: true }
                                     }
-                                    HudButton { text: "EDIT"; implicitHeight: 24; visible: timelineSession.height > 44; onClicked: sessionDialog.openExisting(timelineSession.modelData) }
-                                    HudButton { text: "RUN"; implicitHeight: 24; visible: timelineSession.height > 44; enabled: modelData.status !== "running"; onClicked: backend.runNow(modelData.id) }
+                                    HudButton { text: "EDIT"; implicitHeight: 24; visible: timelineSession.height > 44 && timelineSession.width > 220; onClicked: sessionDialog.openExisting(timelineSession.modelData) }
+                                    HudButton { text: "RUN"; implicitHeight: 24; visible: timelineSession.height > 44 && timelineSession.width > 220; enabled: modelData.status !== "running"; onClicked: backend.runNow(modelData.id) }
                                 }
                                 TapHandler { acceptedButtons: Qt.RightButton; onTapped: timelineMenu.popup() }
                                 SessionContextMenu {
                                     onEditRequested: session => sessionDialog.openExisting(session)
                                     id: timelineMenu
                                     sessionData: timelineSession.modelData
-                                    selectionItems: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+                                    selectionItems: calendarPage.nightSessions
                                     selectedMap: calendarPage.selectedIds
-                                    onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)), true)
+                                    onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(calendarPage.nightSessions, true)
                                     onUnselectAllRequested: {
                                         calendarPage.selectedIds = ({})
                                         calendarPage.selectionAnchorId = ""
@@ -505,7 +684,13 @@ Item {
                             height: 2
                             z: 20
                             color: Theme.warning
-                            y: calendarPage.timelineMinutes(String(backend.clockText).substring(0, 5)) / 60 * nightTimeline.hourHeight
+                            y: {
+                                const epoch = Number(calendarPage.observingNow().epoch_ms || 0)
+                                const minutes = epoch
+                                    ? calendarPage.timelineMinutesFromEpoch(epoch)
+                                    : calendarPage.timelineMinutes(String(backend.clockText).substring(0, 5))
+                                return minutes / 60 * nightTimeline.hourHeight
+                            }
                             Text { anchors.right: parent.right; anchors.bottom: parent.top; text: "NOW"; color: Theme.warning; font.pixelSize: 9; font.bold: true }
                         }
                         Rectangle {
@@ -528,9 +713,10 @@ Item {
                         }
                         Rectangle {
                             visible: DragCoordinator.active && DragCoordinator.previewMinutes >= 0
-                            x: 66
+                            readonly property var slot: calendarPage.timelineSlot(DragCoordinator.data)
+                            x: slot.x
                             y: DragCoordinator.previewMinutes / 60 * nightTimeline.hourHeight + nightTimeline.itemOffset
-                            width: timelineTrack.width - 82
+                            width: slot.width
                             height: Math.max(36, Number(DragCoordinator.data.planned_duration_seconds || 0) / 3600 * nightTimeline.hourHeight - 6)
                             radius: 3
                             color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.12)
@@ -551,17 +737,20 @@ Item {
                         }
                     }
                 }
+                }
                 EmptyHint {
                     anchors.centerIn: parent
                     glyph: "☾"
-                    visible: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).length === 0
-                    text: "Nothing scheduled for this night. Drop a session onto the timeline, or create a new one."
+                    visible: calendarPage.nightSessions.length === 0
+                    text: calendarPage.showAllDevices
+                          ? "Nothing scheduled for this night. Drop a session onto the timeline, or create a new one."
+                          : "Nothing scheduled on this telescope for this night."
                 }
             }
         }
         HudPanel {
             id: nightPanel
-            readonly property var nightSessions: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+            readonly property var nightSessions: calendarPage.nightSessions
             readonly property int nightSeconds: nightSessions.reduce((sum, item) => sum + Number(item.planned_duration_seconds || 0), 0)
             visible: calendarPage.viewMode === 0
             title: Qt.formatDate(calendarPage.selectedDate, "ddd d MMM").toUpperCase()
@@ -579,6 +768,8 @@ Item {
                 selectedCount: nightPanel.nightSessions.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).length
                 totalCount: nightPanel.nightSessions.length
                 noun: "session"
+                allowMove: true
+                sessionIds: nightPanel.nightSessions.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).map(item => item.id)
                 onSelectAllRequested: {
                     const next = Object.assign({}, calendarPage.selectedIds)
                     for (let i = 0; i < nightPanel.nightSessions.length; i++) {
@@ -628,7 +819,7 @@ Item {
                         boundsBehavior: Flickable.StopAtBounds
                         ScrollBar.vertical: HiddenBar {}
                         ScrollBar.horizontal: HiddenBar {}
-                        model: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+                        model: calendarPage.nightSessions
                         delegate: Rectangle {
                             id: daySessionRow
                             required property var modelData
@@ -708,8 +899,8 @@ Item {
                 EmptyHint {
                     anchors.centerIn: parent
                     glyph: "☾"
-                    visible: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate)).length === 0
-                    text: "No sessions this observing night"
+                    visible: calendarPage.nightSessions.length === 0
+                    text: calendarPage.showAllDevices ? "No sessions this observing night" : "No sessions on this telescope for this night"
                 }
             }
         }

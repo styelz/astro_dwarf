@@ -16,6 +16,7 @@ Dialog {
     // size to the form so the dialog doesn't float in a sea of empty surface
     height: Math.min(root.height - 80, Math.max(420, contentItem.implicitHeight + 40))
     property string editingId: ""
+    property string editingDeviceId: ""
     property bool editingTemplate: false
     property var templateMembers: []
     property int paneIndex: 0
@@ -202,11 +203,20 @@ Dialog {
         sessionDialog.applyWorkflowChecks(data.workflow)
         saveTemplate.checked = false
     }
+    function syncDeviceCombo() {
+        const wanted = sessionDialog.editingDeviceId || backend.selectedDeviceId
+        for (let i = 0; i < sessionDevice.count; i++) {
+            if (sessionDevice.valueAt(i) === wanted) {
+                sessionDevice.currentIndex = i
+                return
+            }
+        }
+    }
     function formPayload() {
         return {
             id: sessionDialog.editingId, name: sessionName.text, target: targetName.text,
             target_kind: targetType.currentText, ra: ra.text, dec: dec.text,
-            scheduled_start: startTime.text, device_id: backend.selectedDeviceId,
+            scheduled_start: startTime.text, device_id: sessionDialog.editingDeviceId || backend.selectedDeviceId,
             camera: camera.currentIndex === 1 ? "wide" : "tele", exposure: Number(exposure.text),
             gain: Number(gain.text), frame_count: Number(frames.text), binning: Number(binning.currentText),
             ir_filter: irFilter.currentText, rows: Number(rows.text), columns: Number(columns.text),
@@ -218,6 +228,7 @@ Dialog {
     }
     function openForDate(day) {
         editingId = ""
+        editingDeviceId = backend.selectedDeviceId
         editingTemplate = false
         templateMembers = []
         paneIndex = 0
@@ -245,15 +256,18 @@ Dialog {
             calibrate: true, autofocus: true, infinite_focus: false, polar_align: false, goto: true
         })
         saveTemplate.checked = false
+        sessionDialog.syncDeviceCombo()
         open()
     }
     function openExisting(data) {
         editingId = data.id
+        editingDeviceId = data.device_id || backend.selectedDeviceId
         editingTemplate = false
         templateMembers = []
         paneIndex = 0
         fillForm(data)
         startTime.text = String(data.scheduled_start).substring(0, 16)
+        sessionDialog.syncDeviceCombo()
         open()
     }
     function openTemplate(data) {
@@ -263,6 +277,7 @@ Dialog {
             cloned.push(sessionDialog.cloneMember(members[i]))
         sessionDialog.staggerImportedWorkflows(cloned)
         editingTemplate = true
+        editingDeviceId = backend.selectedDeviceId
         templateMembers = cloned
         paneIndex = 0
         editingId = cloned[0].id || data.id
@@ -332,6 +347,17 @@ Dialog {
             HudField { id: dec; placeholderText: "Dec degrees"; Layout.fillWidth: true }
             FieldLabel { text: "START"; visible: !sessionDialog.editingTemplate }
             HudField { id: startTime; Layout.fillWidth: true; Layout.columnSpan: 2; visible: !sessionDialog.editingTemplate }
+            FieldLabel { text: "DEVICE"; visible: !sessionDialog.editingTemplate }
+            HudCombo {
+                id: sessionDevice
+                visible: !sessionDialog.editingTemplate
+                Layout.fillWidth: true
+                Layout.columnSpan: 2
+                model: backend.devices
+                textRole: "name"
+                valueRole: "id"
+                onActivated: if (currentValue) sessionDialog.editingDeviceId = currentValue
+            }
             FieldLabel { text: "CAMERA" }
             HudCombo { id: camera; model: ["Tele", "Wide"]; Layout.fillWidth: true; Layout.columnSpan: currentIndex === 1 ? 2 : 1 }
             HudCombo {

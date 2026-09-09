@@ -46,6 +46,14 @@ HudMenu {
         glyph: "\uE8C8"
         onTriggered: backend.duplicateSession(sessionContextMenu.sessionId)
     }
+    MoveDeviceMenu {
+        sessionIds: {
+            const keys = Util.idSetKeys(sessionContextMenu.selectedMap)
+            if (sessionContextMenu.sessionId && Util.idSetHas(sessionContextMenu.selectedMap, sessionContextMenu.sessionId) && keys.length > 1)
+                return keys
+            return sessionContextMenu.sessionId ? [sessionContextMenu.sessionId] : []
+        }
+    }
     HudMenuSeparator {}
     HudMenuItem {
         text: "Copy target name"

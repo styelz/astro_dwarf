@@ -11,6 +11,8 @@ RowLayout {
     property int totalCount: 0
     property string noun: "item"
     property bool active: true
+    property bool allowMove: false
+    property var sessionIds: []
     signal selectAllRequested()
     signal clearRequested()
     signal deleteRequested()
@@ -35,6 +37,16 @@ RowLayout {
         font.letterSpacing: 0.4
     }
     Item { Layout.fillWidth: true }
+    HudButton {
+        text: "MOVE TO"
+        visible: selectionBar.allowMove && selectionBar.selectedCount > 0 && (backend.devices || []).length > 1
+        implicitHeight: 28
+        onClicked: moveMenu.popup()
+    }
+    MoveDeviceMenu {
+        id: moveMenu
+        sessionIds: selectionBar.sessionIds
+    }
     HudButton {
         text: selectionBar.selectedCount > 1 ? "DELETE " + selectionBar.selectedCount : "DELETE SELECTED"
         enabled: selectionBar.selectedCount > 0

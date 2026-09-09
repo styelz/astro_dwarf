@@ -1027,6 +1027,7 @@ class AppBackend(QObject):
             "year": now.year,
             "month": now.month,
             "day": now.day,
+            "epoch_ms": int(now.timestamp() * 1000),
             "observing_date": observing.date().isoformat(),
             "observing_year": observing.year,
             "observing_month": observing.month,
@@ -1583,10 +1584,11 @@ class AppBackend(QObject):
         self._notify_devices()
 
     def _abort_active_session(self, device_id: str, reason: str) -> bool:
-        """Flag the running session as user-stopped and disarm the scheduler.
+        """Flag the running session as user-stopped.
 
         Returns True when a session was running. The worker aborts the session
-        itself once it receives the stop/disconnect command.
+        itself once it receives the stop/disconnect command. The fleet scheduler
+        stays armed so other telescopes can still start their queues.
         """
         session_id = self._active_sessions.get(device_id)
         if not session_id:
@@ -1595,11 +1597,6 @@ class AppBackend(QObject):
         session = self.store.sessions.get(session_id)
         name = session.target.name if session else "session"
         self.add_log("warning", f"Stopping session · {name} ({reason})", device_id)
-        if self._scheduler_enabled:
-            self._scheduler_enabled = False
-            self.schedulerEnabledChanged.emit()
-            self.add_log("warning", f"Scheduler disarmed by {reason}; re-arm it to continue the queue")
-            self._toast("Scheduler disarmed", "warning", "Re-arm it from Control to resume the session queue")
         return True
 
     @Slot(str)
@@ -1828,20 +1825,40 @@ class AppBackend(QObject):
         if len(self._devices) <= 1:
             self._toast("Keep at least one telescope profile", "warning")
             return
+        if device_id in self._active_sessions:
+            self._toast("Stop the running session before removing this telescope", "warning")
+            return
         worker = self._workers.pop(device_id, None)
         if worker:
             worker.shutdown()
+        session_ids = [item.id for item in self.store.sessions.all() if item.device_id == device_id]
+        history_ids = [item.id for item in self.store.history.all() if item.device_id == device_id]
+        for session_id in session_ids:
+            self.store.sessions.delete(session_id)
+        for record_id in history_ids:
+            self.store.history.delete(record_id)
         self.store.devices.delete(device_id)
         self._devices = [item for item in self._devices if item.id != device_id]
         self._active_sessions.pop(device_id, None)
         self._pending_actions.pop(device_id, None)
         self._device_activity.pop(device_id, None)
+        self._device_telemetry.pop(device_id, None)
+        self._telemetry_updated.pop(device_id, None)
+        self._device_lights.pop(device_id, None)
         if self._selected_device_id == device_id:
             self._selected_device_id = self._devices[0].id
         self.devicesChanged.emit()
         self.selectedDeviceChanged.emit()
         self.sessionsChanged.emit()
-        self._toast("Device removed", "success")
+        if history_ids:
+            self.historyChanged.emit()
+        extra = []
+        if session_ids:
+            extra.append(f"{len(session_ids)} session{'s' if len(session_ids) != 1 else ''}")
+        if history_ids:
+            extra.append(f"{len(history_ids)} history record{'s' if len(history_ids) != 1 else ''}")
+        detail = "Removed " + " and ".join(extra) if extra else ""
+        self._toast("Device removed", "success", detail)
 
     def _normalize_ids(self, ids: Any) -> list[str]:
         if ids is None:
@@ -2119,6 +2136,12 @@ class AppBackend(QObject):
             )
             resetting = existing is not None and existing.status != SessionStatus.PLANNED
             device = self._device_by_id(values["device_id"])
+            siblings: list[Session] = []
+            if existing and existing.device_id != device.id:
+                family = self._mosaic_siblings(existing)
+                if any(item.status == SessionStatus.RUNNING for item in family):
+                    raise ValueError("Stop the running mosaic before moving it to another telescope")
+                siblings = [item for item in family if item.id != existing.id]
             session = Session(
                 id=existing.id if existing else uuid4().hex,
                 name=values.get("name") or values["target"],
@@ -2137,7 +2160,22 @@ class AppBackend(QObject):
                 template_id=existing.template_id if existing else None,
                 created_at=existing.created_at if existing else datetime.now(timezone.utc).isoformat(),
             )
-            self._save_session(session)
+            self._save_session(session, notify=not siblings)
+            if siblings and existing:
+                old_tz = self._zone_for_id(existing.device_id)
+                new_tz = self._zone_for(device)
+                delta = parse_in_zone(session.scheduled_start, new_tz) - parse_in_zone(existing.scheduled_start, old_tz)
+                for sibling in siblings:
+                    sib_start = parse_in_zone(sibling.scheduled_start, old_tz) + delta
+                    self._save_session(
+                        replace(sibling, device_id=device.id, scheduled_start=store_local_iso(sib_start, new_tz)),
+                        notify=False,
+                    )
+                self.sessionsChanged.emit()
+                self._warn_schedule_overlap(
+                    {session.id, *(item.id for item in siblings)},
+                    device.id,
+                )
             if values.get("save_template"):
                 self.store.templates.save(SessionTemplate(
                     name=session.name,
@@ -2202,11 +2240,13 @@ class AppBackend(QObject):
         except Exception as exc:
             self._toast(f"Could not save template: {exc}", "error")
 
-    def _save_session(self, session: Session) -> None:
+    def _save_session(self, session: Session, *, notify: bool = True) -> Session:
         device = self._device_by_id(session.device_id)
         session = replace(session, planned_duration_seconds=DurationEngine.calculate(session, device.hardware))
         self.store.sessions.save(session)
-        self.sessionsChanged.emit()
+        if notify:
+            self.sessionsChanged.emit()
+        return session
 
     @Slot(str)
     def deleteSession(self, session_id: str) -> None:
@@ -2340,19 +2380,79 @@ class AppBackend(QObject):
             self.store.sessions.save(replace(item, scheduled_start=store_local_iso(start, tz)))
         self.sessionsChanged.emit()
 
-    def _session_group(self, session: Session) -> list[Session]:
+    def _mosaic_siblings(self, session: Session) -> list[Session]:
         group_id = session.mosaic.group_id
         if not group_id:
             return [session]
+        return [
+            item for item in self.store.sessions.all()
+            if item.mosaic.group_id == group_id and item.device_id == session.device_id
+        ]
+
+    def _session_group(self, session: Session) -> list[Session]:
         return sorted(
-            (
-                item for item in self.store.sessions.all()
-                if item.mosaic.group_id == group_id
-                and item.device_id == session.device_id
-                and item.status != SessionStatus.RUNNING
-            ),
+            (item for item in self._mosaic_siblings(session) if item.status != SessionStatus.RUNNING),
             key=lambda item: (item.scheduled_start, pane_sort_key(item.name), item.name),
         )
+
+    def _reassign_session(self, session: Session, device: Device) -> Session:
+        if session.device_id == device.id:
+            return session
+        return replace(
+            session,
+            device_id=device.id,
+            scheduled_start=self._store_session_time(session.scheduled_start, device),
+        )
+
+    def _sessions_to_reassign(self, session_ids: list[str]) -> tuple[list[Session], int]:
+        skipped = 0
+        seen: set[str] = set()
+        moving: list[Session] = []
+        for session_id in self._normalize_ids(session_ids):
+            session = self.store.sessions.get(session_id)
+            if not session or session.id in seen:
+                continue
+            family = self._mosaic_siblings(session)
+            if any(item.status == SessionStatus.RUNNING for item in family):
+                skipped += 1
+                seen.update(item.id for item in family)
+                continue
+            for item in family:
+                if item.id in seen:
+                    continue
+                seen.add(item.id)
+                moving.append(item)
+        return moving, skipped
+
+    @Slot(list, str)
+    @Slot("QVariantList", str)
+    def assignSessionsDevice(self, session_ids: list, device_id: str) -> None:
+        device = next((item for item in self._devices if item.id == device_id), None)
+        if not device:
+            self._toast("That telescope was not found", "error")
+            return
+        moving, skipped = self._sessions_to_reassign(session_ids)
+        changed_ids: set[str] = set()
+        for session in moving:
+            if session.device_id == device.id:
+                continue
+            self._save_session(self._reassign_session(session, device), notify=False)
+            changed_ids.add(session.id)
+        if changed_ids:
+            self.sessionsChanged.emit()
+            self._warn_schedule_overlap(changed_ids, device.id)
+        if skipped and not changed_ids:
+            self._toast("Stop running sessions before moving them", "warning")
+        elif skipped:
+            self._toast(
+                f"Moved {len(changed_ids)}; skipped {skipped} running group{'s' if skipped != 1 else ''}",
+                "warning",
+            )
+        elif changed_ids:
+            label = "session" if len(changed_ids) == 1 else "sessions"
+            self._toast(f"Moved {len(changed_ids)} {label} to {device.name}", "success")
+        else:
+            self._toast("Those sessions are already on this telescope", "info")
 
     def _session_window(self, session: Session, tz) -> tuple[datetime, datetime]:
         start = parse_in_zone(session.scheduled_start, tz).replace(second=0, microsecond=0)
@@ -2385,7 +2485,8 @@ class AppBackend(QObject):
             return
         try:
             tz = self._zone_for_id(session.device_id)
-            target = parse_in_zone(iso_datetime, tz).replace(second=0, microsecond=0)
+            axis_tz = self._zone_for(self._device_by_id(self._selected_device_id))
+            target = parse_in_zone(iso_datetime, axis_tz).replace(second=0, microsecond=0)
             current = parse_in_zone(session.scheduled_start, tz)
         except ValueError:
             self._toast("That schedule time is not valid", "error")
@@ -2723,6 +2824,29 @@ class AppBackend(QObject):
 
     def _device_by_id(self, device_id: str) -> Device:
         return next(item for item in self._devices if item.id == device_id)
+
+    def _night_start(self, day: str, device: Device | None = None) -> datetime:
+        item = device or self._device_by_id(self._selected_device_id)
+        tz = self._zone_for(item)
+        cutoff = item.observing_day_cutoff_hour if item else 12
+        start_date = date.fromisoformat(day)
+        return datetime(start_date.year, start_date.month, start_date.day, cutoff, 0, tzinfo=tz)
+
+    @Slot(str, result=float)
+    def nightStartEpochMs(self, day: str) -> float:
+        try:
+            return self._night_start(day).timestamp() * 1000
+        except ValueError:
+            return 0.0
+
+    @Slot(str, int, result=str)
+    def nightTimelineIso(self, day: str, minutes: int) -> str:
+        try:
+            start = self._night_start(day)
+        except ValueError:
+            return ""
+        value = start + timedelta(minutes=max(0, min(1435, int(minutes))))
+        return store_local_iso(value, self._zone_for())
 
     def _zone_for(self, device: Device | None = None):
         item = device or self._device_by_id(self._selected_device_id)
