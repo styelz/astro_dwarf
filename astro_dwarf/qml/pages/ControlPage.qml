@@ -517,10 +517,11 @@ Item {
                     property string previewDeviceId: backend.selectedDeviceId
                     property string statusText: backend.selectedDevice.connected ? backend.videoUrl : "Connect a telescope to start the stream"
                     property bool mainIsWide: backend.selectedDevice.camera === "wide"
+                    property bool pipEnabled: true
                     readonly property bool pipAvailable: backend.previewTelePlaying && backend.previewWidePlaying
                     readonly property bool displayWide: pipAvailable ? mainIsWide : backend.previewWidePlaying
                     readonly property bool mainPlaying: displayWide ? backend.previewWidePlaying : backend.previewTelePlaying
-                    readonly property bool pipPlaying: pipAvailable
+                    readonly property bool pipPlaying: pipAvailable && pipEnabled
                     readonly property real teleFovH: {
                         const tele = Number(root.scopeTelemetry.tele_fov_h)
                         const wide = Number(root.scopeTelemetry.wide_fov_h)
@@ -708,16 +709,17 @@ Item {
                         footprintNy: previewHost.teleMatchNy
                         footprintNw: previewHost.teleMatchNw
                         footprintNh: previewHost.teleMatchNh
-                        onCenterRequested: (nx, ny) => backend.centerOnTap(backend.selectedDeviceId, nx, ny)
+                        onCenterRequested: (nx, ny, diag) => backend.centerOnTap(backend.selectedDeviceId, nx, ny, diag)
                     }
 
                     Item {
                         id: pipBox
                         z: 3
                         clip: true
-                        visible: previewHost.pipAvailable
+                        visible: previewHost.pipPlaying
                         width: Math.round(Math.max(168, Math.min(parent.width * 0.32, parent.height * 0.38, 300)))
                         height: Math.round(width * pipAspect)
+                        property bool floating: false
                         readonly property real pipAspect: {
                             const w = pipPane.paintedWidth
                             const h = pipPane.paintedHeight
@@ -727,6 +729,31 @@ Item {
                         anchors.bottom: parent.bottom
                         anchors.rightMargin: 14
                         anchors.bottomMargin: 46
+                        function beginFloat() {
+                            if (floating)
+                                return
+                            const pos = mapToItem(parent, 0, 0)
+                            anchors.right = undefined
+                            anchors.bottom = undefined
+                            anchors.rightMargin = 0
+                            anchors.bottomMargin = 0
+                            x = pos.x
+                            y = pos.y
+                            floating = true
+                        }
+                        function clampToHost() {
+                            if (!floating || !parent)
+                                return
+                            x = Math.max(8, Math.min(x, parent.width - width - 8))
+                            y = Math.max(8, Math.min(y, parent.height - height - 8))
+                        }
+                        onWidthChanged: clampToHost()
+                        onHeightChanged: clampToHost()
+                        Connections {
+                            target: previewHost
+                            function onWidthChanged() { pipBox.clampToHost() }
+                            function onHeightChanged() { pipBox.clampToHost() }
+                        }
                         Rectangle {
                             anchors.fill: parent
                             color: Theme.hsl(0.090, 0.375, 0.031, 0.92)
@@ -741,6 +768,7 @@ Item {
                             wideView: !previewHost.displayWide
                             camera: previewHost.liveCamera(!previewHost.displayWide)
                             centerEnabled: playing && root.motionEnabled
+                            inputEnabled: false
                             swallowClicks: true
                             showFootprint: wideView
                             chromeShown: previewHost.chromeShown
@@ -750,7 +778,20 @@ Item {
                             footprintNy: previewHost.teleMatchNy
                             footprintNw: previewHost.teleMatchNw
                             footprintNh: previewHost.teleMatchNh
-                            onCenterRequested: (nx, ny) => backend.centerOnTap(backend.selectedDeviceId, nx, ny)
+                            onCenterRequested: (nx, ny, diag) => backend.centerOnTap(backend.selectedDeviceId, nx, ny, diag)
+                        }
+                        MouseArea {
+                            id: pipDrag
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            drag.target: pipBox
+                            drag.minimumX: 8
+                            drag.maximumX: Math.max(8, previewHost.width - pipBox.width - 8)
+                            drag.minimumY: 8
+                            drag.maximumY: Math.max(8, previewHost.height - pipBox.height - 8)
+                            onPressed: pipBox.beginFloat()
+                            onContainsMouseChanged: previewHost.holdControls(containsMouse)
+                            onDoubleClicked: (mouse) => pipPane.centerOn(mouse.x, mouse.y)
                         }
                         Rectangle {
                             anchors.left: parent.left
@@ -770,31 +811,57 @@ Item {
                                 font.letterSpacing: 1
                             }
                         }
-                        Rectangle {
-                            id: pipSwap
+                        Row {
                             anchors.right: parent.right
                             anchors.top: parent.top
                             anchors.margins: 6
-                            width: pipSwapLabel.implicitWidth + 14
-                            height: 18
+                            spacing: 4
                             z: 2
-                            color: Theme.fillActive
-                            border.color: Theme.accent
-                            Text {
-                                id: pipSwapLabel
-                                anchors.centerIn: parent
-                                text: "SWAP"
-                                color: Theme.accent
-                                font.pixelSize: 9
-                                font.bold: true
-                                font.letterSpacing: 1
+                            Rectangle {
+                                id: pipSwap
+                                width: pipSwapLabel.implicitWidth + 14
+                                height: 18
+                                color: Theme.fillActive
+                                border.color: Theme.accent
+                                Text {
+                                    id: pipSwapLabel
+                                    anchors.centerIn: parent
+                                    text: "SWAP"
+                                    color: Theme.accent
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                    font.letterSpacing: 1
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onContainsMouseChanged: previewHost.holdControls(containsMouse)
+                                    onClicked: previewHost.swapViews()
+                                }
                             }
-                            MouseArea {
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onContainsMouseChanged: previewHost.holdControls(containsMouse)
-                                onClicked: previewHost.swapViews()
+                            Rectangle {
+                                id: pipHide
+                                width: pipHideLabel.implicitWidth + 14
+                                height: 18
+                                color: Theme.fillActive
+                                border.color: Theme.accent
+                                Text {
+                                    id: pipHideLabel
+                                    anchors.centerIn: parent
+                                    text: "HIDE"
+                                    color: Theme.accent
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                    font.letterSpacing: 1
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onContainsMouseChanged: previewHost.holdControls(containsMouse)
+                                    onClicked: previewHost.pipEnabled = false
+                                }
                             }
                         }
                     }
@@ -1004,6 +1071,12 @@ Item {
                         Behavior on opacity { NumberAnimation { duration: Theme.normal } }
                         HudButton {
                             visible: previewHost.pipAvailable
+                            text: previewHost.pipEnabled ? "HIDE PIP" : "SHOW PIP"
+                            onHoveredChanged: previewHost.holdControls(hovered)
+                            onClicked: previewHost.pipEnabled = !previewHost.pipEnabled
+                        }
+                        HudButton {
+                            visible: previewHost.pipAvailable
                             text: "SWAP VIEWS"
                             onHoveredChanged: previewHost.holdControls(hovered)
                             onClicked: previewHost.swapViews()
@@ -1081,6 +1154,12 @@ Item {
                                 else
                                     previewHost.startPreview()
                             }
+                        }
+                        HudMenuItem {
+                            text: previewHost.pipEnabled ? "Hide picture-in-picture" : "Show picture-in-picture"
+                            glyph: "\uE7C4"
+                            enabled: previewHost.pipAvailable
+                            onTriggered: previewHost.pipEnabled = !previewHost.pipEnabled
                         }
                         HudMenuItem {
                             text: "Swap views"

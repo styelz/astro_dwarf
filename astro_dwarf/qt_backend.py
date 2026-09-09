@@ -277,7 +277,7 @@ _ACTIVITY_TRANSIENT = {"calibrate", "autofocus"}
 _ACTION_LABELS = {
     "calibrate": "Calibration started",
     "stop_calibrate": "Calibration stopped",
-    "autofocus": "Autofocus started",
+    "autofocus": "Live autofocus started",
     "infinity": "Infinity focus started",
     "stop_autofocus": "Autofocus stopped",
     "polar": "Polar alignment started",
@@ -1538,12 +1538,13 @@ class AppBackend(QObject):
             worker.send("stop_motors")
 
     @Slot(str, float, float)
-    def centerOnTap(self, device_id: str, nx: float, ny: float) -> None:
-        """Slew so the tapped wide-view spot lands on the centre crosshair.
+    @Slot(str, float, float, str)
+    def centerOnTap(self, device_id: str, nx: float, ny: float, diag: str = "") -> None:
+        """Slew so the tapped wide-view pixel is sent as Dual Lenses Locating.
 
-        Dual Lenses Locating aims at the tele camera, which sits off the wide
-        crosshair at close range. This instead turns the tap's offset from
-        centre into a motor move using the wide camera's field of view.
+        Cmd 14009 uses 1920×1080 wide-camera pixels and puts that point on the
+        tele camera. PictureMatching must not be added on top; live taps showed
+        that shift turning a left-side click into a near-centre command.
         """
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
@@ -1567,11 +1568,8 @@ class AppBackend(QObject):
             fov_h = fov_v = 0.0
         if fov_h <= 0 or fov_v <= 0:
             fov_h, fov_v = 45.06, 25.93
-        self.add_log(
-            "info",
-            f"Center tap ({nx:.3f}, {ny:.3f})  Δ{((nx - 0.5) * fov_h):+.2f}° × {((0.5 - ny) * fov_v):+.2f}°",
-            device_id,
-        )
+        if diag:
+            self.add_log("debug", f"Center tap map {diag}", device_id)
 
         def done(ok: bool, result: Any) -> None:
             if not ok:

@@ -377,70 +377,61 @@ def _motor_run_to(motor_id: int, position: float) -> bool:
 def _wide_linkage_pixels(nx: float, ny: float) -> tuple[int, int]:
     """Map a 0-1 wide-view tap onto firmware DualCameraLinkage pixels.
 
-    The command slews the tap onto the tele footprint. When the device has
-    reported that footprint (tele-in-wide PictureMatching), shift the command
-    so the tap lands on the wide-frame centre (the on-screen crosshair).
+    Cmd 14009 already slews that wide-frame pixel onto the tele camera.
+    Do not add the PictureMatching box: live taps showed that shift pulling
+    a left-side click (raw 553) to near-centre (838).
     """
     x = nx * (_LINKAGE_W - 1)
     y = ny * (_LINKAGE_H - 1)
-    snap = _tap.snapshot() if _tap else {}
-    try:
-        tx = float(snap.get("tele_match_cx"))
-        ty = float(snap.get("tele_match_cy"))
-    except (TypeError, ValueError):
-        tx = ty = None
-    if tx is not None and ty is not None:
-        # Ignore implausible boxes (tele is a small patch near the wide centre).
-        if 0.2 * (_LINKAGE_W - 1) < tx < 0.8 * (_LINKAGE_W - 1) and 0.2 * (_LINKAGE_H - 1) < ty < 0.8 * (_LINKAGE_H - 1):
-            x += tx - (_LINKAGE_W - 1) / 2.0
-            y += ty - (_LINKAGE_H - 1) / 2.0
     return (
         int(round(max(0.0, min(float(_LINKAGE_W - 1), x)))),
         int(round(max(0.0, min(float(_LINKAGE_H - 1), y)))),
     )
 
 
-def _dual_camera_linkage(nx: float, ny: float) -> bool:
-    """Dual Lenses Locating (official app double-tap). CMD 14009, MODULE_MOTOR.
-
-    Works on an unhomed mount, unlike RunTo / GetPosition.
-    """
+def _send_dual_camera_linkage(x: int, y: int) -> bool:
+    """Dual Lenses Locating (official app double-tap). CMD 14009, MODULE_MOTOR."""
     from dwarf_python_api.proto import motor_control_pb2
 
-    x, y = _wide_linkage_pixels(nx, ny)
     message = motor_control_pb2.ReqDualCameraLinkage()
-    message.x = x
-    message.y = y
+    message.x = int(x)
+    message.y = int(y)
     return send_without_response(message, 14009, 6)
 
 
-def _center_wide_view(nx: float, ny: float, fov_h: float, fov_v: float) -> bool:
+def _center_wide_view(nx: float, ny: float, fov_h: float, fov_v: float) -> dict[str, Any]:
     """Slew so a 0-1 wide-frame tap lands on the wide-view crosshair.
 
-    Preferred path: read both axes and RunTo by the tap's offset from centre
-    using the wide FOV. Rotation is motor 1, pitch is motor 2; signs match the
-    on-screen joystick (right / up are positive). That needs homed steppers,
-    so on NEED_RESET (or any failed read) fall back to Dual Lenses Locating,
-    which the firmware accepts unhomed.
+    Dual Lenses Locating is the official double-tap and works unhomed. RunTo
+    by FOV is only a fallback if that command fails.
     """
     nx = max(0.0, min(1.0, float(nx)))
     ny = max(0.0, min(1.0, float(ny)))
+    x, y = _wide_linkage_pixels(nx, ny)
+    detail = {
+        "path": "14009",
+        "x": x,
+        "y": y,
+        "nx": nx,
+        "ny": ny,
+        "ok": False,
+    }
+    log(
+        f"Center tap ({nx:.3f}, {ny:.3f}) → Dual Lenses Locating ({x}, {y}) of {_LINKAGE_W}×{_LINKAGE_H}",
+        "info",
+    )
+    if _send_dual_camera_linkage(x, y):
+        detail["ok"] = True
+        return detail
     yaw_delta = (nx - 0.5) * float(fov_h)
     pitch_delta = (0.5 - ny) * float(fov_v)
-    already_unhomed = _motors_unhomed
     az = _motor_position(1)
     alt = _motor_position(2) if az is not None else None
     if az is None or alt is None:
-        reason = "motors not homed" if _motors_unhomed else "mount position unavailable"
-        x, y = _wide_linkage_pixels(nx, ny)
-        # Say why once per session; later taps only leave a debug trace.
-        log(
-            f"Centering via Dual Lenses Locating ({reason}) at ({x}, {y}) of {_LINKAGE_W}×{_LINKAGE_H}",
-            "debug" if already_unhomed else "info",
-        )
-        return _dual_camera_linkage(nx, ny)
+        log("Dual Lenses Locating failed and mount position is unavailable", "error")
+        return detail
     log(
-        f"Center wide yaw {yaw_delta:+.2f}° pitch {pitch_delta:+.2f}° "
+        f"Center fallback RunTo yaw {yaw_delta:+.2f}° pitch {pitch_delta:+.2f}° "
         f"from ({az:.2f}, {alt:.2f})",
         "info",
     )
@@ -449,7 +440,9 @@ def _center_wide_view(nx: float, ny: float, fov_h: float, fov_v: float) -> bool:
         moved = _motor_run_to(1, az + yaw_delta) and moved
     if abs(pitch_delta) >= 0.05:
         moved = _motor_run_to(2, alt + pitch_delta) and moved
-    return moved
+    detail["path"] = "runto"
+    detail["ok"] = bool(moved)
+    return detail
 
 
 def sdk_call(operation: str, *args: Any) -> Any:
@@ -489,6 +482,12 @@ def sdk_call(operation: str, *args: Any) -> Any:
         message = focus_pb2.ReqManualSingleStepFocus()
         message.direction = int(args[0])
         return send_without_response(message, 15001, 8)
+    if operation == "normal_autofocus":
+        # Live/photo AF (15000). Does not switch the tele stream or exposure.
+        # Distinct from astro AF (15004) used by sessions and INFINITY.
+        from dwarf_python_api.proto import focus_pb2
+
+        return send_without_response(focus_pb2.ReqNormalAutoFocus(), 15000, 8)
     capture_messages = {
         "burst_start": ("ReqBurstPhoto", 10003),
         "burst_stop": ("ReqStopBurstPhoto", 10004),
@@ -1586,7 +1585,7 @@ def dispatch(message: dict[str, Any]) -> Any:
     if command in {"disconnect", "reboot", "power_down"}:
         _mark_disconnected()
         return sdk_call(command)
-    if command in {"calibrate", "autofocus", "infinity", "polar"}:
+    if command in {"calibrate", "infinity", "polar"}:
         if _ensure_astro_mode() is False:
             return False
     if command == "astro_mode":
@@ -1594,7 +1593,9 @@ def dispatch(message: dict[str, Any]) -> Any:
         if result is not False:
             request_state_refresh()
         return result
-    if command == "infinity":
+    if command == "autofocus":
+        result = sdk_call("normal_autofocus")
+    elif command == "infinity":
         result = sdk_call("autofocus", True)
     else:
         capture_techniques = {

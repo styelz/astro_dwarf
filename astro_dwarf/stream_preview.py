@@ -5,7 +5,7 @@ import sys
 import threading
 from typing import Optional
 
-from PySide6.QtCore import Property, QObject, QProcess, QRectF, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import Property, QObject, QProcess, QRectF, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QWindow
 from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
 
@@ -102,6 +102,8 @@ class LiveFrameItem(QQuickPaintedItem):
         self._playing = False
         self._painted_w = 0.0
         self._painted_h = 0.0
+        self._painted_x = 0.0
+        self._painted_y = 0.0
         hub = live_frames()
         if hub is not None:
             hub.frameChanged.connect(self._on_hub_frame)
@@ -149,8 +151,68 @@ class LiveFrameItem(QQuickPaintedItem):
 
     paintedHeight = Property(float, getPaintedHeight, notify=paintedSizeChanged)
 
+    def getPaintedX(self) -> float:
+        return self._painted_x
+
+    paintedX = Property(float, getPaintedX, notify=paintedSizeChanged)
+
+    def getPaintedY(self) -> float:
+        return self._painted_y
+
+    paintedY = Property(float, getPaintedY, notify=paintedSizeChanged)
+
+    @Slot(float, float, result="QVariant")
+    def mapToFrame(self, px: float, py: float) -> dict:
+        """Map item-local coords onto the frame drawn by paint().
+
+        Uses the same fit rect the painter uses, so a tap and the pixel under
+        it cannot drift apart. Returns nx/ny in 0-1 of the frame plus the
+        numbers needed to audit the mapping.
+        """
+        hub = live_frames()
+        image = hub.peek(self._camera) if hub is not None else QImage()
+        rect = self._fit_rect(image)
+        window = self.window()
+        dpr = float(window.devicePixelRatio()) if window is not None else 1.0
+        result = {
+            "inside": False,
+            "nx": 0.5,
+            "ny": 0.5,
+            "px": float(px),
+            "py": float(py),
+            "itemW": float(self.width()),
+            "itemH": float(self.height()),
+            "imageW": int(image.width()),
+            "imageH": int(image.height()),
+            "dpr": dpr,
+            "rectX": 0.0,
+            "rectY": 0.0,
+            "rectW": 0.0,
+            "rectH": 0.0,
+        }
+        if rect is None or rect.width() <= 0 or rect.height() <= 0:
+            return result
+        fx = float(px) - rect.x()
+        fy = float(py) - rect.y()
+        result.update(
+            {
+                "rectX": rect.x(),
+                "rectY": rect.y(),
+                "rectW": rect.width(),
+                "rectH": rect.height(),
+                "nx": fx / rect.width(),
+                "ny": fy / rect.height(),
+                "inside": 0 <= fx <= rect.width() and 0 <= fy <= rect.height(),
+            }
+        )
+        return result
+
     def geometryChange(self, new_geometry, old_geometry) -> None:
         super().geometryChange(new_geometry, old_geometry)
+        width = int(max(0.0, float(self.width())))
+        height = int(max(0.0, float(self.height())))
+        if width > 0 and height > 0:
+            self.setContentsSize(QSize(width, height))
         self._sync_painted_size()
 
     @Slot(str)
@@ -177,6 +239,8 @@ class LiveFrameItem(QQuickPaintedItem):
     def _sync_painted_size(self) -> None:
         width = 0.0
         height = 0.0
+        left = 0.0
+        top = 0.0
         if self._playing:
             hub = live_frames()
             image = hub.peek(self._camera) if hub is not None else QImage()
@@ -184,10 +248,19 @@ class LiveFrameItem(QQuickPaintedItem):
             if rect is not None:
                 width = rect.width()
                 height = rect.height()
-        if width == self._painted_w and height == self._painted_h:
+                left = rect.x()
+                top = rect.y()
+        if (
+            width == self._painted_w
+            and height == self._painted_h
+            and left == self._painted_x
+            and top == self._painted_y
+        ):
             return
         self._painted_w = width
         self._painted_h = height
+        self._painted_x = left
+        self._painted_y = top
         self.paintedSizeChanged.emit()
 
     def paint(self, painter: QPainter) -> None:

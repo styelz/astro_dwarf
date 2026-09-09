@@ -12,6 +12,7 @@ Item {
     property bool centerEnabled: false
     property bool showFootprint: false
     property bool swallowClicks: false
+    property bool inputEnabled: true
     property bool chromeShown: true
     property real fovH: 2.95 / 45.06
     property real fovV: 1.66 / 25.93
@@ -21,9 +22,10 @@ Item {
     property real footprintNh: 0
     readonly property real paintedWidth: frame.paintedWidth
     readonly property real paintedHeight: frame.paintedHeight
-    readonly property real frameX: (width - paintedWidth) / 2
-    readonly property real frameY: (height - paintedHeight) / 2
-    signal centerRequested(real nx, real ny)
+    // Same fit rect paint() draws with, so overlays and taps track the pixels.
+    readonly property real frameX: frame.paintedX
+    readonly property real frameY: frame.paintedY
+    signal centerRequested(real nx, real ny, string diag)
 
     LiveFrameItem {
         id: frame
@@ -34,24 +36,30 @@ Item {
     }
 
     function centerOn(px, py) {
-        if (!pane.centerEnabled || !pane.wideView || paintedWidth <= 0 || paintedHeight <= 0)
+        if (!pane.centerEnabled || !pane.wideView)
             return
-        const fx = px - pane.frameX
-        const fy = py - pane.frameY
-        if (fx < 0 || fy < 0 || fx > paintedWidth || fy > paintedHeight)
+        const mapped = tapMouse.mapToItem(frame, px, py)
+        const m = frame.mapToFrame(mapped.x, mapped.y)
+        if (!m || !m.inside)
             return
         tapMarker.showAt(px, py)
-        pane.centerRequested(fx / paintedWidth, fy / paintedHeight)
+        const diag = "mouse (" + px.toFixed(1) + ", " + py.toFixed(1) + ")"
+            + " item " + m.itemW.toFixed(0) + "x" + m.itemH.toFixed(0)
+            + " rect (" + m.rectX.toFixed(1) + ", " + m.rectY.toFixed(1) + " "
+            + m.rectW.toFixed(1) + "x" + m.rectH.toFixed(1) + ")"
+            + " jpeg " + m.imageW + "x" + m.imageH
+            + " dpr " + Number(m.dpr).toFixed(2)
+        pane.centerRequested(m.nx, m.ny, diag)
     }
 
     MouseArea {
-        // Local mouse coords on the Image (letterbox included). Scene
-        // mapping from TapHandler was treating window X as frame X, so
-        // a click on the left of the wide view was sent as the right half.
+        id: tapMouse
+        // Local mouse coords on the pane (letterbox included), then mapped
+        // through LiveFrameItem so taps use the same fit rect as paint().
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton
         hoverEnabled: false
-        enabled: pane.swallowClicks || (pane.centerEnabled && pane.wideView)
+        enabled: pane.inputEnabled && (pane.swallowClicks || (pane.centerEnabled && pane.wideView))
         onDoubleClicked: (mouse) => pane.centerOn(mouse.x, mouse.y)
     }
 
