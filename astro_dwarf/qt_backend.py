@@ -273,6 +273,18 @@ _ACTIVITY_STOP = {
     "stop_autofocus": "autofocus",
 }
 _ACTIVITY_CLEAR = {"stop_all", "reboot", "power_down", "go_live"}
+_CAPTURE_PREVIEW_STEPS = {
+    "Start capture",
+    "Start wide capture",
+    "Start mosaic",
+    "Waiting for capture",
+    "Waiting for mosaic",
+    "Waiting for wide capture",
+    "Waiting for stack",
+    "Waiting for wide stack",
+    "Imaging",
+    "Imaging (wide)",
+}
 _ACTIVITY_TRANSIENT = {"calibrate", "autofocus"}
 _ACTION_LABELS = {
     "calibrate": "Calibration started",
@@ -506,6 +518,7 @@ class AppBackend(QObject):
     previewWidePlayingChanged = Signal()
     previewTeleGenerationChanged = Signal()
     previewWideGenerationChanged = Signal()
+    previewHoldChanged = Signal()
     _openTeleStream = Signal(str)
     _openWideStream = Signal(str)
     _closePreviewStreams = Signal()
@@ -566,6 +579,8 @@ class AppBackend(QObject):
         self._last_preview_ui: dict[str, float] = {}
         self._preview_window = None
         self._preview_window_filter = None
+        self._preview_hold_device_id = ""
+        self._preview_hold_target = ""
         self._shut_down = False
         self._preview_thread = QThread(self)
         self._tele_player = StreamPlayer()
@@ -660,6 +675,7 @@ class AppBackend(QObject):
             self._drop_device_link(device_id)
             return
         self._track_session_capture(device_id, current)
+        self._maybe_resume_held_preview(device_id)
         self._notify_devices()
 
     def _toast(self, message: str, level: str = "info", detail: str = "") -> None:
@@ -1119,6 +1135,25 @@ class AppBackend(QObject):
     def previewWideGeneration(self) -> int:
         return self._preview_wide_generation
 
+    @Property(bool, notify=previewHoldChanged)
+    def previewHeld(self) -> bool:
+        return bool(self._preview_hold_device_id) and self._preview_hold_device_id == self._selected_device_id
+
+    @Property(str, notify=previewHoldChanged)
+    def previewHoldMessage(self) -> str:
+        if not self.previewHeld:
+            return ""
+        session_id = self._active_sessions.get(self._preview_hold_device_id)
+        session = self.store.sessions.get(session_id) if session_id else None
+        step = str(session.current_step or "").strip() if session else ""
+        target = self._preview_hold_target or (session.target.name if session else "this target")
+        if not step or step in {"Starting worker", "Waiting"}:
+            step = "Leaving live camera mode"
+        return (
+            f"{step} · {target}. Live view is paused so the telescope can prepare "
+            "without locking the app. The stream returns when capture starts."
+        )
+
     def _stream_url(self, device: Device, camera: Camera) -> str:
         if device.model in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
             return f"rtsp://{device.ip_address}/{'ch1' if camera == Camera.WIDE else 'ch0'}/stream0"
@@ -1137,19 +1172,15 @@ class AppBackend(QObject):
         if not worker or not worker.connected:
             self.add_log("warning", "Preview needs an active telescope connection", device_id)
             return
-        self.stopPreview()
-        self._preview_token += 1
-        token = self._preview_token
-        self._preview_active = True
-        self._preview_playing = False
-        self._preview_tele_playing = False
-        self._preview_wide_playing = False
-        self.live_images.clear()
-        self._set_preview_status("Starting live camera…")
-        self.previewActiveChanged.emit()
-        self.previewPlayingChanged.emit()
-        self.previewTelePlayingChanged.emit()
-        self.previewWidePlayingChanged.emit()
+        if self._preview_hold_device_id == device_id and self._session_is_capturing(device_id):
+            self._resume_held_preview(device_id)
+            return
+        if self._preview_hold_device_id == device_id and self._active_sessions.get(device_id):
+            self.add_log("info", "Live view stays paused until this session starts capturing", device_id)
+            self._refresh_preview_hold()
+            return
+        self._clear_preview_hold()
+        token = self._arm_preview_ui("Starting live camera…")
         tele_url = self._stream_url(device, Camera.TELE)
         wide_url = self._stream_url(device, Camera.WIDE)
         host = urlparse(tele_url).hostname or device.ip_address
@@ -1162,14 +1193,7 @@ class AppBackend(QObject):
                 self.add_log("error", f"Could not open camera: {result}", device_id)
                 self._set_preview_status("Camera failed to open")
                 return
-            self.add_log("info", f"Opening {tele_url} and {wide_url} in the background", device_id)
-            self._set_preview_status("Waiting for stream " + tele_url)
-            threading.Thread(
-                target=self._wait_for_stream,
-                args=(token, tele_url, wide_url, host, port),
-                daemon=True,
-                name="preview-wait",
-            ).start()
+            self._begin_stream_wait(token, tele_url, wide_url, host, port)
 
         def after_photo(ok: bool, result: Any) -> None:
             if token != self._preview_token:
@@ -1216,8 +1240,52 @@ class AppBackend(QObject):
 
         worker.send("go_live", callback=after_live)
 
-    def _wait_for_stream(self, token: int, tele_url: str, wide_url: str, host: str, port: int) -> None:
-        deadline = time.monotonic() + 12
+    def _arm_preview_ui(self, status: str) -> int:
+        if self._preview_active or self._preview_playing:
+            self._closePreviewStreams.emit()
+        self._preview_token += 1
+        self._preview_active = True
+        self._preview_playing = False
+        self._preview_tele_playing = False
+        self._preview_wide_playing = False
+        self.live_images.clear()
+        self._last_preview_ui.clear()
+        self._set_preview_status(status)
+        self.previewActiveChanged.emit()
+        self.previewPlayingChanged.emit()
+        self.previewTelePlayingChanged.emit()
+        self.previewWidePlayingChanged.emit()
+        return self._preview_token
+
+    def _begin_stream_wait(
+        self,
+        token: int,
+        tele_url: str,
+        wide_url: str,
+        host: str,
+        port: int,
+        timeout: float = 12,
+        status: str | None = None,
+    ) -> None:
+        self.add_log("info", f"Opening {tele_url} and {wide_url} in the background")
+        self._set_preview_status(status or ("Waiting for stream " + tele_url))
+        threading.Thread(
+            target=self._wait_for_stream,
+            args=(token, tele_url, wide_url, host, port, timeout),
+            daemon=True,
+            name="preview-wait",
+        ).start()
+
+    def _wait_for_stream(
+        self,
+        token: int,
+        tele_url: str,
+        wide_url: str,
+        host: str,
+        port: int,
+        timeout: float = 12,
+    ) -> None:
+        deadline = time.monotonic() + timeout
         while token == self._preview_token and time.monotonic() < deadline:
             if port_is_open(host, port, timeout=0.8):
                 break
@@ -1248,6 +1316,10 @@ class AppBackend(QObject):
 
     @Slot()
     def stopPreview(self) -> None:
+        self._clear_preview_hold()
+        self._stop_preview_streams()
+
+    def _stop_preview_streams(self) -> None:
         self._preview_token += 1
         if self._preview_active or self._preview_playing:
             self._closePreviewStreams.emit()
@@ -1265,6 +1337,86 @@ class AppBackend(QObject):
         self.previewGenerationChanged.emit()
         self.previewTeleGenerationChanged.emit()
         self.previewWideGenerationChanged.emit()
+
+    def _clear_preview_hold(self) -> None:
+        if not self._preview_hold_device_id and not self._preview_hold_target:
+            return
+        self._preview_hold_device_id = ""
+        self._preview_hold_target = ""
+        self.previewHoldChanged.emit()
+
+    def _refresh_preview_hold(self) -> None:
+        if not self._preview_hold_device_id:
+            return
+        self.previewHoldChanged.emit()
+        if self.previewHeld:
+            self._set_preview_status(self.previewHoldMessage)
+
+    def _hold_preview_for_session(self, device_id: str, target_name: str) -> None:
+        if device_id != self._selected_device_id:
+            return
+        if not (self._preview_active or self._preview_playing or self._preview_hold_device_id == device_id):
+            return
+        self._preview_hold_device_id = device_id
+        self._preview_hold_target = target_name or "this target"
+        self.previewHoldChanged.emit()
+        self._stop_preview_streams()
+        self._set_preview_status(self.previewHoldMessage)
+        self.add_log(
+            "info",
+            "Live view paused while the session prepares; it will return when capture starts",
+            device_id,
+        )
+
+    def _session_is_capturing(self, device_id: str) -> bool:
+        telemetry = self._device_telemetry.get(device_id) or {}
+        if telemetry.get("capture_active") or telemetry.get("capture_state") == "running":
+            return True
+        session_id = self._active_sessions.get(device_id)
+        session = self.store.sessions.get(session_id) if session_id else None
+        return bool(session and session.current_step in _CAPTURE_PREVIEW_STEPS)
+
+    def _maybe_resume_held_preview(self, device_id: str) -> None:
+        if self._preview_hold_device_id != device_id:
+            return
+        if not self._session_is_capturing(device_id):
+            return
+        self._resume_held_preview(device_id)
+
+    def _resume_held_preview(self, device_id: str) -> None:
+        if self._preview_hold_device_id != device_id:
+            return
+        if self._preview_active or self._preview_playing:
+            self._clear_preview_hold()
+            return
+        if device_id != self._selected_device_id:
+            return
+        worker = self._workers.get(device_id)
+        device = next((item for item in self._devices if item.id == device_id), None)
+        if not worker or not worker.connected or device is None:
+            return
+        self._clear_preview_hold()
+        self.add_log("info", "Capture started; reconnecting live view", device_id)
+        token = self._arm_preview_ui("Capture started — reconnecting live view…")
+        tele_url = self._stream_url(device, Camera.TELE)
+        wide_url = self._stream_url(device, Camera.WIDE)
+        host = urlparse(tele_url).hostname or device.ip_address
+        self._begin_stream_wait(
+            token,
+            tele_url,
+            wide_url,
+            host,
+            stream_port(tele_url),
+            timeout=20,
+            status="Capture started — reconnecting live view…",
+        )
+
+    def _restore_held_preview(self, device_id: str) -> None:
+        if device_id != self._selected_device_id:
+            return
+        worker = self._workers.get(device_id)
+        if worker and worker.connected:
+            QTimer.singleShot(0, lambda did=device_id: self.startPreview(did))
 
     def bindPreviewWindow(self, window) -> None:
         self._preview_window = window
@@ -1368,6 +1520,7 @@ class AppBackend(QObject):
             self.selectedDeviceChanged.emit()
             self.sessionsChanged.emit()
             self.clockChanged.emit()
+            self.previewHoldChanged.emit()
 
     @Property(str, notify=uiBusyChanged)
     def uiBusy(self) -> str:
@@ -2405,6 +2558,7 @@ class AppBackend(QObject):
         self._session_capture_base[session.id] = self._telemetry_frame_count(session.device_id)
         self._session_capture_peak[session.id] = 0
         self._set_activity(session.device_id, "")
+        self._hold_preview_for_session(session.device_id, session.target.name)
         self.sessionsChanged.emit()
         self.add_log("notice", f"Session started · {session.target.name}", session.device_id)
         self._toast(f"Session started · {session.target.name}", "info", f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s")
@@ -2413,26 +2567,42 @@ class AppBackend(QObject):
     @Slot(str, str)
     def _session_progress(self, session_id: str, step: str) -> None:
         session = self.store.sessions.get(session_id)
-        if session:
-            self.store.sessions.save(replace(session, current_step=step))
-            self.sessionsChanged.emit()
+        if not session:
+            return
+        self.store.sessions.save(replace(session, current_step=step))
+        self.sessionsChanged.emit()
+        if self._preview_hold_device_id == session.device_id:
+            self._refresh_preview_hold()
+            self._maybe_resume_held_preview(session.device_id)
 
     def _session_finished(self, session_id: str, ok: bool, result: Any) -> None:
         active_device = next(
             (device_id for device_id, active_id in self._active_sessions.items() if active_id == session_id),
             None,
         )
+        session = self.store.sessions.get(session_id)
+        device_id = active_device or (session.device_id if session else "")
+        restore_preview = bool(
+            device_id
+            and self._preview_hold_device_id == device_id
+            and not self._preview_active
+            and not self._preview_playing
+        )
+        self._clear_preview_hold()
         if active_device:
             self._active_sessions.pop(active_device, None)
         stopped = session_id in self._stop_requested
         self._stop_requested.discard(session_id)
-        session = self.store.sessions.get(session_id)
         if not session:
             self.sessionsChanged.emit()
+            if restore_preview:
+                self._restore_held_preview(device_id)
             return
         if session.status != SessionStatus.RUNNING:
             # Already finalised (for example the worker died and reported it first).
             self.sessionsChanged.emit()
+            if restore_preview:
+                self._restore_held_preview(device_id)
             return
         ended = datetime.now(timezone.utc)
         started = datetime.fromisoformat(session.actual_started_at) if session.actual_started_at else ended
@@ -2477,6 +2647,8 @@ class AppBackend(QObject):
             self._toast(f"Session failed · {final.target.name}", "error", outcome)
         self.sessionsChanged.emit()
         self.historyChanged.emit()
+        if restore_preview:
+            self._restore_held_preview(final.device_id)
 
     def shutdown(self) -> None:
         if self._shut_down:

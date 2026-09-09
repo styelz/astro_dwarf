@@ -116,7 +116,7 @@ Item {
                     model: [
                         {label: "ENDPOINT", value: backend.selectedDevice.ip_address || "—", tone: root.scopeOnline ? Theme.textPrimary : Theme.textSecondary},
                         {label: "SCHEDULER", value: backend.schedulerEnabled ? root.nextSessionCountdown() : "Disarmed", tone: backend.schedulerEnabled ? Theme.success : Theme.textSecondary},
-                        {label: "PREVIEW", value: backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped", tone: backend.previewPlaying ? Theme.danger : backend.previewActive ? Theme.warning : Theme.textSecondary},
+                        {label: "PREVIEW", value: backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped"), tone: backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary)},
                         {label: "SESSION", value: backend.currentSession.current_step || "No active session", tone: backend.currentSession.id ? Theme.accent : Theme.textSecondary},
                         {label: "REMAINING", value: backend.currentSession.id ? Util.durationLabel(Number(backend.currentSession.planned_duration_seconds || 0) * (1 - backend.sessionProgress)) : "—", tone: Theme.textPrimary},
                         {label: "TIMEZONE", value: backend.selectedDevice.timezone_name || "UTC", tone: Theme.textPrimary},
@@ -670,15 +670,23 @@ Item {
                             previewHost.stopPreview()
                         }
                         function onPreviewStatusChanged() {
-                            if (backend.previewStatus)
+                            if (backend.previewHeld)
+                                previewHost.statusText = backend.previewHoldMessage
+                            else if (backend.previewStatus)
                                 previewHost.statusText = backend.previewStatus
                             else if (!backend.previewActive)
                                 previewHost.statusText = backend.selectedDevice.connected
                                     ? backend.videoUrl
                                     : "Connect a telescope to start the stream"
                         }
+                        function onPreviewHoldChanged() {
+                            if (backend.previewHeld)
+                                previewHost.statusText = backend.previewHoldMessage
+                        }
                         function onPreviewActiveChanged() {
-                            if (!backend.previewActive)
+                            if (backend.previewHeld)
+                                previewHost.statusText = backend.previewHoldMessage
+                            else if (!backend.previewActive)
                                 previewHost.statusText = backend.selectedDevice.connected
                                     ? backend.videoUrl
                                     : "Connect a telescope to start the stream"
@@ -960,9 +968,42 @@ Item {
                         }
                     }
                     Column {
+                        z: 5
+                        anchors.centerIn: parent
+                        spacing: 10
+                        width: Math.min(parent.width - 48, 520)
+                        visible: backend.previewHeld && !backend.previewPlaying
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "LIVE VIEW PAUSED"
+                            color: Theme.warning
+                            font.pixelSize: 16
+                            font.letterSpacing: 3
+                            font.bold: true
+                        }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            width: parent.width
+                            wrapMode: Text.Wrap
+                            horizontalAlignment: Text.AlignHCenter
+                            text: backend.previewHoldMessage
+                            color: Theme.textPrimary
+                            font.pixelSize: 13
+                        }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            width: parent.width
+                            wrapMode: Text.Wrap
+                            horizontalAlignment: Text.AlignHCenter
+                            text: "Streaming resumes automatically when stacking starts."
+                            color: Theme.textSecondary
+                            font.pixelSize: 11
+                        }
+                    }
+                    Column {
                         anchors.centerIn: parent
                         spacing: 8
-                        visible: !backend.previewPlaying
+                        visible: !backend.previewPlaying && !backend.previewHeld
                         Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: Theme.textPrimary; font.pixelSize: 16; font.letterSpacing: 3; font.bold: true }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -992,16 +1033,16 @@ Item {
                         opacity: previewHost.chromeShown ? 1 : 0.75
                         Behavior on opacity { NumberAnimation { duration: Theme.slow } }
                         Rectangle {
-                            width: 96
+                            width: backend.previewHeld && !backend.previewPlaying ? 108 : 96
                             height: 28
                             color: Theme.hsl(0.094, 0.333, 0.094, 0.753)
-                            border.color: backend.previewPlaying ? Theme.success : Theme.outline
+                            border.color: backend.previewPlaying ? Theme.success : (backend.previewHeld ? Theme.warning : Theme.outline)
                             Row {
                                 anchors.centerIn: parent
                                 spacing: 7
                                 Rectangle {
                                     width: 8; height: 8; radius: 4
-                                    color: backend.previewPlaying ? Theme.danger : (backend.previewActive ? Theme.warning : "#64748B")
+                                    color: backend.previewPlaying ? Theme.danger : (backend.previewHeld ? Theme.warning : (backend.previewActive ? Theme.warning : "#64748B"))
                                     anchors.verticalCenter: parent.verticalCenter
                                     SequentialAnimation on opacity {
                                         running: backend.previewPlaying
@@ -1010,7 +1051,7 @@ Item {
                                         NumberAnimation { from: 0.3; to: 1; duration: 600 }
                                     }
                                 }
-                                Text { text: backend.previewPlaying ? "LIVE" : (backend.previewActive ? "STARTING" : "STANDBY"); color: Theme.textPrimary; font.pixelSize: 11; font.bold: true }
+                                Text { text: backend.previewPlaying ? "LIVE" : (backend.previewHeld ? "PAUSED" : (backend.previewActive ? "STARTING" : "STANDBY")); color: Theme.textPrimary; font.pixelSize: 11; font.bold: true }
                             }
                         }
                         Rectangle {
@@ -1144,12 +1185,13 @@ Item {
                     HudMenu {
                         id: previewMenu
                         HudMenuItem {
-                            text: backend.previewActive ? "Stop preview" : "Start preview"
-                            glyph: backend.previewActive ? "\uE71A" : "\uE768"
+                            text: backend.previewHeld ? "Don't resume live view" : (backend.previewActive ? "Stop preview" : "Start preview")
+                            glyph: backend.previewActive || backend.previewHeld ? "\uE71A" : "\uE768"
                             enabled: backend.previewActive
+                                || backend.previewHeld
                                 || root.commandEnabled("open_camera")
                             onTriggered: {
-                                if (backend.previewActive)
+                                if (backend.previewActive || backend.previewHeld)
                                     previewHost.stopPreview()
                                 else
                                     previewHost.startPreview()
