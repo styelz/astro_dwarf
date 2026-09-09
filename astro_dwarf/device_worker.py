@@ -1533,6 +1533,9 @@ def stop_all() -> bool:
     _stop.set()
     operations = _stop_targets()
     _stop_phase = None
+    if not _connected.is_set() or (_tap is not None and _tap.snapshot().get("power_off")):
+        log("Stop skipped; telescope is not connected", "debug")
+        return True
     for operation in operations:
         try:
             _sdk_call_bounded(operation, _STOP_COMMAND_TIMEOUT)

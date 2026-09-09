@@ -671,6 +671,16 @@ Item {
                         function onPreviewStatusChanged() {
                             if (backend.previewStatus)
                                 previewHost.statusText = backend.previewStatus
+                            else if (!backend.previewActive)
+                                previewHost.statusText = backend.selectedDevice.connected
+                                    ? backend.videoUrl
+                                    : "Connect a telescope to start the stream"
+                        }
+                        function onPreviewActiveChanged() {
+                            if (!backend.previewActive)
+                                previewHost.statusText = backend.selectedDevice.connected
+                                    ? backend.videoUrl
+                                    : "Connect a telescope to start the stream"
                         }
                         function onPreviewPlayingChanged() {
                             previewHost.controlHovered = false

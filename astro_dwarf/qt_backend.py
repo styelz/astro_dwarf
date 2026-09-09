@@ -601,13 +601,32 @@ class AppBackend(QObject):
         return worker
 
     def _worker_status_changed(self) -> None:
+        selected_offline = False
         for device_id, worker in self._workers.items():
             if worker.connected:
                 continue
+            if device_id == self._selected_device_id:
+                selected_offline = True
             self._pending_actions.pop(device_id, None)
             self._device_activity.pop(device_id, None)
             self._device_telemetry.pop(device_id, None)
             self._telemetry_updated.pop(device_id, None)
+        if selected_offline:
+            self.stopPreview()
+        self._disarm_scheduler_if_offline()
+        self._notify_devices()
+
+    def _drop_device_link(self, device_id: str) -> None:
+        """Mark the telescope offline so live video and commands stop with it."""
+        worker = self._workers.get(device_id)
+        if worker:
+            worker.busy = False
+            if worker.connected:
+                worker.connected = False
+                worker.availabilityChanged.emit()
+                return
+        if device_id == self._selected_device_id:
+            self.stopPreview()
         self._disarm_scheduler_if_offline()
         self._notify_devices()
 
@@ -638,10 +657,8 @@ class AppBackend(QObject):
         elif previous and derive_activity(previous)[0]:
             self._device_activity.pop(device_id, None)
         if data.get("power_off"):
-            worker = self._workers.get(device_id)
-            if worker:
-                worker.connected = False
-            self._disarm_scheduler_if_offline()
+            self._drop_device_link(device_id)
+            return
         self._track_session_capture(device_id, current)
         self._notify_devices()
 
@@ -1437,6 +1454,8 @@ class AppBackend(QObject):
         worker = self._workers.get(device_id)
         if not worker or device_id in self._disconnecting_ids:
             return
+        if device_id == self._selected_device_id:
+            self.stopPreview()
         self._disconnecting_ids.add(device_id)
         if self._abort_active_session(device_id, "Disconnect"):
             # Stop what the telescope is doing before dropping the link. Both
@@ -1465,6 +1484,9 @@ class AppBackend(QObject):
         self._begin_activity(device_id, operation)
 
         label = _ACTION_LABELS.get(operation, operation.replace("_", " ").title())
+        dropping = operation in {"reboot", "power_down"}
+        if dropping:
+            self._abort_active_session(device_id, label)
 
         def done(ok: bool, result: Any) -> None:
             self._complete_activity(device_id, operation, ok)
@@ -1480,6 +1502,8 @@ class AppBackend(QObject):
                 self._toast(f"{label} failed", "error", str(result))
 
         worker.send(operation, callback=self._with_pending(device_id, operation, done))
+        if dropping:
+            self._drop_device_link(device_id)
 
     @Slot(str, float, float)
     def joystick(self, device_id: str, angle: float, speed: float) -> None:
@@ -1566,9 +1590,14 @@ class AppBackend(QObject):
     @Slot(str)
     def stopDevice(self, device_id: str) -> None:
         worker = self._workers.get(device_id)
-        if not worker or not (worker.connected or worker.busy):
+        if not worker:
             return
         self._abort_active_session(device_id, "STOP ALL")
+        if not worker.connected:
+            if device_id == self._selected_device_id:
+                self.stopPreview()
+            self.add_log("warning", "Stop skipped; telescope is not connected", device_id)
+            return
         self._begin_activity(device_id, "stop_all")
 
         def done(ok: bool, result: Any) -> None:
