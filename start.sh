@@ -101,4 +101,9 @@ printf '\n'
 step "Starting Astro Dwarf..."
 info "The app window should open in a moment."
 printf '\n'
+if [ -r /proc/sys/kernel/osrelease ] && grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease; then
+    [ -n "$QT_QPA_PLATFORM" ] || export QT_QPA_PLATFORM=xcb
+    [ -n "$QT_XCB_GL_INTEGRATION" ] || export QT_XCB_GL_INTEGRATION=none
+    [ -n "$QT_QUICK_BACKEND" ] || export QT_QUICK_BACKEND=software
+fi
 exec "$VENV_PYTHON" app.py

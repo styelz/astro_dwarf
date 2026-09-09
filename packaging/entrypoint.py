@@ -1,3 +1,7 @@
+from astro_dwarf.qt_display import configure_qt_display
+
+configure_qt_display()
+
 from app import main
 
 

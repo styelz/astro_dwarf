@@ -35,6 +35,9 @@ def configure_quick_runtime() -> None:
     loop can deadlock the GIL against the render thread when Windows restores
     an occluded window, which leaves the UI stuck until the process is killed.
     """
+    from .qt_display import configure_qt_display
+
+    configure_qt_display()
     os.environ.setdefault("QSG_RENDER_LOOP", "basic")
 
 

@@ -8,6 +8,10 @@ import threading
 import time
 from pathlib import Path
 
+from .qt_display import configure_qt_display
+
+configure_qt_display()
+
 from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
