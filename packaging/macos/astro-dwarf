@@ -1,0 +1,2 @@
+#!/bin/sh
+exec "/Applications/AstroDwarf.app/Contents/MacOS/AstroDwarf" "$@"

@@ -16,6 +16,9 @@ contents:
     dst: /usr/bin/astro-dwarf
     file_info:
       mode: 0755
+  - src: /usr/bin/astro-dwarf
+    dst: /usr/bin/AstroDwarf
+    type: symlink
   - src: packaging/linux/astro-dwarf.desktop
     dst: /usr/share/applications/astro-dwarf.desktop
   - src: packaging/icons/astro-dwarf.png

@@ -1,0 +1,4 @@
+*.sh text eol=lf
+packaging/linux/astro-dwarf text eol=lf
+packaging/linux/AppRun text eol=lf
+packaging/macos/astro-dwarf text eol=lf

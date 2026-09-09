@@ -163,10 +163,10 @@ jobs:
           fi
           ASTRO_DWARF_TEST_EXIT_MS=3000 "$APP"
 
-      - name: Build disk image
+      - name: Build disk image and command-line package
         shell: bash
         run: |
-          mkdir -p release dmg-root
+          mkdir -p release dmg-root pkgroot/Applications pkgroot/usr/local/bin
           cp -R dist/AstroDwarf.app dmg-root/
           ln -s /Applications dmg-root/Applications
           hdiutil create \
@@ -174,11 +174,22 @@ jobs:
             -srcfolder dmg-root \
             -ov -format UDZO \
             "release/AstroDwarf-${VERSION}-macos-arm64.dmg"
+          cp -R dist/AstroDwarf.app pkgroot/Applications/
+          install -m 0755 packaging/macos/astro-dwarf pkgroot/usr/local/bin/astro-dwarf
+          ln -s astro-dwarf pkgroot/usr/local/bin/AstroDwarf
+          pkgbuild \
+            --root pkgroot \
+            --identifier com.astrodwarf.app \
+            --version "${VERSION}" \
+            --install-location / \
+            "release/AstroDwarf-${VERSION}-macos-arm64.pkg"
 
       - uses: actions/upload-artifact@v4
         with:
           name: macos-installer
-          path: release/*.dmg
+          path: |
+            release/*.dmg
+            release/*.pkg
           if-no-files-found: error
 
   linux:
@@ -254,6 +265,8 @@ jobs:
       - name: Build Debian and RPM packages
         shell: bash
         run: |
+          sed -i 's/\r$//' packaging/linux/astro-dwarf packaging/linux/AppRun
+          chmod +x packaging/linux/astro-dwarf
           curl -fsSL \
             https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz \
             | tar -xz -C "$RUNNER_TEMP" nfpm
@@ -265,6 +278,7 @@ jobs:
             --config packaging/linux/nfpm.yaml \
             --packager rpm \
             --target "release/AstroDwarf-${VERSION}-linux-x86_64.rpm"
+          dpkg-deb -c "release/AstroDwarf-${VERSION}-linux-amd64.deb" | grep -E '/usr/bin/(astro-dwarf|AstroDwarf)$'
 
       - uses: actions/upload-artifact@v4
         with:

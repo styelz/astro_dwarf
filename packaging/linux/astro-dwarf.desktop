@@ -2,7 +2,7 @@
 Type=Application
 Name=Astro Dwarf
 Comment=Control and schedule Dwarf telescopes
-Exec=astro-dwarf
+Exec=/usr/bin/astro-dwarf
 Icon=astro-dwarf
 Categories=Science;Astronomy;
 Terminal=false
