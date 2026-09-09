@@ -1,12 +1,12 @@
-# Astro Dwarf
-
-<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/1a434b1d-461b-4b85-a7ae-241169c6b9d9" />
+# Astro Dwarf - Multi Device Controller and Scheduler
 
 Desktop app for controlling and scheduling [Dwarf II](https://dwarflab.com/), Dwarf 3, and Dwarf Mini telescopes. Each telescope is a separate profile with its own IP, location, and session queue.
 
 The Control page shows live view, device status, camera settings, commands, the upcoming queue, and a log. Calendar, Templates, History, and Settings are the other pages.
 
 Sessions can be created by hand, from templates, from Stellarium's current target, or from a Telescopius CSV. Duration includes hardware overheads you can edit per telescope (slew, settle, calibration, focus, and so on). Tele/wide cameras and mosaics are supported.
+
+<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/a2d7b529-7958-447d-82b1-91bf02511092" />
 
 Hardware commands go through [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api).
 
