@@ -424,8 +424,8 @@ Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    cellWidth: 340
-                    cellHeight: 170
+                    cellWidth: 360
+                    cellHeight: 228
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: HiddenBar {}
                     ScrollBar.horizontal: HiddenBar {}
@@ -433,8 +433,8 @@ Item {
                     delegate: HudPanel {
                         id: templateCard
                         required property var modelData
-                        width: 324
-                        height: 156
+                        width: 344
+                        height: 212
                         title: modelData.name
                         readonly property bool grouped: Util.isGrouped(modelData)
                         readonly property color groupTone: Util.sessionTone(modelData)
@@ -531,14 +531,79 @@ Item {
                             }
                         ]
                         Text {
-                            visible: modelData.target_name !== modelData.name
+                            visible: !!modelData.target_name && modelData.target_name !== modelData.name
                             text: modelData.target_name
                             color: Theme.textPrimary
-                            font.pixelSize: 16
+                            font.pixelSize: 14
+                            font.bold: true
+                            elide: Text.ElideRight
                             Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
                         }
-                        Text { text: modelData.summary; color: Theme.textSecondary; Layout.fillWidth: true }
+                        Text {
+                            visible: !!(modelData.coords_text || modelData.duration_text)
+                            text: {
+                                const coords = modelData.coords_text || ""
+                                const length = modelData.duration_text || ""
+                                if (coords && length)
+                                    return coords + "  ·  " + length
+                                return coords || length
+                            }
+                            color: Theme.textPrimary
+                            font.pixelSize: 12
+                            font.family: Theme.fontMono
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: 2
+                            columnSpacing: 14
+                            rowSpacing: 2
+                            Text { text: "CAPTURE"; color: Theme.muted; font.pixelSize: 9; font.letterSpacing: 1.1; font.bold: true }
+                            Text { text: "CAMERA"; color: Theme.muted; font.pixelSize: 9; font.letterSpacing: 1.1; font.bold: true }
+                            Text {
+                                text: (modelData.capture_text || modelData.summary || "") + (modelData.gain_text ? "  " + modelData.gain_text : "")
+                                color: Theme.textPrimary
+                                font.pixelSize: 12
+                                font.family: Theme.fontMono
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            Text {
+                                text: modelData.camera_text || ""
+                                color: Theme.textPrimary
+                                font.pixelSize: 12
+                                font.family: Theme.fontMono
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            Text { text: "MOSAIC"; color: Theme.muted; font.pixelSize: 9; font.letterSpacing: 1.1; font.bold: true }
+                            Text { text: "WORKFLOW"; color: Theme.muted; font.pixelSize: 9; font.letterSpacing: 1.1; font.bold: true }
+                            Text {
+                                text: modelData.mosaic_text || ""
+                                color: Theme.textPrimary
+                                font.pixelSize: 12
+                                font.family: Theme.fontMono
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            Text {
+                                text: modelData.workflow_text || ""
+                                color: Theme.textPrimary
+                                font.pixelSize: 12
+                                font.family: Theme.fontMono
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                        }
+                        Text {
+                            visible: !!(modelData.notes)
+                            text: modelData.notes
+                            color: Theme.textSecondary
+                            font.pixelSize: 11
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
                         Item { Layout.fillWidth: true; Layout.preferredHeight: 34 }
                     }
                 }

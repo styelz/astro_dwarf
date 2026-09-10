@@ -35,6 +35,7 @@ from .domain import (
     CameraSettings,
     Device,
     DeviceModel,
+    HardwareProfile,
     Mosaic,
     Session,
     SessionStatus,
@@ -56,6 +57,7 @@ from .services import (
     StellariumClient,
     import_telescopius,
     mosaic_group_title,
+    mosaic_pane_workflow,
     next_free_start,
     observing_date,
     pane_sort_key,
@@ -1049,7 +1051,60 @@ class AppBackend(QObject):
             data["summary"] = f"{len(members)} panes · {grid}{exposure}"
         else:
             data["summary"] = f"{exposure} · {first.mosaic.rows}×{first.mosaic.columns}"
+        data.update(self._template_detail_fields(first, ordered))
         return data
+
+    def _template_detail_fields(self, first: SessionTemplate, members: list[SessionTemplate]) -> dict[str, Any]:
+        cam = first.camera
+        mosaic = first.mosaic
+        target = first.target
+        workflow = first.workflow
+        ir = str(cam.ir_filter or "VIS").replace(" Filter", "").upper()
+        camera_bits = ["WIDE" if cam.camera == Camera.WIDE else "TELE"]
+        camera_bits.append("2K" if int(cam.binning or 1) >= 2 else "4K")
+        if cam.camera != Camera.WIDE and ir:
+            camera_bits.append(ir)
+        steps: list[str] = []
+        if workflow.calibrate:
+            steps.append("CAL")
+        if workflow.autofocus:
+            steps.append("AF")
+        elif workflow.infinite_focus:
+            steps.append("INF")
+        if workflow.polar_align:
+            steps.append("POLAR")
+        if workflow.goto:
+            steps.append("GOTO")
+        if mosaic.imported_plan or len(members) > 1:
+            mosaic_text = f"{len(members)} pane" + ("" if len(members) == 1 else "s")
+            if mosaic.grid_text:
+                mosaic_text += f" · {mosaic.grid_text}"
+        elif mosaic.rows > 1 or mosaic.columns > 1:
+            mosaic_text = f"{mosaic.rows}×{mosaic.columns}"
+            if mosaic.rotation_degrees:
+                mosaic_text += f" · {mosaic.rotation_degrees:g}°"
+        else:
+            mosaic_text = "Single pane"
+        if target.kind == TargetKind.EQUATORIAL and target.ra_hours is not None and target.dec_degrees is not None:
+            coords = f"RA {float(target.ra_hours):.3f}h  DEC {float(target.dec_degrees):+.3f}°"
+        elif target.kind == TargetKind.SOLAR:
+            coords = target.solar_name or target.name or "Solar"
+        else:
+            coords = ""
+        seconds = 0.0
+        profile = HardwareProfile()
+        for index, item in enumerate(members):
+            timed = replace(item, workflow=mosaic_pane_workflow(item.workflow, index))
+            seconds += DurationEngine.calculate(timed, profile)
+        return {
+            "capture_text": f"{cam.frame_count} × {cam.exposure_seconds:g}s",
+            "gain_text": f"G{cam.gain}",
+            "camera_text": " · ".join(camera_bits),
+            "mosaic_text": mosaic_text,
+            "workflow_text": " · ".join(steps) if steps else "Capture only",
+            "coords_text": coords,
+            "duration_text": self._duration_text(seconds),
+        }
 
     def _template_member_dict(self, template: SessionTemplate) -> dict[str, Any]:
         data = to_dict(template)
