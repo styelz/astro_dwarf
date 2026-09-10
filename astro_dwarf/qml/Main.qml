@@ -59,7 +59,9 @@ ApplicationWindow {
     readonly property bool motionEnabled: commandEnabled("joystick")
 
     function confirmBulkDelete(kind, idMap, noun) {
-        const ids = Util.idSetKeys(idMap)
+        const ids = typeof idMap === "string"
+            ? (idMap ? [idMap] : [])
+            : Array.isArray(idMap) ? idMap : Util.idSetKeys(idMap)
         if (!ids.length)
             return
         const plural = ids.length === 1 ? noun : noun + "s"

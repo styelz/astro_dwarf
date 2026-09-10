@@ -400,6 +400,12 @@ Item {
                     selectedIds = result.map
                     selectionAnchorId = result.anchor
                 }
+                function confirmDelete(id) {
+                    if (id && Util.idSetHas(selectedIds, id) && selectedCount > 1)
+                        root.confirmBulkDelete("deleteTemplates", selectedIds, "template")
+                    else
+                        root.confirmBulkDelete("deleteTemplates", id, "template")
+                }
                 Connections {
                     target: backend
                     function onTemplatesChanged() {
@@ -486,7 +492,7 @@ Item {
                                 anchors.margins: 12
                                 HudButton { text: "EDIT"; busyText: "OPENING…"; onClicked: sessionDialog.openTemplate(templateCard.modelData) }
                                 HudButton { text: "SCHEDULE"; Layout.fillWidth: true; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: scheduleTemplateDialog.openFor(templateCard.modelData) }
-                                HudButton { text: "DELETE"; busyText: "DELETING…"; onClicked: backend.deleteTemplate(templateCard.modelData.id) }
+                                HudButton { text: "DELETE"; busyText: "DELETING…"; onClicked: root.confirmBulkDelete("deleteTemplates", templateCard.modelData.id, "template") }
                             },
                             HudMenu {
                                 id: templateMenu
@@ -523,10 +529,10 @@ Item {
                                 }
                                 HudMenuSeparator {}
                                 HudMenuItem {
-                                    text: "Delete"
+                                    text: templatesPage.selectedCount > 1 && Util.idSetHas(templatesPage.selectedIds, templateCard.modelData.id) ? "Delete selected" : "Delete"
                                     glyph: "\uE74D"
                                     destructive: true
-                                    onTriggered: backend.deleteTemplate(templateCard.modelData.id)
+                                    onTriggered: templatesPage.confirmDelete(templateCard.modelData.id)
                                 }
                             }
                         ]
