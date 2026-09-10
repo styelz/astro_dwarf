@@ -41,6 +41,26 @@ def _assign_temp(view: dict[str, Any], prefix: str, value: Any) -> None:
     view[f"{prefix}_f_text"] = fahrenheit
 
 
+def _capture_frame_count(raw: dict[str, Any]) -> int | None:
+    """Prefer taken frames; fall back to stacked when current was not in this update."""
+    values: list[int] = []
+    for key in ("capture_current", "capture_stacked"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if number:
+            values.append(number)
+        elif not values:
+            values.append(0)
+    if not values:
+        return None
+    return max(values)
+
+
 def derive_activity(raw: dict[str, Any]) -> tuple[str, str]:
     """Return (activity, detail) as reported by the device, or ("", "")."""
     if raw.get("power_off"):
@@ -67,7 +87,7 @@ def derive_activity(raw: dict[str, Any]) -> tuple[str, str]:
         progress = raw.get("dark_progress")
         return "dark", f"{int(progress)}%" if progress is not None else "RUNNING"
     if raw.get("capture_active") or raw.get("capture_state") == "running":
-        current = raw.get("capture_current")
+        current = _capture_frame_count(raw)
         total = raw.get("capture_total")
         if current is not None and total:
             detail = f"{int(current)}/{int(total)}"
@@ -135,7 +155,7 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     view["gain_text"] = str(int(gain)) if gain is not None else "—"
     view["tele_resolution"] = raw.get("tele_resolution") or ""
     view["tele_fov"] = raw.get("tele_fov") or ""
-    current = raw.get("capture_current")
+    current = _capture_frame_count(raw)
     total_frames = raw.get("capture_total")
     stacked = raw.get("capture_stacked")
     if current is not None and total_frames:
