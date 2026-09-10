@@ -1520,6 +1520,16 @@ Item {
                         }
                     }
                     HudButton {
+                        text: controlPage.selectedUpcomingCount > 1 ? "EDIT " + controlPage.selectedUpcomingCount : "EDIT"
+                        visible: controlPage.selectedUpcomingCount > 1
+                        implicitHeight: 20
+                        implicitWidth: controlPage.selectedUpcomingCount > 1 ? 64 : 44
+                        font.pixelSize: 8
+                        leftPadding: 6
+                        rightPadding: 6
+                        onClicked: sessionDialog.openSelected(Util.itemsByIds(backend.upcomingSessions, controlPage.selectedUpcomingIds))
+                    }
+                    HudButton {
                         text: controlPage.selectedUpcomingCount > 1 ? "DEL " + controlPage.selectedUpcomingCount : "DELETE"
                         enabled: controlPage.selectedUpcomingCount > 0
                         implicitHeight: 20
@@ -1931,6 +1941,7 @@ Item {
         selectionItems: backend.upcomingSessions
         selectedMap: controlPage.selectedUpcomingIds
         onEditRequested: session => sessionDialog.openExisting(session)
+        onEditSelectedRequested: sessionDialog.openSelected(Util.itemsByIds(backend.upcomingSessions, controlPage.selectedUpcomingIds))
         onSelectAllRequested: controlPage.selectedUpcomingIds = Util.idSetAll(backend.upcomingSessions, true)
         onUnselectAllRequested: {
             controlPage.selectedUpcomingIds = ({})

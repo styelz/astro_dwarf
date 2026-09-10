@@ -12,9 +12,11 @@ RowLayout {
     property string noun: "item"
     property bool active: true
     property bool allowMove: false
+    property bool allowEdit: true
     property var sessionIds: []
     signal selectAllRequested()
     signal clearRequested()
+    signal editRequested()
     signal deleteRequested()
     Layout.fillWidth: true
     visible: active && totalCount > 0
@@ -37,6 +39,12 @@ RowLayout {
         font.letterSpacing: 0.4
     }
     Item { Layout.fillWidth: true }
+    HudButton {
+        text: selectionBar.selectedCount > 1 ? "EDIT " + selectionBar.selectedCount : "EDIT SELECTED"
+        visible: selectionBar.allowEdit && selectionBar.selectedCount > 1
+        implicitHeight: 28
+        onClicked: selectionBar.editRequested()
+    }
     HudButton {
         text: "MOVE TO"
         visible: selectionBar.allowMove && selectionBar.selectedCount > 0 && (backend.devices || []).length > 1

@@ -101,6 +101,7 @@ Item {
                         sessionIds: Util.idSetKeys(scheduledPage.selectedIds)
                         onSelectAllRequested: scheduledPage.selectedIds = Util.idSetAll(backend.sessions, true)
                         onClearRequested: scheduledPage.selectedIds = ({})
+                        onEditRequested: sessionDialog.openSelected(Util.itemsByIds(backend.sessions, scheduledPage.selectedIds))
                         onDeleteRequested: root.confirmBulkDelete("deleteSessions", scheduledPage.selectedIds, "session")
                     }
                     RowLayout {
@@ -313,6 +314,7 @@ Item {
                     selectionItems: backend.sessions
                     selectedMap: scheduledPage.selectedIds
                     onEditRequested: session => sessionDialog.openExisting(session)
+                    onEditSelectedRequested: sessionDialog.openSelected(Util.itemsByIds(backend.sessions, scheduledPage.selectedIds))
                     onSelectAllRequested: scheduledPage.selectedIds = Util.idSetAll(backend.sessions, true)
                     onUnselectAllRequested: {
                         scheduledPage.selectedIds = ({})
@@ -347,6 +349,7 @@ Item {
                         noun: "template"
                         onSelectAllRequested: templatesPage.selectedIds = Util.idSetAll(backend.templates, true)
                         onClearRequested: templatesPage.selectedIds = ({})
+                        onEditRequested: sessionDialog.openSelected(Util.itemsByIds(backend.templates, templatesPage.selectedIds), true)
                         onDeleteRequested: root.confirmBulkDelete("deleteTemplates", templatesPage.selectedIds, "template")
                     }
                 GridView {
@@ -407,9 +410,14 @@ Item {
                             HudMenu {
                                 id: templateMenu
                                 HudMenuItem {
-                                    text: "Edit"
+                                    text: templatesPage.selectedCount > 1 && Util.idSetHas(templatesPage.selectedIds, templateCard.modelData.id) ? "Edit selected" : "Edit"
                                     glyph: "\uE70F"
-                                    onTriggered: sessionDialog.openTemplate(templateCard.modelData)
+                                    onTriggered: {
+                                        if (templatesPage.selectedCount > 1 && Util.idSetHas(templatesPage.selectedIds, templateCard.modelData.id))
+                                            sessionDialog.openSelected(Util.itemsByIds(backend.templates, templatesPage.selectedIds), true)
+                                        else
+                                            sessionDialog.openTemplate(templateCard.modelData)
+                                    }
                                 }
                                 HudMenuItem {
                                     text: "Schedule"

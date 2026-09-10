@@ -13,15 +13,23 @@ HudMenu {
     readonly property string coordinates: Util.targetCoordinates(sessionData)
     property var selectionItems: []
     property var selectedMap: ({})
+    readonly property int selectedCount: Util.idSetCount(selectedMap)
+    readonly property bool editSelection: !!(sessionId && Util.idSetHas(selectedMap, sessionId) && selectedCount > 1)
     signal selectAllRequested()
     signal unselectAllRequested()
     signal editRequested(var session)
+    signal editSelectedRequested()
 
     HudMenuItem {
-        text: "Edit"
+        text: sessionContextMenu.editSelection ? "Edit selected" : "Edit"
         glyph: "\uE70F"
-        enabled: sessionContextMenu.sessionStatus !== "running"
-        onTriggered: sessionContextMenu.editRequested(sessionContextMenu.sessionData)
+        enabled: sessionContextMenu.sessionStatus !== "running" || sessionContextMenu.editSelection
+        onTriggered: {
+            if (sessionContextMenu.editSelection)
+                sessionContextMenu.editSelectedRequested()
+            else
+                sessionContextMenu.editRequested(sessionContextMenu.sessionData)
+        }
     }
     HudMenuItem {
         text: "Run now"

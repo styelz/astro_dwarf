@@ -2138,6 +2138,129 @@ class AppBackend(QObject):
             ),
         )
 
+    def _patch_camera(self, camera: CameraSettings, values: dict[str, Any]) -> CameraSettings:
+        kwargs: dict[str, Any] = {}
+        if "camera" in values:
+            kwargs["camera"] = Camera(values.get("camera") or Camera.TELE)
+        if "exposure" in values:
+            kwargs["exposure_seconds"] = float(values["exposure"])
+        if "gain" in values:
+            kwargs["gain"] = int(values["gain"])
+        if "frame_count" in values:
+            kwargs["frame_count"] = int(values["frame_count"])
+        if "binning" in values:
+            kwargs["binning"] = int(values["binning"])
+        if "ir_filter" in values:
+            kwargs["ir_filter"] = values.get("ir_filter") or "VIS"
+        return replace(camera, **kwargs) if kwargs else camera
+
+    def _patch_workflow(self, workflow: Workflow, values: dict[str, Any]) -> Workflow:
+        kwargs: dict[str, Any] = {}
+        flags = {
+            "calibrate": "calibrate",
+            "autofocus": "autofocus",
+            "infinite_focus": "infinite_focus",
+            "polar_align": "polar_align",
+            "goto": "goto",
+        }
+        for src, dest in flags.items():
+            if src in values:
+                kwargs[dest] = bool(values[src])
+        if "wait_before" in values:
+            kwargs["wait_before_seconds"] = float(values["wait_before"])
+        if "wait_after" in values:
+            kwargs["wait_after_seconds"] = float(values["wait_after"])
+        return replace(workflow, **kwargs) if kwargs else workflow
+
+    def _template_ids_for_shared_update(self, ids: list[str]) -> list[str]:
+        wanted: list[str] = []
+        seen: set[str] = set()
+        groups: set[str] = set()
+        for template_id in ids:
+            template = self.store.templates.get(template_id)
+            if not template:
+                continue
+            group_id = template.mosaic.group_id
+            if group_id:
+                groups.add(group_id)
+                continue
+            if template.id not in seen:
+                seen.add(template.id)
+                wanted.append(template.id)
+        if groups:
+            for item in self.store.templates.all():
+                if item.mosaic.group_id in groups and item.id not in seen:
+                    seen.add(item.id)
+                    wanted.append(item.id)
+        return wanted
+
+    @Slot(str)
+    def updateSharedSettings(self, payload: str) -> None:
+        try:
+            values = json.loads(payload)
+            ids = self._normalize_ids(values.get("ids"))
+            patch = {key: value for key, value in values.items() if key not in {"ids", "templates"}}
+            if not ids:
+                raise ValueError("No items selected")
+            if not patch:
+                self._toast("No common fields changed", "warning")
+                return
+            if values.get("templates"):
+                updated = 0
+                for template_id in self._template_ids_for_shared_update(ids):
+                    template = self.store.templates.get(template_id)
+                    if not template:
+                        continue
+                    camera = self._patch_camera(template.camera, patch)
+                    workflow = self._patch_workflow(template.workflow, patch)
+                    if camera is template.camera and workflow is template.workflow:
+                        continue
+                    self.store.templates.save(replace(template, camera=camera, workflow=workflow))
+                    updated += 1
+                if not updated:
+                    self._toast("No templates to update", "warning")
+                    return
+                self.templatesChanged.emit()
+                self._toast(f"Updated {updated} template{'s' if updated != 1 else ''}", "success")
+                return
+            updated = 0
+            skipped_running = 0
+            saved: list[Session] = []
+            for session_id in ids:
+                session = self.store.sessions.get(session_id)
+                if not session:
+                    continue
+                if session.status == SessionStatus.RUNNING:
+                    skipped_running += 1
+                    continue
+                camera = self._patch_camera(session.camera, patch)
+                workflow = self._patch_workflow(session.workflow, patch)
+                if camera is session.camera and workflow is session.workflow:
+                    continue
+                saved.append(self._save_session(replace(session, camera=camera, workflow=workflow), notify=False))
+                updated += 1
+            grouped: set[str] = set()
+            for session in saved:
+                group_id = session.mosaic.group_id
+                if group_id and group_id not in grouped:
+                    grouped.add(group_id)
+                    self._sequence_mosaic_group(session, notify=False)
+            if updated:
+                self.sessionsChanged.emit()
+            if skipped_running and not updated:
+                self._toast("Stop running sessions before editing them", "warning")
+            elif skipped_running:
+                self._toast(
+                    f"Updated {updated}; skipped {skipped_running} running",
+                    "warning",
+                )
+            elif updated:
+                self._toast(f"Updated {updated} session{'s' if updated != 1 else ''}", "success")
+            else:
+                self._toast("No sessions to update", "warning")
+        except Exception as exc:
+            self._toast(f"Could not update settings: {exc}", "error")
+
     def _session_from_payload(self, values: dict[str, Any], existing: Session | None) -> Session:
         if existing and existing.status == SessionStatus.RUNNING:
             raise ValueError("A running session cannot be edited")

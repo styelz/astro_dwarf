@@ -483,6 +483,7 @@ Item {
                 sessionIds: calendarPage.nightSessions.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).map(item => item.id)
                 onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(calendarPage.nightSessions, true)
                 onClearRequested: calendarPage.selectedIds = ({})
+                onEditRequested: sessionDialog.openSelected(Util.itemsByIds(calendarPage.nightSessions, calendarPage.selectedIds))
                 onDeleteRequested: {
                     const chosen = {}
                     const items = calendarPage.nightSessions
@@ -1116,6 +1117,7 @@ Item {
                         delete next[keys[i]]
                     calendarPage.selectedIds = next
                 }
+                onEditRequested: sessionDialog.openSelected(Util.itemsByIds(nightPanel.nightSessions, calendarPage.selectedIds))
                 onDeleteRequested: {
                     const chosen = {}
                     for (let i = 0; i < nightPanel.nightSessions.length; i++) {
@@ -1217,6 +1219,7 @@ Item {
         selectionItems: calendarPage.contextItems
         selectedMap: calendarPage.selectedIds
         onEditRequested: session => sessionDialog.openExisting(session)
+        onEditSelectedRequested: sessionDialog.openSelected(Util.itemsByIds(calendarPage.contextItems, calendarPage.selectedIds))
         onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(calendarPage.contextItems, true)
         onUnselectAllRequested: {
             calendarPage.selectedIds = ({})

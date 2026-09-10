@@ -154,6 +154,7 @@ Item {
             selectedCount: historyPage.filteredHistory.filter(item => Util.idSetHas(historyPage.selectedIds, item.id)).length
             totalCount: historyPage.filteredCount
             noun: "run"
+            allowEdit: false
             onSelectAllRequested: historyPage.selectedIds = Util.idSetAll(historyPage.filteredHistory, true)
             onClearRequested: historyPage.selectedIds = ({})
             onDeleteRequested: {

@@ -92,6 +92,15 @@ QtObject {
         }
         return next
     }
+    function itemsByIds(items, map) {
+        const list = items || []
+        const result = []
+        for (let i = 0; i < list.length; i++) {
+            if (list[i] && Util.idSetHas(map, list[i].id))
+                result.push(list[i])
+        }
+        return result
+    }
     function pruneIdSet(map, items) {
         const alive = {}
         const list = items || []

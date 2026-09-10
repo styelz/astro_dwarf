@@ -19,11 +19,35 @@ Dialog {
     property string editingAnchorId: ""
     property string editingDeviceId: ""
     property bool editingTemplate: false
+    property bool bulkMode: false
+    property bool bulkTemplates: false
+    property var bulkIds: []
     property var templateMembers: []
+    property var paneSelected: []
+    property var dirtyFields: ({})
     property int paneIndex: 0
     property bool syncingPane: false
+    property bool syncingCommon: false
     readonly property int paneCount: templateMembers.length
     readonly property bool multiPane: paneCount > 1
+    readonly property int selectedPaneCount: {
+        const flags = paneSelected || []
+        let count = 0
+        for (let i = 0; i < flags.length; i++) {
+            if (flags[i])
+                count++
+        }
+        return count
+    }
+    readonly property bool commonMulti: bulkMode || (multiPane && selectedPaneCount > 1)
+    readonly property bool uniqueVisible: !bulkMode
+    readonly property bool mosaicVisible: !bulkMode
+    readonly property bool dirty: Object.keys(dirtyFields || {}).length > 0
+    readonly property bool focusedPaneSelected: {
+        selectedPaneCount
+        paneIndex
+        return !!(paneSelected && paneSelected[paneIndex])
+    }
     padding: 0
 
     QtObject {
@@ -66,9 +90,21 @@ Dialog {
             wait_after_seconds: w.wait_after_seconds
         }
     }
+    function cameraOf(item) {
+        const cam = (item && item.camera) || {}
+        return {
+            camera: cam.camera === "wide" ? "wide" : "tele",
+            exposure_seconds: cam.exposure_seconds,
+            gain: cam.gain,
+            frame_count: cam.frame_count,
+            binning: cam.binning,
+            ir_filter: cam.ir_filter || "VIS Filter"
+        }
+    }
     function cloneMember(item) {
         const cloned = sessionDialog.cloneValue(item)
         cloned.workflow = sessionDialog.workflowOf(item)
+        cloned.camera = sessionDialog.cameraOf(item)
         cloned.target = sessionDialog.cloneValue((item && item.target) || cloned.target || {})
         cloned.pane_name = (item && (item.pane_name || item.name)) || cloned.name || ""
         cloned.name = cloned.pane_name
@@ -102,6 +138,158 @@ Dialog {
         polar.setOn(paneFlags.polar)
         doGoto.setOn(paneFlags.doGoto)
     }
+    function setCheckAgreed(box, flagKey, value) {
+        if (value === undefined) {
+            box.checkState = Qt.PartiallyChecked
+            return
+        }
+        paneFlags[flagKey] = !!value
+        box.setOn(!!value)
+    }
+    function markDirty(key) {
+        if (syncingPane || syncingCommon)
+            return
+        const next = Object.assign({}, dirtyFields || {})
+        next[key] = true
+        dirtyFields = next
+    }
+    function isDirty(key) {
+        return !!(dirtyFields && dirtyFields[key])
+    }
+    function agreedValue(items, read) {
+        if (!items.length)
+            return undefined
+        const first = read(items[0])
+        for (let i = 1; i < items.length; i++) {
+            if (String(read(items[i])) !== String(first))
+                return undefined
+        }
+        return first
+    }
+    function irIndex(value) {
+        const ir = value || "VIS Filter"
+        return Math.max(0, ["VIS Filter", "Astro Filter", "Duo-Band Filter", "VIS"].indexOf(ir) % 3)
+    }
+    function selectedMembers() {
+        const items = templateMembers || []
+        const flags = paneSelected || []
+        const result = []
+        for (let i = 0; i < items.length; i++) {
+            if (flags[i])
+                result.push(items[i])
+        }
+        return result
+    }
+    function loadCommonFields(items, keepDirty) {
+        const source = items || []
+        const dirty = keepDirty ? (dirtyFields || {}) : {}
+        syncingCommon = true
+        function agreed(read) {
+            return sessionDialog.agreedValue(source, read)
+        }
+        if (!dirty.camera) {
+            const cam = agreed(item => sessionDialog.cameraOf(item).camera)
+            camera.currentIndex = cam === "wide" ? 1 : cam === "tele" ? 0 : -1
+        }
+        if (!dirty.ir_filter) {
+            const ir = agreed(item => sessionDialog.irIndex(sessionDialog.cameraOf(item).ir_filter))
+            irFilter.currentIndex = ir === undefined ? -1 : ir
+        }
+        if (!dirty.exposure) {
+            const exp = agreed(item => sessionDialog.cameraOf(item).exposure_seconds)
+            exposure.text = exp === undefined || exp === null ? "" : String(exp)
+            exposure.placeholderText = exp === undefined ? "Mixed" : ""
+        }
+        if (!dirty.gain) {
+            const value = agreed(item => sessionDialog.cameraOf(item).gain)
+            gain.text = value === undefined || value === null ? "" : String(value)
+            gain.placeholderText = value === undefined ? "Mixed" : "Gain"
+        }
+        if (!dirty.frame_count) {
+            const value = agreed(item => sessionDialog.cameraOf(item).frame_count)
+            frames.text = value === undefined || value === null ? "" : String(value)
+            frames.placeholderText = value === undefined ? "Mixed" : ""
+        }
+        if (!dirty.binning) {
+            const value = agreed(item => String(sessionDialog.cameraOf(item).binning || "1"))
+            binning.currentIndex = value === undefined ? -1 : Math.max(0, ["1", "2"].indexOf(String(value)))
+        }
+        if (!dirty.wait_before) {
+            const value = agreed(item => sessionDialog.workflowOf(item).wait_before_seconds)
+            waitBefore.text = value === undefined || value === null ? "" : String(value)
+            waitBefore.placeholderText = value === undefined ? "Mixed" : "Before"
+        }
+        if (!dirty.wait_after) {
+            const value = agreed(item => sessionDialog.workflowOf(item).wait_after_seconds)
+            waitAfter.text = value === undefined || value === null ? "" : String(value)
+            waitAfter.placeholderText = value === undefined ? "Mixed" : "After"
+        }
+        if (!dirty.calibrate)
+            sessionDialog.setCheckAgreed(calibrate, "calibrate", agreed(item => sessionDialog.workflowOf(item).calibrate))
+        if (!dirty.autofocus)
+            sessionDialog.setCheckAgreed(autofocus, "autofocus", agreed(item => sessionDialog.workflowOf(item).autofocus))
+        if (!dirty.infinite_focus)
+            sessionDialog.setCheckAgreed(infiniteFocus, "infiniteFocus", agreed(item => sessionDialog.workflowOf(item).infinite_focus))
+        if (!dirty.polar_align)
+            sessionDialog.setCheckAgreed(polar, "polar", agreed(item => sessionDialog.workflowOf(item).polar_align))
+        if (!dirty.goto)
+            sessionDialog.setCheckAgreed(doGoto, "doGoto", agreed(item => sessionDialog.workflowOf(item).goto))
+        syncingCommon = false
+    }
+    function applyDirtyToSelected() {
+        const dirty = dirtyFields || {}
+        const members = templateMembers.slice()
+        const flags = paneSelected || []
+        for (let i = 0; i < members.length; i++) {
+            if (!flags[i])
+                continue
+            const pane = sessionDialog.cloneValue(members[i] || {})
+            pane.camera = sessionDialog.cameraOf(pane)
+            pane.workflow = sessionDialog.workflowOf(pane)
+            if (dirty.camera && camera.currentIndex >= 0)
+                pane.camera.camera = camera.currentIndex === 1 ? "wide" : "tele"
+            if (dirty.ir_filter && irFilter.currentIndex >= 0)
+                pane.camera.ir_filter = irFilter.currentText
+            if (dirty.exposure && exposure.text !== "")
+                pane.camera.exposure_seconds = Number(exposure.text)
+            if (dirty.gain && gain.text !== "")
+                pane.camera.gain = Number(gain.text)
+            if (dirty.frame_count && frames.text !== "")
+                pane.camera.frame_count = Number(frames.text)
+            if (dirty.binning && binning.currentIndex >= 0)
+                pane.camera.binning = Number(binning.currentText)
+            if (dirty.wait_before && waitBefore.text !== "")
+                pane.workflow.wait_before_seconds = Number(waitBefore.text)
+            if (dirty.wait_after && waitAfter.text !== "")
+                pane.workflow.wait_after_seconds = Number(waitAfter.text)
+            if (dirty.calibrate && calibrate.checkState !== Qt.PartiallyChecked)
+                pane.workflow.calibrate = calibrate.ticked
+            if (dirty.autofocus && autofocus.checkState !== Qt.PartiallyChecked)
+                pane.workflow.autofocus = autofocus.ticked
+            if (dirty.infinite_focus && infiniteFocus.checkState !== Qt.PartiallyChecked)
+                pane.workflow.infinite_focus = infiniteFocus.ticked
+            if (dirty.polar_align && polar.checkState !== Qt.PartiallyChecked)
+                pane.workflow.polar_align = polar.ticked
+            if (dirty.goto && doGoto.checkState !== Qt.PartiallyChecked)
+                pane.workflow.goto = doGoto.ticked
+            members[i] = pane
+        }
+        templateMembers = members
+    }
+    function setPaneSelectedAt(index, on) {
+        syncingPane = true
+        const flags = (paneSelected || []).slice()
+        flags[index] = !!on
+        paneSelected = flags
+        syncingPane = false
+        sessionDialog.loadCommonFields(sessionDialog.selectedMembers(), true)
+    }
+    function selectAllPanes(on) {
+        syncingPane = true
+        paneSelected = (templateMembers || []).map(() => !!on)
+        syncingPane = false
+        sessionDialog.loadCommonFields(sessionDialog.selectedMembers(), true)
+    }
     function workflowFromForm(existing) {
         const current = existing || {}
         return {
@@ -122,7 +310,6 @@ Dialog {
         targetType.currentIndex = Math.max(0, ["equatorial", "solar", "none"].indexOf(kind))
         ra.text = target.ra_hours != null && target.ra_hours !== "" ? target.ra_hours : ""
         dec.text = target.dec_degrees != null && target.dec_degrees !== "" ? target.dec_degrees : ""
-        sessionDialog.applyWorkflowChecks(data.workflow)
     }
     function stashCurrentPane() {
         if (paneCount === 0)
@@ -138,7 +325,6 @@ Dialog {
             ra_hours: ra.text,
             dec_degrees: dec.text
         }
-        current.workflow = sessionDialog.workflowFromForm(current.workflow)
         members[paneIndex] = current
         templateMembers = members
     }
@@ -156,6 +342,7 @@ Dialog {
     }
     function memberPayloads() {
         stashCurrentPane()
+        sessionDialog.applyDirtyToSelected()
         const shared = sessionDialog.formPayload()
         const items = templateMembers
         const result = []
@@ -163,6 +350,7 @@ Dialog {
             const pane = items[i] || {}
             const target = pane.target || {}
             const workflow = pane.workflow || {}
+            const cam = sessionDialog.cameraOf(pane)
             result.push(Object.assign({}, shared, {
                 id: pane.id || "",
                 name: pane.pane_name || pane.name || shared.name,
@@ -174,7 +362,15 @@ Dialog {
                 autofocus: sessionDialog.flagOn(workflow.autofocus, shared.autofocus),
                 infinite_focus: sessionDialog.flagOn(workflow.infinite_focus, shared.infinite_focus),
                 polar_align: sessionDialog.flagOn(workflow.polar_align, shared.polar_align),
-                goto: sessionDialog.flagOn(workflow.goto, shared.goto)
+                goto: sessionDialog.flagOn(workflow.goto, shared.goto),
+                camera: cam.camera,
+                exposure: cam.exposure_seconds != null ? cam.exposure_seconds : shared.exposure,
+                gain: cam.gain != null ? cam.gain : shared.gain,
+                frame_count: cam.frame_count != null ? cam.frame_count : shared.frame_count,
+                binning: cam.binning != null ? cam.binning : shared.binning,
+                ir_filter: cam.ir_filter || shared.ir_filter,
+                wait_before: workflow.wait_before_seconds != null ? workflow.wait_before_seconds : shared.wait_before,
+                wait_after: workflow.wait_after_seconds != null ? workflow.wait_after_seconds : shared.wait_after
             }))
         }
         return result
@@ -204,6 +400,11 @@ Dialog {
         notes.text = data.notes || ""
         sessionDialog.applyWorkflowChecks(data.workflow)
         saveTemplate.checked = false
+        exposure.placeholderText = ""
+        gain.placeholderText = "Gain"
+        frames.placeholderText = ""
+        waitBefore.placeholderText = "Before"
+        waitAfter.placeholderText = "After"
     }
     function syncDeviceCombo() {
         const wanted = sessionDialog.editingDeviceId || backend.selectedDeviceId
@@ -229,13 +430,53 @@ Dialog {
             polar_align: paneFlags.polar, goto: paneFlags.doGoto, save_template: saveTemplate.checked
         }
     }
+    function bulkPayload() {
+        const payload = { ids: bulkIds, templates: bulkTemplates }
+        const dirty = dirtyFields || {}
+        if (dirty.camera && camera.currentIndex >= 0)
+            payload.camera = camera.currentIndex === 1 ? "wide" : "tele"
+        if (dirty.ir_filter && irFilter.currentIndex >= 0)
+            payload.ir_filter = irFilter.currentText
+        if (dirty.exposure && exposure.text !== "")
+            payload.exposure = Number(exposure.text)
+        if (dirty.gain && gain.text !== "")
+            payload.gain = Number(gain.text)
+        if (dirty.frame_count && frames.text !== "")
+            payload.frame_count = Number(frames.text)
+        if (dirty.binning && binning.currentIndex >= 0)
+            payload.binning = Number(binning.currentText)
+        if (dirty.wait_before && waitBefore.text !== "")
+            payload.wait_before = Number(waitBefore.text)
+        if (dirty.wait_after && waitAfter.text !== "")
+            payload.wait_after = Number(waitAfter.text)
+        if (dirty.calibrate && calibrate.checkState !== Qt.PartiallyChecked)
+            payload.calibrate = calibrate.ticked
+        if (dirty.autofocus && autofocus.checkState !== Qt.PartiallyChecked)
+            payload.autofocus = autofocus.ticked
+        if (dirty.infinite_focus && infiniteFocus.checkState !== Qt.PartiallyChecked)
+            payload.infinite_focus = infiniteFocus.ticked
+        if (dirty.polar_align && polar.checkState !== Qt.PartiallyChecked)
+            payload.polar_align = polar.ticked
+        if (dirty.goto && doGoto.checkState !== Qt.PartiallyChecked)
+            payload.goto = doGoto.ticked
+        return payload
+    }
+    function resetEditorState() {
+        bulkMode = false
+        bulkTemplates = false
+        bulkIds = []
+        paneSelected = []
+        dirtyFields = ({})
+        paneIndex = 0
+        saveTemplate.checked = false
+    }
     function openForDate(day) {
+        sessionDialog.resetEditorState()
         editingId = ""
         editingAnchorId = ""
         editingDeviceId = backend.selectedDeviceId
         editingTemplate = false
         templateMembers = []
-        paneIndex = 0
         sessionName.text = ""
         targetName.text = ""
         targetType.currentIndex = 0
@@ -256,21 +497,25 @@ Dialog {
         waitBefore.text = "0"
         waitAfter.text = "10"
         notes.text = ""
+        exposure.placeholderText = ""
+        gain.placeholderText = "Gain"
+        frames.placeholderText = ""
+        waitBefore.placeholderText = "Before"
+        waitAfter.placeholderText = "After"
         sessionDialog.applyWorkflowChecks({
             calibrate: true, autofocus: true, infinite_focus: false, polar_align: false, goto: true
         })
-        saveTemplate.checked = false
         sessionDialog.syncDeviceCombo()
         open()
     }
     function openExisting(data) {
         const panes = backend.sessionPanes(data.id)
         const members = panes && panes.length ? panes : []
+        sessionDialog.resetEditorState()
         editingId = data.id
         editingAnchorId = data.id
         editingDeviceId = data.device_id || backend.selectedDeviceId
         editingTemplate = false
-        paneIndex = 0
         fillForm(data)
         startTime.text = String(data.scheduled_start).substring(0, 16)
         if (members.length > 1) {
@@ -282,6 +527,7 @@ Dialog {
                     index = i
             }
             templateMembers = cloned
+            paneSelected = cloned.map(() => true)
             paneIndex = index
             editingId = cloned[index].id || data.id
             syncingPane = true
@@ -289,6 +535,7 @@ Dialog {
             panePicker.model = sessionDialog.paneChoices()
             panePicker.currentIndex = index
             syncingPane = false
+            sessionDialog.loadCommonFields(cloned)
         } else {
             templateMembers = []
         }
@@ -301,11 +548,12 @@ Dialog {
         for (let i = 0; i < members.length; i++)
             cloned.push(sessionDialog.cloneMember(members[i]))
         sessionDialog.staggerImportedWorkflows(cloned)
+        sessionDialog.resetEditorState()
         editingTemplate = true
         editingAnchorId = cloned[0].id || data.id
         editingDeviceId = backend.selectedDeviceId
         templateMembers = cloned
-        paneIndex = 0
+        paneSelected = cloned.map(() => true)
         editingId = cloned[0].id || data.id
         syncingPane = true
         fillForm(data)
@@ -314,6 +562,54 @@ Dialog {
         panePicker.model = sessionDialog.paneChoices()
         panePicker.currentIndex = 0
         syncingPane = false
+        if (cloned.length > 1)
+            sessionDialog.loadCommonFields(cloned)
+        open()
+    }
+    function editableItems(items, templates) {
+        const list = items || []
+        const result = []
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i]
+            if (!item)
+                continue
+            if (!templates && item.status === "running")
+                continue
+            result.push(item)
+        }
+        return result
+    }
+    function openSelected(items, templates) {
+        const list = sessionDialog.editableItems(items, !!templates)
+        if (!list.length)
+            return
+        if (list.length === 1) {
+            if (templates)
+                sessionDialog.openTemplate(list[0])
+            else
+                sessionDialog.openExisting(list[0])
+            return
+        }
+        sessionDialog.openBulk(list, !!templates)
+    }
+    function openBulk(items, templates) {
+        const list = sessionDialog.editableItems(items, !!templates)
+        if (!list.length)
+            return
+        sessionDialog.resetEditorState()
+        bulkMode = true
+        bulkTemplates = !!templates
+        bulkIds = list.map(item => item.id)
+        editingTemplate = !!templates
+        editingId = ""
+        editingAnchorId = ""
+        editingDeviceId = backend.selectedDeviceId
+        templateMembers = []
+        startTime.text = ""
+        notes.text = ""
+        saveTemplate.checked = false
+        sessionDialog.loadCommonFields(list.map(item => sessionDialog.cloneMember(item)))
+        sessionDialog.syncDeviceCombo()
         open()
     }
 
@@ -324,13 +620,35 @@ Dialog {
         spacing: 10
         RowLayout {
             Layout.fillWidth: true
-            Text { text: sessionDialog.editingTemplate ? "EDIT TEMPLATE" : (sessionDialog.editingId ? "EDIT SESSION" : "NEW SESSION"); color: Theme.accent; font.pixelSize: 20; font.letterSpacing: 2; Layout.fillWidth: true }
+            Text {
+                text: {
+                    if (sessionDialog.bulkMode)
+                        return "EDIT " + sessionDialog.bulkIds.length + (sessionDialog.bulkTemplates ? " TEMPLATES" : " SESSIONS")
+                    if (sessionDialog.editingTemplate)
+                        return "EDIT TEMPLATE"
+                    return sessionDialog.editingId ? "EDIT SESSION" : "NEW SESSION"
+                }
+                color: Theme.accent
+                font.pixelSize: 20
+                font.letterSpacing: 2
+                Layout.fillWidth: true
+            }
             HudButton { text: "×"; implicitWidth: 40; onClicked: sessionDialog.close() }
         }
         RowLayout {
             visible: sessionDialog.multiPane
             Layout.fillWidth: true
             spacing: 8
+            HudCheck {
+                text: "THIS PANE"
+                checked: sessionDialog.focusedPaneSelected
+                onClicked: sessionDialog.setPaneSelectedAt(sessionDialog.paneIndex, checked)
+            }
+            HudButton {
+                text: sessionDialog.selectedPaneCount === sessionDialog.paneCount ? "NONE" : "ALL PANES"
+                busyMs: 0
+                onClicked: sessionDialog.selectAllPanes(sessionDialog.selectedPaneCount !== sessionDialog.paneCount)
+            }
             HudButton {
                 text: "‹ PREV"
                 busyMs: 0
@@ -351,8 +669,10 @@ Dialog {
             }
         }
         Text {
-            visible: sessionDialog.multiPane
-            text: "Each pane has its own name, coordinates, and workflow. Camera, mosaic, and wait apply to every pane."
+            visible: sessionDialog.multiPane || sessionDialog.bulkMode
+            text: sessionDialog.bulkMode
+                  ? "Name, coordinates, start time, and device stay unchanged. Camera, wait, and workflow apply to every selected item."
+                  : "Name and coordinates follow the focused pane. Camera, wait, and workflow apply to checked panes. Mosaic and notes apply to every pane."
             color: Theme.textSecondary
             font.pixelSize: 12
             wrapMode: Text.Wrap
@@ -363,20 +683,20 @@ Dialog {
             columns: 3
             columnSpacing: 10
             rowSpacing: 8
-            FieldLabel { text: "SESSION NAME" }
-            HudField { id: sessionName; Layout.fillWidth: true; Layout.columnSpan: 2 }
-            FieldLabel { text: "TARGET TYPE" }
-            HudCombo { id: targetType; model: ["equatorial", "solar", "none"]; Layout.fillWidth: true }
-            HudField { id: targetName; placeholderText: "Target name"; Layout.fillWidth: true }
-            FieldLabel { text: "RA HOURS" }
-            HudField { id: ra; Layout.fillWidth: true }
-            HudField { id: dec; placeholderText: "Dec degrees"; Layout.fillWidth: true }
-            FieldLabel { text: "START"; visible: !sessionDialog.editingTemplate }
-            HudField { id: startTime; Layout.fillWidth: true; Layout.columnSpan: 2; visible: !sessionDialog.editingTemplate }
-            FieldLabel { text: "DEVICE"; visible: !sessionDialog.editingTemplate }
+            FieldLabel { text: "SESSION NAME"; visible: sessionDialog.uniqueVisible }
+            HudField { id: sessionName; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible }
+            FieldLabel { text: "TARGET TYPE"; visible: sessionDialog.uniqueVisible }
+            HudCombo { id: targetType; model: ["equatorial", "solar", "none"]; Layout.fillWidth: true; visible: sessionDialog.uniqueVisible }
+            HudField { id: targetName; placeholderText: "Target name"; Layout.fillWidth: true; visible: sessionDialog.uniqueVisible }
+            FieldLabel { text: "RA HOURS"; visible: sessionDialog.uniqueVisible }
+            HudField { id: ra; Layout.fillWidth: true; visible: sessionDialog.uniqueVisible }
+            HudField { id: dec; placeholderText: "Dec degrees"; Layout.fillWidth: true; visible: sessionDialog.uniqueVisible }
+            FieldLabel { text: "START"; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
+            HudField { id: startTime; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
+            FieldLabel { text: "DEVICE"; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
             HudCombo {
                 id: sessionDevice
-                visible: !sessionDialog.editingTemplate
+                visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate
                 Layout.fillWidth: true
                 Layout.columnSpan: 2
                 model: backend.devices
@@ -385,33 +705,41 @@ Dialog {
                 onActivated: if (currentValue) sessionDialog.editingDeviceId = currentValue
             }
             FieldLabel { text: "CAMERA" }
-            HudCombo { id: camera; model: ["Tele", "Wide"]; Layout.fillWidth: true; Layout.columnSpan: currentIndex === 1 ? 2 : 1 }
+            HudCombo {
+                id: camera
+                model: ["Tele", "Wide"]
+                Layout.fillWidth: true
+                Layout.columnSpan: currentIndex === 1 ? 2 : 1
+                onActivated: sessionDialog.markDirty("camera")
+            }
             HudCombo {
                 id: irFilter
-                visible: camera.currentIndex === 0
+                visible: camera.currentIndex !== 1
                 model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
                 Layout.fillWidth: true
+                onActivated: sessionDialog.markDirty("ir_filter")
             }
             FieldLabel { text: "EXPOSURE" }
-            HudField { id: exposure; Layout.fillWidth: true }
-            HudField { id: gain; placeholderText: "Gain"; Layout.fillWidth: true }
+            HudField { id: exposure; Layout.fillWidth: true; onTextEdited: sessionDialog.markDirty("exposure") }
+            HudField { id: gain; placeholderText: "Gain"; Layout.fillWidth: true; onTextEdited: sessionDialog.markDirty("gain") }
             FieldLabel { text: "FRAMES" }
-            HudField { id: frames; Layout.fillWidth: true }
-            HudCombo { id: binning; model: ["1", "2"]; Layout.fillWidth: true }
-            FieldLabel { text: "MOSAIC" }
-            HudField { id: rows; placeholderText: "Rows"; Layout.fillWidth: true }
-            HudField { id: columns; placeholderText: "Columns"; Layout.fillWidth: true }
-            FieldLabel { text: "ROTATION / SCALE" }
-            HudField { id: rotation; placeholderText: "Rotation °"; Layout.fillWidth: true }
+            HudField { id: frames; Layout.fillWidth: true; onTextEdited: sessionDialog.markDirty("frame_count") }
+            HudCombo { id: binning; model: ["1", "2"]; Layout.fillWidth: true; onActivated: sessionDialog.markDirty("binning") }
+            FieldLabel { text: "MOSAIC"; visible: sessionDialog.mosaicVisible }
+            HudField { id: rows; placeholderText: "Rows"; Layout.fillWidth: true; visible: sessionDialog.mosaicVisible }
+            HudField { id: columns; placeholderText: "Columns"; Layout.fillWidth: true; visible: sessionDialog.mosaicVisible }
+            FieldLabel { text: "ROTATION / SCALE"; visible: sessionDialog.mosaicVisible }
+            HudField { id: rotation; placeholderText: "Rotation °"; Layout.fillWidth: true; visible: sessionDialog.mosaicVisible }
             RowLayout {
+                visible: sessionDialog.mosaicVisible
                 HudField { id: hScale; placeholderText: "H scale"; Layout.fillWidth: true }
                 HudField { id: vScale; placeholderText: "V scale"; Layout.fillWidth: true }
             }
             FieldLabel { text: "WAIT S" }
-            HudField { id: waitBefore; placeholderText: "Before"; Layout.fillWidth: true }
-            HudField { id: waitAfter; placeholderText: "After"; Layout.fillWidth: true }
-            FieldLabel { text: "NOTES" }
-            HudField { id: notes; Layout.fillWidth: true; Layout.columnSpan: 2 }
+            HudField { id: waitBefore; placeholderText: "Before"; Layout.fillWidth: true; onTextEdited: sessionDialog.markDirty("wait_before") }
+            HudField { id: waitAfter; placeholderText: "After"; Layout.fillWidth: true; onTextEdited: sessionDialog.markDirty("wait_after") }
+            FieldLabel { text: "NOTES"; visible: sessionDialog.mosaicVisible }
+            HudField { id: notes; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.mosaicVisible }
             FieldLabel { text: "WORKFLOW"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 8 }
             Flow {
                 Layout.fillWidth: true
@@ -421,54 +749,74 @@ Dialog {
                 HudCheck {
                     id: calibrate
                     text: "Calibrate"
-                    onToggled: if (!sessionDialog.syncingPane) paneFlags.calibrate = checked
+                    tristate: sessionDialog.commonMulti
+                    onToggled: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
+                        paneFlags.calibrate = checked
+                        sessionDialog.markDirty("calibrate")
+                    }
                     Binding on checked {
                         value: paneFlags.calibrate
-                        when: !calibrate.pressed
+                        when: !calibrate.pressed && !sessionDialog.commonMulti && !sessionDialog.syncingCommon
                         restoreMode: Binding.RestoreNone
                     }
                 }
                 HudCheck {
                     id: autofocus
                     text: "Auto focus"
-                    onToggled: if (!sessionDialog.syncingPane) paneFlags.autofocus = checked
+                    tristate: sessionDialog.commonMulti
+                    onToggled: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
+                        paneFlags.autofocus = checked
+                        sessionDialog.markDirty("autofocus")
+                    }
                     Binding on checked {
                         value: paneFlags.autofocus
-                        when: !autofocus.pressed
+                        when: !autofocus.pressed && !sessionDialog.commonMulti && !sessionDialog.syncingCommon
                         restoreMode: Binding.RestoreNone
                     }
                 }
                 HudCheck {
                     id: infiniteFocus
                     text: "Infinity focus"
-                    onToggled: if (!sessionDialog.syncingPane) paneFlags.infiniteFocus = checked
+                    tristate: sessionDialog.commonMulti
+                    onToggled: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
+                        paneFlags.infiniteFocus = checked
+                        sessionDialog.markDirty("infinite_focus")
+                    }
                     Binding on checked {
                         value: paneFlags.infiniteFocus
-                        when: !infiniteFocus.pressed
+                        when: !infiniteFocus.pressed && !sessionDialog.commonMulti && !sessionDialog.syncingCommon
                         restoreMode: Binding.RestoreNone
                     }
                 }
                 HudCheck {
                     id: polar
                     text: "Polar / EQ"
-                    onToggled: if (!sessionDialog.syncingPane) paneFlags.polar = checked
+                    tristate: sessionDialog.commonMulti
+                    onToggled: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
+                        paneFlags.polar = checked
+                        sessionDialog.markDirty("polar_align")
+                    }
                     Binding on checked {
                         value: paneFlags.polar
-                        when: !polar.pressed
+                        when: !polar.pressed && !sessionDialog.commonMulti && !sessionDialog.syncingCommon
                         restoreMode: Binding.RestoreNone
                     }
                 }
                 HudCheck {
                     id: doGoto
                     text: "GOTO"
-                    onToggled: if (!sessionDialog.syncingPane) paneFlags.doGoto = checked
+                    tristate: sessionDialog.commonMulti
+                    onToggled: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
+                        paneFlags.doGoto = checked
+                        sessionDialog.markDirty("goto")
+                    }
                     Binding on checked {
                         value: paneFlags.doGoto
-                        when: !doGoto.pressed
+                        when: !doGoto.pressed && !sessionDialog.commonMulti && !sessionDialog.syncingCommon
                         restoreMode: Binding.RestoreNone
                     }
                 }
-                HudCheck { id: saveTemplate; text: "Save template"; visible: !sessionDialog.editingTemplate }
+                HudCheck { id: saveTemplate; text: "Save template"; visible: !sessionDialog.editingTemplate && !sessionDialog.bulkMode }
             }
         }
         Item { Layout.fillHeight: true }
@@ -476,11 +824,17 @@ Dialog {
             Layout.alignment: Qt.AlignRight
             HudButton { text: "CANCEL"; onClicked: sessionDialog.close() }
             HudButton {
-                text: sessionDialog.editingTemplate ? "SAVE TEMPLATE" : "SAVE SESSION"
-                busyText: "SAVING…"
+                text: sessionDialog.bulkMode ? "UPDATE SELECTED" : (sessionDialog.editingTemplate ? "SAVE TEMPLATE" : "SAVE SESSION")
+                busyText: sessionDialog.bulkMode ? "UPDATING…" : "SAVING…"
+                enabled: !sessionDialog.bulkMode || sessionDialog.dirty
                 buttonColor: Theme.fillActive
                 foregroundColor: Theme.accent
                 onClicked: {
+                    if (sessionDialog.bulkMode) {
+                        backend.updateSharedSettings(JSON.stringify(sessionDialog.bulkPayload()))
+                        sessionDialog.close()
+                        return
+                    }
                     const payload = sessionDialog.formPayload()
                     if (sessionDialog.paneCount > 1)
                         payload.members = sessionDialog.memberPayloads()
