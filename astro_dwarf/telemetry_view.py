@@ -210,7 +210,9 @@ class AlertEngine:
             elif state == "solving" and previous_state == "running":
                 add("info", f"GOTO plate-solving{suffix}", "", toast=False)
             elif state in ("stopped", "idle") and previous_state in ("running", "solving", "stopping"):
-                add("success", f"GOTO complete{suffix}", "Target centred; tracking engaged")
+                tracking = current.get("tracking_state") == "running"
+                detail = "Target centred; tracking engaged" if tracking else "Target centred"
+                add("success", f"GOTO complete{suffix}", detail)
         # Calibration
         if changed("calibration_state"):
             state = current["calibration_state"]

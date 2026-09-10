@@ -206,7 +206,7 @@ def _telemetry_loop() -> None:
 
 
 def send_without_response(message: Any, command: int, module_id: int) -> bool:
-    """Send commands whose V3 firmware does not return a request response."""
+    """Send a V3 command without waiting for the SDK's blocking reply."""
     socket_globals = _api.connect_socket.__globals__
     client = socket_globals.get("client_instance")
     if not client:
@@ -503,9 +503,28 @@ def sdk_call(operation: str, *args: Any) -> Any:
         message_name, command = capture_messages[operation]
         return send_without_response(getattr(camera_pb2, message_name)(), command, 1)
     if _device.get("model") in ("Dwarf 3", "Dwarf Mini"):
-        if operation in ("calibrate", "stop_calibrate", "polar", "stop_polar"):
+        if operation in ("calibrate", "stop_calibrate", "polar", "stop_polar", "goto", "goto_solar"):
             from dwarf_python_api.proto import astro_pb2
 
+            if operation == "goto":
+                message = astro_pb2.ReqGotoDSO()
+                message.ra = float(args[0])
+                message.dec = float(args[1])
+                message.target_name = str(args[2] if len(args) > 2 else "")
+                # We start stacking ourselves after GOTO finishes.
+                message.goto_only = bool(args[3]) if len(args) > 3 else True
+                if len(args) > 4 and args[4] is not None:
+                    message.rotation = int(args[4])
+                return send_without_response(message, 11002, 3)
+            if operation == "goto_solar":
+                message = astro_pb2.ReqGotoSolarSystem()
+                message.index = int(args[0])
+                message.lon = float(_device.get("longitude", 0))
+                message.lat = float(_device.get("latitude", 0))
+                message.target_name = str(args[1] if len(args) > 1 else "")
+                if len(args) > 2:
+                    message.force_start = bool(args[2])
+                return send_without_response(message, 11003, 3)
             astro_messages = {
                 "calibrate": ("ReqStartCalibration", 11000),
                 "stop_calibrate": ("ReqStopCalibration", 11001),
@@ -1098,9 +1117,11 @@ def _await_operation(name: str, operation: str, since: float) -> None:
 
     Dwarf 3 / Mini start calibration, autofocus, polar alignment and GOTO
     without waiting for the slew/solve to finish. The session watches
-    telemetry: the device sends the reply for the start command when the
-    operation ends (or immediately for GOTO), and state notifications
-    report running → solving → idle/stopped.
+    telemetry: calibration/EQ/autofocus send a reply when they end, GOTO
+    is acknowledged up front, and state notifications report
+    running → solving → idle/stopped. The SDK's own GOTO wrapper instead
+    blocks until tracking starts and never times out, so sessions send
+    GOTO fire-and-forget and wait here.
     """
     if _tap is None:
         return
@@ -1115,7 +1136,7 @@ def _await_operation(name: str, operation: str, since: float) -> None:
         and snapshot.get("tracking_state") == "running"
         and (time.monotonic() - since) > 5
     ):
-        # perform_goto already blocked until tracking engaged.
+        # GOTO already handed off to tracking before we started waiting.
         return
     log(f"{name} started; waiting for the telescope to finish…")
     while True:
@@ -1131,6 +1152,8 @@ def _await_operation(name: str, operation: str, since: float) -> None:
         if state in _BUSY_ASTRO:
             seen_running = True
         elif seen_running and state in ("idle", "stopped"):
+            if operation in ("goto", "goto_solar") and snapshot.get("tracking_state") != "running":
+                log("GOTO finished; tracking has not started yet — continuing to capture", "notice")
             return
         if (
             operation in ("goto", "goto_solar")
@@ -1423,6 +1446,16 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         if _stop.is_set():
             raise InterruptedError("Session stopped")
         raise RuntimeError("Could not connect to telescope")
+    try:
+        latitude = float(_device.get("latitude") or 0)
+        longitude = float(_device.get("longitude") or 0)
+    except (TypeError, ValueError):
+        latitude = longitude = 0.0
+    if abs(latitude) < 1e-9 and abs(longitude) < 1e-9:
+        log(
+            "Telescope location is lat=0, long=0 — set your site coordinates or polar alignment and tracking will be wrong",
+            "warning",
+        )
     step("Closing previous capture", "go_live")
     if target.get("kind") == "solar":
         solar_name = (target.get("solar_name") or target["name"]).lower()
