@@ -305,12 +305,18 @@ class StreamPlayer(QObject):
     failed = Signal(str)
     statusChanged = Signal(str)
 
+    _FIRST_FRAME_MS = 8000
+    _HTTP_STALL_MS = 20000
+    _HTTP_RECONNECT_MS = 8000
+    _HTTP_RETRY_MS = 1500
+
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
         self._process: QProcess | None = None
         self._url = ""
         self._transports: list[str | None] = [None]
         self._transport_index = 0
+        self._keep_alive = False
         self._cancelled = False
         self._got_frame = False
         self._buffer = b""
@@ -322,30 +328,39 @@ class StreamPlayer(QObject):
         self._watchdog = QTimer(self)
         self._watchdog.setSingleShot(True)
         self._watchdog.timeout.connect(self._on_watchdog)
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setSingleShot(True)
+        self._reconnect_timer.timeout.connect(self._start_process)
 
     @Slot(str)
     def openStream(self, url: str) -> None:
         self._cancelled = False
         self._url = url
+        self._keep_alive = url.startswith("http://")
         if url.startswith("rtsp://"):
             # VLC typically uses TCP; UDP often never errors, it just stays blank.
             self._transports = ["tcp", "udp"]
         else:
             self._transports = [None]
         self._transport_index = 0
-        self.statusChanged.emit("Opening camera stream…")
+        self.statusChanged.emit(
+            "Opening stacking preview…" if self._keep_alive else "Opening camera stream…"
+        )
         self._start_process()
 
     @Slot()
     def closeStream(self) -> None:
         self._cancelled = True
         self._url = ""
+        self._keep_alive = False
         self._watchdog.stop()
+        self._reconnect_timer.stop()
         self._latest_image = None
         self._flush_scheduled = False
         self._teardown()
 
     def _start_process(self) -> None:
+        self._reconnect_timer.stop()
         self._teardown()
         if self._cancelled or not self._url:
             return
@@ -354,6 +369,8 @@ class StreamPlayer(QObject):
             self.statusChanged.emit("Opening camera stream over TCP…")
         elif transport == "udp":
             self.statusChanged.emit("TCP stream failed, retrying over UDP…")
+        elif self._keep_alive:
+            self.statusChanged.emit("Opening stacking preview…")
         command = ffmpeg_mjpeg_command(self._url, transport)
         program, arguments = command[0], command[1:]
         process = QProcess(self)
@@ -377,11 +394,11 @@ class StreamPlayer(QObject):
         process.start(program, arguments)
         if not process.waitForStarted(4000):
             if not self._cancelled:
-                self._retry_or_fail(f"Could not start ffmpeg ({ffmpeg_path()})")
+                self._retry_or_fail(f"Could not start ffmpeg ({ffmpeg_path()})", fatal=True)
             return
         with self._pid_lock:
             self._pid = int(process.processId() or 0)
-        self._watchdog.start(8000)
+        self._watchdog.start(self._FIRST_FRAME_MS)
 
     def abort(self) -> None:
         """Kill ffmpeg from any thread without waiting on Qt."""
@@ -393,6 +410,7 @@ class StreamPlayer(QObject):
 
     def _teardown(self) -> None:
         self._watchdog.stop()
+        self._reconnect_timer.stop()
         process = self._process
         self._process = None
         self._buffer = b""
@@ -449,7 +467,10 @@ class StreamPlayer(QObject):
         if image is None or image.isNull() or self._cancelled:
             return
         self._got_frame = True
-        self._watchdog.stop()
+        if self._keep_alive:
+            self._watchdog.start(self._HTTP_STALL_MS)
+        else:
+            self._watchdog.stop()
         self.frameReady.emit(image)
 
     def _on_stderr(self) -> None:
@@ -462,21 +483,46 @@ class StreamPlayer(QObject):
         if self._cancelled or self._process is None:
             return
         if error == QProcess.ProcessError.FailedToStart:
-            self._retry_or_fail(f"Could not start ffmpeg ({ffmpeg_path()})")
+            self._retry_or_fail(f"Could not start ffmpeg ({ffmpeg_path()})", fatal=True)
 
     def _on_finished(self) -> None:
         if self._cancelled or self._process is None:
+            return
+        if self._keep_alive:
+            delay = self._HTTP_RECONNECT_MS if self._got_frame else self._HTTP_RETRY_MS
+            self._schedule_reconnect(delay)
             return
         detail = self._stderr.strip().splitlines()[-1] if self._stderr.strip() else "ffmpeg exited"
         self._retry_or_fail(detail)
 
     def _on_watchdog(self) -> None:
-        if self._cancelled or self._got_frame:
+        if self._cancelled:
+            return
+        if self._keep_alive:
+            self._schedule_reconnect(0)
+            return
+        if self._got_frame:
             return
         self._retry_or_fail("No frames received from the camera stream")
 
-    def _retry_or_fail(self, message: str) -> None:
+    def _schedule_reconnect(self, delay_ms: int | None = None) -> None:
+        if self._cancelled or not self._url:
+            return
+        self._watchdog.stop()
+        if self._reconnect_timer.isActive():
+            return
+        wait = self._HTTP_RETRY_MS if delay_ms is None else delay_ms
+        if wait <= 0:
+            self._start_process()
+            return
+        self._reconnect_timer.start(wait)
+
+    def _retry_or_fail(self, message: str, *, fatal: bool = False) -> None:
         if self._cancelled:
+            return
+        if not fatal and self._keep_alive:
+            self.statusChanged.emit("Waiting for stacking preview…")
+            self._schedule_reconnect()
             return
         if self._got_frame:
             return

@@ -529,6 +529,7 @@ class AppBackend(QObject):
     previewHoldChanged = Signal()
     _openTeleStream = Signal(str)
     _openWideStream = Signal(str)
+    _closeWideStream = Signal()
     _closePreviewStreams = Signal()
     _previewReady = Signal(int, str, str)
 
@@ -594,6 +595,9 @@ class AppBackend(QObject):
         self._preview_window_filter = None
         self._preview_hold_device_id = ""
         self._preview_hold_target = ""
+        self._preview_tele_url = ""
+        self._preview_wide_url = ""
+        self._preview_stack_mode = False
         self._shut_down = False
         self._preview_thread = QThread(self)
         self._tele_player = StreamPlayer()
@@ -608,6 +612,7 @@ class AppBackend(QObject):
         self._wide_player.statusChanged.connect(self._on_wide_status)
         self._openTeleStream.connect(self._tele_player.openStream, Qt.QueuedConnection)
         self._openWideStream.connect(self._wide_player.openStream, Qt.QueuedConnection)
+        self._closeWideStream.connect(self._wide_player.closeStream, Qt.QueuedConnection)
         self._closePreviewStreams.connect(self._tele_player.closeStream, Qt.QueuedConnection)
         self._closePreviewStreams.connect(self._wide_player.closeStream, Qt.QueuedConnection)
         self._previewReady.connect(self._open_ready_stream)
@@ -711,6 +716,7 @@ class AppBackend(QObject):
         self._track_session_capture(device_id, current)
         self._maybe_resume_held_preview(device_id)
         self._maybe_resume_interrupted_session(device_id)
+        self._sync_preview_for_capture(device_id, previous, current)
         self._notify_devices()
 
     def _toast(self, message: str, level: str = "info", detail: str = "") -> None:
@@ -1221,7 +1227,9 @@ class AppBackend(QObject):
     @Property(str, notify=selectedDeviceChanged)
     def videoUrl(self) -> str:
         device = next(item for item in self._devices if item.id == self._selected_device_id)
-        return self._stream_url(device, device.camera)
+        stacking = self._preview_stacking(device.id)
+        camera = Camera.TELE if stacking else device.camera
+        return self._stream_url(device, camera, stacking=stacking)
 
     @Property(bool, notify=previewActiveChanged)
     def previewActive(self) -> bool:
@@ -1274,10 +1282,25 @@ class AppBackend(QObject):
             "without locking the app. The stream returns when capture starts."
         )
 
-    def _stream_url(self, device: Device, camera: Camera) -> str:
+    def _stream_url(self, device: Device, camera: Camera, stacking: bool | None = None) -> str:
+        if stacking is None:
+            stacking = self._preview_stacking(device.id)
+        if stacking and device.model in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
+            # RTSP stops when an astro session starts. Dwarflab documents this
+            # HTTP snapshot for the tele stacking preview; wide has no equivalent.
+            if camera == Camera.WIDE:
+                return ""
+            return f"http://{device.ip_address}:8092/mainstream"
         if device.model in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
             return f"rtsp://{device.ip_address}/{'ch1' if camera == Camera.WIDE else 'ch0'}/stream0"
         return f"http://{device.ip_address}:8092/{'secondstream' if camera == Camera.WIDE else 'mainstream'}"
+
+    def _preview_stacking(self, device_id: str) -> bool:
+        """Dwarf 3/Mini need the HTTP stacking JPEG while capture is running."""
+        device = next((item for item in self._devices if item.id == device_id), None)
+        if device is None or device.model not in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
+            return False
+        return self._session_is_capturing(device_id)
 
     def _set_preview_status(self, text: str) -> None:
         if self._preview_status == text:
@@ -1294,8 +1317,16 @@ class AppBackend(QObject):
             return
         if self._preview_should_attach_only(device_id):
             self._clear_preview_hold()
-            self.add_log("info", "Attaching live view without interrupting the session", device_id)
-            self._attach_preview_streams(device_id, "Attaching to live view…")
+            stacking = self._preview_stacking(device_id)
+            self.add_log(
+                "info",
+                "Attaching to stacking preview" if stacking else "Attaching live view without interrupting the session",
+                device_id,
+            )
+            self._attach_preview_streams(
+                device_id,
+                "Attaching to stacking preview…" if stacking else "Attaching to live view…",
+            )
             return
         if self._preview_hold_device_id == device_id and self._session_is_capturing(device_id):
             self._resume_held_preview(device_id)
@@ -1375,6 +1406,9 @@ class AppBackend(QObject):
         self._preview_wide_playing = False
         self.live_images.clear()
         self._last_preview_ui.clear()
+        self._preview_tele_url = ""
+        self._preview_wide_url = ""
+        self._preview_stack_mode = self._preview_stacking(self._selected_device_id)
         self._set_preview_status(status)
         self.previewActiveChanged.emit()
         self.previewPlayingChanged.emit()
@@ -1392,8 +1426,13 @@ class AppBackend(QObject):
         timeout: float = 12,
         status: str | None = None,
     ) -> None:
-        self.add_log("info", f"Opening {tele_url} and {wide_url} in the background")
+        if wide_url:
+            self.add_log("info", f"Opening {tele_url} and {wide_url} in the background")
+        else:
+            self.add_log("info", f"Opening {tele_url} in the background")
         self._set_preview_status(status or ("Waiting for stream " + tele_url))
+        self._preview_tele_url = tele_url
+        self._preview_wide_url = wide_url
         threading.Thread(
             target=self._wait_for_stream,
             args=(token, tele_url, wide_url, host, port, timeout),
@@ -1422,6 +1461,17 @@ class AppBackend(QObject):
     def _open_ready_stream(self, token: int, tele_url: str, wide_url: str) -> None:
         if token != self._preview_token:
             return
+        self._preview_tele_url = tele_url
+        self._preview_wide_url = wide_url
+        if tele_url:
+            self._set_preview_status(tele_url)
+        if not wide_url:
+            self._openTeleStream.emit(tele_url)
+            self._closeWideStream.emit()
+            if self._preview_wide_playing:
+                self._preview_wide_playing = False
+                self.previewWidePlayingChanged.emit()
+            return
         device = self._device_by_id(self._selected_device_id)
         primary_wide = device.camera == Camera.WIDE
         if primary_wide:
@@ -1432,7 +1482,7 @@ class AppBackend(QObject):
             QTimer.singleShot(400, lambda: self._open_secondary_stream(token, "wide", wide_url))
 
     def _open_secondary_stream(self, token: int, camera: str, url: str) -> None:
-        if token != self._preview_token or not self._preview_active:
+        if token != self._preview_token or not self._preview_active or not url:
             return
         if camera == "wide":
             self._openWideStream.emit(url)
@@ -1454,6 +1504,9 @@ class AppBackend(QObject):
         self._preview_wide_playing = False
         self.live_images.clear()
         self._last_preview_ui.clear()
+        self._preview_tele_url = ""
+        self._preview_wide_url = ""
+        self._preview_stack_mode = False
         self._set_preview_status("")
         self.previewActiveChanged.emit()
         self.previewPlayingChanged.emit()
@@ -1503,6 +1556,81 @@ class AppBackend(QObject):
         session_id = self._active_sessions.get(device_id)
         session = self.store.sessions.get(session_id) if session_id else None
         return bool(session and session.current_step in _CAPTURE_PREVIEW_STEPS)
+
+    def _sync_preview_for_capture(
+        self,
+        device_id: str,
+        previous: dict[str, Any],
+        current: dict[str, Any],
+    ) -> None:
+        """Move Dwarf 3/Mini live view onto the HTTP stacking JPEG during capture."""
+        if device_id != self._selected_device_id or not self._preview_active:
+            return
+        stacking = self._preview_stacking(device_id)
+        device = self._device_by_id(device_id)
+        tele_url = self._stream_url(device, Camera.TELE, stacking=stacking)
+        wide_url = self._stream_url(device, Camera.WIDE, stacking=stacking)
+        mode_changed = stacking != self._preview_stack_mode
+        urls_changed = tele_url != self._preview_tele_url or wide_url != self._preview_wide_url
+        if not mode_changed and not self._preview_tele_url:
+            return
+        if mode_changed or urls_changed:
+            was_stacking = self._preview_stack_mode
+            self._preview_stack_mode = stacking
+            if stacking and not was_stacking:
+                self.add_log(
+                    "info",
+                    "Capture started — switching live view to the stacking preview",
+                    device_id,
+                )
+            elif not stacking and was_stacking:
+                self.add_log("info", "Capture ended — restoring RTSP live view", device_id)
+            self._retarget_preview_streams(tele_url, wide_url)
+            return
+        if not stacking:
+            return
+
+        def frame_count(raw: dict[str, Any], key: str) -> int:
+            try:
+                return int(raw.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        stacked = frame_count(current, "capture_stacked")
+        taken = frame_count(current, "capture_current")
+        if stacked > frame_count(previous, "capture_stacked") or taken > frame_count(
+            previous, "capture_current"
+        ):
+            token = self._preview_token
+            QTimer.singleShot(400, lambda: self._refresh_stacking_preview(token, tele_url))
+
+    def _refresh_stacking_preview(self, token: int, tele_url: str) -> None:
+        if token != self._preview_token or not self._preview_active or not tele_url:
+            return
+        if not self._preview_stacking(self._selected_device_id):
+            return
+        self._openTeleStream.emit(tele_url)
+
+    def _retarget_preview_streams(self, tele_url: str, wide_url: str, timeout: float = 20) -> None:
+        """Switch stream URLs without clearing the last frame or sending go_live."""
+        self._preview_token += 1
+        self._preview_tele_url = tele_url
+        self._preview_wide_url = wide_url
+        host = urlparse(tele_url).hostname or self._device_by_id(self._selected_device_id).ip_address
+        status = (
+            "Switching to stacking preview…"
+            if tele_url.startswith("http://")
+            else "Restoring camera stream…"
+        )
+        self._begin_stream_wait(
+            self._preview_token,
+            tele_url,
+            wide_url,
+            host,
+            stream_port(tele_url),
+            timeout=timeout,
+            status=status,
+        )
 
     def _preview_should_attach_only(self, device_id: str) -> bool:
         """Avoid go_live / photo_mode while the telescope is already working."""
@@ -1635,6 +1763,12 @@ class AppBackend(QObject):
         other_playing = self._preview_wide_playing if camera == "tele" else self._preview_tele_playing
         text = message or "Video preview failed"
         url = self._stream_url(self._device_by_id(self._selected_device_id), Camera(camera))
+        if not url:
+            if other_playing:
+                return
+            self.add_log("error", text)
+            self._set_preview_status(text)
+            return
         if "Could not open file" in text or not text.strip():
             text = f"Could not open {url}. The control link is up, but the camera stream is not reachable yet."
         if other_playing:
@@ -1650,11 +1784,11 @@ class AppBackend(QObject):
         self._on_camera_preview_status("wide", message)
 
     def _on_camera_preview_status(self, camera: str, message: str) -> None:
-        if not self._preview_active:
+        if not self._preview_active or self._preview_playing:
             return
         device = self._device_by_id(self._selected_device_id)
-        primary = "wide" if device.camera == Camera.WIDE else "tele"
-        if camera == primary or not self._preview_playing:
+        primary = "tele" if self._preview_stack_mode or device.camera != Camera.WIDE else "wide"
+        if camera == primary:
             self._set_preview_status(message)
 
     @Slot(str, str)
@@ -3293,6 +3427,11 @@ class AppBackend(QObject):
         if self._preview_hold_device_id == session.device_id:
             self._refresh_preview_hold()
             self._maybe_resume_held_preview(session.device_id)
+        self._sync_preview_for_capture(
+            session.device_id,
+            dict(self._device_telemetry.get(session.device_id) or {}),
+            dict(self._device_telemetry.get(session.device_id) or {}),
+        )
 
     def _session_finished(self, session_id: str, ok: bool, result: Any) -> None:
         active_device = next(
@@ -3367,6 +3506,8 @@ class AppBackend(QObject):
             self._toast(f"Session failed · {final.target.name}", "error", outcome)
         self.sessionsChanged.emit()
         self.historyChanged.emit()
+        telemetry = dict(self._device_telemetry.get(final.device_id) or {})
+        self._sync_preview_for_capture(final.device_id, telemetry, telemetry)
         if restore_preview:
             self._restore_held_preview(final.device_id)
 
