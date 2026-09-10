@@ -1104,6 +1104,7 @@ class AppBackend(QObject):
             "workflow_text": " · ".join(steps) if steps else "Capture only",
             "coords_text": coords,
             "duration_text": self._duration_text(seconds),
+            "duration_seconds": seconds,
         }
 
     def _template_member_dict(self, template: SessionTemplate) -> dict[str, Any]:
@@ -3413,8 +3414,63 @@ class AppBackend(QObject):
             cursor += timedelta(seconds=max(60, item.planned_duration_seconds))
         self.sessionsChanged.emit()
 
+    def _schedule_device(self, device_id: str = "") -> Device | None:
+        wanted = device_id or self._selected_device_id
+        return next((item for item in self._devices if item.id == wanted), None) or (
+            next((item for item in self._devices if item.id == self._selected_device_id), None)
+        )
+
+    @Slot(result=str)
+    @Slot(str, result=str)
+    def deviceNowStamp(self, device_id: str = "") -> str:
+        device = self._schedule_device(device_id)
+        now = datetime.now(self._zone_for(device)).replace(second=0, microsecond=0)
+        return now.strftime("%Y-%m-%dT%H:%M")
+
+    @Slot(str, str, float, result="QVariantMap")
+    def scheduleWindow(self, device_id: str, scheduled_start: str, duration_seconds: float) -> dict[str, Any]:
+        device = self._schedule_device(device_id)
+        if not device:
+            return {"ok": False}
+        tz = self._zone_for(device)
+        raw = str(scheduled_start or "").strip()
+        if not raw:
+            return {"ok": False, "device_name": device.name, "timezone": device.timezone_name}
+        try:
+            start = parse_in_zone(raw, tz).replace(second=0, microsecond=0)
+        except ValueError:
+            return {"ok": False, "device_name": device.name, "timezone": device.timezone_name}
+        seconds = max(60.0, float(duration_seconds or 0))
+        span = timedelta(seconds=seconds)
+        end = start + span
+        occupied = self._occupied_windows(device.id, set())
+        conflict = ""
+        for item in self.store.sessions.all():
+            if item.device_id != device.id or item.status not in (SessionStatus.PLANNED, SessionStatus.RUNNING):
+                continue
+            other_start, other_end = self._session_window(item, tz)
+            if start < other_end and other_start < end:
+                label = item.name or item.target.name
+                conflict = f"{label} {other_start.strftime('%H:%M')}–{other_end.strftime('%H:%M')}"
+                break
+        free = next_free_start(occupied, start, span)
+        snapped = free != start
+        return {
+            "ok": True,
+            "device_name": device.name,
+            "timezone": device.timezone_name,
+            "start": start.strftime("%Y-%m-%dT%H:%M"),
+            "end": end.strftime("%H:%M"),
+            "end_stamp": end.strftime("%Y-%m-%dT%H:%M"),
+            "duration_text": self._duration_text(seconds),
+            "conflict": conflict,
+            "next_free": free.strftime("%Y-%m-%dT%H:%M") if snapped else "",
+            "next_free_time": free.strftime("%H:%M") if snapped else "",
+        }
+
     @Slot(str, str, result=bool)
-    def scheduleTemplate(self, template_id: str, scheduled_start: str) -> bool:
+    @Slot(str, str, str, result=bool)
+    def scheduleTemplate(self, template_id: str, scheduled_start: str, device_id: str = "") -> bool:
         template = self.store.templates.get(template_id)
         if not template:
             return False
@@ -3423,7 +3479,10 @@ class AppBackend(QObject):
             [item for item in self.store.templates.all() if item.mosaic.group_id == group_id]
             if group_id else [template]
         )
-        device = self._device_by_id(self._selected_device_id)
+        device = self._schedule_device(device_id)
+        if not device:
+            self._toast("Select a telescope first", "error")
+            return False
         tz = self._zone_for(device)
         try:
             start = parse_in_zone(str(scheduled_start).strip(), tz).replace(second=0, microsecond=0)
@@ -3431,7 +3490,7 @@ class AppBackend(QObject):
             self._toast("Enter a start time like 2026-09-10T22:00", "error")
             return False
         sessions = [
-            self.store.clone_template(item, self._selected_device_id, start)
+            self.store.clone_template(item, device.id, start)
             for item in templates
         ]
         staggered = stagger_mosaic_sessions(sessions, start, device.hardware)
@@ -3441,7 +3500,7 @@ class AppBackend(QObject):
             self._toast(str(exc), "warning")
             return False
         count = len(sessions)
-        self._toast(f"Scheduled {count} pane{'s' if count != 1 else ''}", "success")
+        self._toast(f"Scheduled {count} pane{'s' if count != 1 else ''} on {device.name}", "success")
         return True
 
     @Slot(str)
