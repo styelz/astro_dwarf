@@ -204,6 +204,11 @@ class HistoryRecord:
     summary: str = ""
     notes: str = ""
     captured_frame_count: int | None = None
+    exposure_seconds: float | None = None
+    mosaic_panes: int = 1
+    workflow: dict[str, Any] = field(default_factory=dict)
+    hardware: dict[str, float] = field(default_factory=dict)
+    step_seconds: dict[str, float] = field(default_factory=dict)
 
 
 def to_dict(value: Any) -> dict[str, Any]:
@@ -211,7 +216,9 @@ def to_dict(value: Any) -> dict[str, Any]:
 
 
 def hardware_from_dict(data: dict[str, Any]) -> HardwareProfile:
-    return HardwareProfile(**data)
+    allowed = set(HardwareProfile.__dataclass_fields__)
+    cleaned = {key: value for key, value in dict(data or {}).items() if key in allowed}
+    return HardwareProfile(**cleaned)
 
 
 def device_from_dict(data: dict[str, Any]) -> Device:
@@ -308,6 +315,59 @@ def session_from_dict(data: dict[str, Any]) -> Session:
     return Session(**data)
 
 
+def _float_map(data: Any) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for key, value in dict(data or {}).items():
+        try:
+            result[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
 def history_from_dict(data: dict[str, Any]) -> HistoryRecord:
+    data = dict(data)
+    data["workflow"] = dict(data.get("workflow") or {})
+    data["hardware"] = _float_map(data.get("hardware"))
+    data["step_seconds"] = _float_map(data.get("step_seconds"))
+    try:
+        data["mosaic_panes"] = max(1, int(data.get("mosaic_panes") or 1))
+    except (TypeError, ValueError):
+        data["mosaic_panes"] = 1
     allowed = set(HistoryRecord.__dataclass_fields__)
     return HistoryRecord(**{key: value for key, value in data.items() if key in allowed})
+
+
+def history_record_for_run(
+    session: Session,
+    *,
+    actual_duration_seconds: float,
+    captured_frame_count: int,
+    hardware: HardwareProfile | None = None,
+    step_seconds: dict[str, float] | None = None,
+) -> HistoryRecord:
+    captured = int(captured_frame_count)
+    planned_frames = int(session.camera.frame_count or 0)
+    return HistoryRecord(
+        session_id=session.id,
+        device_id=session.device_id,
+        target_name=session.target.name,
+        scheduled_start=session.scheduled_start,
+        actual_started_at=session.actual_started_at,
+        actual_ended_at=session.actual_ended_at,
+        planned_duration_seconds=session.planned_duration_seconds,
+        actual_duration_seconds=actual_duration_seconds,
+        frame_count=planned_frames,
+        captured_frame_count=captured,
+        outcome=session.outcome,
+        summary=f"{captured}/{planned_frames} frames · {session.camera.exposure_seconds:g}s",
+        notes=session.notes,
+        exposure_seconds=float(session.camera.exposure_seconds),
+        mosaic_panes=int(session.mosaic.panes),
+        workflow=asdict(session.workflow),
+        hardware={
+            key: float(getattr(hardware, key))
+            for key in HardwareProfile.__dataclass_fields__
+        } if hardware is not None else {},
+        step_seconds={key: round(float(value), 1) for key, value in dict(step_seconds or {}).items()},
+    )

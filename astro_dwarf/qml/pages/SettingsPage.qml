@@ -30,6 +30,46 @@ Item {
         }
     }
     readonly property bool dirty: JSON.stringify(currentPayload()) !== loadedSnapshot
+    readonly property var durationHint: backend.durationSuggestion || ({})
+    readonly property bool durationHintPending: {
+        const hint = settingsPage.durationHint
+        if (!hint || !hint.available || !hint.changes || !hint.changes.length)
+            return false
+        const fields = {
+            slew_seconds: slewField.text, settle_seconds: settleField.text,
+            calibration_seconds: calibrationField.text, autofocus_seconds: autofocusField.text,
+            infinite_focus_seconds: infinityField.text, polar_seconds: polarField.text,
+            readout_seconds: readoutField.text, pane_slew_seconds: paneField.text,
+            startup_seconds: startupField.text
+        }
+        for (let i = 0; i < hint.changes.length; i++) {
+            const change = hint.changes[i]
+            if (Math.abs(Number(fields[change.key]) - Number(change.suggested)) > 0.05)
+                return true
+        }
+        return false
+    }
+    function applyDurationHint() {
+        const hint = settingsPage.durationHint
+        if (!hint || !hint.changes)
+            return
+        const fields = {
+            slew_seconds: slewField, settle_seconds: settleField,
+            calibration_seconds: calibrationField, autofocus_seconds: autofocusField,
+            infinite_focus_seconds: infinityField, polar_seconds: polarField,
+            readout_seconds: readoutField, pane_slew_seconds: paneField,
+            startup_seconds: startupField
+        }
+        for (let i = 0; i < hint.changes.length; i++) {
+            const change = hint.changes[i]
+            const field = fields[change.key]
+            if (!field)
+                continue
+            field.text = change.key === "readout_seconds"
+                ? Number(change.suggested).toFixed(1)
+                : String(change.suggested)
+        }
+    }
     function isDirty() { return dirty }
     function saveCurrent() {
         backend.saveDevice(JSON.stringify(currentPayload()))
@@ -381,6 +421,44 @@ Item {
                 title: "◷  HARDWARE DURATION PROFILE"
                 width: parent.width
                 Text { text: "These overheads size calendar blocks and remaining-time estimates."; color: Theme.textSecondary; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                ColumnLayout {
+                    visible: settingsPage.durationHintPending
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Text {
+                        Layout.fillWidth: true
+                        text: settingsPage.durationHint.summary || ""
+                        color: Theme.warning
+                        wrapMode: Text.Wrap
+                        font.pixelSize: 12
+                    }
+                    Text {
+                        visible: !!(settingsPage.durationHint.note)
+                        Layout.fillWidth: true
+                        text: settingsPage.durationHint.note || ""
+                        color: Theme.textSecondary
+                        wrapMode: Text.Wrap
+                        font.pixelSize: 11
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: settingsPage.durationHint.change_text || ""
+                        color: Theme.textPrimary
+                        wrapMode: Text.Wrap
+                        font.pixelSize: 12
+                        font.family: Theme.fontMono
+                    }
+                    RowLayout {
+                        HudButton {
+                            text: "APPLY SUGGESTIONS"
+                            busyText: "APPLYING…"
+                            buttonColor: Theme.fillActive
+                            foregroundColor: Theme.accent
+                            onClicked: settingsPage.applyDurationHint()
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                }
                 GridLayout {
                     Layout.fillWidth: true
                     columns: 6

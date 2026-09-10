@@ -35,7 +35,6 @@ from .domain import (
     CameraSettings,
     Device,
     DeviceModel,
-    HistoryRecord,
     Mosaic,
     Session,
     SessionStatus,
@@ -46,6 +45,7 @@ from .domain import (
     Workflow,
     device_from_dict,
     firmware_exposure_name,
+    history_record_for_run,
     session_from_dict,
     to_dict,
 )
@@ -64,6 +64,7 @@ from .services import (
     store_local_iso,
     zoneinfo_from_name,
 )
+from .duration_suggest import suggest_hardware_profile
 from .location import has_site_coordinates, match_timezone, resolve_location, suggested_timezone, timezone_locations
 from .runtime import PROCESS_CREATION_FLAGS, kill_pid_tree, prepare_worker_environment, worker_command
 from .storage import SessionStore
@@ -505,6 +506,7 @@ class AppBackend(QObject):
     sessionsChanged = Signal()
     templatesChanged = Signal()
     historyChanged = Signal()
+    durationSuggestionChanged = Signal()
     showDebugLogsChanged = Signal()
     selectedDeviceChanged = Signal()
     statusChanged = Signal()
@@ -556,7 +558,9 @@ class AppBackend(QObject):
         self._device_telemetry: dict[str, dict[str, Any]] = {}
         self._session_capture_base: dict[str, int] = {}
         self._session_capture_peak: dict[str, int] = {}
+        self._session_timing: dict[str, dict[str, Any]] = {}
         self._hold_session_capture: set[str] = set()
+        self.historyChanged.connect(self.durationSuggestionChanged)
         self._recovered_sessions: dict[str, str] = {}
         self._resume_attempted: set[str] = set()
         self._telemetry_updated: dict[str, float] = {}
@@ -1070,8 +1074,59 @@ class AppBackend(QObject):
                 data["delta_text"] = self._duration_text(delta) + " over"
             else:
                 data["delta_text"] = self._duration_text(-delta) + " under"
+            steps = []
+            for name, seconds in (record.step_seconds or {}).items():
+                if float(seconds) < 1:
+                    continue
+                steps.append(f"{name} {self._duration_text(seconds)}")
+            data["step_text"] = " · ".join(steps)
             result.append(data)
         return result
+
+    @Property("QVariantMap", notify=durationSuggestionChanged)
+    def durationSuggestion(self) -> dict[str, Any]:
+        device = next((item for item in self._devices if item.id == self._selected_device_id), None)
+        if not device:
+            return {"available": False, "run_count": 0, "changes": [], "summary": "", "note": "", "change_text": ""}
+        sessions = {item.id: item for item in self.store.sessions.all()}
+        hint = suggest_hardware_profile(
+            self.store.history.all(),
+            device.hardware,
+            sessions,
+            device.id,
+        )
+        if hint.get("available") and hint.get("summary"):
+            hint["summary"] = f"{device.name}: {hint['summary']}"
+        return hint
+
+    @Slot()
+    def applyDurationSuggestion(self) -> None:
+        suggestion = self.durationSuggestion
+        if not suggestion.get("available"):
+            return
+        device = self._device_by_id(self._selected_device_id)
+        updates = {}
+        for change in suggestion.get("changes") or []:
+            key = str(change.get("key") or "")
+            if key in device.hardware.__dataclass_fields__:
+                updates[key] = float(change["suggested"])
+        if not updates:
+            return
+        updated = replace(device, hardware=replace(device.hardware, **updates))
+        self.store.devices.save(updated)
+        self._devices = [updated if item.id == updated.id else item for item in self._devices]
+        for session in self.store.upcoming(updated.id):
+            self._save_session(replace(
+                session,
+                planned_duration_seconds=DurationEngine.calculate(session, updated.hardware),
+            ), notify=False)
+        self._sequence_colliding_mosaics()
+        self.devicesChanged.emit()
+        self.selectedDeviceChanged.emit()
+        self.clockChanged.emit()
+        self.sessionsChanged.emit()
+        self.durationSuggestionChanged.emit()
+        self._toast("Duration profile updated from history", "success")
 
     @Property(bool, notify=showDebugLogsChanged)
     def showDebugLogs(self) -> bool:
@@ -1800,6 +1855,7 @@ class AppBackend(QObject):
         if any(device.id == device_id for device in self._devices):
             self._selected_device_id = device_id
             self.selectedDeviceChanged.emit()
+            self.durationSuggestionChanged.emit()
             self.sessionsChanged.emit()
             self.clockChanged.emit()
             self.previewHoldChanged.emit()
@@ -2102,6 +2158,7 @@ class AppBackend(QObject):
             self._selected_device_id = device.id
             self.devicesChanged.emit()
             self.selectedDeviceChanged.emit()
+            self.durationSuggestionChanged.emit()
             self.clockChanged.emit()
             self._toast("Device added", "success")
             return True
@@ -2140,6 +2197,7 @@ class AppBackend(QObject):
             self._selected_device_id = self._devices[0].id
         self.devicesChanged.emit()
         self.selectedDeviceChanged.emit()
+        self.durationSuggestionChanged.emit()
         self.sessionsChanged.emit()
         if history_ids:
             self.historyChanged.emit()
@@ -2320,6 +2378,7 @@ class AppBackend(QObject):
             self._sequence_colliding_mosaics()
             self.devicesChanged.emit()
             self.selectedDeviceChanged.emit()
+            self.durationSuggestionChanged.emit()
             self.clockChanged.emit()
             self._toast("Device saved", "success")
         except Exception as exc:
@@ -3383,6 +3442,7 @@ class AppBackend(QObject):
         )
         self._recovered_sessions.pop(session.id, None)
         self._active_sessions[session.device_id] = session.id
+        self._session_timing[session.id] = {"started": time.monotonic(), "steps": []}
         if resuming:
             self._session_capture_base[session.id] = 0
             self._session_capture_peak[session.id] = self._telemetry_frame_count(session.device_id)
@@ -3422,6 +3482,8 @@ class AppBackend(QObject):
         session = self.store.sessions.get(session_id)
         if not session:
             return
+        timing = self._session_timing.setdefault(session_id, {"started": time.monotonic(), "steps": []})
+        timing["steps"].append((step, time.monotonic()))
         self.store.sessions.save(replace(session, current_step=step))
         self.sessionsChanged.emit()
         if self._preview_hold_device_id == session.device_id:
@@ -3452,12 +3514,14 @@ class AppBackend(QObject):
         stopped = session_id in self._stop_requested
         self._stop_requested.discard(session_id)
         if not session:
+            self._session_timing.pop(session_id, None)
             self.sessionsChanged.emit()
             if restore_preview:
                 self._restore_held_preview(device_id)
             return
         if session.status != SessionStatus.RUNNING:
             # Already finalised (for example the worker died and reported it first).
+            self._session_timing.pop(session_id, None)
             self.sessionsChanged.emit()
             if restore_preview:
                 self._restore_held_preview(device_id)
@@ -3479,20 +3543,13 @@ class AppBackend(QObject):
         )
         captured = self._captured_frames_for(session.id, final.camera.frame_count, ok)
         self._hold_session_capture.discard(final.device_id)
-        self.store.history.save(HistoryRecord(
-            session_id=final.id,
-            device_id=final.device_id,
-            target_name=final.target.name,
-            scheduled_start=final.scheduled_start,
-            actual_started_at=final.actual_started_at,
-            actual_ended_at=final.actual_ended_at,
-            planned_duration_seconds=final.planned_duration_seconds,
+        device = next((item for item in self._devices if item.id == final.device_id), None)
+        self.store.history.save(history_record_for_run(
+            final,
             actual_duration_seconds=(ended - started).total_seconds(),
-            frame_count=final.camera.frame_count,
             captured_frame_count=captured,
-            outcome=outcome,
-            summary=f"{captured}/{final.camera.frame_count} frames · {final.camera.exposure_seconds:g}s",
-            notes=final.notes,
+            hardware=device.hardware if device else None,
+            step_seconds=self._finish_session_timing(session.id),
         ))
         elapsed = self._duration_text((ended - started).total_seconds())
         if ok:
@@ -3626,6 +3683,24 @@ class AppBackend(QObject):
         tz = self._zone_for(device)
         parsed = parse_in_zone(value, tz) if isinstance(value, str) else value
         return store_local_iso(parsed, tz)
+
+    def _finish_session_timing(self, session_id: str) -> dict[str, float]:
+        log = self._session_timing.pop(session_id, None)
+        if not log:
+            return {}
+        started = float(log.get("started") or time.monotonic())
+        steps = list(log.get("steps") or [])
+        ended = time.monotonic()
+        marks: list[tuple[str, float]] = [("Session start", started), *steps]
+        out: dict[str, float] = {}
+        for index, (name, stamp) in enumerate(marks):
+            finish = marks[index + 1][1] if index + 1 < len(marks) else ended
+            elapsed = max(0.0, float(finish) - float(stamp))
+            if elapsed < 0.05:
+                continue
+            key = str(name)
+            out[key] = round(out.get(key, 0.0) + elapsed, 1)
+        return out
 
     @staticmethod
     def _duration_text(seconds: float) -> str:

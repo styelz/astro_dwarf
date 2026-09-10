@@ -23,7 +23,6 @@ from .domain import (
     Camera,
     Device,
     HardwareProfile,
-    HistoryRecord,
     Mosaic,
     Session,
     SessionStatus,
@@ -32,6 +31,7 @@ from .domain import (
     Workflow,
     firmware_binning,
     firmware_exposure_name,
+    history_record_for_run,
 )
 from .runtime import ffmpeg_mjpeg_command
 from .storage import SessionStore
@@ -581,23 +581,13 @@ class Scheduler:
             outcome=outcome,
             current_step=outcome,
         )
-        self.store.history.save(
-            HistoryRecord(
-                session_id=session.id,
-                device_id=session.device_id,
-                target_name=session.target.name,
-                scheduled_start=session.scheduled_start,
-                actual_started_at=session.actual_started_at,
-                actual_ended_at=session.actual_ended_at,
-                planned_duration_seconds=session.planned_duration_seconds,
-                actual_duration_seconds=(ended - started).total_seconds(),
-                frame_count=session.camera.frame_count,
-                captured_frame_count=session.camera.frame_count if status == SessionStatus.DONE else 0,
-                outcome=outcome,
-                summary=f"{session.camera.frame_count if status == SessionStatus.DONE else 0}/{session.camera.frame_count} frames · {session.camera.exposure_seconds:g}s",
-                notes=session.notes,
-            )
-        )
+        captured = session.camera.frame_count if status == SessionStatus.DONE else 0
+        self.store.history.save(history_record_for_run(
+            session,
+            actual_duration_seconds=(ended - started).total_seconds(),
+            captured_frame_count=captured,
+            hardware=self.device.hardware,
+        ))
         self.after_run(session)
         self.on_change()
 

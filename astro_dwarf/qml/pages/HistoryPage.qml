@@ -150,6 +150,48 @@ Item {
                 onActivated: historyPage.outcomeFilter = currentIndex
             }
         }
+        HudPanel {
+            visible: !!(backend.durationSuggestion && backend.durationSuggestion.available)
+            Layout.fillWidth: true
+            title: "◷  DURATION PROFILE"
+            RowLayout {
+                Layout.fillWidth: true
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    Text {
+                        Layout.fillWidth: true
+                        text: (backend.durationSuggestion && backend.durationSuggestion.summary) || ""
+                        color: Theme.warning
+                        wrapMode: Text.Wrap
+                        font.pixelSize: 12
+                    }
+                    Text {
+                        visible: !!(backend.durationSuggestion && backend.durationSuggestion.note)
+                        Layout.fillWidth: true
+                        text: (backend.durationSuggestion && backend.durationSuggestion.note) || ""
+                        color: Theme.textSecondary
+                        wrapMode: Text.Wrap
+                        font.pixelSize: 11
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: (backend.durationSuggestion && backend.durationSuggestion.change_text) || ""
+                        color: Theme.textPrimary
+                        wrapMode: Text.Wrap
+                        font.pixelSize: 12
+                        font.family: Theme.fontMono
+                    }
+                }
+                HudButton {
+                    text: "APPLY TO PROFILE"
+                    busyText: "APPLYING…"
+                    buttonColor: Theme.fillActive
+                    foregroundColor: Theme.accent
+                    onClicked: backend.applyDurationSuggestion()
+                }
+            }
+        }
         SelectionBar {
             selectedCount: historyPage.filteredHistory.filter(item => Util.idSetHas(historyPage.selectedIds, item.id)).length
             totalCount: historyPage.filteredCount
@@ -429,6 +471,15 @@ Item {
                                         color: historyRow.modelData.ok ? Theme.success : Theme.danger
                                         wrapMode: Text.Wrap
                                         font.pixelSize: 12
+                                    }
+                                    Text {
+                                        visible: !!(historyRow.modelData.step_text)
+                                        Layout.fillWidth: true
+                                        text: historyRow.modelData.step_text
+                                        color: Theme.textSecondary
+                                        wrapMode: Text.Wrap
+                                        font.pixelSize: 11
+                                        font.family: Theme.fontMono
                                     }
                                     Text {
                                         visible: !!(historyRow.modelData.notes)
