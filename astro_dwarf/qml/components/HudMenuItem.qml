@@ -1,11 +1,9 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Shapes
-import QtCore
+import QtQuick.Templates as T
 import ".."
 
-MenuItem {
+T.MenuItem {
     id: hudMenuItem
     property string glyph: ""
     property string trailingText: ""
@@ -16,6 +14,7 @@ MenuItem {
     rightPadding: 10
     topPadding: 0
     bottomPadding: 0
+    hoverEnabled: true
     opacity: enabled ? 1 : 0.4
     font.pixelSize: 13
     background: Rectangle {
@@ -43,9 +42,10 @@ MenuItem {
         }
         Text {
             visible: text.length > 0
-            text: hudMenuItem.trailingText
+            text: hudMenuItem.subMenu ? "\uE76C" : hudMenuItem.trailingText
             color: Theme.textSecondary
-            font.pixelSize: 11
+            font.family: hudMenuItem.subMenu ? Theme.fontIcon : Theme.fontUi
+            font.pixelSize: hudMenuItem.subMenu ? 12 : 11
             elide: Text.ElideMiddle
             Layout.maximumWidth: 92
             verticalAlignment: Text.AlignVCenter

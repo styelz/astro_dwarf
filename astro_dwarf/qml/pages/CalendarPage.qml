@@ -28,6 +28,13 @@ Item {
         selectedIds = result.map
         selectionAnchorId = result.anchor
     }
+    property var contextSession: ({})
+    property var contextItems: []
+    function openSessionMenu(session, items) {
+        contextSession = session || ({})
+        contextItems = items || []
+        sessionMenu.popup()
+    }
     Connections {
         target: backend
         function onSessionsChanged() {
@@ -85,6 +92,43 @@ Item {
     function sessionEndMs(item) {
         return Number(item.start_epoch_ms || 0) + Number(item.planned_duration_seconds || 0) * 1000
     }
+    // Two sessions share lanes only when they genuinely overlap in time; a 500 ms
+    // slack keeps back-to-back sessions out of each other's lane.
+    function sessionsOverlap(a, b) {
+        return a.start < b.end - 500 && b.start < a.end - 500
+    }
+    // Lane assignment for one cluster of transitively overlapping sessions. Each
+    // session then grows rightwards over any lane that stays free for its whole
+    // run, so a lone session never renders as a sliver next to a busy stretch.
+    function packCluster(cluster, column, columns, layout) {
+        const laneEnds = []
+        const placed = []
+        for (let i = 0; i < cluster.length; i++) {
+            const slot = { item: cluster[i], lane: 0, start: Number(cluster[i].start_epoch_ms), end: calendarPage.sessionEndMs(cluster[i]) }
+            while (slot.lane < laneEnds.length && slot.start < laneEnds[slot.lane] - 500)
+                slot.lane += 1
+            if (slot.lane === laneEnds.length)
+                laneEnds.push(slot.end)
+            else
+                laneEnds[slot.lane] = Math.max(laneEnds[slot.lane], slot.end)
+            placed.push(slot)
+        }
+        const lanes = Math.max(1, laneEnds.length)
+        for (let i = 0; i < placed.length; i++) {
+            let span = 1
+            while (placed[i].lane + span < lanes) {
+                let free = true
+                for (let j = 0; j < placed.length && free; j++) {
+                    if (j !== i && placed[j].lane === placed[i].lane + span && calendarPage.sessionsOverlap(placed[i], placed[j]))
+                        free = false
+                }
+                if (!free)
+                    break
+                span += 1
+            }
+            layout[placed[i].item.id] = { column: column, columns: columns, lane: placed[i].lane, lanes: lanes, span: span }
+        }
+    }
     function layoutNight(items) {
         const deviceIds = calendarPage.showAllDevices ? calendarPage.nightDeviceIds(items) : [backend.selectedDeviceId]
         const columns = Math.max(1, deviceIds.length)
@@ -100,38 +144,33 @@ Item {
             const group = (byDevice[deviceIds[d]] || []).slice().sort(function(a, b) {
                 return Number(a.start_epoch_ms) - Number(b.start_epoch_ms)
             })
-            const laneEnds = []
-            const assigned = []
+            let cluster = []
+            let clusterEnd = 0
             for (let i = 0; i < group.length; i++) {
                 const start = Number(group[i].start_epoch_ms)
-                const end = calendarPage.sessionEndMs(group[i])
-                let lane = 0
-                while (lane < laneEnds.length && start < laneEnds[lane] - 500)
-                    lane += 1
-                if (lane === laneEnds.length)
-                    laneEnds.push(end)
-                else
-                    laneEnds[lane] = Math.max(laneEnds[lane], end)
-                assigned.push({ id: group[i].id, lane: lane })
+                if (cluster.length && start >= clusterEnd - 500) {
+                    calendarPage.packCluster(cluster, d, columns, layout)
+                    cluster = []
+                    clusterEnd = 0
+                }
+                cluster.push(group[i])
+                clusterEnd = Math.max(clusterEnd, calendarPage.sessionEndMs(group[i]))
             }
-            const lanes = Math.max(1, laneEnds.length)
-            for (let i = 0; i < assigned.length; i++)
-                layout[assigned[i].id] = { column: d, columns: columns, lane: assigned[i].lane, lanes: lanes }
+            if (cluster.length)
+                calendarPage.packCluster(cluster, d, columns, layout)
         }
         return layout
     }
     function timelineSlot(item) {
-        const layout = (calendarPage.nightLayout && item && calendarPage.nightLayout[item.id]) || { column: 0, columns: 1, lane: 0, lanes: 1 }
-        const inner = Math.max(80, timelineTrack.width - 82)
-        const colGap = 6
-        const laneGap = 4
-        const columns = Math.max(1, layout.columns)
+        const layout = (calendarPage.nightLayout && item && calendarPage.nightLayout[item.id]) || { column: 0, columns: 1, lane: 0, lanes: 1, span: 1 }
         const lanes = Math.max(1, layout.lanes)
-        const colW = (inner - colGap * (columns - 1)) / columns
-        const laneW = (colW - laneGap * (lanes - 1)) / lanes
+        const lane = Math.max(0, Math.min(lanes - 1, layout.lane))
+        const span = Math.max(1, Math.min(lanes - lane, layout.span || 1))
+        const laneGap = nightTimeline.laneGap
+        const laneW = (nightTimeline.columnWidth - laneGap * (lanes - 1)) / lanes
         return {
-            x: 66 + layout.column * (colW + colGap) + layout.lane * (laneW + laneGap),
-            width: Math.max(56, laneW)
+            x: nightTimeline.columnX(layout.column) + lane * (laneW + laneGap),
+            width: Math.max(28, laneW * span + laneGap * (span - 1))
         }
     }
     function deviceName(deviceId) {
@@ -216,8 +255,6 @@ Item {
     function scrollNowLineIntoView() {
         if (calendarPage.viewMode !== 1 || !nightTimeline.visible)
             return
-        if (calendarPage.dateKey(calendarPage.selectedDate) !== calendarPage.currentObservingKey())
-            return
         const viewH = timelineFlick.height
         if (viewH <= 1) {
             if (nowLineScrollTries < 8) {
@@ -227,16 +264,29 @@ Item {
             return
         }
         nowLineScrollTries = 0
-        const y = nowLine.y
+        nightTimeline.autoFit()
         const maxY = Math.max(0, timelineFlick.contentHeight - viewH)
-        const target = Math.max(0, Math.min(maxY, y - viewH / 2 + nowLine.height / 2))
-        timelineFlick.contentY = target
+        // Centre on the now line tonight, otherwise park the first session near the top.
+        let target = -1
+        if (calendarPage.dateKey(calendarPage.selectedDate) === calendarPage.currentObservingKey())
+            target = nowLine.y - viewH / 2 + nowLine.height / 2
+        else if (calendarPage.nightSessions.length)
+            target = nightTimeline.firstSessionMinutes() / 60 * nightTimeline.hourHeight - viewH * 0.2
+        if (target < 0 && !calendarPage.nightSessions.length)
+            return
+        timelineFlick.contentY = Math.max(0, Math.min(maxY, target))
     }
     Timer {
         id: nowLineScrollTimer
         interval: 16
         repeat: false
         onTriggered: calendarPage.scrollNowLineIntoView()
+    }
+    // Refit and re-centre only when the night itself changes; a routine session
+    // refresh must never yank the timeline out from under the user.
+    onSelectedDateChanged: {
+        nightTimeline.zoomLocked = false
+        calendarPage.requestNowLineScroll()
     }
     Component.onCompleted: {
         const today = calendarPage.dateFromKey(calendarPage.currentObservingKey())
@@ -440,19 +490,7 @@ Item {
                                         pressedAction: function() { calendarPage.selectedDate = dayCell.cellDate }
                                         onEditRequested: session => sessionDialog.openExisting(session)
                                     }
-                                    TapHandler { acceptedButtons: Qt.RightButton; onTapped: sessionMenu.open() }
-                                    SessionContextMenu {
-                                        onEditRequested: session => sessionDialog.openExisting(session)
-                                        id: sessionMenu
-                                        sessionData: sessionChip.modelData
-                                        selectionItems: dayCell.daySessions
-                                        selectedMap: calendarPage.selectedIds
-                                        onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(dayCell.daySessions, true)
-                                        onUnselectAllRequested: {
-                                            calendarPage.selectedIds = ({})
-                                            calendarPage.selectionAnchorId = ""
-                                        }
-                                    }
+                                    TapHandler { acceptedButtons: Qt.RightButton; onTapped: calendarPage.openSessionMenu(sessionChip.modelData, dayCell.daySessions) }
                                 }
                             }
                             Text {
@@ -524,7 +562,101 @@ Item {
                 Layout.fillHeight: true
                 property real hourHeight: 64
                 property real itemOffset: 5
+                // A whole night at a fixed scale leaves an hour of sessions squeezed into
+                // a sliver of a very tall, empty track, so the scale follows the content
+                // until the user zooms with Ctrl+wheel.
+                property bool zoomLocked: false
+                readonly property real minHourHeight: 40
+                readonly property real maxHourHeight: 260
+                function firstSessionMinutes() {
+                    const items = calendarPage.nightSessions
+                    let lo = 1440
+                    for (let i = 0; i < items.length; i++)
+                        lo = Math.min(lo, calendarPage.timelineMinutesFromEpoch(items[i].start_epoch_ms))
+                    return Math.max(0, Math.min(1440, lo))
+                }
+                function autoFit() {
+                    const items = calendarPage.nightSessions
+                    if (nightTimeline.zoomLocked || timelineFlick.height < 80)
+                        return
+                    if (!items.length) {
+                        nightTimeline.hourHeight = 64
+                        return
+                    }
+                    let lo = 1440
+                    let hi = 0
+                    for (let i = 0; i < items.length; i++) {
+                        lo = Math.min(lo, calendarPage.timelineMinutesFromEpoch(items[i].start_epoch_ms))
+                        hi = Math.max(hi, calendarPage.timelineMinutesFromEpoch(calendarPage.sessionEndMs(items[i])))
+                    }
+                    const hours = Math.max(1, (Math.min(1440, hi) - Math.max(0, lo)) / 60) + 1
+                    nightTimeline.hourHeight = Math.max(nightTimeline.minHourHeight, Math.min(nightTimeline.maxHourHeight, timelineFlick.height / hours))
+                }
+                function zoomBy(factor, anchorY) {
+                    const before = nightTimeline.hourHeight
+                    const next = Math.max(nightTimeline.minHourHeight, Math.min(nightTimeline.maxHourHeight, before * factor))
+                    if (Math.abs(next - before) < 0.01)
+                        return
+                    const offset = Math.max(0, anchorY)
+                    const anchor = (timelineFlick.contentY + offset) / before
+                    nightTimeline.zoomLocked = true
+                    nightTimeline.hourHeight = next
+                    const maxY = Math.max(0, timelineFlick.contentHeight - timelineFlick.height)
+                    timelineFlick.contentY = Math.max(0, Math.min(maxY, anchor * next - offset))
+                }
+                // One source of truth for the horizontal grid: hour labels sit in the
+                // gutter, everything else (bands, headers, chips, now line) lines up on
+                // trackLeft .. width - trackPadRight.
+                readonly property real gutterWidth: 58
+                readonly property real trackLeft: 66
+                readonly property real trackPadRight: 10
+                readonly property real columnGap: 10
+                readonly property real laneGap: 3
                 readonly property var columnIds: calendarPage.showAllDevices ? calendarPage.nightDeviceIds(calendarPage.nightSessions) : []
+                readonly property int columnCount: Math.max(1, columnIds.length)
+                readonly property bool columnsVisible: columnIds.length > 1
+                readonly property real trackWidth: Math.max(120, timelineTrack.width - trackLeft - trackPadRight)
+                readonly property real columnWidth: (trackWidth - columnGap * (columnCount - 1)) / columnCount
+                function columnX(index) {
+                    return trackLeft + Math.max(0, index) * (columnWidth + columnGap)
+                }
+                // Dragging to the top or bottom edge scrolls the timeline, so a session
+                // can be moved to an hour that is not currently on screen.
+                readonly property real dragScrollEdge: 56
+                readonly property real dragScrollMaxStep: 14
+                function dragScrollStep() {
+                    if (!DragCoordinator.active || !DragCoordinator.contentItem || timelineFlick.height < 8)
+                        return 0
+                    const local = timelineFlick.mapFromItem(DragCoordinator.contentItem, DragCoordinator.pos.x, DragCoordinator.pos.y)
+                    if (local.x < -80 || local.x > timelineFlick.width + 80)
+                        return 0
+                    const edge = Math.min(nightTimeline.dragScrollEdge, timelineFlick.height / 3)
+                    let ratio = 0
+                    if (local.y < edge)
+                        ratio = (local.y - edge) / edge
+                    else if (local.y > timelineFlick.height - edge)
+                        ratio = (local.y - (timelineFlick.height - edge)) / edge
+                    if (ratio === 0)
+                        return 0
+                    return Math.max(-1, Math.min(1, ratio)) * nightTimeline.dragScrollMaxStep
+                }
+                Timer {
+                    running: DragCoordinator.active && nightTimeline.visible
+                    interval: 16
+                    repeat: true
+                    onTriggered: {
+                        const step = nightTimeline.dragScrollStep()
+                        if (step === 0)
+                            return
+                        const maxY = Math.max(0, timelineFlick.contentHeight - timelineFlick.height)
+                        const next = Math.max(0, Math.min(maxY, timelineFlick.contentY + step))
+                        if (Math.abs(next - timelineFlick.contentY) < 0.01)
+                            return
+                        timelineFlick.contentY = next
+                        // The pointer has not moved but the hour under it has.
+                        DragCoordinator.refreshPreview(DragCoordinator.pos)
+                    }
+                }
                 onVisibleChanged: {
                     if (visible)
                         calendarPage.requestNowLineScroll()
@@ -532,27 +664,53 @@ Item {
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: 4
-                    Row {
-                        visible: nightTimeline.columnIds.length > 1
+                    Item {
+                        id: columnHeader
+                        visible: nightTimeline.columnsVisible
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 18
-                        spacing: 6
-                        Item { width: 60; height: 1 }
+                        Layout.preferredHeight: visible ? 24 : 0
                         Repeater {
                             model: nightTimeline.columnIds
-                            delegate: Text {
+                            delegate: Item {
+                                id: columnHead
+                                required property int index
                                 required property var modelData
-                                width: {
-                                    const cols = Math.max(1, nightTimeline.columnIds.length)
-                                    const inner = Math.max(80, timelineTrack.width - 82)
-                                    return (inner - 6 * (cols - 1)) / cols
+                                readonly property color tone: calendarPage.deviceColor(modelData)
+                                readonly property int count: calendarPage.nightSessions.filter(item => item.device_id === columnHead.modelData).length
+                                x: nightTimeline.columnX(index)
+                                width: nightTimeline.columnWidth
+                                height: columnHeader.height
+                                Row {
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    anchors.bottomMargin: 4
+                                    spacing: 6
+                                    Rectangle { width: 6; height: 6; radius: 3; anchors.verticalCenter: parent.verticalCenter; color: columnHead.tone }
+                                    Text {
+                                        text: calendarPage.deviceName(columnHead.modelData).toUpperCase()
+                                        color: columnHead.tone
+                                        font.pixelSize: Theme.fontSm
+                                        font.bold: true
+                                        font.letterSpacing: Theme.tracking1
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    Text {
+                                        text: columnHead.count + (columnHead.count === 1 ? " session" : " sessions")
+                                        color: Theme.textSecondary
+                                        font.pixelSize: Theme.fontXs
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
                                 }
-                                text: calendarPage.deviceName(modelData)
-                                color: calendarPage.deviceColor(modelData)
-                                font.pixelSize: 10
-                                font.bold: true
-                                font.letterSpacing: 0.6
-                                elide: Text.ElideRight
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    width: parent.width
+                                    height: 2
+                                    radius: 1
+                                    color: columnHead.tone
+                                    opacity: 0.7
+                                }
                             }
                         }
                     }
@@ -565,6 +723,10 @@ Item {
                     contentHeight: 24 * nightTimeline.hourHeight + 24
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollBar {}
+                    WheelHandler {
+                        acceptedModifiers: Qt.ControlModifier
+                        onWheel: event => nightTimeline.zoomBy(event.angleDelta.y > 0 ? 1.15 : 1 / 1.15, point.position.y)
+                    }
                     Item {
                         id: timelineTrack
                         width: timelineFlick.width
@@ -583,6 +745,27 @@ Item {
                             }
                         }
                         Repeater {
+                            // Device lanes: a faint tint plus a divider so it is obvious
+                            // which telescope each session belongs to.
+                            model: nightTimeline.columnsVisible ? nightTimeline.columnIds : []
+                            delegate: Rectangle {
+                                required property int index
+                                required property var modelData
+                                readonly property color tone: calendarPage.deviceColor(modelData)
+                                x: nightTimeline.columnX(index) - nightTimeline.columnGap / 2
+                                width: nightTimeline.columnWidth + nightTimeline.columnGap
+                                height: timelineTrack.height
+                                color: Qt.rgba(tone.r, tone.g, tone.b, 0.035)
+                                Rectangle {
+                                    visible: index > 0
+                                    width: 1
+                                    height: parent.height
+                                    color: Theme.outline
+                                    opacity: 0.5
+                                }
+                            }
+                        }
+                        Repeater {
                             model: 25
                             delegate: Item {
                                 required property int index
@@ -590,13 +773,19 @@ Item {
                                 width: timelineTrack.width
                                 height: 1
                                 Text {
-                                    x: 4; y: -7; width: 52
+                                    x: 4; y: -7; width: nightTimeline.gutterWidth - 8
                                     text: String((calendarPage.cutoffHour + index) % 24).padStart(2, "0") + ":00"
                                     color: Theme.textSecondary
                                     font.pixelSize: 10
                                     font.family: Theme.fontMono
                                 }
-                                Rectangle { x: 58; width: parent.width - 66; height: 1; color: index % 6 === 0 ? Theme.accent : Theme.outline; opacity: index % 6 === 0 ? 0.55 : 0.4 }
+                                Rectangle {
+                                    x: nightTimeline.gutterWidth
+                                    width: timelineTrack.width - nightTimeline.gutterWidth - nightTimeline.trackPadRight
+                                    height: 1
+                                    color: index % 6 === 0 ? Theme.accent : Theme.outline
+                                    opacity: index % 6 === 0 ? 0.55 : 0.4
+                                }
                             }
                         }
                         Repeater {
@@ -616,8 +805,11 @@ Item {
                                     return minutes / 60 * nightTimeline.hourHeight + nightTimeline.itemOffset
                                 }
                                 width: slot.width
-                                height: Math.max(36, Number(modelData.planned_duration_seconds || 0) / 3600 * nightTimeline.hourHeight - 6)
+                                height: Math.max(26, Number(modelData.planned_duration_seconds || 0) / 3600 * nightTimeline.hourHeight - 4)
+                                readonly property bool tight: height < 44
+                                readonly property bool narrow: width < 210
                                 radius: 3
+                                clip: true
                                 color: Util.statusFill(modelData.status)
                                 border.color: Util.statusColor(modelData.status)
                                 border.width: 1
@@ -634,12 +826,12 @@ Item {
                                 }
                                 RowLayout {
                                     anchors.fill: parent
-                                    anchors.margins: 6
+                                    anchors.margins: timelineSession.tight ? 2 : 6
                                     anchors.leftMargin: 2
-                                    spacing: 6
+                                    spacing: timelineSession.narrow ? 4 : 6
                                     RowGutter {
-                                        Layout.preferredWidth: 20
-                                        Layout.maximumWidth: 20
+                                        Layout.preferredWidth: 18
+                                        Layout.maximumWidth: 18
                                         Layout.fillHeight: true
                                         spineInset: 2
                                         spineColor: timelineSession.modelData.device_color || Theme.accent
@@ -648,39 +840,37 @@ Item {
                                         onToggled: (shiftHeld) => calendarPage.selectClick(timelineSession.modelData.id, shiftHeld, calendarPage.nightSessions)
                                     }
                                     ColumnLayout {
-                                        Layout.fillWidth: true; spacing: 0
+                                        Layout.fillWidth: true
+                                        Layout.alignment: Qt.AlignVCenter
+                                        spacing: 0
                                         RowLayout {
                                             Layout.fillWidth: true
-                                            spacing: 8
-                                            Text { text: modelData.start_time; color: Theme.accent; font.family: Theme.fontMono; font.pixelSize: 12; font.bold: true }
-                                            Text { text: modelData.target_name; color: Theme.textPrimary; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
-                                            StatusChip { status: modelData.status; visible: modelData.status !== "planned" && timelineSession.width > 160 }
+                                            spacing: timelineSession.narrow ? 5 : 8
+                                            Text { text: modelData.start_time; color: Theme.accent; font.family: Theme.fontMono; font.pixelSize: timelineSession.narrow ? 10 : 12; font.bold: true }
+                                            Text { text: modelData.target_name; color: Theme.textPrimary; font.pixelSize: timelineSession.narrow ? 11 : 13; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                            StatusChip { status: modelData.status; visible: modelData.status !== "planned" && timelineSession.width > 200 }
                                         }
-                                        Text { text: modelData.duration_text + "  ·  " + modelData.device_name; color: Theme.textSecondary; font.pixelSize: 10; visible: timelineSession.height > 40; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        Text {
+                                            // The device is already named by the column header when several are shown.
+                                            text: nightTimeline.columnsVisible ? modelData.duration_text : modelData.duration_text + "  ·  " + modelData.device_name
+                                            color: Theme.textSecondary
+                                            font.pixelSize: 10
+                                            visible: !timelineSession.tight
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                        }
                                     }
-                                    HudButton { text: "EDIT"; implicitHeight: 24; visible: timelineSession.height > 44 && timelineSession.width > 220; onClicked: sessionDialog.openExisting(timelineSession.modelData) }
-                                    HudButton { text: "RUN"; implicitHeight: 24; visible: timelineSession.height > 44 && timelineSession.width > 220; enabled: modelData.status !== "running"; onClicked: backend.runNow(modelData.id) }
+                                    HudButton { text: "EDIT"; implicitHeight: 24; visible: !timelineSession.tight && timelineSession.width > 260; onClicked: sessionDialog.openExisting(timelineSession.modelData) }
+                                    HudButton { text: "RUN"; implicitHeight: 24; visible: !timelineSession.tight && timelineSession.width > 260; enabled: modelData.status !== "running"; onClicked: backend.runNow(modelData.id) }
                                 }
-                                TapHandler { acceptedButtons: Qt.RightButton; onTapped: timelineMenu.popup() }
-                                SessionContextMenu {
-                                    onEditRequested: session => sessionDialog.openExisting(session)
-                                    id: timelineMenu
-                                    sessionData: timelineSession.modelData
-                                    selectionItems: calendarPage.nightSessions
-                                    selectedMap: calendarPage.selectedIds
-                                    onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(calendarPage.nightSessions, true)
-                                    onUnselectAllRequested: {
-                                        calendarPage.selectedIds = ({})
-                                        calendarPage.selectionAnchorId = ""
-                                    }
-                                }
+                                TapHandler { acceptedButtons: Qt.RightButton; onTapped: calendarPage.openSessionMenu(timelineSession.modelData, calendarPage.nightSessions) }
                             }
                         }
                         Rectangle {
                             id: nowLine
                             visible: calendarPage.dateKey(calendarPage.selectedDate) === calendarPage.currentObservingKey()
-                            x: 58
-                            width: parent.width - 66
+                            x: nightTimeline.gutterWidth
+                            width: parent.width - nightTimeline.gutterWidth - nightTimeline.trackPadRight
                             height: 2
                             z: 20
                             color: Theme.warning
@@ -695,8 +885,8 @@ Item {
                         }
                         Rectangle {
                             visible: DragCoordinator.active && DragCoordinator.previewMinutes >= 0
-                            x: 58
-                            width: parent.width - 66
+                            x: nightTimeline.gutterWidth
+                            width: parent.width - nightTimeline.gutterWidth - nightTimeline.trackPadRight
                             height: 2
                             color: Theme.accent
                             y: DragCoordinator.previewMinutes / 60 * nightTimeline.hourHeight
@@ -717,7 +907,7 @@ Item {
                             x: slot.x
                             y: DragCoordinator.previewMinutes / 60 * nightTimeline.hourHeight + nightTimeline.itemOffset
                             width: slot.width
-                            height: Math.max(36, Number(DragCoordinator.data.planned_duration_seconds || 0) / 3600 * nightTimeline.hourHeight - 6)
+                            height: Math.max(26, Number(DragCoordinator.data.planned_duration_seconds || 0) / 3600 * nightTimeline.hourHeight - 4)
                             radius: 3
                             color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.12)
                             border.color: Theme.accent
@@ -871,27 +1061,7 @@ Item {
                             }
                             TapHandler {
                                 acceptedButtons: Qt.RightButton
-                                onTapped: daySessionMenu.popup()
-                            }
-                            SessionContextMenu {
-                                onEditRequested: session => sessionDialog.openExisting(session)
-                                id: daySessionMenu
-                                sessionData: daySessionRow.modelData
-                                selectionItems: nightPanel.nightSessions
-                                selectedMap: calendarPage.selectedIds
-                                onSelectAllRequested: {
-                                    const next = Object.assign({}, calendarPage.selectedIds)
-                                    for (let i = 0; i < nightPanel.nightSessions.length; i++) {
-                                        const id = nightPanel.nightSessions[i] && nightPanel.nightSessions[i].id
-                                        if (id)
-                                            next[id] = true
-                                    }
-                                    calendarPage.selectedIds = next
-                                }
-                                onUnselectAllRequested: {
-                                    calendarPage.selectedIds = ({})
-                                    calendarPage.selectionAnchorId = ""
-                                }
+                                onTapped: calendarPage.openSessionMenu(daySessionRow.modelData, nightPanel.nightSessions)
                             }
                         }
                     }
@@ -903,6 +1073,18 @@ Item {
                     text: calendarPage.showAllDevices ? "No sessions this observing night" : "No sessions on this telescope for this night"
                 }
             }
+        }
+    }
+    SessionContextMenu {
+        id: sessionMenu
+        sessionData: calendarPage.contextSession
+        selectionItems: calendarPage.contextItems
+        selectedMap: calendarPage.selectedIds
+        onEditRequested: session => sessionDialog.openExisting(session)
+        onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(calendarPage.contextItems, true)
+        onUnselectAllRequested: {
+            calendarPage.selectedIds = ({})
+            calendarPage.selectionAnchorId = ""
         }
     }
 }

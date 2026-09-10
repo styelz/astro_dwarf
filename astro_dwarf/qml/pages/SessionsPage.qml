@@ -69,6 +69,11 @@ Item {
                     selectedIds = result.map
                     selectionAnchorId = result.anchor
                 }
+                property var contextSession: ({})
+                function openSessionMenu(session) {
+                    contextSession = session || ({})
+                    sessionMenu.popup()
+                }
                 readonly property int rowInset: 12
                 readonly property int colGap: 12
                 readonly property int gripWidth: 28
@@ -297,21 +302,21 @@ Item {
                                         }
                                     }
                                 }
-                                TapHandler { acceptedButtons: Qt.RightButton; onTapped: scheduledMenu.popup() }
-                                SessionContextMenu {
-                                    onEditRequested: session => sessionDialog.openExisting(session)
-                                    id: scheduledMenu
-                                    sessionData: scheduledRow.modelData
-                                    selectionItems: backend.sessions
-                                    selectedMap: scheduledPage.selectedIds
-                                    onSelectAllRequested: scheduledPage.selectedIds = Util.idSetAll(backend.sessions, true)
-                                    onUnselectAllRequested: {
-                                        scheduledPage.selectedIds = ({})
-                                        scheduledPage.selectionAnchorId = ""
-                                    }
-                                }
+                                TapHandler { acceptedButtons: Qt.RightButton; onTapped: scheduledPage.openSessionMenu(scheduledRow.modelData) }
                             }
                         }
+                    }
+                }
+                SessionContextMenu {
+                    id: sessionMenu
+                    sessionData: scheduledPage.contextSession
+                    selectionItems: backend.sessions
+                    selectedMap: scheduledPage.selectedIds
+                    onEditRequested: session => sessionDialog.openExisting(session)
+                    onSelectAllRequested: scheduledPage.selectedIds = Util.idSetAll(backend.sessions, true)
+                    onUnselectAllRequested: {
+                        scheduledPage.selectedIds = ({})
+                        scheduledPage.selectionAnchorId = ""
                     }
                 }
             }

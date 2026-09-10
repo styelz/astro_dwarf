@@ -18,6 +18,11 @@ Item {
         selectedUpcomingIds = result.map
         selectionAnchorId = result.anchor
     }
+    property var contextSession: ({})
+    function openSessionMenu(session) {
+        contextSession = session || ({})
+        upcomingMenu.popup()
+    }
     Connections {
         target: backend
         function onSessionsChanged() {
@@ -1599,19 +1604,7 @@ Item {
                                 }
                                 TapHandler {
                                     acceptedButtons: Qt.RightButton
-                                    onTapped: upcomingMenu.popup()
-                                }
-                                SessionContextMenu {
-                                    onEditRequested: session => sessionDialog.openExisting(session)
-                                    id: upcomingMenu
-                                    sessionData: upcomingRow.modelData
-                                    selectionItems: backend.upcomingSessions
-                                    selectedMap: controlPage.selectedUpcomingIds
-                                    onSelectAllRequested: controlPage.selectedUpcomingIds = Util.idSetAll(backend.upcomingSessions, true)
-                                    onUnselectAllRequested: {
-                                        controlPage.selectedUpcomingIds = ({})
-                                        controlPage.selectionAnchorId = ""
-                                    }
+                                    onTapped: controlPage.openSessionMenu(upcomingRow.modelData)
                                 }
                             }
                         }
@@ -1930,6 +1923,18 @@ Item {
                     }
                 }
             }
+        }
+    }
+    SessionContextMenu {
+        id: upcomingMenu
+        sessionData: controlPage.contextSession
+        selectionItems: backend.upcomingSessions
+        selectedMap: controlPage.selectedUpcomingIds
+        onEditRequested: session => sessionDialog.openExisting(session)
+        onSelectAllRequested: controlPage.selectedUpcomingIds = Util.idSetAll(backend.upcomingSessions, true)
+        onUnselectAllRequested: {
+            controlPage.selectedUpcomingIds = ({})
+            controlPage.selectionAnchorId = ""
         }
     }
 }

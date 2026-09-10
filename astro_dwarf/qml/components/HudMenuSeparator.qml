@@ -1,11 +1,8 @@
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
-import QtQuick.Shapes
-import QtCore
+import QtQuick.Templates as T
 import ".."
 
-MenuSeparator {
+T.MenuSeparator {
     implicitHeight: 9
     contentItem: Rectangle {
         implicitHeight: 1

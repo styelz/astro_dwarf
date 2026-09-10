@@ -8,6 +8,7 @@ import ".."
 Menu {
     id: hudMenu
     popupType: Popup.Item
+    delegate: HudMenuItem {}
     implicitWidth: 232
     padding: 6
     topPadding: 6

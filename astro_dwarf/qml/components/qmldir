@@ -13,6 +13,7 @@ HudMenu 1.0 HudMenu.qml
 HudMenuItem 1.0 HudMenuItem.qml
 HudMenuSeparator 1.0 HudMenuSeparator.qml
 SessionContextMenu 1.0 SessionContextMenu.qml
+MoveDeviceMenu 1.0 MoveDeviceMenu.qml
 HudField 1.0 HudField.qml
 HudCombo 1.0 HudCombo.qml
 HudSearchCombo 1.0 HudSearchCombo.qml
