@@ -43,9 +43,11 @@ from .domain import (
     TargetKind,
     WifiMode,
     Workflow,
+    clamp_cutoff_hour,
     device_from_dict,
     firmware_exposure_name,
     history_record_for_run,
+    normalized_stellarium_url,
     session_from_dict,
     to_dict,
 )
@@ -105,6 +107,7 @@ class TelescopeProcess(QObject):
         self.configured = False
         self.connected = False
         self.busy = False
+        self._stopping = False
 
     @property
     def running(self) -> bool:
@@ -188,6 +191,7 @@ class TelescopeProcess(QObject):
         ))
 
     def shutdown(self, wait: bool = True) -> None:
+        self._stopping = True
         if not self.running:
             return
         pid = int(self.process.processId() or 0)
@@ -250,13 +254,16 @@ class TelescopeProcess(QObject):
 
     def _finished(self, exit_code: int, _status) -> None:
         self.configured = self.connected = self.busy = False
-        self.logReceived.emit("warning" if exit_code == 0 else "error", f"Worker stopped (code {exit_code})")
+        if not self._stopping:
+            self.logReceived.emit("warning" if exit_code == 0 else "error", f"Worker stopped (code {exit_code})")
         pending, self._callbacks = self._callbacks, {}
         for callback in pending.values():
             callback(False, "Telescope worker stopped")
         self.availabilityChanged.emit()
 
     def _process_error(self, error) -> None:
+        if self._stopping:
+            return
         try:
             self.logReceived.emit("error", f"Worker error: {error}")
         except RuntimeError:
@@ -529,6 +536,7 @@ class AppBackend(QObject):
     previewTeleGenerationChanged = Signal()
     previewWideGenerationChanged = Signal()
     previewHoldChanged = Signal()
+    appSettingsChanged = Signal()
     _openTeleStream = Signal(str)
     _openWideStream = Signal(str)
     _closeWideStream = Signal()
@@ -541,6 +549,7 @@ class AppBackend(QObject):
         self._devices = self.store.devices.all()
         if not self._devices:
             self._devices = [self.store.seed_device()]
+        self._settings = self.store.load_app_settings(self._devices)
         self._selected_device_id = self._devices[0].id
         self._log_model = LogListModel(self)
         self._log_model.countsChanged.connect(self.logCountsChanged)
@@ -552,6 +561,7 @@ class AppBackend(QObject):
         self._clock_text = datetime.now(self._zone_for()).strftime("%H:%M:%S")
         self._connecting_ids: set[str] = set()
         self._disconnecting_ids: set[str] = set()
+        self._pending_reconnect_ids: set[str] = set()
         self._pending_actions: dict[str, str] = {}
         self._pending_details: dict[str, str] = {}
         self._device_activity: dict[str, str] = {}
@@ -572,6 +582,7 @@ class AppBackend(QObject):
         self._joystick_pending: dict[str, tuple[float, float]] = {}
         self._ui_busy = ""
         self._asyncResult.connect(self._handle_async_result)
+        self._sync_shared_device_fields()
         for device in self._devices:
             self._create_worker(device)
         recovered = self.store.recover_running()
@@ -624,10 +635,9 @@ class AppBackend(QObject):
         self._window_frame_hook = None
         self._pending_window_frame = None
 
-    def _create_worker(self, device: Device) -> TelescopeProcess:
+    def _create_worker(self, device: Device, reconnect: bool = False) -> TelescopeProcess:
         old = self._workers.pop(device.id, None)
-        if old:
-            old.shutdown()
+        self._release_worker(old)
         worker = TelescopeProcess(device, self)
         worker.logReceived.connect(lambda level, message, did=device.id: self.add_log(level, message, did))
         worker.telemetryReceived.connect(lambda data, did=device.id: self._on_telemetry(did, data))
@@ -636,7 +646,40 @@ class AppBackend(QObject):
         worker.availabilityChanged.connect(self._worker_status_changed)
         self._workers[device.id] = worker
         worker.start()
+        if reconnect:
+            self._pending_reconnect_ids.add(device.id)
+
+            def on_ready() -> None:
+                try:
+                    worker.availabilityChanged.disconnect(on_ready)
+                except RuntimeError:
+                    self._pending_reconnect_ids.discard(device.id)
+                    return
+                self._pending_reconnect_ids.discard(device.id)
+                if worker.configured and not worker.connected:
+                    self.connectDevice(device.id)
+                else:
+                    self._disarm_scheduler_if_offline()
+
+            worker.availabilityChanged.connect(on_ready)
         return worker
+
+    def _release_worker(self, worker: TelescopeProcess | None) -> None:
+        if worker is None:
+            return
+        for signal in (
+            worker.logReceived,
+            worker.telemetryReceived,
+            worker.progressReceived,
+            worker.statusReceived,
+            worker.availabilityChanged,
+        ):
+            try:
+                signal.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        worker.shutdown()
+        worker.deleteLater()
 
     def _worker_status_changed(self) -> None:
         selected_offline = False
@@ -944,7 +987,7 @@ class AppBackend(QObject):
         data["subtitle"] = session.name if session.name != session.target.name else data["summary"]
         data["observing_date"] = observing_date(
             session.scheduled_start,
-            device.observing_day_cutoff_hour if device else 12,
+            self._cutoff_hour(),
             self._zone_for(device),
         )
         data["pane_index"] = pane_sort_key(session.name)[0]
@@ -1196,7 +1239,7 @@ class AppBackend(QObject):
         device = self._device_by_id(self._selected_device_id)
         tz = self._zone_for(device)
         now = datetime.now(tz)
-        cutoff = device.observing_day_cutoff_hour if device else 12
+        cutoff = self._cutoff_hour()
         observing = now - timedelta(days=1) if now.hour < cutoff else now
         return {
             "timezone": device.timezone_name if device else "UTC",
@@ -1213,6 +1256,30 @@ class AppBackend(QObject):
             "observing_month": observing.month,
             "observing_day": observing.day,
         }
+
+    @Property(int, notify=appSettingsChanged)
+    def observingDayCutoffHour(self) -> int:
+        return self._cutoff_hour()
+
+    @Slot(int)
+    def setObservingDayCutoffHour(self, hour: int) -> None:
+        hour = clamp_cutoff_hour(hour)
+        if hour == self._settings.observing_day_cutoff_hour:
+            return
+        self._settings = replace(self._settings, observing_day_cutoff_hour=hour)
+        self._persist_app_settings()
+
+    @Property(str, notify=appSettingsChanged)
+    def stellariumUrl(self) -> str:
+        return self._settings.stellarium_url
+
+    @Slot(str)
+    def setStellariumUrl(self, url: str) -> None:
+        url = normalized_stellarium_url(url)
+        if url == self._settings.stellarium_url:
+            return
+        self._settings = replace(self._settings, stellarium_url=url)
+        self._persist_app_settings()
 
     @Property(float, notify=sessionProgressChanged)
     def sessionProgress(self) -> float:
@@ -1265,7 +1332,7 @@ class AppBackend(QObject):
 
     def _disarm_scheduler_if_offline(self) -> None:
         """Drop the scheduler once the last telescope link is gone."""
-        if not self._scheduler_enabled or self._any_device_connected():
+        if not self._scheduler_enabled or self._any_device_connected() or self._pending_reconnect_ids:
             return
         self._scheduler_enabled = False
         self.schedulerEnabledChanged.emit()
@@ -2151,6 +2218,8 @@ class AppBackend(QObject):
                 latitude=latitude,
                 longitude=longitude,
                 location_configured=has_site_coordinates(latitude, longitude),
+                observing_day_cutoff_hour=self._cutoff_hour(),
+                stellarium_url=self._settings.stellarium_url,
             )
             self.store.devices.save(device)
             self._devices.append(device)
@@ -2175,8 +2244,7 @@ class AppBackend(QObject):
             self._toast("Stop the running session before removing this telescope", "warning")
             return
         worker = self._workers.pop(device_id, None)
-        if worker:
-            worker.shutdown()
+        self._release_worker(worker)
         session_ids = [item.id for item in self.store.sessions.all() if item.device_id == device_id]
         history_ids = [item.id for item in self.store.history.all() if item.device_id == device_id]
         for session_id in session_ids:
@@ -2350,6 +2418,17 @@ class AppBackend(QObject):
                 values.get("latitude", current.latitude),
                 values.get("longitude", current.longitude),
             )
+            if "observing_day_cutoff_hour" in values or "stellarium_url" in values:
+                self._settings = replace(
+                    self._settings,
+                    observing_day_cutoff_hour=clamp_cutoff_hour(
+                        values.get("observing_day_cutoff_hour", self._settings.observing_day_cutoff_hour)
+                    ),
+                    stellarium_url=normalized_stellarium_url(
+                        values.get("stellarium_url", self._settings.stellarium_url)
+                    ),
+                )
+                self.store.save_app_settings(self._settings)
             updated = replace(
                 current,
                 name=values["name"].strip(),
@@ -2361,18 +2440,17 @@ class AppBackend(QObject):
                 longitude=longitude,
                 timezone_name=timezone_name,
                 location_configured=has_site_coordinates(latitude, longitude),
-                stellarium_url=values.get("stellarium_url", current.stellarium_url),
+                stellarium_url=self._settings.stellarium_url,
                 wifi_ssid=values.get("wifi_ssid", current.wifi_ssid),
                 wifi_password=values.get("wifi_password", current.wifi_password),
                 wifi_mode=WifiMode(str(values.get("wifi_mode", current.wifi_mode) or WifiMode.AUTO).lower()),
                 ble_password=str(values.get("ble_password", current.ble_password) or "DWARF_12345678"),
                 ble_enabled=bool(values.get("ble_enabled", current.ble_enabled)),
-                observing_day_cutoff_hour=int(values.get("observing_day_cutoff_hour", current.observing_day_cutoff_hour)),
+                observing_day_cutoff_hour=self._cutoff_hour(),
                 hardware=hardware,
             )
-            self.store.devices.save(updated)
-            self._devices = [updated if item.id == updated.id else item for item in self._devices]
-            self._create_worker(updated)
+            if not self._commit_device(current, updated):
+                return
             for session in self.store.upcoming(updated.id):
                 self._save_session(replace(session, planned_duration_seconds=DurationEngine.calculate(session, updated.hardware)))
             self._sequence_colliding_mosaics()
@@ -2380,6 +2458,7 @@ class AppBackend(QObject):
             self.selectedDeviceChanged.emit()
             self.durationSuggestionChanged.emit()
             self.clockChanged.emit()
+            self.appSettingsChanged.emit()
             self._toast("Device saved", "success")
         except Exception as exc:
             self._toast(f"Could not save device: {exc}", "error")
@@ -2409,9 +2488,8 @@ class AppBackend(QObject):
                 timezone_name=timezone_name,
                 location_configured=has_site_coordinates(latitude, longitude),
             )
-            self.store.devices.save(updated)
-            self._devices = [updated if item.id == updated.id else item for item in self._devices]
-            self._create_worker(updated)
+            if not self._commit_device(current, updated):
+                return False
             self.devicesChanged.emit()
             self.selectedDeviceChanged.emit()
             self.clockChanged.emit()
@@ -2908,7 +2986,7 @@ class AppBackend(QObject):
             return
         old_night = date.fromisoformat(observing_date(
             session.scheduled_start,
-            self._device_by_id(session.device_id).observing_day_cutoff_hour,
+            self._cutoff_hour(),
             self._zone_for_id(session.device_id),
         ))
         delta = target_day - old_night
@@ -3226,7 +3304,7 @@ class AppBackend(QObject):
         if before and (before.device_id != session.device_id or before.status != SessionStatus.PLANNED):
             return
         device = self._device_by_id(session.device_id)
-        cutoff = device.observing_day_cutoff_hour if device else 12
+        cutoff = self._cutoff_hour()
         target_night = observing_date(
             before.scheduled_start if before else session.scheduled_start,
             cutoff,
@@ -3298,8 +3376,7 @@ class AppBackend(QObject):
 
     @Slot()
     def importStellarium(self) -> None:
-        device = self._device_by_id(self._selected_device_id)
-        self._run_async("stellarium", lambda: StellariumClient(device.stellarium_url).current_target())
+        self._run_async("stellarium", lambda: StellariumClient(self._settings.stellarium_url).current_target())
 
     @Slot(str)
     def importLegacy(self, raw_path: str) -> None:
@@ -3646,10 +3723,74 @@ class AppBackend(QObject):
     def _device_by_id(self, device_id: str) -> Device:
         return next(item for item in self._devices if item.id == device_id)
 
+    def _cutoff_hour(self) -> int:
+        return clamp_cutoff_hour(self._settings.observing_day_cutoff_hour)
+
+    def _persist_app_settings(self) -> None:
+        self.store.save_app_settings(self._settings)
+        self._sync_shared_device_fields()
+        self.appSettingsChanged.emit()
+        self.clockChanged.emit()
+        self.sessionsChanged.emit()
+        self.devicesChanged.emit()
+        self.selectedDeviceChanged.emit()
+
+    def _sync_shared_device_fields(self) -> None:
+        cutoff = self._cutoff_hour()
+        url = self._settings.stellarium_url
+        updated: list[Device] = []
+        workers = getattr(self, "_workers", {})
+        for device in self._devices:
+            if device.observing_day_cutoff_hour == cutoff and device.stellarium_url == url:
+                updated.append(device)
+                continue
+            item = replace(device, observing_day_cutoff_hour=cutoff, stellarium_url=url)
+            self.store.devices.save(item)
+            worker = workers.get(item.id)
+            if worker:
+                worker.device = item
+            updated.append(item)
+        self._devices = updated
+
+    _WORKER_CONFIG_FIELDS = (
+        "ip_address",
+        "model",
+        "wifi_mode",
+        "wifi_ssid",
+        "wifi_password",
+        "ble_password",
+        "ble_enabled",
+        "latitude",
+        "longitude",
+        "timezone_name",
+    )
+
+    def _worker_config_changed(self, previous: Device, updated: Device) -> bool:
+        return any(getattr(previous, name) != getattr(updated, name) for name in self._WORKER_CONFIG_FIELDS)
+
+    def _commit_device(self, previous: Device, updated: Device) -> bool:
+        restart = self._worker_config_changed(previous, updated)
+        if restart:
+            if updated.id in self._active_sessions:
+                self._toast("Stop the running session before changing connection settings", "warning")
+                return False
+            if updated.id in self._connecting_ids or updated.id in self._disconnecting_ids:
+                self._toast("Wait for the connection to finish before changing those settings", "warning")
+                return False
+        self.store.devices.save(updated)
+        self._devices = [updated if item.id == updated.id else item for item in self._devices]
+        worker = self._workers.get(updated.id)
+        if restart:
+            was_connected = bool(worker and worker.connected)
+            self._create_worker(updated, reconnect=was_connected)
+        elif worker:
+            worker.device = updated
+        return True
+
     def _night_start(self, day: str, device: Device | None = None) -> datetime:
         item = device or self._device_by_id(self._selected_device_id)
         tz = self._zone_for(item)
-        cutoff = item.observing_day_cutoff_hour if item else 12
+        cutoff = self._cutoff_hour()
         start_date = date.fromisoformat(day)
         return datetime(start_date.year, start_date.month, start_date.day, cutoff, 0, tzinfo=tz)
 

@@ -11,6 +11,7 @@ import "../components"
 Dialog {
     id: settingsLeaveDialog
     property int pendingPage: -1
+    property string pendingDeviceId: ""
     modal: true
     anchors.centerIn: Overlay.overlay
     width: 480
@@ -20,7 +21,14 @@ Dialog {
     contentItem: ColumnLayout {
         spacing: 12
         Text { text: "UNSAVED SETTINGS"; color: Theme.warning; font.pixelSize: 16; font.letterSpacing: 1.4 }
-        Text { text: "Save your device settings before leaving this page?"; color: Theme.textPrimary; wrapMode: Text.Wrap; Layout.fillWidth: true }
+        Text {
+            text: settingsLeaveDialog.pendingDeviceId
+                ? "Save your device settings before switching telescopes?"
+                : "Save your device settings before leaving this page?"
+            color: Theme.textPrimary
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
+        }
         RowLayout {
             Layout.alignment: Qt.AlignRight
             HudButton { text: "CANCEL"; onClicked: settingsLeaveDialog.close() }
@@ -30,9 +38,13 @@ Dialog {
                 foregroundColor: Theme.danger
                 onClicked: {
                     const idx = settingsLeaveDialog.pendingPage
+                    const deviceId = settingsLeaveDialog.pendingDeviceId
                     settingsLeaveDialog.close()
                     settingsPage.load()
-                    root.currentPage = idx
+                    if (deviceId)
+                        backend.selectDevice(deviceId)
+                    if (idx >= 0)
+                        root.currentPage = idx
                 }
             }
             HudButton {
@@ -41,9 +53,13 @@ Dialog {
                 foregroundColor: Theme.accent
                 onClicked: {
                     const idx = settingsLeaveDialog.pendingPage
+                    const deviceId = settingsLeaveDialog.pendingDeviceId
                     settingsPage.saveCurrent()
                     settingsLeaveDialog.close()
-                    root.currentPage = idx
+                    if (deviceId)
+                        backend.selectDevice(deviceId)
+                    if (idx >= 0)
+                        root.currentPage = idx
                 }
             }
         }

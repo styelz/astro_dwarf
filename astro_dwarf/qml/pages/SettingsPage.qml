@@ -12,17 +12,18 @@ Item {
     id: settingsPage
     property string loadedDeviceId: ""
     property string loadedSnapshot: ""
+    property bool applyingDeviceSelect: false
     function currentPayload() {
         return {
-            id: backend.selectedDeviceId, name: nameField.text, model: modelField.currentText,
+            id: settingsPage.loadedDeviceId || backend.selectedDeviceId, name: nameField.text, model: modelField.currentText,
             ip_address: ipField.text, camera: cameraField.currentIndex === 1 ? "wide" : "tele",
             ble_enabled: bleField.checked,
             latitude: Number(latField.text), longitude: Number(lonField.text),
-            timezone_name: timezoneField.selectedName || timezoneField.editText, stellarium_url: stellariumField.text,
+            timezone_name: timezoneField.selectedName || timezoneField.editText,
             wifi_mode: ["auto", "ap", "sta"][wifiModeField.currentIndex],
             wifi_ssid: ssidField.text, wifi_password: wifiField.text,
             ble_password: blePasswordField.text,
-            observing_day_cutoff_hour: cutoffField.value, slew_seconds: Number(slewField.text),
+            slew_seconds: Number(slewField.text),
             settle_seconds: Number(settleField.text), calibration_seconds: Number(calibrationField.text),
             autofocus_seconds: Number(autofocusField.text), infinite_focus_seconds: Number(infinityField.text),
             polar_seconds: Number(polarField.text), readout_seconds: Number(readoutField.text),
@@ -87,12 +88,12 @@ Item {
         latField.text = d.latitude
         lonField.text = d.longitude
         timezoneField.setFromName(d.timezone_name || "")
-        stellariumField.text = d.stellarium_url || "http://localhost:8090"
+        stellariumField.text = backend.stellariumUrl || "http://localhost:8090"
         wifiModeField.currentIndex = Math.max(0, ["auto", "ap", "sta"].indexOf(d.wifi_mode || "auto"))
         ssidField.text = d.wifi_ssid || ""
         wifiField.text = d.wifi_password || ""
         blePasswordField.text = d.ble_password || "DWARF_12345678"
-        cutoffField.value = d.observing_day_cutoff_hour || 12
+        cutoffField.value = backend.observingDayCutoffHour
         slewField.text = hw.slew_seconds || 20
         settleField.text = hw.settle_seconds || 10
         calibrationField.text = hw.calibration_seconds || 90
@@ -108,10 +109,30 @@ Item {
     Connections {
         target: backend
         function onSelectedDeviceChanged() {
-            if (settingsPage.loadedDeviceId !== backend.selectedDeviceId || !settingsPage.dirty)
+            if (settingsPage.applyingDeviceSelect)
+                return
+            if (settingsPage.loadedDeviceId === backend.selectedDeviceId) {
+                if (!settingsPage.dirty)
+                    settingsPage.load()
+                else if (!ipField.text && backend.selectedDevice.ip_address)
+                    ipField.text = backend.selectedDevice.ip_address
+                return
+            }
+            if (!settingsPage.dirty) {
                 settingsPage.load()
-            else if (!ipField.text && backend.selectedDevice.ip_address)
-                ipField.text = backend.selectedDevice.ip_address
+                return
+            }
+            const wanted = backend.selectedDeviceId
+            settingsPage.applyingDeviceSelect = true
+            backend.selectDevice(settingsPage.loadedDeviceId)
+            settingsPage.applyingDeviceSelect = false
+            root.askLeaveSettings(-1, wanted)
+        }
+        function onAppSettingsChanged() {
+            if (!settingsPage.dirty) {
+                stellariumField.text = backend.stellariumUrl || "http://localhost:8090"
+                cutoffField.value = backend.observingDayCutoffHour
+            }
         }
     }
 
@@ -307,6 +328,44 @@ Item {
                 }
             }
             HudPanel {
+                title: "◷  OBSERVING"
+                width: parent.width
+                Text {
+                    text: "These apply to every telescope immediately. Night cutoff is when the calendar rolls to the next observing night, in each telescope's own timezone."
+                    color: Theme.textSecondary
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                }
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: 4
+                    columnSpacing: 10
+                    rowSpacing: 8
+                    FieldLabel { text: "NIGHT CUTOFF" }
+                    SpinBox {
+                        id: cutoffField
+                        from: 0
+                        to: 23
+                        value: 12
+                        editable: true
+                        Layout.fillWidth: true
+                        palette.text: Theme.textPrimary
+                        palette.base: Theme.inputBg
+                        palette.button: Theme.surfaceHigh
+                        palette.buttonText: Theme.accent
+                        palette.highlight: Theme.accent
+                        onValueModified: backend.setObservingDayCutoffHour(value)
+                    }
+                    FieldLabel { text: "STELLARIUM" }
+                    HudField {
+                        id: stellariumField
+                        Layout.fillWidth: true
+                        placeholderText: "http://localhost:8090"
+                        onEditingFinished: backend.setStellariumUrl(text)
+                    }
+                }
+            }
+            HudPanel {
                 title: "◈  DEVICE"
                 width: parent.width
                 headerExtra: [
@@ -339,22 +398,6 @@ Item {
                     HudField { id: latField; Layout.fillWidth: true }
                     FieldLabel { text: "LONGITUDE" }
                     HudField { id: lonField; Layout.fillWidth: true }
-                    FieldLabel { text: "STELLARIUM" }
-                    HudField { id: stellariumField; Layout.fillWidth: true }
-                    FieldLabel { text: "NIGHT CUTOFF" }
-                    SpinBox {
-                        id: cutoffField
-                        from: 0
-                        to: 23
-                        value: 12
-                        editable: true
-                        Layout.fillWidth: true
-                        palette.text: Theme.textPrimary
-                        palette.base: Theme.inputBg
-                        palette.button: Theme.surfaceHigh
-                        palette.buttonText: Theme.accent
-                        palette.highlight: Theme.accent
-                    }
                 }
             }
             HudPanel {
@@ -519,8 +562,8 @@ Item {
             Text {
                 Layout.fillWidth: true
                 text: settingsPage.dirty
-                    ? "UNSAVED CHANGES · " + (backend.selectedDevice.name || "device").toUpperCase()
-                    : "ALL CHANGES SAVED · " + (backend.selectedDevice.name || "device").toUpperCase()
+                    ? "UNSAVED CHANGES · " + (nameField.text || "device").toUpperCase()
+                    : "ALL CHANGES SAVED · " + (nameField.text || "device").toUpperCase()
                 color: settingsPage.dirty ? Theme.warning : Theme.textSecondary
                 font.pixelSize: 10
                 font.bold: true

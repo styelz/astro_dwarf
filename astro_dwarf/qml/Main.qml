@@ -196,13 +196,18 @@ ApplicationWindow {
             return
         }
         if (root.currentPage === 4 && settingsPage.isDirty()) {
-            settingsLeaveDialog.pendingPage = idx
-            settingsLeaveDialog.open()
+            root.askLeaveSettings(idx, "")
             return
         }
         root.currentPage = idx
         if (idx === 4)
             settingsPage.load()
+    }
+
+    function askLeaveSettings(page, deviceId) {
+        settingsLeaveDialog.pendingPage = page
+        settingsLeaveDialog.pendingDeviceId = deviceId || ""
+        settingsLeaveDialog.open()
     }
 
     Settings {

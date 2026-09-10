@@ -9,11 +9,15 @@ from pathlib import Path
 from typing import Callable, Generic, Iterable, TypeVar
 
 from .domain import (
+    DEFAULT_OBSERVING_DAY_CUTOFF_HOUR,
+    DEFAULT_STELLARIUM_URL,
+    AppSettings,
     Device,
     HistoryRecord,
     Session,
     SessionStatus,
     SessionTemplate,
+    app_settings_from_dict,
     device_from_dict,
     history_from_dict,
     session_from_dict,
@@ -91,6 +95,47 @@ class SessionStore:
         self.templates = JsonRepository(root / "templates", template_from_dict)
         self.sessions = JsonRepository(root / "sessions", session_from_dict)
         self.history = JsonRepository(root / "history", history_from_dict)
+        self.settings_path = root / "settings.json"
+
+    def load_app_settings(self, devices: list[Device] | None = None) -> AppSettings:
+        if self.settings_path.exists():
+            try:
+                return app_settings_from_dict(json.loads(self.settings_path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                pass
+        settings = AppSettings()
+        for device in devices or []:
+            if device.observing_day_cutoff_hour != DEFAULT_OBSERVING_DAY_CUTOFF_HOUR:
+                settings = replace(settings, observing_day_cutoff_hour=device.observing_day_cutoff_hour)
+                break
+        else:
+            if devices:
+                settings = replace(settings, observing_day_cutoff_hour=devices[0].observing_day_cutoff_hour)
+        for device in devices or []:
+            url = str(device.stellarium_url or "").strip()
+            if url and url != DEFAULT_STELLARIUM_URL:
+                settings = replace(settings, stellarium_url=url)
+                break
+        else:
+            if devices:
+                settings = replace(settings, stellarium_url=devices[0].stellarium_url or DEFAULT_STELLARIUM_URL)
+        self.save_app_settings(settings)
+        return settings
+
+    def save_app_settings(self, settings: AppSettings) -> AppSettings:
+        self.root.mkdir(parents=True, exist_ok=True)
+        temporary = self.settings_path.with_suffix(f".{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(to_dict(settings), indent=2), encoding="utf-8")
+        for attempt in range(8):
+            try:
+                os.replace(temporary, self.settings_path)
+                break
+            except PermissionError:
+                if attempt == 7:
+                    temporary.unlink(missing_ok=True)
+                    raise
+                time.sleep(0.01 * (attempt + 1))
+        return settings
 
     def transition(self, session_id: str, status: SessionStatus, **changes) -> Session:
         session = self.sessions.get(session_id)

@@ -304,7 +304,7 @@ Item {
             bits.push(extra)
         return bits.join("  ·  ")
     }
-    readonly property int cutoffHour: Number(backend.selectedDevice.observing_day_cutoff_hour || 12)
+    readonly property int cutoffHour: backend.observingDayCutoffHour
     readonly property real nightOriginMs: {
         const _id = backend.selectedDeviceId
         const _cutoff = calendarPage.cutoffHour

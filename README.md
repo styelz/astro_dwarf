@@ -48,6 +48,7 @@ When run from source, files live under `data/` in the repo. Installed copies use
 
 ```text
 devices/    telescope profiles and timing
+settings.json  shared night cutoff and Stellarium URL
 templates/  reusable session recipes
 sessions/   scheduled and running sessions
 history/    completed runs

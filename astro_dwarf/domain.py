@@ -62,6 +62,16 @@ class HardwareProfile:
     startup_seconds: float = 8
 
 
+DEFAULT_STELLARIUM_URL = "http://localhost:8090"
+DEFAULT_OBSERVING_DAY_CUTOFF_HOUR = 12
+
+
+@dataclass(slots=True)
+class AppSettings:
+    observing_day_cutoff_hour: int = DEFAULT_OBSERVING_DAY_CUTOFF_HOUR
+    stellarium_url: str = DEFAULT_STELLARIUM_URL
+
+
 @dataclass(slots=True)
 class Device:
     name: str
@@ -80,8 +90,8 @@ class Device:
     longitude: float = 0
     timezone_name: str = "UTC"
     location_configured: bool = False
-    stellarium_url: str = "http://localhost:8090"
-    observing_day_cutoff_hour: int = 12
+    stellarium_url: str = DEFAULT_STELLARIUM_URL
+    observing_day_cutoff_hour: int = DEFAULT_OBSERVING_DAY_CUTOFF_HOUR
 
 
 @dataclass(slots=True)
@@ -215,6 +225,27 @@ def to_dict(value: Any) -> dict[str, Any]:
     return asdict(value)
 
 
+def clamp_cutoff_hour(value: Any, default: int = DEFAULT_OBSERVING_DAY_CUTOFF_HOUR) -> int:
+    try:
+        hour = int(value)
+    except (TypeError, ValueError):
+        hour = default
+    return max(0, min(23, hour))
+
+
+def normalized_stellarium_url(value: Any, default: str = DEFAULT_STELLARIUM_URL) -> str:
+    text = str(value or "").strip()
+    return text or default
+
+
+def app_settings_from_dict(data: dict[str, Any]) -> AppSettings:
+    data = dict(data or {})
+    return AppSettings(
+        observing_day_cutoff_hour=clamp_cutoff_hour(data.get("observing_day_cutoff_hour")),
+        stellarium_url=normalized_stellarium_url(data.get("stellarium_url")),
+    )
+
+
 def hardware_from_dict(data: dict[str, Any]) -> HardwareProfile:
     allowed = set(HardwareProfile.__dataclass_fields__)
     cleaned = {key: value for key, value in dict(data or {}).items() if key in allowed}
@@ -233,6 +264,8 @@ def device_from_dict(data: dict[str, Any]) -> Device:
         data["wifi_mode"] = WifiMode.AUTO
     data["hardware"] = hardware_from_dict(data.get("hardware", {}))
     data["location_configured"] = has_site_coordinates(data.get("latitude"), data.get("longitude"))
+    data["observing_day_cutoff_hour"] = clamp_cutoff_hour(data.get("observing_day_cutoff_hour"))
+    data["stellarium_url"] = normalized_stellarium_url(data.get("stellarium_url"))
     allowed = set(Device.__dataclass_fields__)
     return Device(**{key: value for key, value in data.items() if key in allowed})
 
