@@ -16,13 +16,14 @@ Dialog {
     // size to the form so the dialog doesn't float in a sea of empty surface
     height: Math.min(root.height - 80, Math.max(420, contentItem.implicitHeight + 40))
     property string editingId: ""
+    property string editingAnchorId: ""
     property string editingDeviceId: ""
     property bool editingTemplate: false
     property var templateMembers: []
     property int paneIndex: 0
     property bool syncingPane: false
     readonly property int paneCount: templateMembers.length
-    readonly property bool multiPaneTemplate: editingTemplate && paneCount > 1
+    readonly property bool multiPane: paneCount > 1
     padding: 0
 
     QtObject {
@@ -124,7 +125,7 @@ Dialog {
         sessionDialog.applyWorkflowChecks(data.workflow)
     }
     function stashCurrentPane() {
-        if (!editingTemplate || paneCount === 0)
+        if (paneCount === 0)
             return
         const members = templateMembers.slice()
         const current = sessionDialog.cloneValue(members[paneIndex] || {})
@@ -142,13 +143,14 @@ Dialog {
         templateMembers = members
     }
     function showPane(index) {
-        if (syncingPane || !editingTemplate || index < 0 || index >= paneCount || index === paneIndex)
+        if (syncingPane || paneCount < 2 || index < 0 || index >= paneCount || index === paneIndex)
             return
         syncingPane = true
         stashCurrentPane()
         paneIndex = index
         editingId = templateMembers[index].id || editingId
         loadPaneCoordinates(templateMembers[index])
+        panePicker.model = sessionDialog.paneChoices()
         panePicker.currentIndex = index
         syncingPane = false
     }
@@ -214,7 +216,8 @@ Dialog {
     }
     function formPayload() {
         return {
-            id: sessionDialog.editingId, name: sessionName.text, target: targetName.text,
+            id: sessionDialog.editingId, anchor_id: sessionDialog.editingAnchorId || sessionDialog.editingId,
+            name: sessionName.text, target: targetName.text,
             target_kind: targetType.currentText, ra: ra.text, dec: dec.text,
             scheduled_start: startTime.text, device_id: sessionDialog.editingDeviceId || backend.selectedDeviceId,
             camera: camera.currentIndex === 1 ? "wide" : "tele", exposure: Number(exposure.text),
@@ -228,6 +231,7 @@ Dialog {
     }
     function openForDate(day) {
         editingId = ""
+        editingAnchorId = ""
         editingDeviceId = backend.selectedDeviceId
         editingTemplate = false
         templateMembers = []
@@ -260,13 +264,34 @@ Dialog {
         open()
     }
     function openExisting(data) {
+        const panes = backend.sessionPanes(data.id)
+        const members = panes && panes.length ? panes : []
         editingId = data.id
+        editingAnchorId = data.id
         editingDeviceId = data.device_id || backend.selectedDeviceId
         editingTemplate = false
-        templateMembers = []
         paneIndex = 0
         fillForm(data)
         startTime.text = String(data.scheduled_start).substring(0, 16)
+        if (members.length > 1) {
+            const cloned = []
+            let index = 0
+            for (let i = 0; i < members.length; i++) {
+                cloned.push(sessionDialog.cloneMember(members[i]))
+                if (members[i].id === data.id)
+                    index = i
+            }
+            templateMembers = cloned
+            paneIndex = index
+            editingId = cloned[index].id || data.id
+            syncingPane = true
+            loadPaneCoordinates(cloned[index])
+            panePicker.model = sessionDialog.paneChoices()
+            panePicker.currentIndex = index
+            syncingPane = false
+        } else {
+            templateMembers = []
+        }
         sessionDialog.syncDeviceCombo()
         open()
     }
@@ -277,6 +302,7 @@ Dialog {
             cloned.push(sessionDialog.cloneMember(members[i]))
         sessionDialog.staggerImportedWorkflows(cloned)
         editingTemplate = true
+        editingAnchorId = cloned[0].id || data.id
         editingDeviceId = backend.selectedDeviceId
         templateMembers = cloned
         paneIndex = 0
@@ -302,7 +328,7 @@ Dialog {
             HudButton { text: "×"; implicitWidth: 40; onClicked: sessionDialog.close() }
         }
         RowLayout {
-            visible: sessionDialog.multiPaneTemplate
+            visible: sessionDialog.multiPane
             Layout.fillWidth: true
             spacing: 8
             HudButton {
@@ -325,7 +351,7 @@ Dialog {
             }
         }
         Text {
-            visible: sessionDialog.multiPaneTemplate
+            visible: sessionDialog.multiPane
             text: "Each pane has its own name, coordinates, and workflow. Camera, mosaic, and wait apply to every pane."
             color: Theme.textSecondary
             font.pixelSize: 12
@@ -455,14 +481,13 @@ Dialog {
                 buttonColor: Theme.fillActive
                 foregroundColor: Theme.accent
                 onClicked: {
-                    if (sessionDialog.editingTemplate) {
-                        const payload = sessionDialog.formPayload()
-                        if (sessionDialog.paneCount > 1)
-                            payload.members = sessionDialog.memberPayloads()
+                    const payload = sessionDialog.formPayload()
+                    if (sessionDialog.paneCount > 1)
+                        payload.members = sessionDialog.memberPayloads()
+                    if (sessionDialog.editingTemplate)
                         backend.saveTemplate(JSON.stringify(payload))
-                    } else {
-                        backend.saveSession(JSON.stringify(sessionDialog.formPayload()))
-                    }
+                    else
+                        backend.saveSession(JSON.stringify(payload))
                     sessionDialog.close()
                 }
             }

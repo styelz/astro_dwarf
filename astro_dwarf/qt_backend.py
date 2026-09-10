@@ -854,6 +854,7 @@ class AppBackend(QObject):
             self._zone_for(device),
         )
         data["pane_index"] = pane_sort_key(session.name)[0]
+        data["pane_name"] = session.name
         return data
 
     @Property("QVariantList", notify=sessionsChanged)
@@ -908,6 +909,16 @@ class AppBackend(QObject):
         result.extend(self._template_dict(template) for template in singles)
         result.sort(key=lambda item: item["name"].lower())
         return result
+
+    @Slot(str, result="QVariantList")
+    def sessionPanes(self, session_id: str) -> list[dict[str, Any]]:
+        session = self.store.sessions.get(session_id)
+        if not session:
+            return []
+        siblings = sorted(self._mosaic_siblings(session), key=lambda item: pane_sort_key(item.name))
+        if len(siblings) < 2:
+            return []
+        return [self._session_dict(item) for item in siblings]
 
     @Property("QVariantList", notify=historyChanged)
     def history(self) -> list[dict[str, Any]]:
@@ -2127,36 +2138,44 @@ class AppBackend(QObject):
             ),
         )
 
+    def _session_from_payload(self, values: dict[str, Any], existing: Session | None) -> Session:
+        if existing and existing.status == SessionStatus.RUNNING:
+            raise ValueError("A running session cannot be edited")
+        target, camera, workflow, mosaic = self._fields_from_payload(
+            values, existing.mosaic if existing else None
+        )
+        resetting = existing is not None and existing.status != SessionStatus.PLANNED
+        device = self._device_by_id(values["device_id"])
+        return Session(
+            id=existing.id if existing else uuid4().hex,
+            name=values.get("name") or values["target"],
+            target=target,
+            device_id=values["device_id"],
+            scheduled_start=self._store_session_time(values["scheduled_start"], device),
+            camera=camera,
+            workflow=workflow,
+            mosaic=mosaic,
+            notes=values.get("notes", existing.notes if existing else ""),
+            status=SessionStatus.PLANNED,
+            current_step="Waiting" if (existing is None or resetting) else existing.current_step,
+            actual_started_at=None,
+            actual_ended_at=None,
+            outcome="",
+            template_id=existing.template_id if existing else None,
+            created_at=existing.created_at if existing else datetime.now(timezone.utc).isoformat(),
+        )
+
     @Slot(str)
     def saveSession(self, payload: str) -> None:
         try:
             values = json.loads(payload)
+            panes = values.get("members")
+            if isinstance(panes, list) and len(panes) > 1:
+                self._save_session_panes(values, panes)
+                return
             existing = self.store.sessions.get(values.get("id", "")) if values.get("id") else None
-            if existing and existing.status == SessionStatus.RUNNING:
-                raise ValueError("A running session cannot be edited")
-            target, camera, workflow, mosaic = self._fields_from_payload(
-                values, existing.mosaic if existing else None
-            )
-            resetting = existing is not None and existing.status != SessionStatus.PLANNED
-            device = self._device_by_id(values["device_id"])
-            session = Session(
-                id=existing.id if existing else uuid4().hex,
-                name=values.get("name") or values["target"],
-                target=target,
-                device_id=values["device_id"],
-                scheduled_start=self._store_session_time(values["scheduled_start"], device),
-                camera=camera,
-                workflow=workflow,
-                mosaic=mosaic,
-                notes=values.get("notes", existing.notes if existing else ""),
-                status=SessionStatus.PLANNED,
-                current_step="Waiting" if (existing is None or resetting) else existing.current_step,
-                actual_started_at=None,
-                actual_ended_at=None,
-                outcome="",
-                template_id=existing.template_id if existing else None,
-                created_at=existing.created_at if existing else datetime.now(timezone.utc).isoformat(),
-            )
+            session = self._session_from_payload(values, existing)
+            device = self._device_by_id(session.device_id)
             siblings: list[Session] = []
             if existing:
                 family = self._mosaic_siblings(existing)
@@ -2199,6 +2218,53 @@ class AppBackend(QObject):
             self._toast("Session saved", "success")
         except Exception as exc:
             self._toast(f"Could not save session: {exc}", "error")
+
+    def _save_session_panes(self, values: dict[str, Any], panes: list) -> None:
+        shared = {key: value for key, value in values.items() if key != "members"}
+        anchor_id = str(shared.get("anchor_id") or shared.get("id") or "")
+        existing_anchor = self.store.sessions.get(anchor_id) if anchor_id else None
+        if existing_anchor and existing_anchor.status == SessionStatus.RUNNING:
+            raise ValueError("A running session cannot be edited")
+        device = self._device_by_id(shared["device_id"])
+        family = self._mosaic_siblings(existing_anchor) if existing_anchor else []
+        if existing_anchor and existing_anchor.device_id != device.id and any(
+            item.status == SessionStatus.RUNNING for item in family
+        ):
+            raise ValueError("Stop the running mosaic before moving it to another telescope")
+        new_tz = self._zone_for(device)
+        old_tz = self._zone_for_id(existing_anchor.device_id) if existing_anchor else new_tz
+        new_anchor_start = self._store_session_time(shared["scheduled_start"], device)
+        delta = (
+            parse_in_zone(new_anchor_start, new_tz) - parse_in_zone(existing_anchor.scheduled_start, old_tz)
+            if existing_anchor else timedelta(0)
+        )
+        saved: list[Session] = []
+        for pane in panes:
+            if not isinstance(pane, dict):
+                continue
+            existing = self.store.sessions.get(pane.get("id", "")) if pane.get("id") else None
+            merged = {**shared, **pane, "device_id": device.id}
+            if existing:
+                start = parse_in_zone(existing.scheduled_start, old_tz) + delta
+                merged["scheduled_start"] = store_local_iso(start, new_tz)
+            session = self._session_from_payload(merged, existing)
+            saved.append(self._save_session(session, notify=False))
+        if not saved:
+            raise ValueError("No panes to save")
+        anchor = next((item for item in saved if item.id == anchor_id), saved[0])
+        self._sequence_mosaic_group(anchor, notify=False)
+        self.sessionsChanged.emit()
+        self._warn_schedule_overlap({item.id for item in saved}, device.id)
+        if values.get("save_template"):
+            self.store.templates.save(SessionTemplate(
+                name=anchor.name,
+                target=anchor.target,
+                camera=anchor.camera,
+                workflow=anchor.workflow,
+                mosaic=anchor.mosaic,
+            ))
+            self.templatesChanged.emit()
+        self._toast("Session saved", "success")
 
     def _save_one_template(self, values: dict[str, Any]) -> SessionTemplate:
         existing = self.store.templates.get(values.get("id", "")) if values.get("id") else None
