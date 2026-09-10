@@ -28,6 +28,7 @@ Dialog {
     property int paneIndex: 0
     property bool syncingPane: false
     property bool syncingCommon: false
+    property bool importedPlan: false
     readonly property int paneCount: templateMembers.length
     readonly property bool multiPane: paneCount > 1
     readonly property int selectedPaneCount: {
@@ -40,8 +41,29 @@ Dialog {
         return count
     }
     readonly property bool commonMulti: bulkMode || (multiPane && selectedPaneCount > 1)
+    // camera, wait, and workflow edits need at least one checked pane to land on
+    readonly property bool sharedEnabled: !multiPane || selectedPaneCount > 0
     readonly property bool uniqueVisible: !bulkMode
     readonly property bool mosaicVisible: !bulkMode
+    readonly property bool equatorialTarget: targetType.currentIndex === 0
+    readonly property var focusedMosaic: {
+        const item = templateMembers[paneIndex]
+        return (item && item.mosaic) || null
+    }
+    readonly property string planGridText: {
+        const grid = focusedMosaic
+        if (!importedPlan)
+            return ""
+        const cell = grid && grid.row && grid.column ? "This pane is R" + grid.row + " C" + grid.column + ". " : ""
+        return cell + "Each pane is captured on its own; the telescope mosaic is not used."
+    }
+    readonly property bool mosaicScaleVisible: {
+        if (!mosaicVisible || importedPlan)
+            return false
+        const r = Math.max(1, parseInt(rows.text, 10) || 1)
+        const c = Math.max(1, parseInt(columns.text, 10) || 1)
+        return r * c > 1
+    }
     readonly property bool dirty: Object.keys(dirtyFields || {}).length > 0
     readonly property bool focusedPaneSelected: {
         selectedPaneCount
@@ -50,6 +72,12 @@ Dialog {
     }
     padding: 0
 
+    component FieldCaption: Text {
+        color: Theme.textSecondary
+        font.pixelSize: 9
+        font.letterSpacing: 1.0
+        font.bold: true
+    }
     QtObject {
         id: paneFlags
         property bool calibrate: true
@@ -63,8 +91,15 @@ Dialog {
         return JSON.parse(JSON.stringify(value || {}))
     }
     function paneLabel(item, index) {
-        const name = (item && (item.pane_name || item.name)) || ("Pane " + (index + 1))
-        return "Pane " + (index + 1) + " · " + name
+        const position = "Pane " + (index + 1)
+        const parts = [position]
+        const cell = (item && item.pane_position) || ""
+        const name = (item && (item.pane_name || item.name)) || ""
+        if (cell)
+            parts.push(cell)
+        if (name && name !== position)
+            parts.push(name)
+        return parts.join(" · ")
     }
     function paneChoices() {
         const items = templateMembers
@@ -181,7 +216,9 @@ Dialog {
         return result
     }
     function loadCommonFields(items, keepDirty) {
-        const source = items || []
+        // with no pane checked the shared fields are read-only, so preview the focused pane
+        const focused = templateMembers[paneIndex]
+        const source = (items && items.length) ? items : (focused ? [focused] : [])
         const dirty = keepDirty ? (dirtyFields || {}) : {}
         syncingCommon = true
         function agreed(read) {
@@ -283,19 +320,28 @@ Dialog {
             flags.push(i === index)
         return flags
     }
+    // pending edits belong to the panes that were checked while they were typed
+    function commitPendingEdits() {
+        if (!sessionDialog.dirty)
+            return
+        sessionDialog.applyDirtyToSelected()
+        dirtyFields = ({})
+    }
     function setPaneSelectedAt(index, on) {
+        sessionDialog.commitPendingEdits()
         syncingPane = true
         const flags = (paneSelected || []).slice()
         flags[index] = !!on
         paneSelected = flags
         syncingPane = false
-        sessionDialog.loadCommonFields(sessionDialog.selectedMembers(), true)
+        sessionDialog.loadCommonFields(sessionDialog.selectedMembers())
     }
     function selectAllPanes(on) {
+        sessionDialog.commitPendingEdits()
         syncingPane = true
         paneSelected = (templateMembers || []).map(() => !!on)
         syncingPane = false
-        sessionDialog.loadCommonFields(sessionDialog.selectedMembers(), true)
+        sessionDialog.loadCommonFields(sessionDialog.selectedMembers())
     }
     function workflowFromForm(existing) {
         const current = existing || {}
@@ -403,8 +449,15 @@ Dialog {
         binning.currentIndex = Math.max(0, ["1", "2"].indexOf(String(data.camera.binning)))
         const ir = data.camera.ir_filter || "VIS Filter"
         irFilter.currentIndex = Math.max(0, ["VIS Filter", "Astro Filter", "Duo-Band Filter", "VIS"].indexOf(ir) % 3)
-        rows.text = data.mosaic.rows
-        columns.text = data.mosaic.columns
+        const mosaic = data.mosaic || {}
+        importedPlan = !!(mosaic.grid_rows && mosaic.grid_columns)
+        if (importedPlan) {
+            rows.text = mosaic.grid_rows
+            columns.text = mosaic.grid_columns
+        } else {
+            rows.text = mosaic.rows
+            columns.text = mosaic.columns
+        }
         rotation.text = data.mosaic.rotation_degrees
         hScale.text = data.mosaic.horizontal_scale
         vScale.text = data.mosaic.vertical_scale
@@ -436,7 +489,9 @@ Dialog {
             scheduled_start: startTime.text, device_id: sessionDialog.editingDeviceId || backend.selectedDeviceId,
             camera: camera.currentIndex === 1 ? "wide" : "tele", exposure: Number(exposure.text),
             gain: Number(gain.text), frame_count: Number(frames.text), binning: Number(binning.currentText),
-            ir_filter: irFilter.currentText, rows: Number(rows.text), columns: Number(columns.text),
+            ir_filter: irFilter.currentText,
+            rows: sessionDialog.importedPlan ? 1 : Number(rows.text),
+            columns: sessionDialog.importedPlan ? 1 : Number(columns.text),
             rotation: Number(rotation.text), horizontal_scale: Number(hScale.text), vertical_scale: Number(vScale.text),
             wait_before: Number(waitBefore.text), wait_after: Number(waitAfter.text), notes: notes.text,
             calibrate: paneFlags.calibrate, autofocus: paneFlags.autofocus, infinite_focus: paneFlags.infiniteFocus,
@@ -481,6 +536,7 @@ Dialog {
         paneSelected = []
         dirtyFields = ({})
         paneIndex = 0
+        importedPlan = false
         saveTemplate.checked = false
     }
     function openForDate(day) {
@@ -654,9 +710,14 @@ Dialog {
             Layout.fillWidth: true
             spacing: 8
             HudCheck {
+                id: thisPane
                 text: "THIS PANE"
-                checked: sessionDialog.focusedPaneSelected
                 onClicked: sessionDialog.setPaneSelectedAt(sessionDialog.paneIndex, checked)
+                Binding on checked {
+                    value: sessionDialog.focusedPaneSelected
+                    when: !thisPane.pressed
+                    restoreMode: Binding.RestoreNone
+                }
             }
             HudButton {
                 text: sessionDialog.selectedPaneCount === sessionDialog.paneCount ? "NONE" : "ALL PANES"
@@ -684,9 +745,13 @@ Dialog {
         }
         Text {
             visible: sessionDialog.multiPane || sessionDialog.bulkMode
-            text: sessionDialog.bulkMode
-                  ? "Name, coordinates, start time, and device stay unchanged. Camera, wait, and workflow apply to every selected item."
-                  : "Name and coordinates follow the focused pane. Camera, wait, and workflow apply to checked panes. Mosaic and notes apply to every pane."
+            text: {
+                if (sessionDialog.bulkMode)
+                    return "Name, coordinates, start time, and device stay unchanged. Camera, wait, and workflow apply to every selected item."
+                if (!sessionDialog.sharedEnabled)
+                    return "No pane is checked, so camera, wait, and workflow are read-only and show the focused pane. Name and coordinates follow the focused pane; mosaic and notes apply to every pane."
+                return "Name and coordinates follow the focused pane. Camera, wait, and workflow apply to checked panes. Mosaic and notes apply to every pane."
+            }
             color: Theme.textSecondary
             font.pixelSize: 12
             wrapMode: Text.Wrap
@@ -701,10 +766,27 @@ Dialog {
             HudField { id: sessionName; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible }
             FieldLabel { text: "TARGET TYPE"; visible: sessionDialog.uniqueVisible }
             HudCombo { id: targetType; model: ["equatorial", "solar", "none"]; Layout.fillWidth: true; visible: sessionDialog.uniqueVisible }
-            HudField { id: targetName; placeholderText: "Target name"; Layout.fillWidth: true; visible: sessionDialog.uniqueVisible }
-            FieldLabel { text: "RA HOURS"; visible: sessionDialog.uniqueVisible }
-            HudField { id: ra; Layout.fillWidth: true; visible: sessionDialog.uniqueVisible }
-            HudField { id: dec; placeholderText: "Dec degrees"; Layout.fillWidth: true; visible: sessionDialog.uniqueVisible }
+            HudField {
+                id: targetName
+                placeholderText: targetType.currentIndex === 1 ? "Sun, moon, planet…" : "Target name"
+                Layout.fillWidth: true
+                visible: sessionDialog.uniqueVisible
+            }
+            FieldLabel { text: "RA / DEC"; visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget }
+            ColumnLayout {
+                visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget
+                spacing: 2
+                Layout.fillWidth: true
+                FieldCaption { text: "RA HOURS" }
+                HudField { id: ra; Layout.fillWidth: true }
+            }
+            ColumnLayout {
+                visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget
+                spacing: 2
+                Layout.fillWidth: true
+                FieldCaption { text: "DEC °" }
+                HudField { id: dec; Layout.fillWidth: true }
+            }
             FieldLabel { text: "START"; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
             HudField { id: startTime; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
             FieldLabel { text: "DEVICE"; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
@@ -722,6 +804,8 @@ Dialog {
             HudCombo {
                 id: camera
                 model: ["Tele", "Wide"]
+                emptyText: "Mixed"
+                enabled: sessionDialog.sharedEnabled
                 Layout.fillWidth: true
                 Layout.columnSpan: currentIndex === 1 ? 2 : 1
                 onActivated: sessionDialog.markDirty("camera")
@@ -730,28 +814,142 @@ Dialog {
                 id: irFilter
                 visible: camera.currentIndex !== 1
                 model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
+                emptyText: "Mixed"
+                enabled: sessionDialog.sharedEnabled
                 Layout.fillWidth: true
                 onActivated: sessionDialog.markDirty("ir_filter")
             }
-            FieldLabel { text: "EXPOSURE" }
-            HudField { id: exposure; Layout.fillWidth: true; onTextEdited: sessionDialog.markDirty("exposure") }
-            HudField { id: gain; placeholderText: "Gain"; Layout.fillWidth: true; onTextEdited: sessionDialog.markDirty("gain") }
-            FieldLabel { text: "FRAMES" }
-            HudField { id: frames; Layout.fillWidth: true; onTextEdited: sessionDialog.markDirty("frame_count") }
-            HudCombo { id: binning; model: ["1", "2"]; Layout.fillWidth: true; onActivated: sessionDialog.markDirty("binning") }
+            FieldLabel { text: "EXPOSURE / GAIN" }
+            ColumnLayout {
+                spacing: 2
+                Layout.fillWidth: true
+                FieldCaption { text: "SECONDS" }
+                HudField {
+                    id: exposure
+                    enabled: sessionDialog.sharedEnabled
+                    Layout.fillWidth: true
+                    onTextEdited: sessionDialog.markDirty("exposure")
+                }
+            }
+            ColumnLayout {
+                spacing: 2
+                Layout.fillWidth: true
+                FieldCaption { text: "GAIN" }
+                HudField {
+                    id: gain
+                    enabled: sessionDialog.sharedEnabled
+                    Layout.fillWidth: true
+                    onTextEdited: sessionDialog.markDirty("gain")
+                }
+            }
+            FieldLabel { text: "FRAMES / BIN" }
+            ColumnLayout {
+                spacing: 2
+                Layout.fillWidth: true
+                FieldCaption { text: "FRAMES" }
+                HudField {
+                    id: frames
+                    enabled: sessionDialog.sharedEnabled
+                    Layout.fillWidth: true
+                    onTextEdited: sessionDialog.markDirty("frame_count")
+                }
+            }
+            ColumnLayout {
+                spacing: 2
+                Layout.fillWidth: true
+                FieldCaption { text: "BINNING" }
+                HudCombo {
+                    id: binning
+                    model: ["1", "2"]
+                    emptyText: "Mixed"
+                    enabled: sessionDialog.sharedEnabled
+                    Layout.fillWidth: true
+                    onActivated: sessionDialog.markDirty("binning")
+                }
+            }
             FieldLabel { text: "MOSAIC"; visible: sessionDialog.mosaicVisible }
-            HudField { id: rows; placeholderText: "Rows"; Layout.fillWidth: true; visible: sessionDialog.mosaicVisible }
-            HudField { id: columns; placeholderText: "Columns"; Layout.fillWidth: true; visible: sessionDialog.mosaicVisible }
-            FieldLabel { text: "ROTATION / SCALE"; visible: sessionDialog.mosaicVisible }
-            HudField { id: rotation; placeholderText: "Rotation °"; Layout.fillWidth: true; visible: sessionDialog.mosaicVisible }
-            RowLayout {
+            ColumnLayout {
                 visible: sessionDialog.mosaicVisible
-                HudField { id: hScale; placeholderText: "H scale"; Layout.fillWidth: true }
-                HudField { id: vScale; placeholderText: "V scale"; Layout.fillWidth: true }
+                spacing: 2
+                Layout.fillWidth: true
+                FieldCaption { text: sessionDialog.importedPlan ? "ROWS (PLAN)" : "ROWS" }
+                HudField {
+                    id: rows
+                    placeholderText: "1"
+                    enabled: !sessionDialog.importedPlan
+                    Layout.fillWidth: true
+                }
+            }
+            ColumnLayout {
+                visible: sessionDialog.mosaicVisible
+                spacing: 2
+                Layout.fillWidth: true
+                FieldCaption { text: sessionDialog.importedPlan ? "COLUMNS (PLAN)" : "COLUMNS" }
+                HudField {
+                    id: columns
+                    placeholderText: "1"
+                    enabled: !sessionDialog.importedPlan
+                    Layout.fillWidth: true
+                }
+            }
+            FieldLabel { text: "PLAN GRID"; visible: sessionDialog.mosaicVisible && sessionDialog.planGridText !== "" }
+            Text {
+                visible: sessionDialog.mosaicVisible && sessionDialog.planGridText !== ""
+                Layout.columnSpan: 2
+                Layout.fillWidth: true
+                text: sessionDialog.planGridText
+                color: Theme.textSecondary
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+            }
+            FieldLabel { text: "ROTATION / SCALE"; visible: sessionDialog.mosaicScaleVisible }
+            ColumnLayout {
+                visible: sessionDialog.mosaicScaleVisible
+                spacing: 2
+                Layout.fillWidth: true
+                FieldCaption { text: "ROTATION °" }
+                HudField { id: rotation; Layout.fillWidth: true }
+            }
+            RowLayout {
+                visible: sessionDialog.mosaicScaleVisible
+                Layout.fillWidth: true
+                spacing: 10
+                ColumnLayout {
+                    spacing: 2
+                    Layout.fillWidth: true
+                    FieldCaption { text: "H SCALE %" }
+                    HudField { id: hScale; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                }
+                ColumnLayout {
+                    spacing: 2
+                    Layout.fillWidth: true
+                    FieldCaption { text: "V SCALE %" }
+                    HudField { id: vScale; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                }
             }
             FieldLabel { text: "WAIT S" }
-            HudField { id: waitBefore; placeholderText: "Before"; Layout.fillWidth: true; onTextEdited: sessionDialog.markDirty("wait_before") }
-            HudField { id: waitAfter; placeholderText: "After"; Layout.fillWidth: true; onTextEdited: sessionDialog.markDirty("wait_after") }
+            ColumnLayout {
+                spacing: 2
+                Layout.fillWidth: true
+                FieldCaption { text: "BEFORE" }
+                HudField {
+                    id: waitBefore
+                    enabled: sessionDialog.sharedEnabled
+                    Layout.fillWidth: true
+                    onTextEdited: sessionDialog.markDirty("wait_before")
+                }
+            }
+            ColumnLayout {
+                spacing: 2
+                Layout.fillWidth: true
+                FieldCaption { text: "AFTER" }
+                HudField {
+                    id: waitAfter
+                    enabled: sessionDialog.sharedEnabled
+                    Layout.fillWidth: true
+                    onTextEdited: sessionDialog.markDirty("wait_after")
+                }
+            }
             FieldLabel { text: "NOTES"; visible: sessionDialog.mosaicVisible }
             HudField { id: notes; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.mosaicVisible }
             FieldLabel { text: "WORKFLOW"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 8 }
@@ -763,8 +961,11 @@ Dialog {
                 HudCheck {
                     id: calibrate
                     text: "Calibrate"
+                    enabled: sessionDialog.sharedEnabled
                     tristate: sessionDialog.commonMulti
-                    onToggled: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
+                    // a click always lands on a real value; the dash only ever reports mixed panes
+                    nextCheckState: function() { return calibrate.checkState === Qt.Checked ? Qt.Unchecked : Qt.Checked }
+                    onClicked: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
                         paneFlags.calibrate = checked
                         sessionDialog.markDirty("calibrate")
                     }
@@ -777,8 +978,10 @@ Dialog {
                 HudCheck {
                     id: autofocus
                     text: "Auto focus"
+                    enabled: sessionDialog.sharedEnabled
                     tristate: sessionDialog.commonMulti
-                    onToggled: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
+                    nextCheckState: function() { return autofocus.checkState === Qt.Checked ? Qt.Unchecked : Qt.Checked }
+                    onClicked: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
                         paneFlags.autofocus = checked
                         sessionDialog.markDirty("autofocus")
                     }
@@ -791,8 +994,10 @@ Dialog {
                 HudCheck {
                     id: infiniteFocus
                     text: "Infinity focus"
+                    enabled: sessionDialog.sharedEnabled
                     tristate: sessionDialog.commonMulti
-                    onToggled: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
+                    nextCheckState: function() { return infiniteFocus.checkState === Qt.Checked ? Qt.Unchecked : Qt.Checked }
+                    onClicked: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
                         paneFlags.infiniteFocus = checked
                         sessionDialog.markDirty("infinite_focus")
                     }
@@ -805,8 +1010,10 @@ Dialog {
                 HudCheck {
                     id: polar
                     text: "Polar / EQ"
+                    enabled: sessionDialog.sharedEnabled
                     tristate: sessionDialog.commonMulti
-                    onToggled: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
+                    nextCheckState: function() { return polar.checkState === Qt.Checked ? Qt.Unchecked : Qt.Checked }
+                    onClicked: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
                         paneFlags.polar = checked
                         sessionDialog.markDirty("polar_align")
                     }
@@ -819,8 +1026,10 @@ Dialog {
                 HudCheck {
                     id: doGoto
                     text: "GOTO"
+                    enabled: sessionDialog.sharedEnabled
                     tristate: sessionDialog.commonMulti
-                    onToggled: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
+                    nextCheckState: function() { return doGoto.checkState === Qt.Checked ? Qt.Unchecked : Qt.Checked }
+                    onClicked: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
                         paneFlags.doGoto = checked
                         sessionDialog.markDirty("goto")
                     }

@@ -1467,7 +1467,8 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     _wait_seconds(2)
     _wait_for_capture_slot()
     ir_index = _ir_index(camera.get("ir_filter"))
-    if max(1, mosaic["rows"] * mosaic["columns"]) > 1:
+    imported_plan = int(mosaic.get("grid_rows") or 0) >= 1 and int(mosaic.get("grid_columns") or 0) >= 1
+    if not imported_plan and max(1, mosaic["rows"] * mosaic["columns"]) > 1:
         step("Set mosaic count", "set_mosaic_count", camera["frame_count"])
         step("Start mosaic", "mosaic", mosaic["horizontal_scale"], mosaic["vertical_scale"], mosaic["rotation_degrees"], ir_index)
         step("Waiting for mosaic", "wait_astro")

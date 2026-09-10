@@ -7,7 +7,13 @@ import ".."
 
 ComboBox {
     id: combo
+    // shown instead of a blank box when nothing is selected, e.g. mixed values
+    property string emptyText: ""
+    displayText: combo.currentIndex < 0 && combo.emptyText ? combo.emptyText : combo.currentText
+    implicitWidth: 160
     implicitHeight: 34
+    Layout.minimumWidth: 0
+    Layout.preferredWidth: implicitWidth
     font.pixelSize: 13
     palette.window: Theme.popupBg
     palette.windowText: Theme.textPrimary

@@ -855,6 +855,7 @@ class AppBackend(QObject):
         )
         data["pane_index"] = pane_sort_key(session.name)[0]
         data["pane_name"] = session.name
+        data["pane_position"] = session.mosaic.position_text
         return data
 
     @Property("QVariantList", notify=sessionsChanged)
@@ -884,15 +885,19 @@ class AppBackend(QObject):
         data["target_name"] = mosaic_group_title(first.target.name, group_id) if grouped else first.target.name
         data["member_ids"] = [item.id for item in ordered]
         data["members"] = [self._template_member_dict(item) for item in ordered]
+        data["grid_text"] = first.mosaic.grid_text
+        exposure = f"{first.camera.frame_count} × {first.camera.exposure_seconds:g}s"
         if grouped:
-            data["summary"] = f"{len(members)} panes · {first.camera.frame_count} × {first.camera.exposure_seconds:g}s"
+            grid = f"{first.mosaic.grid_text} · " if first.mosaic.grid_text else ""
+            data["summary"] = f"{len(members)} panes · {grid}{exposure}"
         else:
-            data["summary"] = f"{first.camera.frame_count} × {first.camera.exposure_seconds:g}s · {first.mosaic.rows}×{first.mosaic.columns}"
+            data["summary"] = f"{exposure} · {first.mosaic.rows}×{first.mosaic.columns}"
         return data
 
     def _template_member_dict(self, template: SessionTemplate) -> dict[str, Any]:
         data = to_dict(template)
         data["pane_name"] = template.name
+        data["pane_position"] = template.mosaic.position_text
         return data
 
     @Property("QVariantList", notify=templatesChanged)
@@ -2129,12 +2134,16 @@ class AppBackend(QObject):
                 wait_after_seconds=float(values.get("wait_after", 10)),
             ),
             Mosaic(
-                rows=int(values.get("rows", 1)),
-                columns=int(values.get("columns", 1)),
+                rows=1 if (existing_mosaic and existing_mosaic.imported_plan) else int(values.get("rows", 1)),
+                columns=1 if (existing_mosaic and existing_mosaic.imported_plan) else int(values.get("columns", 1)),
                 rotation_degrees=float(values.get("rotation", 0)),
                 horizontal_scale=int(values.get("horizontal_scale", 150)),
                 vertical_scale=int(values.get("vertical_scale", 150)),
                 group_id=existing_mosaic.group_id if existing_mosaic else None,
+                grid_rows=existing_mosaic.grid_rows if existing_mosaic else 0,
+                grid_columns=existing_mosaic.grid_columns if existing_mosaic else 0,
+                row=existing_mosaic.row if existing_mosaic else 0,
+                column=existing_mosaic.column if existing_mosaic else 0,
             ),
         )
 

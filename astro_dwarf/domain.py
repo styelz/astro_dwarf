@@ -113,16 +113,42 @@ class Workflow:
 
 @dataclass(slots=True)
 class Mosaic:
+    # rows/columns drive the telescope's own mosaic. Imported Telescopius panes
+    # keep those at 1x1 and store the CSV grid in grid_rows/grid_columns plus
+    # this pane's row/column. The editor shows the CSV grid; capture still
+    # treats each pane as a single pointing.
     rows: int = 1
     columns: int = 1
     rotation_degrees: float = 0
     horizontal_scale: int = 150
     vertical_scale: int = 150
     group_id: str | None = None
+    grid_rows: int = 0
+    grid_columns: int = 0
+    row: int = 0
+    column: int = 0
+
+    @property
+    def imported_plan(self) -> bool:
+        return self.grid_rows >= 1 and self.grid_columns >= 1
 
     @property
     def panes(self) -> int:
+        if self.imported_plan:
+            return 1
         return max(1, self.rows * self.columns)
+
+    @property
+    def grid_text(self) -> str:
+        if self.grid_rows < 1 or self.grid_columns < 1:
+            return ""
+        return f"{self.grid_rows}×{self.grid_columns}"
+
+    @property
+    def position_text(self) -> str:
+        if self.row < 1 or self.column < 1:
+            return ""
+        return f"R{self.row} C{self.column}"
 
 
 @dataclass(slots=True)

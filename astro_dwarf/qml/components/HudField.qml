@@ -16,7 +16,11 @@ TextField {
     font.pixelSize: 13
     leftPadding: 10
     rightPadding: 10
+    clip: true
+    implicitWidth: 160
     implicitHeight: 34
+    Layout.minimumWidth: 0
+    Layout.preferredWidth: implicitWidth
     background: Item {
         implicitHeight: 34
         HudFrame {

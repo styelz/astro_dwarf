@@ -426,7 +426,7 @@ class DwarfClient:
             step("Setting IR filter", "set_ir", session.camera.ir_filter)
         step("Setting frame count", "set_count", session.camera.frame_count, session.camera.camera.value)
         step("Setting binning", "set_binning", session.camera.binning)
-        if session.mosaic.panes > 1:
+        if session.mosaic.panes > 1 and not session.mosaic.imported_plan:
             step("Setting mosaic frame count", "set_mosaic_count", session.camera.frame_count)
             step("Starting mosaic", "mosaic", session.mosaic.horizontal_scale, session.mosaic.vertical_scale, session.mosaic.rotation_degrees)
             step("Waiting for mosaic", "wait_astro")
@@ -690,6 +690,11 @@ def _parse_dec(value: str) -> float:
     return sign * (values[0] + (values[1] if len(values) > 1 else 0) / 60 + (values[2] if len(values) > 2 else 0) / 3600)
 
 
+def _parse_grid_index(value: Any) -> int:
+    match = re.search(r"\d+", str(value or ""))
+    return int(match.group()) if match else 0
+
+
 def import_telescopius(path: Path) -> list[SessionTemplate]:
     templates: list[SessionTemplate] = []
     group = path.stem
@@ -724,13 +729,24 @@ def import_telescopius(path: Path) -> list[SessionTemplate]:
                 SessionTemplate(
                     name=str(name),
                     target=Target(name=str(name), ra_hours=_parse_ra(str(ra)), dec_degrees=_parse_dec(str(dec))),
-                    mosaic=Mosaic(group_id=group),
+                    mosaic=Mosaic(
+                        group_id=group,
+                        row=_parse_grid_index(lowered.get("row")),
+                        column=_parse_grid_index(lowered.get("column")),
+                    ),
                     notes=f"Imported from Telescopius: {path.name}",
                 )
             )
     templates.sort(key=lambda item: pane_sort_key(item.name))
+    # the plan grid is whatever the pane positions span; a plain target list has none
+    grid_rows = max((item.mosaic.row for item in templates), default=0)
+    grid_columns = max((item.mosaic.column for item in templates), default=0)
     return [
-        replace(template, workflow=mosaic_pane_workflow(template.workflow, index))
+        replace(
+            template,
+            workflow=mosaic_pane_workflow(template.workflow, index),
+            mosaic=replace(template.mosaic, grid_rows=grid_rows, grid_columns=grid_columns),
+        )
         for index, template in enumerate(templates)
     ]
 
