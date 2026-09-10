@@ -74,6 +74,7 @@ from .telemetry_view import AlertEngine, derive_activity, format_telemetry
 class TelescopeProcess(QObject):
     logReceived = Signal(str, str)
     progressReceived = Signal(str, str)
+    statusReceived = Signal(str, str)
     telemetryReceived = Signal(dict)
     availabilityChanged = Signal()
 
@@ -224,6 +225,8 @@ class TelescopeProcess(QObject):
                     self.telemetryReceived.emit(data)
             elif event == "progress":
                 self.progressReceived.emit(message["session_id"], message["step"])
+            elif event == "status":
+                self.statusReceived.emit(str(message.get("kind") or ""), str(message.get("step") or ""))
             elif event == "connected":
                 if not self.connected:
                     self.connected = True
@@ -286,6 +289,7 @@ _CAPTURE_PREVIEW_STEPS = {
     "Waiting for wide capture",
     "Waiting for stack",
     "Waiting for wide stack",
+    "Joining capture",
     "Imaging",
     "Imaging (wide)",
 }
@@ -546,10 +550,14 @@ class AppBackend(QObject):
         self._connecting_ids: set[str] = set()
         self._disconnecting_ids: set[str] = set()
         self._pending_actions: dict[str, str] = {}
+        self._pending_details: dict[str, str] = {}
         self._device_activity: dict[str, str] = {}
         self._device_telemetry: dict[str, dict[str, Any]] = {}
         self._session_capture_base: dict[str, int] = {}
         self._session_capture_peak: dict[str, int] = {}
+        self._hold_session_capture: set[str] = set()
+        self._recovered_sessions: dict[str, str] = {}
+        self._resume_attempted: set[str] = set()
         self._telemetry_updated: dict[str, float] = {}
         self._alerts = AlertEngine()
         self._last_toast: tuple[str, str, float] = ("", "", 0.0)
@@ -563,6 +571,7 @@ class AppBackend(QObject):
             self._create_worker(device)
         recovered = self.store.recover_running()
         if recovered:
+            self._recovered_sessions = {item.id: item.device_id for item in recovered}
             self.add_log("warning", f"Recovered {len(recovered)} interrupted session(s)")
         self._sequence_colliding_mosaics()
         self.timer = QTimer(self)
@@ -614,6 +623,7 @@ class AppBackend(QObject):
         worker.logReceived.connect(lambda level, message, did=device.id: self.add_log(level, message, did))
         worker.telemetryReceived.connect(lambda data, did=device.id: self._on_telemetry(did, data))
         worker.progressReceived.connect(self._session_progress)
+        worker.statusReceived.connect(lambda kind, step, did=device.id: self._on_worker_status(did, kind, step))
         worker.availabilityChanged.connect(self._worker_status_changed)
         self._workers[device.id] = worker
         worker.start()
@@ -627,9 +637,11 @@ class AppBackend(QObject):
             if device_id == self._selected_device_id:
                 selected_offline = True
             self._pending_actions.pop(device_id, None)
+            self._pending_details.pop(device_id, None)
             self._device_activity.pop(device_id, None)
             self._device_telemetry.pop(device_id, None)
             self._telemetry_updated.pop(device_id, None)
+            self._hold_session_capture.discard(device_id)
         if selected_offline:
             self.stopPreview()
         self._disarm_scheduler_if_offline()
@@ -658,6 +670,24 @@ class AppBackend(QObject):
         """Merge a telemetry delta from the worker and raise transition alerts."""
         if not isinstance(data, dict) or not data:
             return
+        data = dict(data)
+        if device_id in self._hold_session_capture:
+            reset = False
+            try:
+                reset = int(data.get("capture_current") or 0) == 0 and int(data.get("capture_stacked") or 0) == 0
+            except (TypeError, ValueError):
+                reset = False
+            if reset and ("capture_current" in data or "capture_stacked" in data):
+                self._hold_session_capture.discard(device_id)
+            else:
+                for key in ("capture_current", "capture_stacked", "capture_active", "capture_state", "mosaic_active"):
+                    if key == "capture_state" and data.get(key) in ("idle", "stopped"):
+                        continue
+                    if key == "capture_active" and data.get(key) is False:
+                        continue
+                    data.pop(key, None)
+                if not data:
+                    return
         previous = dict(self._device_telemetry.get(device_id, {}))
         current = dict(previous)
         current.update(data)
@@ -680,6 +710,7 @@ class AppBackend(QObject):
             return
         self._track_session_capture(device_id, current)
         self._maybe_resume_held_preview(device_id)
+        self._maybe_resume_interrupted_session(device_id)
         self._notify_devices()
 
     def _toast(self, message: str, level: str = "info", detail: str = "") -> None:
@@ -734,11 +765,52 @@ class AppBackend(QObject):
             if current == action:
                 return
             self._pending_actions[device_id] = action
+            if action != "stop_all":
+                self._pending_details.pop(device_id, None)
         elif current:
             self._pending_actions.pop(device_id, None)
+            self._pending_details.pop(device_id, None)
         else:
             return
         self._notify_devices()
+
+    def _set_pending_detail(self, device_id: str, detail: str) -> None:
+        text = str(detail or "").strip()
+        current = self._pending_details.get(device_id, "")
+        if text:
+            if current == text:
+                return
+            self._pending_details[device_id] = text
+        elif current:
+            self._pending_details.pop(device_id, None)
+        else:
+            return
+        self._notify_devices()
+
+    def _on_worker_status(self, device_id: str, kind: str, step: str) -> None:
+        if kind != "stop" or self._pending_actions.get(device_id) != "stop_all":
+            return
+        self._set_pending_detail(device_id, step)
+
+    def _initial_stop_detail(self, device_id: str) -> str:
+        session_id = self._active_sessions.get(device_id)
+        session = self.store.sessions.get(session_id) if session_id else None
+        telemetry = self._device_telemetry.get(device_id, {})
+        target = str(telemetry.get("capture_target") or telemetry.get("tracking_target") or "")
+        if session and session.target.name:
+            target = target or session.target.name
+        if telemetry.get("capture_active"):
+            return f"Stopping capture{f' · {target}' if target else ''}"
+        if session:
+            step = str(session.current_step or "").strip()
+            name = session.target.name if session else "session"
+            if step and step not in {"Waiting", "Starting worker", "Stopping"}:
+                return f"Stopping {step.lower()} · {name}"
+            return f"Stopping session · {name}"
+        activity = self._device_activity.get(device_id) or ""
+        if activity:
+            return f"Stopping {activity.replace('_', ' ')}"
+        return "Stopping telescope activity"
 
     def _with_pending(self, device_id: str, action: str, callback: Callable[[bool, Any], None] | None = None) -> Callable[[bool, Any], None]:
         self._set_pending_action(device_id, action)
@@ -820,6 +892,7 @@ class AppBackend(QObject):
                 "connecting": connecting,
                 "disconnecting": disconnecting,
                 "pending_action": self._pending_actions.get(device.id, ""),
+                "pending_detail": self._pending_details.get(device.id, ""),
                 "activity": activity,
                 "activity_detail": telemetry["activity_detail"],
                 "activity_from_device": bool(telemetry["activity"]),
@@ -1219,6 +1292,11 @@ class AppBackend(QObject):
         if not worker or not worker.connected:
             self.add_log("warning", "Preview needs an active telescope connection", device_id)
             return
+        if self._preview_should_attach_only(device_id):
+            self._clear_preview_hold()
+            self.add_log("info", "Attaching live view without interrupting the session", device_id)
+            self._attach_preview_streams(device_id, "Attaching to live view…")
+            return
         if self._preview_hold_device_id == device_id and self._session_is_capturing(device_id):
             self._resume_held_preview(device_id)
             return
@@ -1400,6 +1478,9 @@ class AppBackend(QObject):
             self._set_preview_status(self.previewHoldMessage)
 
     def _hold_preview_for_session(self, device_id: str, target_name: str) -> None:
+        # Temporarily leave live preview running through session start so we can
+        # test whether the stream survives while the telescope is working.
+        return
         if device_id != self._selected_device_id:
             return
         if not (self._preview_active or self._preview_playing or self._preview_hold_device_id == device_id):
@@ -1423,6 +1504,44 @@ class AppBackend(QObject):
         session = self.store.sessions.get(session_id) if session_id else None
         return bool(session and session.current_step in _CAPTURE_PREVIEW_STEPS)
 
+    def _preview_should_attach_only(self, device_id: str) -> bool:
+        """Avoid go_live / photo_mode while the telescope is already working."""
+        if self._active_sessions.get(device_id):
+            return True
+        worker = self._workers.get(device_id)
+        if worker and worker.busy:
+            return True
+        if self._session_is_capturing(device_id):
+            return True
+        telemetry = self._device_telemetry.get(device_id) or {}
+        if telemetry.get("capture_active") or telemetry.get("capture_state") == "running":
+            return True
+        return any(
+            item.device_id == device_id and item.status == SessionStatus.RUNNING
+            for item in self.store.sessions.all()
+        )
+
+    def _attach_preview_streams(self, device_id: str, status: str, timeout: float = 20) -> None:
+        if device_id != self._selected_device_id:
+            return
+        worker = self._workers.get(device_id)
+        device = next((item for item in self._devices if item.id == device_id), None)
+        if not worker or not worker.connected or device is None:
+            return
+        token = self._arm_preview_ui(status)
+        tele_url = self._stream_url(device, Camera.TELE)
+        wide_url = self._stream_url(device, Camera.WIDE)
+        host = urlparse(tele_url).hostname or device.ip_address
+        self._begin_stream_wait(
+            token,
+            tele_url,
+            wide_url,
+            host,
+            stream_port(tele_url),
+            timeout=timeout,
+            status=status,
+        )
+
     def _maybe_resume_held_preview(self, device_id: str) -> None:
         if self._preview_hold_device_id != device_id:
             return
@@ -1436,27 +1555,9 @@ class AppBackend(QObject):
         if self._preview_active or self._preview_playing:
             self._clear_preview_hold()
             return
-        if device_id != self._selected_device_id:
-            return
-        worker = self._workers.get(device_id)
-        device = next((item for item in self._devices if item.id == device_id), None)
-        if not worker or not worker.connected or device is None:
-            return
         self._clear_preview_hold()
         self.add_log("info", "Capture started; reconnecting live view", device_id)
-        token = self._arm_preview_ui("Capture started — reconnecting live view…")
-        tele_url = self._stream_url(device, Camera.TELE)
-        wide_url = self._stream_url(device, Camera.WIDE)
-        host = urlparse(tele_url).hostname or device.ip_address
-        self._begin_stream_wait(
-            token,
-            tele_url,
-            wide_url,
-            host,
-            stream_port(tele_url),
-            timeout=20,
-            status="Capture started — reconnecting live view…",
-        )
+        self._attach_preview_streams(device_id, "Capture started — reconnecting live view…")
 
     def _restore_held_preview(self, device_id: str) -> None:
         if device_id != self._selected_device_id:
@@ -1624,6 +1725,8 @@ class AppBackend(QObject):
             self._toast(f"{device.name} connected", "success", detail)
             if isinstance(telemetry, dict) and telemetry:
                 self._on_telemetry(device_id, telemetry)
+            self._maybe_resume_interrupted_session(device_id)
+            QTimer.singleShot(8000, lambda did=device_id: self._release_recovered_if_idle(did))
         else:
             self._toast("Connection failed", "error", str(result))
             self._disarm_scheduler_if_offline()
@@ -1642,6 +1745,9 @@ class AppBackend(QObject):
         self._stop_requested.add(session_id)
         session = self.store.sessions.get(session_id)
         name = session.target.name if session else "session"
+        if session:
+            self.store.sessions.save(replace(session, current_step="Stopping"))
+            self.sessionsChanged.emit()
         self.add_log("warning", f"Stopping session · {name} ({reason})", device_id)
         return True
 
@@ -1664,6 +1770,7 @@ class AppBackend(QObject):
             self._set_activity(device_id, "")
             self._device_telemetry.pop(device_id, None)
             self._telemetry_updated.pop(device_id, None)
+            self._hold_session_capture.discard(device_id)
             self._device_lights.pop(device_id, None)
             self.add_log("info" if ok else "error", "Disconnected" if ok else str(result), device_id)
             self._toast("Telescope disconnected" if ok else "Disconnect failed", "info" if ok else "error", "" if ok else str(result))
@@ -1786,6 +1893,7 @@ class AppBackend(QObject):
         worker = self._workers.get(device_id)
         if not worker:
             return
+        detail = self._initial_stop_detail(device_id)
         self._abort_active_session(device_id, "STOP ALL")
         if not worker.connected:
             if device_id == self._selected_device_id:
@@ -1793,6 +1901,7 @@ class AppBackend(QObject):
             self.add_log("warning", "Stop skipped; telescope is not connected", device_id)
             return
         self._begin_activity(device_id, "stop_all")
+        self._set_pending_detail(device_id, detail)
 
         def done(ok: bool, result: Any) -> None:
             self._complete_activity(device_id, "stop_all", ok)
@@ -1887,9 +1996,11 @@ class AppBackend(QObject):
         self._devices = [item for item in self._devices if item.id != device_id]
         self._active_sessions.pop(device_id, None)
         self._pending_actions.pop(device_id, None)
+        self._pending_details.pop(device_id, None)
         self._device_activity.pop(device_id, None)
         self._device_telemetry.pop(device_id, None)
         self._telemetry_updated.pop(device_id, None)
+        self._hold_session_capture.discard(device_id)
         self._device_lights.pop(device_id, None)
         if self._selected_device_id == device_id:
             self._selected_device_id = self._devices[0].id
@@ -3063,24 +3174,113 @@ class AppBackend(QObject):
             due = parse_in_zone(session.scheduled_start, tz)
             if due > datetime.now(tz):
                 continue
+            if session.id in self._recovered_sessions:
+                self._maybe_resume_interrupted_session(device.id)
+                continue
             self._start_session(worker, session)
 
+    def _recovered_session_for(self, device_id: str, telemetry: dict[str, Any]) -> Session | None:
+        candidates = [
+            session
+            for session_id, owner in self._recovered_sessions.items()
+            if owner == device_id
+            for session in [self.store.sessions.get(session_id)]
+            if session is not None and session.status == SessionStatus.PLANNED
+        ]
+        if not candidates:
+            return None
+        target = str(telemetry.get("capture_target") or telemetry.get("tracking_target") or "").strip().lower()
+        if target:
+            matched = [
+                session
+                for session in candidates
+                if target == session.target.name.strip().lower()
+                or target in session.target.name.strip().lower()
+                or session.target.name.strip().lower() in target
+            ]
+            if matched:
+                candidates = matched
+            elif any(session.target.name.strip() for session in candidates):
+                return None
+        return sorted(candidates, key=lambda item: item.scheduled_start)[-1]
+
+    def _maybe_resume_interrupted_session(self, device_id: str) -> None:
+        if device_id in self._resume_attempted or self._active_sessions.get(device_id):
+            return
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected or worker.busy:
+            return
+        telemetry = self._device_telemetry.get(device_id) or {}
+        if not (telemetry.get("capture_active") or telemetry.get("capture_state") == "running"):
+            return
+        session = self._recovered_session_for(device_id, telemetry)
+        if not session:
+            return
+        self._resume_attempted.add(device_id)
+        self._start_session(worker, session)
+
+    def _release_recovered_if_idle(self, device_id: str) -> None:
+        """If reconnect did not find a live stack, let the scheduler own the recovered session."""
+        if self._shut_down or self._active_sessions.get(device_id):
+            return
+        telemetry = self._device_telemetry.get(device_id) or {}
+        if telemetry.get("capture_active") or telemetry.get("capture_state") == "running":
+            self._maybe_resume_interrupted_session(device_id)
+            return
+        stale = [session_id for session_id, owner in self._recovered_sessions.items() if owner == device_id]
+        for session_id in stale:
+            self._recovered_sessions.pop(session_id, None)
+
     def _start_session(self, worker: TelescopeProcess, session: Session) -> None:
-        started = datetime.now(timezone.utc)
+        resuming = (
+            session.id in self._recovered_sessions
+            or str(session.current_step or "") == "Recovered after restart"
+        )
+        started = (
+            session.actual_started_at
+            if resuming and session.actual_started_at
+            else datetime.now(timezone.utc).isoformat()
+        )
         session = self.store.transition(
             session.id,
             SessionStatus.RUNNING,
-            actual_started_at=started.isoformat(),
-            current_step="Starting worker",
+            actual_started_at=started,
+            current_step="Joining capture" if resuming else "Starting worker",
         )
+        self._recovered_sessions.pop(session.id, None)
         self._active_sessions[session.device_id] = session.id
-        self._session_capture_base[session.id] = self._telemetry_frame_count(session.device_id)
-        self._session_capture_peak[session.id] = 0
+        if resuming:
+            self._session_capture_base[session.id] = 0
+            self._session_capture_peak[session.id] = self._telemetry_frame_count(session.device_id)
+            telemetry = dict(self._device_telemetry.get(session.device_id) or {})
+            if not telemetry.get("capture_total") and session.camera.frame_count:
+                telemetry["capture_total"] = int(session.camera.frame_count)
+                self._device_telemetry[session.device_id] = telemetry
+        else:
+            telemetry = self._device_telemetry.get(session.device_id) or {}
+            capturing = bool(telemetry.get("capture_active") or telemetry.get("capture_state") == "running")
+            # History baseline uses leftover counts in case the firmware does
+            # not reset; wipe the HUD unless we are about to join that stack.
+            self._session_capture_base[session.id] = self._telemetry_frame_count(session.device_id)
+            self._session_capture_peak[session.id] = 0
+            if not capturing:
+                self._hold_session_capture.add(session.device_id)
+                self._reset_device_capture_progress(
+                    session.device_id,
+                    total=int(session.camera.frame_count or 0),
+                    target=session.target.name,
+                )
         self._set_activity(session.device_id, "")
         self._hold_preview_for_session(session.device_id, session.target.name)
         self.sessionsChanged.emit()
-        self.add_log("notice", f"Session started · {session.target.name}", session.device_id)
-        self._toast(f"Session started · {session.target.name}", "info", f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s")
+        if not resuming:
+            self._notify_devices()
+        if resuming:
+            self.add_log("notice", f"Session resumed · {session.target.name}", session.device_id)
+            self._toast(f"Session resumed · {session.target.name}", "info", "Joining the capture already running on the telescope")
+        else:
+            self.add_log("notice", f"Session started · {session.target.name}", session.device_id)
+            self._toast(f"Session started · {session.target.name}", "info", f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s")
         worker.run_session(session, lambda ok, result: self._session_finished(session.id, ok, result))
 
     @Slot(str, str)
@@ -3139,6 +3339,7 @@ class AppBackend(QObject):
             outcome=outcome,
         )
         captured = self._captured_frames_for(session.id, final.camera.frame_count, ok)
+        self._hold_session_capture.discard(final.device_id)
         self.store.history.save(HistoryRecord(
             session_id=final.id,
             device_id=final.device_id,
@@ -3193,6 +3394,24 @@ class AppBackend(QObject):
                 changed = True
         if changed:
             self.sessionsChanged.emit()
+
+    def _reset_device_capture_progress(self, device_id: str, total: int = 0, target: str = "") -> None:
+        """Clear leftover stacking counts on the HUD for a freshly started session."""
+        telemetry = dict(self._device_telemetry.get(device_id) or {})
+        telemetry.update({
+            "capture_current": 0,
+            "capture_stacked": 0,
+            "capture_active": False,
+            "capture_state": "idle",
+            "mosaic_active": False,
+            "capture_target": target or "",
+            "capture_shooting_s": 0,
+            "capture_stacked_s": 0,
+        })
+        if total:
+            telemetry["capture_total"] = int(total)
+        self._device_telemetry[device_id] = telemetry
+        self._telemetry_updated[device_id] = time.time()
 
     def _telemetry_frame_count(self, device_id: str) -> int:
         raw = self._device_telemetry.get(device_id) or {}

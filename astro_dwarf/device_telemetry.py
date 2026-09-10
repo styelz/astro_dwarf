@@ -180,6 +180,44 @@ def _exposure_name(index: Any, model_id: str) -> str:
     return str(index)
 
 
+def _stacking_progress_changes(message: Any, mosaic: bool = False) -> dict[str, Any]:
+    """Honor firmware ``update_type`` so a stacked-only packet cannot zero current.
+
+    The SDK cache does the same: 0 = current, 1 = stacked, 2 = both.
+    Proto3 defaults missing ints to 0, which is what made the HUD flash
+    the real count then jump back to 0/N after a reconnect.
+    """
+    try:
+        update_type = int(getattr(message, "update_type", 2))
+    except (TypeError, ValueError):
+        update_type = 2
+    if update_type not in (0, 1, 2):
+        update_type = 2
+    changes: dict[str, Any] = {
+        "capture_total": int(message.total_count),
+        "capture_target": str(message.target_name or ""),
+        "capture_active": True,
+    }
+    if mosaic:
+        changes["mosaic_active"] = True
+    if update_type in (0, 2):
+        changes["capture_current"] = int(message.current_count)
+    if update_type in (1, 2):
+        changes["capture_stacked"] = int(message.stacked_count)
+    if not mosaic:
+        try:
+            if message.HasField("shooting_time"):
+                changes["capture_shooting_s"] = int(message.shooting_time)
+        except Exception:
+            pass
+        try:
+            if message.HasField("stacked_time"):
+                changes["capture_stacked_s"] = int(message.stacked_time)
+        except Exception:
+            pass
+    return changes
+
+
 class TelemetryTap:
     """Collects device telemetry from raw packets, the SDK cache and state dumps."""
 
@@ -197,6 +235,11 @@ class TelemetryTap:
         self._status_signature: dict[str, Any] = {}
         self._astro = None
         self._responses: dict[int, tuple[int, float]] = {}
+        # After a new session starts, leftover stacking packets / SDK cache
+        # counts from the previous run must not keep the HUD on e.g. 104/120.
+        self._hold_stale_capture = False
+        self._accept_sdk_capture_counts = True
+        self._stale_capture_peak = 0
 
     # ------------------------------------------------------------------ setup
     def install(self, websockets_utils: Any) -> bool:
@@ -250,6 +293,64 @@ class TelemetryTap:
             self._pending.clear()
             self._status_signature.clear()
             self._responses.clear()
+            self._hold_stale_capture = False
+            self._accept_sdk_capture_counts = True
+            self._stale_capture_peak = 0
+
+    def _capture_count_peak(self, data: dict[str, Any] | None = None) -> int:
+        source = data if data is not None else self._state
+        peak = 0
+        for key in ("capture_current", "capture_stacked"):
+            try:
+                peak = max(peak, int(source.get(key) or 0))
+            except (TypeError, ValueError):
+                continue
+        return peak
+
+    def reset_capture_progress(self, total: int | None = None, target: str = "") -> None:
+        """Zero leftover stacking counts so a new session does not show the last run."""
+        with self._lock:
+            peak = max(self._stale_capture_peak, self._capture_count_peak(), self._capture_count_peak(self._pending))
+            self._stale_capture_peak = peak
+            self._hold_stale_capture = True
+            self._accept_sdk_capture_counts = False
+        changes: dict[str, Any] = {
+            "capture_current": 0,
+            "capture_stacked": 0,
+            "capture_active": False,
+            "capture_state": "idle",
+            "mosaic_active": False,
+            "capture_target": target or "",
+            "capture_shooting_s": 0,
+            "capture_stacked_s": 0,
+        }
+        if total is not None:
+            try:
+                changes["capture_total"] = int(total)
+            except (TypeError, ValueError):
+                pass
+        self.update(changes, force=True)
+
+    def release_capture_progress(self) -> None:
+        """Accept stacking notifications for the capture that is about to start."""
+        with self._lock:
+            self._hold_stale_capture = False
+
+    def _fresh_stacking_progress(self, message: Any, mosaic: bool = False) -> dict[str, Any]:
+        with self._lock:
+            hold = self._hold_stale_capture
+            stale_peak = self._stale_capture_peak
+        if hold:
+            return {}
+        changes = _stacking_progress_changes(message, mosaic=mosaic)
+        new_count = self._capture_count_peak(changes)
+        if stale_peak > 1 and new_count >= stale_peak:
+            # Leftover packets from the previous stack; wait for a fresh 0/1.
+            return {}
+        with self._lock:
+            self._stale_capture_peak = 0
+            self._accept_sdk_capture_counts = True
+        return changes
 
     def response_after(self, cmd: int, since: float) -> int | None:
         """Return the reply code for ``cmd`` received after monotonic time ``since``."""
@@ -487,6 +588,10 @@ class TelemetryTap:
         if cmd in (CMD_NOTIFY_STATE_CAPTURE_RAW_LIVE_STACKING, CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING):
             message = self._parse("CaptureRawState", data)
             state = OPERATION_STATES.get(int(message.state), str(message.state))
+            with self._lock:
+                hold = self._hold_stale_capture
+            if hold and state == "running":
+                return {}
             changes: dict[str, Any] = {"capture_state": state}
             changes["capture_camera"] = "wide" if cmd == CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING else "tele"
             if state in ("idle", "stopped"):
@@ -496,28 +601,10 @@ class TelemetryTap:
             return changes
         if cmd in (CMD_NOTIFY_PROGRASS_CAPTURE_RAW_LIVE_STACKING, CMD_NOTIFY_PROGRASS_WIDE_CAPTURE_RAW_LIVE_STACKING):
             message = self._parse("ProgressCaptureRawLiveStacking", data)
-            changes = {
-                "capture_total": int(message.total_count),
-                "capture_current": int(message.current_count),
-                "capture_stacked": int(message.stacked_count),
-                "capture_target": str(message.target_name or ""),
-                "capture_active": True,
-            }
-            if message.HasField("shooting_time"):
-                changes["capture_shooting_s"] = int(message.shooting_time)
-            if message.HasField("stacked_time"):
-                changes["capture_stacked_s"] = int(message.stacked_time)
-            return changes
+            return self._fresh_stacking_progress(message)
         if cmd == CMD_NOTIFY_PROGRESS_CAPTURE_MOSAIC:
             message = self._parse("ProgressCaptureMosaic", data)
-            return {
-                "capture_total": int(message.total_count),
-                "capture_current": int(message.current_count),
-                "capture_stacked": int(message.stacked_count),
-                "capture_target": str(message.target_name or ""),
-                "capture_active": True,
-                "mosaic_active": True,
-            }
+            return self._fresh_stacking_progress(message, mosaic=True)
         if cmd == CMD_NOTIFY_STATE_CAPTURE_RAW_DARK:
             message = self._parse("OperationStateNotify", data)
             state = OPERATION_STATES.get(int(message.state), str(message.state))
@@ -640,12 +727,19 @@ class TelemetryTap:
                 which = exclusive.WhichOneof("current_state")
                 if which == "capture_raw_state":
                     state = OPERATION_STATES.get(int(exclusive.capture_raw_state.state), "idle")
-                    changes["capture_state"] = state
-                    changes["capture_active"] = state == "running"
+                    with self._lock:
+                        hold = self._hold_stale_capture
+                    if not (hold and state == "running"):
+                        changes["capture_state"] = state
+                        changes["capture_active"] = state == "running"
                 elif which == "record_state":
                     changes["record_state"] = OPERATION_STATES.get(int(exclusive.record_state.state), "idle")
                 elif which is None and prefix == "tele":
-                    changes["capture_active"] = False
+                    # Tracking owns the motors during stacking, so this oneof
+                    # can be empty while capture notifications are still live.
+                    snapshot = self.snapshot()
+                    if snapshot.get("capture_state") != "running" and not snapshot.get("capture_active"):
+                        changes["capture_active"] = False
         focus = getattr(message, "focus_motor_state_info", None)
         if focus is not None and message.HasField("focus_motor_state_info"):
             if focus.HasField("focus_position"):
@@ -693,6 +787,25 @@ class TelemetryTap:
         if not isinstance(full, dict) or full.get("error"):
             return
         changes = normalize_client_status(full, self._model_id)
+        if not changes:
+            return
+        snapshot = self.snapshot()
+        with self._lock:
+            accept_sdk_counts = self._accept_sdk_capture_counts
+        if not accept_sdk_counts:
+            changes.pop("capture_current", None)
+            changes.pop("capture_stacked", None)
+        elif snapshot.get("capture_active") or snapshot.get("capture_state") == "running":
+            # After a reconnect the SDK cache starts at 0 until it sees the
+            # next progress packet; never let that clobber notification counts.
+            for key in ("capture_current", "capture_stacked"):
+                if key not in changes:
+                    continue
+                try:
+                    if int(changes[key]) < int(snapshot.get(key) or 0):
+                        changes.pop(key, None)
+                except (TypeError, ValueError):
+                    continue
         if changes:
             self.update(changes, force=True)
 

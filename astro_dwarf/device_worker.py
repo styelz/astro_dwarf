@@ -67,6 +67,10 @@ def log(message: str, level: str = "info") -> None:
     emit({"event": "log", "level": level, "message": message})
 
 
+def report_status(kind: str, step: str) -> None:
+    emit({"event": "status", "kind": kind, "step": step})
+
+
 def _client_status() -> Any:
     try:
         from dwarf_python_api.lib import websockets_utils
@@ -167,6 +171,10 @@ def request_stop(reason: str = "Session stopped") -> None:
     global _stop_phase
     _stop_phase = _session_phase
     _stop.set()
+    if _session_active.is_set() or _in_flight is not None:
+        report_status("stop", _stop_wait_label(_session_phase or _in_flight))
+    else:
+        report_status("stop", "Sending stop commands")
     if _in_flight is not None:
         _interrupt_sdk_wait(reason)
 
@@ -258,9 +266,11 @@ FUNCTIONS = {
     "set_binning": "perform_set_astro_stack_binning_v3",
     "astro": "perform_takeAstroPhoto",
     "wait_astro": "perform_waitEndAstroPhoto",
+    "wait_astro_resume": "perform_waitRetryEndAstroPhoto",
     "stop_astro": "perform_stopAstroPhoto",
     "wide_astro": "perform_takeAstroWidePhoto",
     "wait_wide": "perform_waitEndAstroWidePhoto",
+    "wait_wide_resume": "perform_waitRetryEndAstroWidePhoto",
     "stop_wide": "perform_stopAstroWidePhoto",
     "mosaic": "perform_start_mosaic_v3",
     "stack_status": "perform_read_astro_stacking_status_v3",
@@ -1293,6 +1303,98 @@ def _capture_running(snapshot: dict[str, Any]) -> bool:
     return bool(snapshot.get("capture_active")) or snapshot.get("capture_state") == "running"
 
 
+def _reset_session_capture(session: dict[str, Any] | None = None) -> None:
+    """Drop leftover stacking counts so the HUD does not keep the previous run."""
+    if _tap is None:
+        return
+    total = None
+    target = ""
+    if session is not None:
+        camera = session.get("camera") or {}
+        target = str((session.get("target") or {}).get("name") or "")
+        try:
+            total = int(camera.get("frame_count") or 0) or None
+        except (TypeError, ValueError):
+            total = None
+    else:
+        snapshot = _tap.snapshot()
+        try:
+            total = int(snapshot.get("capture_total") or 0) or None
+        except (TypeError, ValueError):
+            total = None
+        target = str(snapshot.get("capture_target") or "")
+    _tap.reset_capture_progress(total=total, target=target)
+
+
+def _arm_sdk_capture_rejoin(wide: bool) -> None:
+    """Mark the SDK cache so a reconnect still treats STOPPED as this capture ending."""
+    try:
+        from dwarf_python_api.lib import websockets_utils
+
+        client = getattr(websockets_utils, "client_instance", None)
+        if client is None:
+            return
+        if wide:
+            client.RestartAstroWideCapture = True
+            client.takeWidePhotoStarted = True
+            client.AstroWideCapture = True
+        else:
+            client.RestartAstroCapture = True
+            client.takePhotoStarted = True
+            client.AstroCapture = True
+    except Exception:
+        pass
+
+
+def _same_capture_target(session: dict[str, Any], snapshot: dict[str, Any]) -> bool:
+    session_name = str((session.get("target") or {}).get("name") or "").strip().lower()
+    live_name = str(snapshot.get("capture_target") or snapshot.get("tracking_target") or "").strip().lower()
+    if not session_name or not live_name:
+        return True
+    return session_name == live_name or session_name in live_name or live_name in session_name
+
+
+def _wait_for_capture_end() -> None:
+    """Watch telemetry until stacking stops. The SDK wait needs a capture this client started."""
+    seen = False
+    quiet_since: float | None = None
+    while True:
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        snapshot = _tap.snapshot() if _tap is not None else {}
+        if _capture_running(snapshot):
+            seen = True
+            quiet_since = None
+        elif seen:
+            state = str(snapshot.get("capture_state") or "")
+            if state in ("stopped", "idle"):
+                return
+            if quiet_since is None:
+                quiet_since = time.monotonic()
+            elif time.monotonic() - quiet_since >= 20.0:
+                return
+        time.sleep(0.5)
+
+
+def _join_existing_capture(session: dict[str, Any], step: Any) -> bool:
+    if _tap is None:
+        return False
+    snapshot = _tap.snapshot()
+    if not _capture_running(snapshot):
+        return False
+    if not _same_capture_target(session, snapshot):
+        live = snapshot.get("capture_target") or snapshot.get("tracking_target") or "another target"
+        log(f"Telescope is stacking {live}; not joining this session", "warning")
+        return False
+    wide = snapshot.get("capture_camera") == "wide" or str((session.get("camera") or {}).get("camera") or "") == "wide"
+    log("Telescope is already stacking; joining the in-progress capture", "notice")
+    step(
+        "Waiting for wide capture" if wide else "Waiting for capture",
+        "wait_wide_resume" if wide else "wait_astro_resume",
+    )
+    return True
+
+
 def _continue_shooting(name: str) -> bool:
     """Send CMD_ASTRO_CONTINUE_SHOOTING after a recoverable capture warning.
 
@@ -1348,8 +1450,11 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
     label = name
     deadline = time.monotonic() + _CAPTURE_BUSY_TIMEOUT_S
     force_start = False
+    _reset_session_capture()
     while True:
         since = time.monotonic()
+        if _tap is not None:
+            _tap.release_capture_progress()
         message = _capture_request(operation, args, force_start)
         result = _send_request(operation, message, command, _MODULE_ASTRO, label)
         if _stop.is_set():
@@ -1372,6 +1477,7 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"{name} failed: {_error_name(code)}")
             log(f"{name}: astro engine still busy ({_error_name(code)}); retrying in {int(_CAPTURE_BUSY_RETRY_S)} s", "warning")
+            _reset_session_capture()
             if _stop.wait(_CAPTURE_BUSY_RETRY_S):
                 raise InterruptedError("Session stopped")
             continue
@@ -1405,6 +1511,10 @@ def run_session(session: dict[str, Any]) -> bool:
         started = time.monotonic()
         if operation in _CAPTURE_STARTS:
             _start_capture(name, operation, list(args))
+            return
+        if operation in ("wait_astro_resume", "wait_wide_resume"):
+            _arm_sdk_capture_rejoin(wide=operation == "wait_wide_resume")
+            _wait_for_capture_end()
             return
         if sdk_call(operation, *args) is False:
             if _stop.is_set():
@@ -1485,7 +1595,19 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         raise RuntimeError(
             "Telescope location is lat=0, long=0. Set your observing site before running a session."
         )
+    if str(session.get("current_step") or "") in {"Joining capture", "Recovered after restart"}:
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            if _stop.is_set():
+                raise InterruptedError("Session stopped")
+            if _tap is not None and _capture_running(_tap.snapshot()):
+                break
+            time.sleep(0.25)
+    if _join_existing_capture(session, step):
+        return True
+    _reset_session_capture(session)
     step("Closing previous capture", "go_live")
+    _reset_session_capture(session)
     if target.get("kind") == "solar":
         solar_name = (target.get("solar_name") or target["name"]).lower()
         step("Entering solar mode", "shooting_mode", 8 if solar_name == "sun" else 9 if solar_name == "moon" else 10, 2)
@@ -1550,6 +1672,40 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
 # active, which stalls the SDK for its full 150 s timeout.
 _FALLBACK_STOPS = ("stop_astro", "stop_goto", "stop_calibrate", "stop_autofocus", "stop_polar")
 _STOP_COMMAND_TIMEOUT = 6.0
+_STOP_STEP_LABELS = {
+    "stop_astro": "Stopping capture",
+    "stop_wide": "Stopping wide capture",
+    "stop_goto": "Stopping GOTO",
+    "stop_calibrate": "Stopping calibration",
+    "stop_autofocus": "Stopping autofocus",
+    "stop_polar": "Stopping polar alignment",
+    "stop_motors": "Stopping motors",
+}
+_PHASE_STOP_LABELS = {
+    "astro": "Waiting for capture to stop",
+    "wait_astro": "Waiting for capture to stop",
+    "wait_astro_resume": "Waiting for capture to stop",
+    "mosaic": "Waiting for mosaic to stop",
+    "set_mosaic_count": "Waiting for mosaic to stop",
+    "wide_astro": "Waiting for wide capture to stop",
+    "wait_wide": "Waiting for wide capture to stop",
+    "wait_wide_resume": "Waiting for wide capture to stop",
+    "goto": "Waiting for GOTO to stop",
+    "goto_solar": "Waiting for GOTO to stop",
+    "calibrate": "Waiting for calibration to stop",
+    "autofocus": "Waiting for autofocus to stop",
+    "polar": "Waiting for polar alignment to stop",
+}
+
+
+def _stop_wait_label(phase: str | None) -> str:
+    if not phase:
+        return "Waiting for the current command to unwind"
+    return _PHASE_STOP_LABELS.get(phase, f"Waiting for {phase.replace('_', ' ')} to stop")
+
+
+def _stop_step_label(operation: str) -> str:
+    return _STOP_STEP_LABELS.get(operation, operation.replace("_", " ").title())
 
 
 def _stop_targets() -> list[str]:
@@ -1559,9 +1715,9 @@ def _stop_targets() -> list[str]:
     capturing = bool(snapshot.get("capture_active"))
     wide_capture = capturing and snapshot.get("capture_camera") == "wide"
     operations: list[str] = []
-    if phase in ("astro", "wait_astro", "mosaic", "set_mosaic_count") or (capturing and not wide_capture):
+    if phase in ("astro", "wait_astro", "wait_astro_resume", "mosaic", "set_mosaic_count") or (capturing and not wide_capture):
         operations.append("stop_astro")
-    if phase in ("wide_astro", "wait_wide") or wide_capture:
+    if phase in ("wide_astro", "wait_wide", "wait_wide_resume") or wide_capture:
         operations.append("stop_wide")
     if phase in ("goto", "goto_solar") or snapshot.get("goto_state") in _BUSY_ASTRO:
         operations.append("stop_goto")
@@ -1599,12 +1755,18 @@ def stop_all() -> bool:
     _stop_phase = None
     if not _connected.is_set() or (_tap is not None and _tap.snapshot().get("power_off")):
         log("Stop skipped; telescope is not connected", "debug")
+        report_status("stop", "Telescope is not connected")
         return True
+    report_status("stop", "Sending stop commands")
     for operation in operations:
+        label = _stop_step_label(operation)
+        report_status("stop", label)
+        log(f"{label}…")
         try:
             _sdk_call_bounded(operation, _STOP_COMMAND_TIMEOUT)
         except Exception as exc:
-            log(f"{operation.replace('_', ' ').title()} skipped: {exc}", "debug")
+            log(f"{label} skipped: {exc}", "debug")
+    report_status("stop", "Stop complete")
     if _connected.is_set():
         request_state_refresh()
     return True
