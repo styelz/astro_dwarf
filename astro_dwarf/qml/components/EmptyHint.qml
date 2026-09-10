@@ -11,25 +11,31 @@ Column {
     property string glyph: "◇"
     property alias font: hintText.font
     property alias color: hintText.color
-    spacing: 6
+    spacing: 12
     width: Math.min(360, parent ? parent.width - 24 : 320)
     // when placed inside a Layout the width binding is overridden, so size via Layout hints too
     Layout.preferredWidth: 360
     Layout.minimumWidth: 160
     Layout.fillWidth: false
-    Text {
+    Item {
         anchors.horizontalCenter: parent.horizontalCenter
         visible: hint.glyph !== ""
-        text: hint.glyph
-        color: Theme.accent
-        opacity: 0.55
-        font.pixelSize: 22
+        width: glyphText.implicitHeight + 18
+        height: width
         Rectangle {
-            anchors.centerIn: parent
-            width: parent.implicitHeight + 18; height: width; radius: width / 2
+            anchors.fill: parent
+            radius: width / 2
             color: "transparent"
             border.color: Theme.accent
             opacity: 0.35
+        }
+        Text {
+            id: glyphText
+            anchors.centerIn: parent
+            text: hint.glyph
+            color: Theme.accent
+            opacity: 0.55
+            font.pixelSize: 22
         }
     }
     Text {
