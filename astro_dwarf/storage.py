@@ -128,7 +128,6 @@ class SessionStore:
                         session.id,
                         SessionStatus.PLANNED,
                         current_step="Recovered after restart",
-                        actual_started_at=None,
                     )
                 )
         return recovered
