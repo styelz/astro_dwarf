@@ -46,6 +46,7 @@ ApplicationWindow {
     readonly property bool scopeImaging: !!(backend.selectedDevice && backend.selectedDevice.busy)
     readonly property bool scopeLinking: !!(backend.selectedDevice && (backend.selectedDevice.connecting || backend.selectedDevice.disconnecting))
     readonly property string scopePending: String((backend.selectedDevice && backend.selectedDevice.pending_action) || "")
+    readonly property string scopePendingDetail: String((backend.selectedDevice && backend.selectedDevice.pending_detail) || "")
     readonly property string scopeActivity: String((backend.selectedDevice && backend.selectedDevice.activity) || "")
     readonly property bool previewFailed: {
         const status = String(backend.previewStatus || "").toLowerCase()
@@ -94,6 +95,8 @@ ApplicationWindow {
         confirmDialog.open()
     }
     function scopeActivityText() {
+        if (root.scopePending === "stop_all")
+            return (root.scopePendingDetail || "Stopping").toUpperCase()
         if (root.scopePending)
             return "SENDING · " + root.scopePending.replace(/_/g, " ").toUpperCase()
         const label = Util.activityLabel(root.scopeActivity)
@@ -106,6 +109,8 @@ ApplicationWindow {
     function activityColor() {
         if (!root.scopeOnline)
             return Theme.textSecondary
+        if (root.scopePending === "stop_all")
+            return Theme.warning
         if (root.scopePending)
             return Theme.accent
         switch (root.scopeActivity) {
