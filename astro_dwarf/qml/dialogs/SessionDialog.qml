@@ -54,8 +54,10 @@ Dialog {
         const grid = focusedMosaic
         if (!importedPlan)
             return ""
-        const cell = grid && grid.row && grid.column ? "This pane is R" + grid.row + " C" + grid.column + ". " : ""
-        return cell + "Each pane is captured on its own; the telescope mosaic is not used."
+        const size = grid && grid.grid_rows && grid.grid_columns
+            ? grid.grid_rows + " × " + grid.grid_columns + " imported panes. "
+            : ""
+        return size + "Each pane is captured on its own; the telescope mosaic is not used."
     }
     readonly property bool mosaicScaleVisible: {
         if (!mosaicVisible || importedPlan)
@@ -362,6 +364,17 @@ Dialog {
             wait_after_seconds: current.wait_after_seconds
         }
     }
+    function loadMosaicFields(data) {
+        const mosaic = (data && data.mosaic) || {}
+        importedPlan = !!(mosaic.grid_rows && mosaic.grid_columns)
+        if (importedPlan) {
+            rows.text = mosaic.row || ""
+            columns.text = mosaic.column || ""
+            return
+        }
+        rows.text = mosaic.rows
+        columns.text = mosaic.columns
+    }
     function loadPaneCoordinates(data) {
         sessionName.text = data.pane_name || data.name || ""
         const target = data.target || {}
@@ -370,6 +383,7 @@ Dialog {
         targetType.currentIndex = Math.max(0, ["equatorial", "solar", "none"].indexOf(kind))
         ra.text = target.ra_hours != null && target.ra_hours !== "" ? target.ra_hours : ""
         dec.text = target.dec_degrees != null && target.dec_degrees !== "" ? target.dec_degrees : ""
+        sessionDialog.loadMosaicFields(data)
     }
     function stashCurrentPane() {
         if (paneCount === 0)
@@ -456,15 +470,7 @@ Dialog {
         binning.currentIndex = sessionDialog.binningIndex(data.camera.binning)
         const ir = data.camera.ir_filter || "VIS Filter"
         irFilter.currentIndex = Math.max(0, ["VIS Filter", "Astro Filter", "Duo-Band Filter", "VIS"].indexOf(ir) % 3)
-        const mosaic = data.mosaic || {}
-        importedPlan = !!(mosaic.grid_rows && mosaic.grid_columns)
-        if (importedPlan) {
-            rows.text = mosaic.grid_rows
-            columns.text = mosaic.grid_columns
-        } else {
-            rows.text = mosaic.rows
-            columns.text = mosaic.columns
-        }
+        sessionDialog.loadMosaicFields(data)
         rotation.text = data.mosaic.rotation_degrees
         hScale.text = data.mosaic.horizontal_scale
         vScale.text = data.mosaic.vertical_scale
@@ -879,7 +885,7 @@ Dialog {
                 visible: sessionDialog.mosaicVisible
                 spacing: 2
                 Layout.fillWidth: true
-                FieldCaption { text: sessionDialog.importedPlan ? "ROWS (PLAN)" : "ROWS" }
+                FieldCaption { text: sessionDialog.importedPlan ? "ROW" : "ROWS" }
                 HudField {
                     id: rows
                     placeholderText: "1"
@@ -891,7 +897,7 @@ Dialog {
                 visible: sessionDialog.mosaicVisible
                 spacing: 2
                 Layout.fillWidth: true
-                FieldCaption { text: sessionDialog.importedPlan ? "COLUMNS (PLAN)" : "COLUMNS" }
+                FieldCaption { text: sessionDialog.importedPlan ? "COLUMN" : "COLUMNS" }
                 HudField {
                     id: columns
                     placeholderText: "1"
