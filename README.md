@@ -6,7 +6,7 @@ The Control page shows live view, device status, camera settings, commands, the 
 
 Sessions can be created by hand, from templates, from Stellarium's current target, or from a Telescopius CSV. Duration includes hardware overheads you can edit per telescope (slew, settle, calibration, focus, and so on). Tele/wide cameras and mosaics are supported.
 
-<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/a2d7b529-7958-447d-82b1-91bf02511092" />
+<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/2829f378-cd9c-4ca1-a4b0-189e61be7790" />
 
 Hardware commands go through [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api).
 
