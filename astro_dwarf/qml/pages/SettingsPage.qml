@@ -355,6 +355,23 @@ Item {
                         palette.buttonText: Theme.accent
                         palette.highlight: Theme.accent
                         onValueModified: backend.setObservingDayCutoffHour(value)
+                        WheelHandler {
+                            enabled: cutoffField.enabled
+                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                            acceptedModifiers: Qt.NoModifier
+                            blocking: true
+                            onWheel: event => {
+                                const delta = event.angleDelta.y !== 0 ? event.angleDelta.y : event.pixelDelta.y
+                                if (!delta)
+                                    return
+                                const next = Math.max(cutoffField.from, Math.min(cutoffField.to, cutoffField.value + (delta > 0 ? 1 : -1)))
+                                if (next !== cutoffField.value) {
+                                    cutoffField.value = next
+                                    cutoffField.valueModified()
+                                }
+                                event.accepted = true
+                            }
+                        }
                     }
                     FieldLabel { text: "STELLARIUM" }
                     HudField {

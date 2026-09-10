@@ -801,7 +801,7 @@ Dialog {
                 HudField { id: dec; Layout.fillWidth: true }
             }
             FieldLabel { text: "START"; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
-            HudField { id: startTime; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
+            HudTimeField { id: startTime; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
             FieldLabel { text: "DEVICE"; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
             HudCombo {
                 id: sessionDevice

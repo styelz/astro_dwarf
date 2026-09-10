@@ -110,10 +110,9 @@ Dialog {
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
-            HudField {
+            HudTimeField {
                 id: startTime
                 Layout.fillWidth: true
-                placeholderText: "yyyy-MM-ddTHH:mm"
                 onAccepted: scheduleDialog.confirm()
             }
             HudButton {
