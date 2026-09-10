@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
+from fractions import Fraction
 from typing import Any
 from uuid import uuid4
 
@@ -242,6 +243,44 @@ def firmware_binning(value: Any) -> int:
     except (TypeError, ValueError):
         n = 1
     return 1 if n >= 2 else 0
+
+
+# Names from the Dwarf 3 / Mini exposure tables (astro_dwarf_session dropdowns).
+# perform_set_astro_exposure_by_name_v3 matches these strings exactly.
+_EXPOSURE_NAMES = (
+    "1/10000", "1/8000", "1/6400", "1/5000", "1/4000", "1/3200", "1/2500",
+    "1/2000", "1/1600", "1/1250", "1/1000", "1/800", "1/640", "1/500", "1/400",
+    "1/320", "1/250", "1/200", "1/160", "1/125", "1/100", "1/80", "1/60",
+    "1/50", "1/40", "1/30", "1/25", "1/20", "1/15", "1/13", "1/10", "1/8",
+    "1/6", "1/5", "1/4", "1/3", "0.4", "0.5", "0.6", "0.8", "1", "1.3", "1.6",
+    "2", "2.5", "3.2", "4", "5", "6", "8", "10", "13", "15", "30", "45", "60",
+    "90", "120", "180",
+)
+
+
+def _exposure_seconds(name: str) -> float:
+    if "/" in name:
+        return float(Fraction(name))
+    return float(name)
+
+
+def firmware_exposure_name(value: Any) -> str:
+    """Map stored seconds (15.0) onto the SDK table name ("15").
+
+    astro_dwarf_session stores the dropdown string and passes it straight to
+    perform_set_astro_exposure_by_name_v3. str(15.0) is "15.0", which misses
+    "15" and silently falls back to 1/30s.
+    """
+    text = str(value).strip()
+    if not text:
+        return "15"
+    if text in _EXPOSURE_NAMES:
+        return text
+    try:
+        seconds = float(Fraction(text)) if "/" in text else float(text)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return text
+    return min(_EXPOSURE_NAMES, key=lambda name: abs(_exposure_seconds(name) - seconds))
 
 
 def camera_from_dict(data: dict[str, Any]) -> CameraSettings:

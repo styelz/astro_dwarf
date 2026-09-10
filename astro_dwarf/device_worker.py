@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_sdk_logging
-from .domain import firmware_binning
+from .domain import firmware_binning, firmware_exposure_name
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -1518,7 +1518,9 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         ids = {"mercury": 1, "venus": 2, "mars": 3, "jupiter": 4, "saturn": 5, "uranus": 6, "neptune": 7, "moon": 8, "sun": 9}
         name = (target.get("solar_name") or target["name"]).lower()
         step("GOTO solar target", "goto_solar", ids[name], name.title())
-    step("Set exposure", "set_exposure", str(camera["exposure_seconds"]), model_id, camera["camera"])
+    exposure_name = firmware_exposure_name(camera["exposure_seconds"])
+    log(f"Astro photo: exposure {exposure_name}s, gain {camera['gain']}, count {camera['frame_count']}", "notice")
+    step("Set exposure", "set_exposure", exposure_name, model_id, camera["camera"])
     step("Set gain", "set_gain", camera["gain"], camera["camera"])
     if camera["camera"] != "wide":
         step("Set filter", "set_ir", camera["ir_filter"])

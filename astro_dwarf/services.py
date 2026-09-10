@@ -31,6 +31,7 @@ from .domain import (
     Target,
     Workflow,
     firmware_binning,
+    firmware_exposure_name,
 )
 from .runtime import ffmpeg_mjpeg_command
 from .storage import SessionStore
@@ -452,7 +453,7 @@ class DwarfClient:
                 raise ValueError(f"Unknown solar-system target: {solar_name}")
             step("Slewing to solar target", "goto_solar", solar_ids[solar_name], solar_name.title())
         model_id = {"Dwarf II": "2", "Dwarf 3": "3", "Dwarf Mini": "5"}[self.device.model.value]
-        step("Setting exposure", "set_exposure", str(session.camera.exposure_seconds), model_id, session.camera.camera.value)
+        step("Setting exposure", "set_exposure", firmware_exposure_name(session.camera.exposure_seconds), model_id, session.camera.camera.value)
         step("Setting gain", "set_gain", session.camera.gain, session.camera.camera.value)
         if session.camera.camera != Camera.WIDE:
             step("Setting IR filter", "set_ir", session.camera.ir_filter)

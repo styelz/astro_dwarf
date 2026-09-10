@@ -45,6 +45,7 @@ from .domain import (
     WifiMode,
     Workflow,
     device_from_dict,
+    firmware_exposure_name,
     session_from_dict,
     to_dict,
 )
@@ -1997,7 +1998,7 @@ class AppBackend(QObject):
         camera = device.camera.value if hasattr(device.camera, "value") else str(device.camera)
         model_id = {DeviceModel.DWARF_II: "2", DeviceModel.DWARF_3: "3", DeviceModel.DWARF_MINI: "5"}.get(device.model, "3")
         if name == "exposure":
-            operation, args = "set_exposure", [value, model_id, camera]
+            operation, args = "set_exposure", [firmware_exposure_name(value), model_id, camera]
         elif name == "gain":
             operation, args = "set_gain", [int(value), camera]
         elif name == "ir":
