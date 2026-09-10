@@ -12,6 +12,8 @@ Item {
     id: calendarPage
     property date shownMonth: new Date()
     property date selectedDate: new Date()
+    property var selectedDayKeys: ({})
+    property string selectionAnchorKey: ""
     property int viewMode: 0
     property var selectedIds: ({})
     property string selectionAnchorId: ""
@@ -64,11 +66,110 @@ Item {
     function sessionsForDay(key) {
         return backend.sessions.filter(item => item.observing_date === key && calendarPage.matchesScope(item))
     }
+    readonly property int selectedDayCount: Util.idSetCount(selectedDayKeys)
+    function isDaySelected(key) {
+        return Util.idSetHas(calendarPage.selectedDayKeys, key)
+    }
+    function sortedDayKeys() {
+        return Object.keys(calendarPage.selectedDayKeys || {}).sort()
+    }
+    function setSingleDay(value) {
+        const key = typeof value === "string" ? value : calendarPage.dateKey(value)
+        const date = calendarPage.dateFromKey(key)
+        calendarPage.selectedDate = date
+        const next = {}
+        next[key] = true
+        calendarPage.selectedDayKeys = next
+        calendarPage.selectionAnchorKey = key
+    }
+    function clickDay(value, modifiers) {
+        const key = typeof value === "string" ? value : calendarPage.dateKey(value)
+        const date = calendarPage.dateFromKey(key)
+        const shift = !!(modifiers & Qt.ShiftModifier)
+        const ctrl = !!(modifiers & Qt.ControlModifier)
+        if (shift) {
+            const fromKey = calendarPage.selectionAnchorKey || calendarPage.dateKey(calendarPage.selectedDate)
+            const from = calendarPage.dateFromKey(fromKey)
+            const lo = from.getTime() <= date.getTime() ? from : date
+            const hi = from.getTime() <= date.getTime() ? date : from
+            const next = {}
+            const cursor = new Date(lo.getFullYear(), lo.getMonth(), lo.getDate(), 12, 0, 0)
+            const last = new Date(hi.getFullYear(), hi.getMonth(), hi.getDate(), 12, 0, 0)
+            while (cursor.getTime() <= last.getTime()) {
+                next[calendarPage.dateKey(cursor)] = true
+                cursor.setDate(cursor.getDate() + 1)
+            }
+            calendarPage.selectedDayKeys = next
+            calendarPage.selectedDate = date
+            return
+        }
+        if (ctrl) {
+            if (calendarPage.isDaySelected(key)) {
+                if (calendarPage.selectedDayCount <= 1)
+                    return
+                const next = Object.assign({}, calendarPage.selectedDayKeys)
+                delete next[key]
+                calendarPage.selectedDayKeys = next
+                if (calendarPage.dateKey(calendarPage.selectedDate) === key) {
+                    const remain = Object.keys(next).sort()
+                    calendarPage.selectedDate = calendarPage.dateFromKey(remain[remain.length - 1])
+                }
+                calendarPage.selectionAnchorKey = calendarPage.dateKey(calendarPage.selectedDate)
+                return
+            }
+            const next = Object.assign({}, calendarPage.selectedDayKeys)
+            next[key] = true
+            calendarPage.selectedDayKeys = next
+            calendarPage.selectedDate = date
+            calendarPage.selectionAnchorKey = key
+            return
+        }
+        calendarPage.setSingleDay(date)
+    }
+    function sessionsForKeys(keys) {
+        const set = {}
+        const list = keys || []
+        for (let i = 0; i < list.length; i++)
+            set[list[i]] = true
+        const items = backend.sessions.filter(item => set[item.observing_date] && calendarPage.matchesScope(item))
+        items.sort((a, b) => {
+            const da = String(a.observing_date || "")
+            const db = String(b.observing_date || "")
+            if (da !== db)
+                return da < db ? -1 : 1
+            return Number(a.start_epoch_ms || 0) - Number(b.start_epoch_ms || 0)
+        })
+        return items
+    }
+    function selectedNightsTitle() {
+        const keys = calendarPage.sortedDayKeys()
+        if (keys.length <= 1) {
+            const one = keys.length === 1 ? calendarPage.dateFromKey(keys[0]) : calendarPage.selectedDate
+            return Qt.formatDate(one, "ddd d MMM").toUpperCase()
+        }
+        const a = calendarPage.dateFromKey(keys[0])
+        const b = calendarPage.dateFromKey(keys[keys.length - 1])
+        if (a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear())
+            return (a.getDate() + "–" + Qt.formatDate(b, "d MMM")).toUpperCase()
+        return (Qt.formatDate(a, "d MMM") + " – " + Qt.formatDate(b, "d MMM")).toUpperCase()
+    }
+    function sessionWhenText(item) {
+        if (calendarPage.selectedDayCount <= 1)
+            return item.start_time
+        return Qt.formatDate(calendarPage.dateFromKey(item.observing_date), "d MMM") + "  " + item.start_time
+    }
     readonly property var nightSessions: {
         const _sessions = backend.sessions
         const _all = calendarPage.showAllDevices
         const _device = backend.selectedDeviceId
         return calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+    }
+    readonly property var sidebarSessions: {
+        const _sessions = backend.sessions
+        const _all = calendarPage.showAllDevices
+        const _device = backend.selectedDeviceId
+        const _keys = calendarPage.selectedDayKeys
+        return calendarPage.sessionsForKeys(Object.keys(_keys || {}))
     }
     readonly property var nightLayout: calendarPage.layoutNight(calendarPage.nightSessions)
     function nightDeviceIds(items) {
@@ -244,9 +345,21 @@ Item {
         return String(calendarPage.observingNow().observing_date || calendarPage.dateKey(new Date()))
     }
     function openNight(value) {
-        selectedDate = value
+        calendarPage.setSingleDay(value)
         viewMode = 1
         requestNowLineScroll()
+    }
+    function openNightUnlessChip(cellDate, repeater, eventPoint) {
+        const scene = eventPoint.scenePosition
+        for (let i = 0; i < repeater.count; i++) {
+            const chip = repeater.itemAt(i)
+            if (!chip)
+                continue
+            const local = chip.mapFromItem(null, scene.x, scene.y)
+            if (local.x >= 0 && local.y >= 0 && local.x < chip.width && local.y < chip.height)
+                return
+        }
+        calendarPage.openNight(cellDate)
     }
     function requestNowLineScroll() {
         nowLineScrollTries = 0
@@ -290,7 +403,7 @@ Item {
     }
     Component.onCompleted: {
         const today = calendarPage.dateFromKey(calendarPage.currentObservingKey())
-        selectedDate = today
+        calendarPage.setSingleDay(today)
         shownMonth = today
     }
     HudSplitView {
@@ -308,9 +421,10 @@ Item {
                     : Qt.formatDate(calendarPage.selectedDate, "dddd d MMMM").toUpperCase()
                 subtitle: {
                     const planned = backend.sessions.filter(item => item.status === "planned" && calendarPage.matchesScope(item)).length
-                    const night = calendarPage.nightSessions.length
+                    const nightCount = calendarPage.viewMode === 0 ? calendarPage.sidebarSessions.length : calendarPage.nightSessions.length
+                    const nightLabel = calendarPage.viewMode === 0 && calendarPage.selectedDayCount > 1 ? "on selected nights" : "on the selected night"
                     const scope = calendarPage.showAllDevices ? "all telescopes" : (backend.selectedDevice.name || "this telescope")
-                    return planned + " planned session" + (planned === 1 ? "" : "s") + "  ·  " + night + " on the selected night  ·  " + scope + "  ·  night rolls over at " + String(calendarPage.cutoffHour).padStart(2, "0") + ":00  ·  " + (backend.selectedDevice.timezone_name || "UTC")
+                    return planned + " planned session" + (planned === 1 ? "" : "s") + "  ·  " + nightCount + " " + nightLabel + "  ·  " + scope + "  ·  night rolls over at " + String(calendarPage.cutoffHour).padStart(2, "0") + ":00  ·  " + (backend.selectedDevice.timezone_name || "UTC")
                 }
                 HudButton { text: "MONTH"; buttonColor: calendarPage.viewMode === 0 ? Theme.fillActive : Theme.surfaceHigh; foregroundColor: calendarPage.viewMode === 0 ? Theme.accent : Theme.textSecondary; onClicked: calendarPage.viewMode = 0 }
                 HudButton { text: "NIGHT"; buttonColor: calendarPage.viewMode === 1 ? Theme.fillActive : Theme.surfaceHigh; foregroundColor: calendarPage.viewMode === 1 ? Theme.accent : Theme.textSecondary; onClicked: calendarPage.openNight(calendarPage.selectedDate) }
@@ -336,15 +450,14 @@ Item {
                         else {
                             const value = new Date(calendarPage.selectedDate)
                             value.setDate(value.getDate() - 1)
-                            calendarPage.selectedDate = value
+                            calendarPage.setSingleDay(value)
                         }
                     }
                 }
                 HudButton { text: "TODAY"; onClicked: {
-                    const key = calendarPage.currentObservingKey()
-                    const today = calendarPage.dateFromKey(key)
+                    const today = calendarPage.dateFromKey(calendarPage.currentObservingKey())
                     calendarPage.shownMonth = today
-                    calendarPage.selectedDate = today
+                    calendarPage.setSingleDay(today)
                     calendarPage.requestNowLineScroll()
                 } }
                 HudButton {
@@ -355,7 +468,7 @@ Item {
                         else {
                             const value = new Date(calendarPage.selectedDate)
                             value.setDate(value.getDate() + 1)
-                            calendarPage.selectedDate = value
+                            calendarPage.setSingleDay(value)
                         }
                     }
                 }
@@ -413,7 +526,7 @@ Item {
                             return calendarPage.sessionsForDay(dayCell.key)
                         }
                         readonly property bool isToday: key === calendarPage.currentObservingKey()
-                        readonly property bool isSelected: key === calendarPage.dateKey(calendarPage.selectedDate)
+                        readonly property bool isSelected: calendarPage.isDaySelected(key)
                         readonly property bool inMonth: cellDate.getMonth() === calendarPage.shownMonth.getMonth()
                         Layout.fillWidth: true
                         Layout.fillHeight: true
@@ -455,7 +568,7 @@ Item {
                                 if (!sid)
                                     return
                                 backend.moveSessionDate(sid, dayCell.key)
-                                calendarPage.selectedDate = dayCell.cellDate
+                                calendarPage.setSingleDay(dayCell.cellDate)
                             }
                         }
                         Column {
@@ -487,7 +600,7 @@ Item {
                                     Text { anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 10; anchors.topMargin: 4; anchors.bottomMargin: 4; text: calendarPage.chipText(modelData); color: Theme.textPrimary; font.pixelSize: 9; elide: Text.ElideRight }
                                     SessionDragArea {
                                         dragItem: sessionChip.modelData
-                                        pressedAction: function() { calendarPage.selectedDate = dayCell.cellDate }
+                                        pressedAction: function() { calendarPage.setSingleDay(dayCell.cellDate) }
                                         onEditRequested: session => sessionDialog.openExisting(session)
                                     }
                                     TapHandler { acceptedButtons: Qt.RightButton; onTapped: calendarPage.openSessionMenu(sessionChip.modelData, dayCell.daySessions) }
@@ -501,25 +614,36 @@ Item {
                                 MouseArea {
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
-                                    onClicked: calendarPage.selectedDate = dayCell.cellDate
+                                    onClicked: (mouse) => calendarPage.clickDay(dayCell.cellDate, mouse.modifiers)
                                     onDoubleClicked: calendarPage.openNight(dayCell.cellDate)
                                 }
                             }
                         }
                         TapHandler {
-                            onTapped: calendarPage.selectedDate = dayCell.cellDate
-                            onDoubleTapped: (eventPoint) => {
-                                const scene = eventPoint.scenePosition
-                                for (let i = 0; i < chipRepeater.count; i++) {
-                                    const chip = chipRepeater.itemAt(i)
-                                    if (!chip)
-                                        continue
-                                    const local = chip.mapFromItem(null, scene.x, scene.y)
-                                    if (local.x >= 0 && local.y >= 0 && local.x < chip.width && local.y < chip.height)
-                                        return
-                                }
-                                calendarPage.openNight(dayCell.cellDate)
-                            }
+                            acceptedButtons: Qt.LeftButton
+                            acceptedModifiers: Qt.NoModifier
+                            onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.NoModifier)
+                            onDoubleTapped: (eventPoint) => calendarPage.openNightUnlessChip(dayCell.cellDate, chipRepeater, eventPoint)
+                        }
+                        TapHandler {
+                            acceptedButtons: Qt.LeftButton
+                            acceptedModifiers: Qt.ShiftModifier
+                            onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.ShiftModifier)
+                        }
+                        TapHandler {
+                            acceptedButtons: Qt.LeftButton
+                            acceptedModifiers: Qt.ControlModifier
+                            onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.ControlModifier)
+                        }
+                        TapHandler {
+                            acceptedButtons: Qt.LeftButton
+                            acceptedModifiers: Qt.MetaModifier
+                            onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.ControlModifier)
+                        }
+                        TapHandler {
+                            acceptedButtons: Qt.LeftButton
+                            acceptedModifiers: Qt.ShiftModifier | Qt.ControlModifier
+                            onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.ShiftModifier)
                         }
                         TapHandler {
                             acceptedButtons: Qt.RightButton
@@ -532,6 +656,11 @@ Item {
                                 glyph: "\uE710"
                                 onTriggered: {
                                     calendarPage.selectedDate = dayCell.cellDate
+                                    if (!calendarPage.isDaySelected(dayCell.key)) {
+                                        const next = Object.assign({}, calendarPage.selectedDayKeys)
+                                        next[dayCell.key] = true
+                                        calendarPage.selectedDayKeys = next
+                                    }
                                     sessionDialog.openForDate(dayCell.key)
                                 }
                             }
@@ -940,18 +1069,23 @@ Item {
         }
         HudPanel {
             id: nightPanel
-            readonly property var nightSessions: calendarPage.nightSessions
+            readonly property var nightSessions: calendarPage.sidebarSessions
             readonly property int nightSeconds: nightSessions.reduce((sum, item) => sum + Number(item.planned_duration_seconds || 0), 0)
             visible: calendarPage.viewMode === 0
-            title: Qt.formatDate(calendarPage.selectedDate, "ddd d MMM").toUpperCase()
+            title: {
+                calendarPage.selectedDayKeys
+                calendarPage.selectedDate
+                return calendarPage.selectedNightsTitle()
+            }
             SplitView.preferredWidth: 312
             SplitView.minimumWidth: 220
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
+                HudChip { visible: calendarPage.selectedDayCount > 1; label: calendarPage.selectedDayCount + " NIGHTS"; tone: Theme.accent }
                 HudChip { label: nightPanel.nightSessions.length + (nightPanel.nightSessions.length === 1 ? " SESSION" : " SESSIONS"); tone: nightPanel.nightSessions.length > 0 ? Theme.accent : Theme.textSecondary }
                 HudChip { visible: nightPanel.nightSeconds > 0; label: "PLAN"; value: Util.formatDuration(nightPanel.nightSeconds); tone: Theme.textSecondary }
-                HudChip { visible: calendarPage.dateKey(calendarPage.selectedDate) === calendarPage.currentObservingKey(); label: "TONIGHT"; tone: Theme.warning; glow: true }
+                HudChip { visible: calendarPage.isDaySelected(calendarPage.currentObservingKey()); label: "TONIGHT"; tone: Theme.warning; glow: true }
                 Item { Layout.fillWidth: true }
             }
             SelectionBar {
@@ -1009,7 +1143,7 @@ Item {
                         boundsBehavior: Flickable.StopAtBounds
                         ScrollBar.vertical: HiddenBar {}
                         ScrollBar.horizontal: HiddenBar {}
-                        model: calendarPage.nightSessions
+                        model: nightPanel.nightSessions
                         delegate: Rectangle {
                             id: daySessionRow
                             required property var modelData
@@ -1048,7 +1182,7 @@ Item {
                                 RowLayout {
                                     Layout.fillWidth: true
                                     spacing: 6
-                                    Text { text: modelData.start_time; color: Theme.accent; font.pixelSize: 12; font.bold: true; font.family: Theme.fontMono }
+                                    Text { text: calendarPage.sessionWhenText(modelData); color: Theme.accent; font.pixelSize: 12; font.bold: true; font.family: Theme.fontMono }
                                     Text { text: modelData.target_name; color: Theme.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                     StatusChip { status: modelData.status; visible: modelData.status !== "planned" }
                                 }
@@ -1069,8 +1203,10 @@ Item {
                 EmptyHint {
                     anchors.centerIn: parent
                     glyph: "☾"
-                    visible: calendarPage.nightSessions.length === 0
-                    text: calendarPage.showAllDevices ? "No sessions this observing night" : "No sessions on this telescope for this night"
+                    visible: nightPanel.nightSessions.length === 0
+                    text: calendarPage.showAllDevices
+                          ? (calendarPage.selectedDayCount > 1 ? "No sessions on these observing nights" : "No sessions this observing night")
+                          : (calendarPage.selectedDayCount > 1 ? "No sessions on this telescope for these nights" : "No sessions on this telescope for this night")
                 }
             }
         }
