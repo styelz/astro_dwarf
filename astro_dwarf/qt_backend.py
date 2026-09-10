@@ -846,7 +846,11 @@ class AppBackend(QObject):
         data["start_epoch_ms"] = int(start.timestamp() * 1000)
         data["duration_text"] = self._duration_text(session.planned_duration_seconds)
         data["summary"] = f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s"
-        data["display_title"] = mosaic_group_title(session.target.name, session.mosaic.group_id or "")
+        group_id = session.mosaic.group_id or ""
+        data["group_id"] = group_id
+        data["group_title"] = mosaic_group_title(session.target.name, group_id)
+        data["display_title"] = data["group_title"]
+        data["grid_text"] = session.mosaic.grid_text
         data["subtitle"] = session.name if session.name != session.target.name else data["summary"]
         data["observing_date"] = observing_date(
             session.scheduled_start,
@@ -858,15 +862,33 @@ class AppBackend(QObject):
         data["pane_position"] = session.mosaic.position_text
         return data
 
+    def _decorate_session_groups(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        counts: dict[tuple[str, str], int] = {}
+        for item in items:
+            group_id = item.get("group_id") or ""
+            if not group_id:
+                continue
+            key = (group_id, item.get("device_id") or "")
+            counts[key] = counts.get(key, 0) + 1
+        for item in items:
+            group_id = item.get("group_id") or ""
+            device_id = item.get("device_id") or ""
+            pane_count = counts.get((group_id, device_id), 1) if group_id else 1
+            grouped = pane_count > 1
+            item["pane_count"] = pane_count
+            item["is_grouped"] = grouped
+            item["group_key"] = f"{group_id}|{device_id}" if grouped else f"session:{item.get('id', '')}"
+        return items
+
     @Property("QVariantList", notify=sessionsChanged)
     def sessions(self) -> list[dict[str, Any]]:
-        return [
+        return self._decorate_session_groups([
             self._session_dict(session)
             for session in sorted(
                 self.store.sessions.all(),
                 key=lambda item: (item.scheduled_start, pane_sort_key(item.name), item.name),
             )
-        ]
+        ])
 
     def _template_dict(self, template: SessionTemplate, members: list[SessionTemplate] | None = None) -> dict[str, Any]:
         members = members or [template]

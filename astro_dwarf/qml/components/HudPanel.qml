@@ -11,6 +11,7 @@ Item {
     property alias headerExtra: headerExtraRow.data
     property alias overlay: overlayHost.data
     property color fill: Theme.panelFill
+    property color titleColor: Theme.accent
     default property alias contents: body.data
     implicitWidth: 240
     implicitHeight: (headerRow.visible ? headerRow.implicitHeight + 17 : 0) + body.implicitHeight + 24
@@ -86,7 +87,7 @@ Item {
             Text {
                 id: heading
                 visible: text.length
-                color: Theme.accent
+                color: panel.titleColor
                 font.pixelSize: 11
                 font.letterSpacing: 1.6
                 font.bold: true

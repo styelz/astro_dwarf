@@ -293,6 +293,17 @@ Item {
     function chipText(item) {
         return item.start_time + "  " + (item.pane_index < 1000000 ? "pane " + item.pane_index : item.target_name)
     }
+    function sessionLabel(item) {
+        return item.pane_name || item.target_name || ""
+    }
+    function sessionDetail(item, extra) {
+        const bits = []
+        if (item.is_grouped && item.group_title)
+            bits.push(item.group_title)
+        if (extra)
+            bits.push(extra)
+        return bits.join("  ·  ")
+    }
     readonly property int cutoffHour: Number(backend.selectedDevice.observing_day_cutoff_hour || 12)
     readonly property real nightOriginMs: {
         const _id = backend.selectedDeviceId
@@ -584,7 +595,7 @@ Item {
                                     id: sessionChip
                                     required property var modelData
                                     property string sessionId: modelData.id
-                                    readonly property color deviceTone: modelData.device_color || Theme.accent
+                                    readonly property color deviceTone: Util.sessionTone(modelData)
                                     width: parent.width
                                     height: 22
                                     radius: 2
@@ -964,7 +975,7 @@ Item {
                                         Layout.maximumWidth: 18
                                         Layout.fillHeight: true
                                         spineInset: 2
-                                        spineColor: timelineSession.modelData.device_color || Theme.accent
+                                        spineColor: Util.sessionTone(timelineSession.modelData)
                                         checked: Util.idSetHas(calendarPage.selectedIds, timelineSession.modelData.id)
                                         revealed: timelineHover.hovered || calendarPage.selectedCount > 0
                                         onToggled: (shiftHeld) => calendarPage.selectClick(timelineSession.modelData.id, shiftHeld, calendarPage.nightSessions)
@@ -977,12 +988,14 @@ Item {
                                             Layout.fillWidth: true
                                             spacing: timelineSession.narrow ? 5 : 8
                                             Text { text: modelData.start_time; color: Theme.accent; font.family: Theme.fontMono; font.pixelSize: timelineSession.narrow ? 10 : 12; font.bold: true }
-                                            Text { text: modelData.target_name; color: Theme.textPrimary; font.pixelSize: timelineSession.narrow ? 11 : 13; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                            Text { text: calendarPage.sessionLabel(modelData); color: Theme.textPrimary; font.pixelSize: timelineSession.narrow ? 11 : 13; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                             StatusChip { status: modelData.status; visible: modelData.status !== "planned" && timelineSession.width > 200 }
                                         }
                                         Text {
-                                            // The device is already named by the column header when several are shown.
-                                            text: nightTimeline.columnsVisible ? modelData.duration_text : modelData.duration_text + "  ·  " + modelData.device_name
+                                            text: {
+                                                const extra = nightTimeline.columnsVisible ? modelData.duration_text : modelData.duration_text + "  ·  " + modelData.device_name
+                                                return calendarPage.sessionDetail(modelData, extra)
+                                            }
                                             color: Theme.textSecondary
                                             font.pixelSize: 10
                                             visible: !timelineSession.tight
@@ -1171,7 +1184,7 @@ Item {
                                 width: 20
                                 anchors.top: parent.top
                                 anchors.bottom: parent.bottom
-                                spineColor: daySessionRow.modelData.device_color || Theme.accent
+                                spineColor: Util.sessionTone(daySessionRow.modelData)
                                 checked: Util.idSetHas(calendarPage.selectedIds, daySessionRow.modelData.id)
                                 revealed: daySessionHover.hovered || calendarPage.selectedCount > 0
                                 onToggled: (shiftHeld) => calendarPage.selectClick(daySessionRow.modelData.id, shiftHeld, nightPanel.nightSessions)
@@ -1185,10 +1198,10 @@ Item {
                                     Layout.fillWidth: true
                                     spacing: 6
                                     Text { text: calendarPage.sessionWhenText(modelData); color: Theme.accent; font.pixelSize: 12; font.bold: true; font.family: Theme.fontMono }
-                                    Text { text: modelData.target_name; color: Theme.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                    Text { text: calendarPage.sessionLabel(modelData); color: Theme.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                     StatusChip { status: modelData.status; visible: modelData.status !== "planned" }
                                 }
-                                Text { text: modelData.subtitle + " · " + modelData.duration_text; color: Theme.textSecondary; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
+                                Text { text: calendarPage.sessionDetail(modelData, modelData.subtitle + " · " + modelData.duration_text); color: Theme.textSecondary; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
                                 RowLayout {
                                     HudButton { text: "EDIT"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
                                     HudButton { text: "RESET"; implicitHeight: 24; visible: Util.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }

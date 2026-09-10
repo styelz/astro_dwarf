@@ -22,21 +22,60 @@ DropArea {
     }
     readonly property real insertLineY: {
         const list = insertDrop.targetList
-        if (!list)
+        const idx = insertDrop.insertIndex
+        if (!list || idx < 0)
             return -999
-        return insertDrop.insertIndex * (insertDrop.rowHeight + list.spacing) - list.contentY - 1
+        if (idx === 0)
+            return -list.contentY - 1
+        if (idx >= list.count) {
+            const last = list.itemAtIndex(list.count - 1)
+            if (last)
+                return last.mapToItem(insertDrop, 0, last.height).y - 1
+            return list.contentHeight - list.contentY - 1
+        }
+        const row = list.itemAtIndex(idx)
+        if (row)
+            return row.mapToItem(insertDrop, 0, 0).y - 1
+        const stride = Math.max(1, insertDrop.rowHeight + list.spacing)
+        return idx * stride - list.contentY - 1
     }
 
     function indexAtY(y) {
         const list = insertDrop.targetList
-        if (!list)
+        if (!list || list.count <= 0)
             return 0
-        const stride = Math.max(1, insertDrop.rowHeight + list.spacing)
-        let idx = Math.round((y + list.contentY) / stride)
-        if (idx < 0)
+        const contentY = y + list.contentY
+        if (contentY <= 0)
             return 0
-        if (idx > list.count)
+        if (contentY >= list.contentHeight)
             return list.count
+        const x = Math.max(1, list.width / 2)
+        let idx = list.indexAt(x, contentY)
+        if (idx < 0) {
+            const step = Math.max(4, insertDrop.rowHeight / 4)
+            const reach = insertDrop.rowHeight + list.spacing
+            for (let d = step; d <= reach; d += step) {
+                const down = list.indexAt(x, contentY + d)
+                if (down >= 0)
+                    return down
+                const up = list.indexAt(x, contentY - d)
+                if (up >= 0)
+                    return up + 1
+            }
+            const stride = Math.max(1, insertDrop.rowHeight + list.spacing)
+            idx = Math.round(contentY / stride)
+            if (idx < 0)
+                return 0
+            if (idx > list.count)
+                return list.count
+            return idx
+        }
+        const row = list.itemAtIndex(idx)
+        if (row) {
+            const top = row.mapToItem(insertDrop, 0, 0).y
+            if (y > top + row.height / 2)
+                return idx + 1
+        }
         return idx
     }
 

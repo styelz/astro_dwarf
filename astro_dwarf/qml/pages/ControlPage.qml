@@ -13,8 +13,9 @@ Item {
     property var selectedUpcomingIds: ({})
     property string selectionAnchorId: ""
     readonly property int selectedUpcomingCount: Util.idSetCount(selectedUpcomingIds)
+    readonly property var clusteredUpcoming: Util.clusterSessions(backend.upcomingSessions)
     function selectClick(id, shift) {
-        const result = Util.clickSelect(selectedUpcomingIds, backend.upcomingSessions, id, shift, selectionAnchorId)
+        const result = Util.clickSelect(selectedUpcomingIds, controlPage.clusteredUpcoming, id, shift, selectionAnchorId)
         selectedUpcomingIds = result.map
         selectionAnchorId = result.anchor
     }
@@ -1559,15 +1560,64 @@ Item {
                             boundsBehavior: Flickable.StopAtBounds
                             ScrollBar.vertical: HiddenBar {}
                             ScrollBar.horizontal: HiddenBar {}
-                            model: backend.upcomingSessions
-                            delegate: Rectangle {
-                                id: upcomingRow
+                            model: controlPage.clusteredUpcoming
+                            delegate: Column {
+                                id: upcomingWrap
                                 required property var modelData
+                                required property int index
                                 width: ListView.view.width
-                                height: 44
-                                color: Theme.surfaceHigh
-                                border.color: Theme.outline
+                                spacing: 0
+                                height: (showHeader ? 20 : 0) + 44
+                                readonly property bool showHeader: {
+                                    if (!modelData.is_grouped)
+                                        return false
+                                    if (index <= 0)
+                                        return true
+                                    const prev = controlPage.clusteredUpcoming[index - 1]
+                                    return !prev || String(prev.group_key || "") !== String(modelData.group_key || "")
+                                }
+                                readonly property color groupTone: Util.sessionTone(modelData)
                                 opacity: DragCoordinator.active && DragCoordinator.data.id === modelData.id ? 0.35 : 1
+                                Item {
+                                    width: parent.width
+                                    height: upcomingWrap.showHeader ? 20 : 0
+                                    visible: upcomingWrap.showHeader
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 4
+                                        anchors.rightMargin: 4
+                                        spacing: 6
+                                        Rectangle {
+                                            Layout.preferredWidth: 3
+                                            Layout.preferredHeight: 10
+                                            Layout.alignment: Qt.AlignVCenter
+                                            color: upcomingWrap.groupTone
+                                        }
+                                        Text {
+                                            text: String(upcomingWrap.modelData.group_title || upcomingWrap.modelData.display_title || "").toUpperCase()
+                                            color: upcomingWrap.groupTone
+                                            font.pixelSize: 8
+                                            font.letterSpacing: 1.1
+                                            font.bold: true
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                        }
+                                        Text {
+                                            text: Number(upcomingWrap.modelData.pane_count || 0) + "P"
+                                            color: Theme.textSecondary
+                                            font.pixelSize: 8
+                                            font.family: Theme.fontMono
+                                            Layout.fillWidth: false
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                id: upcomingRow
+                                readonly property var modelData: upcomingWrap.modelData
+                                width: parent.width
+                                height: 44
+                                color: modelData.is_grouped ? Util.groupFill(modelData.group_id) : Theme.surfaceHigh
+                                border.color: modelData.is_grouped ? Qt.rgba(upcomingWrap.groupTone.r, upcomingWrap.groupTone.g, upcomingWrap.groupTone.b, 0.45) : Theme.outline
                                 SessionDragArea {
                                     dragItem: upcomingRow.modelData
                                     onEditRequested: session => sessionDialog.openExisting(session)
@@ -1587,7 +1637,7 @@ Item {
                                         Layout.preferredWidth: 20
                                         Layout.maximumWidth: 20
                                         Layout.fillHeight: true
-                                        spineColor: upcomingRow.modelData.device_color || Theme.accent
+                                        spineColor: upcomingWrap.groupTone
                                         checked: Util.idSetHas(controlPage.selectedUpcomingIds, upcomingRow.modelData.id)
                                         revealed: upcomingHover.hovered || controlPage.selectedUpcomingCount > 0
                                         onToggled: (shiftHeld) => controlPage.selectClick(upcomingRow.modelData.id, shiftHeld)
@@ -1595,7 +1645,7 @@ Item {
                                     ColumnLayout {
                                         Layout.fillWidth: true
                                         spacing: 0
-                                        Text { text: modelData.target_name; color: Theme.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        Text { text: modelData.pane_name || modelData.target_name; color: Theme.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                         Text {
                                             readonly property bool due: {
                                                 backend.clockText
@@ -1615,6 +1665,7 @@ Item {
                                 TapHandler {
                                     acceptedButtons: Qt.RightButton
                                     onTapped: controlPage.openSessionMenu(upcomingRow.modelData)
+                                }
                                 }
                             }
                         }

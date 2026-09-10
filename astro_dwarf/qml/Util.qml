@@ -194,4 +194,63 @@ QtObject {
         return "RA " + Number(target.ra_hours).toFixed(3) + "h  DEC "
             + Number(target.dec_degrees).toFixed(3) + "°"
     }
+    function groupHash(groupId) {
+        const text = String(groupId || "")
+        let hash = 2166136261
+        for (let i = 0; i < text.length; i++)
+            hash = Math.imul(hash ^ text.charCodeAt(i), 16777619)
+        return hash >>> 0
+    }
+    function groupOffset(groupId) {
+        const offsets = [0.00, 0.10, 0.18, -0.08, -0.16, 0.28, -0.28, 0.38]
+        return offsets[Util.groupHash(groupId) % offsets.length]
+    }
+    function groupTone(groupId) {
+        if (!groupId)
+            return Theme.accent
+        return Theme.hsl(Util.groupOffset(groupId), 1.0, 0.62, 1, 1.0)
+    }
+    function groupFill(groupId) {
+        if (!groupId)
+            return Theme.panelFill
+        return Theme.hsl(Util.groupOffset(groupId), 0.50, 0.10, 0.70, 0.20)
+    }
+    function isGrouped(item) {
+        return !!(item && item.group_id && (item.is_grouped || item.is_group))
+    }
+    function sessionTone(item) {
+        if (Util.isGrouped(item))
+            return Util.groupTone(item.group_id)
+        return (item && item.device_color) || Theme.accent
+    }
+    function clusterSessions(items) {
+        const list = items || []
+        const groups = []
+        const indexByKey = {}
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i]
+            if (!item)
+                continue
+            const key = String(item.group_key || ("session:" + item.id))
+            if (!(key in indexByKey)) {
+                indexByKey[key] = groups.length
+                groups.push([])
+            }
+            groups[indexByKey[key]].push(item)
+        }
+        const result = []
+        for (let g = 0; g < groups.length; g++) {
+            const members = groups[g]
+            members.sort(function(a, b) {
+                const ai = Number(a.pane_index)
+                const bi = Number(b.pane_index)
+                if (ai !== bi)
+                    return ai - bi
+                return String(a.pane_name || "").localeCompare(String(b.pane_name || ""))
+            })
+            for (let m = 0; m < members.length; m++)
+                result.push(members[m])
+        }
+        return result
+    }
 }

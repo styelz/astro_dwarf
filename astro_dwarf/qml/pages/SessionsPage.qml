@@ -64,8 +64,9 @@ Item {
                 property var selectedIds: ({})
                 property string selectionAnchorId: ""
                 readonly property int selectedCount: Util.idSetCount(selectedIds)
+                readonly property var clusteredSessions: Util.clusterSessions(backend.sessions)
                 function selectClick(id, shift) {
-                    const result = Util.clickSelect(selectedIds, backend.sessions, id, shift, selectionAnchorId)
+                    const result = Util.clickSelect(selectedIds, scheduledPage.clusteredSessions, id, shift, selectionAnchorId)
                     selectedIds = result.map
                     selectionAnchorId = result.anchor
                 }
@@ -132,14 +133,68 @@ Item {
                             boundsBehavior: Flickable.StopAtBounds
                             ScrollBar.vertical: HiddenBar {}
                             ScrollBar.horizontal: HiddenBar {}
-                            model: backend.sessions
-                            delegate: HudPanel {
-                                id: scheduledRow
+                            model: scheduledPage.clusteredSessions
+                            delegate: Column {
+                                id: scheduledWrap
                                 required property var modelData
+                                required property int index
                                 width: ListView.view.width
-                                height: 76
-                                fill: Util.idSetHas(scheduledPage.selectedIds, modelData.id) ? Theme.hsl(0.036, 0.640, 0.196, 0.753) : Theme.panelFill
+                                spacing: 0
+                                height: (showHeader ? 30 : 0) + 76
+                                readonly property bool showHeader: {
+                                    if (!modelData.is_grouped)
+                                        return false
+                                    if (index <= 0)
+                                        return true
+                                    const prev = scheduledPage.clusteredSessions[index - 1]
+                                    return !prev || String(prev.group_key || "") !== String(modelData.group_key || "")
+                                }
+                                readonly property color groupTone: modelData.is_grouped ? Util.groupTone(modelData.group_id) : (modelData.device_color || Theme.accent)
                                 opacity: DragCoordinator.active && DragCoordinator.data.id === modelData.id ? 0.35 : 1
+                                Item {
+                                    width: parent.width
+                                    height: scheduledWrap.showHeader ? 30 : 0
+                                    visible: scheduledWrap.showHeader
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: scheduledPage.rowInset
+                                        anchors.rightMargin: scheduledPage.rowInset
+                                        spacing: 8
+                                        Rectangle {
+                                            Layout.preferredWidth: 4
+                                            Layout.preferredHeight: 14
+                                            Layout.alignment: Qt.AlignVCenter
+                                            color: scheduledWrap.groupTone
+                                        }
+                                        Text {
+                                            text: String(scheduledWrap.modelData.group_title || scheduledWrap.modelData.display_title || "").toUpperCase()
+                                            color: scheduledWrap.groupTone
+                                            font.pixelSize: 11
+                                            font.letterSpacing: 1.4
+                                            font.bold: true
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                        }
+                                        Text {
+                                            text: {
+                                                const count = Number(scheduledWrap.modelData.pane_count || 0)
+                                                const grid = scheduledWrap.modelData.grid_text || ""
+                                                return count + (count === 1 ? " PANE" : " PANES") + (grid ? " · " + grid : "")
+                                            }
+                                            color: Theme.textSecondary
+                                            font.pixelSize: 10
+                                            font.family: Theme.fontMono
+                                            Layout.fillWidth: false
+                                        }
+                                    }
+                                }
+                                HudPanel {
+                                    id: scheduledRow
+                                    readonly property var modelData: scheduledWrap.modelData
+                                    width: parent.width
+                                    height: 76
+                                    readonly property color groupTone: scheduledWrap.groupTone
+                                    fill: Util.idSetHas(scheduledPage.selectedIds, modelData.id) ? Theme.hsl(0.036, 0.640, 0.196, 0.753) : (modelData.is_grouped ? Util.groupFill(modelData.group_id) : Theme.panelFill)
                                 overlay: [
                                     HoverHandler { id: scheduledHover },
                                     TapHandler {
@@ -177,7 +232,7 @@ Item {
                                             width: 4
                                             height: parent.height - 8
                                             anchors.verticalCenter: parent.verticalCenter
-                                            color: scheduledRow.modelData.device_color || Theme.accent
+                                            color: scheduledRow.groupTone
                                         }
                                     }
                                     Item {
@@ -191,7 +246,7 @@ Item {
                                             spacing: 3
                                             Text {
                                                 width: parent.width
-                                                text: scheduledRow.modelData.target_name
+                                                text: scheduledRow.modelData.pane_name || scheduledRow.modelData.target_name
                                                 color: Theme.textPrimary
                                                 font.pixelSize: 15
                                                 font.bold: true
@@ -199,11 +254,17 @@ Item {
                                             }
                                             Text {
                                                 width: parent.width
-                                                text: scheduledRow.modelData.subtitle
+                                                text: {
+                                                    const pos = scheduledRow.modelData.pane_position || ""
+                                                    const summary = scheduledRow.modelData.summary || ""
+                                                    if (pos && summary)
+                                                        return pos + " · " + summary
+                                                    return pos || scheduledRow.modelData.subtitle || summary
+                                                }
                                                 color: Theme.textSecondary
                                                 font.pixelSize: 11
                                                 elide: Text.ElideRight
-                                                visible: scheduledRow.modelData.subtitle !== scheduledRow.modelData.target_name
+                                                visible: text !== "" && text !== (scheduledRow.modelData.pane_name || scheduledRow.modelData.target_name)
                                             }
                                         }
                                     }
@@ -304,6 +365,7 @@ Item {
                                     }
                                 }
                                 TapHandler { acceptedButtons: Qt.RightButton; onTapped: scheduledPage.openSessionMenu(scheduledRow.modelData) }
+                                }
                             }
                         }
                     }
@@ -368,8 +430,21 @@ Item {
                         width: 324
                         height: 156
                         title: modelData.name
-                        fill: Util.idSetHas(templatesPage.selectedIds, modelData.id) ? Theme.hsl(0.036, 0.640, 0.196, 0.753) : Theme.panelFill
+                        readonly property bool grouped: Util.isGrouped(modelData)
+                        readonly property color groupTone: Util.sessionTone(modelData)
+                        titleColor: grouped ? groupTone : Theme.accent
+                        fill: Util.idSetHas(templatesPage.selectedIds, modelData.id) ? Theme.hsl(0.036, 0.640, 0.196, 0.753) : (grouped ? Util.groupFill(modelData.group_id) : Theme.panelFill)
                         overlay: [
+                            Rectangle {
+                                visible: templateCard.grouped
+                                width: 4
+                                anchors.left: parent.left
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
+                                anchors.topMargin: 10
+                                anchors.bottomMargin: 10
+                                color: templateCard.groupTone
+                            },
                             HoverHandler { id: templateHover },
                             TapHandler {
                                 acceptedButtons: Qt.LeftButton
