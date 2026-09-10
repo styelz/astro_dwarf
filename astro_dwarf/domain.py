@@ -241,6 +241,15 @@ def target_from_dict(data: dict[str, Any]) -> Target:
     return Target(**data)
 
 
+def firmware_binning(value: Any) -> int:
+    """Map stored 1=4K / 2=2K onto firmware 0=4K / 1=2K."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = 1
+    return 1 if n >= 2 else 0
+
+
 def camera_from_dict(data: dict[str, Any]) -> CameraSettings:
     data = dict(data)
     data["camera"] = Camera(data.get("camera", Camera.TELE))

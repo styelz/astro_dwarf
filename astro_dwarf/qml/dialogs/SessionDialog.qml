@@ -205,6 +205,13 @@ Dialog {
         const ir = value || "VIS Filter"
         return Math.max(0, ["VIS Filter", "Astro Filter", "Duo-Band Filter", "VIS"].indexOf(ir) % 3)
     }
+    // Stored 1/2 match the old combo; Dwarf labels those as 4K / 2K.
+    function binningIndex(value) {
+        return Number(value) >= 2 ? 1 : 0
+    }
+    function binningValue() {
+        return binning.currentIndex === 1 ? 2 : 1
+    }
     function selectedMembers() {
         const items = templateMembers || []
         const flags = paneSelected || []
@@ -248,8 +255,8 @@ Dialog {
             frames.placeholderText = value === undefined ? "Mixed" : ""
         }
         if (!dirty.binning) {
-            const value = agreed(item => String(sessionDialog.cameraOf(item).binning || "1"))
-            binning.currentIndex = value === undefined ? -1 : Math.max(0, ["1", "2"].indexOf(String(value)))
+            const value = agreed(item => sessionDialog.binningIndex(sessionDialog.cameraOf(item).binning))
+            binning.currentIndex = value === undefined ? -1 : value
         }
         if (!dirty.wait_before) {
             const value = agreed(item => sessionDialog.workflowOf(item).wait_before_seconds)
@@ -294,7 +301,7 @@ Dialog {
             if (dirty.frame_count && frames.text !== "")
                 pane.camera.frame_count = Number(frames.text)
             if (dirty.binning && binning.currentIndex >= 0)
-                pane.camera.binning = Number(binning.currentText)
+                pane.camera.binning = sessionDialog.binningValue()
             if (dirty.wait_before && waitBefore.text !== "")
                 pane.workflow.wait_before_seconds = Number(waitBefore.text)
             if (dirty.wait_after && waitAfter.text !== "")
@@ -446,7 +453,7 @@ Dialog {
         gain.text = data.camera.gain
         frames.text = data.camera.frame_count
         camera.currentIndex = data.camera.camera === "wide" ? 1 : 0
-        binning.currentIndex = Math.max(0, ["1", "2"].indexOf(String(data.camera.binning)))
+        binning.currentIndex = sessionDialog.binningIndex(data.camera.binning)
         const ir = data.camera.ir_filter || "VIS Filter"
         irFilter.currentIndex = Math.max(0, ["VIS Filter", "Astro Filter", "Duo-Band Filter", "VIS"].indexOf(ir) % 3)
         const mosaic = data.mosaic || {}
@@ -488,7 +495,7 @@ Dialog {
             target_kind: targetType.currentText, ra: ra.text, dec: dec.text,
             scheduled_start: startTime.text, device_id: sessionDialog.editingDeviceId || backend.selectedDeviceId,
             camera: camera.currentIndex === 1 ? "wide" : "tele", exposure: Number(exposure.text),
-            gain: Number(gain.text), frame_count: Number(frames.text), binning: Number(binning.currentText),
+            gain: Number(gain.text), frame_count: Number(frames.text), binning: sessionDialog.binningValue(),
             ir_filter: irFilter.currentText,
             rows: sessionDialog.importedPlan ? 1 : Number(rows.text),
             columns: sessionDialog.importedPlan ? 1 : Number(columns.text),
@@ -512,7 +519,7 @@ Dialog {
         if (dirty.frame_count && frames.text !== "")
             payload.frame_count = Number(frames.text)
         if (dirty.binning && binning.currentIndex >= 0)
-            payload.binning = Number(binning.currentText)
+            payload.binning = sessionDialog.binningValue()
         if (dirty.wait_before && waitBefore.text !== "")
             payload.wait_before = Number(waitBefore.text)
         if (dirty.wait_after && waitAfter.text !== "")
@@ -860,7 +867,7 @@ Dialog {
                 FieldCaption { text: "BINNING" }
                 HudCombo {
                     id: binning
-                    model: ["1", "2"]
+                    model: ["4K", "2K"]
                     emptyText: "Mixed"
                     enabled: sessionDialog.sharedEnabled
                     Layout.fillWidth: true

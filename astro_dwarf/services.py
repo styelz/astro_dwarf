@@ -30,6 +30,7 @@ from .domain import (
     SessionTemplate,
     Target,
     Workflow,
+    firmware_binning,
 )
 from .runtime import ffmpeg_mjpeg_command
 from .storage import SessionStore
@@ -425,7 +426,7 @@ class DwarfClient:
         if session.camera.camera != Camera.WIDE:
             step("Setting IR filter", "set_ir", session.camera.ir_filter)
         step("Setting frame count", "set_count", session.camera.frame_count, session.camera.camera.value)
-        step("Setting binning", "set_binning", session.camera.binning)
+        step("Setting binning", "set_binning", firmware_binning(session.camera.binning))
         if session.mosaic.panes > 1 and not session.mosaic.imported_plan:
             step("Setting mosaic frame count", "set_mosaic_count", session.camera.frame_count)
             step("Starting mosaic", "mosaic", session.mosaic.horizontal_scale, session.mosaic.vertical_scale, session.mosaic.rotation_degrees)

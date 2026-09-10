@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_sdk_logging
+from .domain import firmware_binning
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -1461,7 +1462,7 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     if camera["camera"] != "wide":
         step("Set filter", "set_ir", camera["ir_filter"])
     step("Set count", "set_count", camera["frame_count"], camera["camera"])
-    step("Set binning", "set_binning", camera["binning"])
+    step("Set binning", "set_binning", firmware_binning(camera["binning"]))
     _wait_seconds(5, "Waiting for capture camera settings to apply…")
     _wait_seconds(workflow.get("wait_after_seconds", 10))
     _wait_seconds(2)
