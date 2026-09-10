@@ -276,6 +276,13 @@ Dialog {
         }
         templateMembers = members
     }
+    function flagsForOnlyPane(index) {
+        const items = templateMembers || []
+        const flags = []
+        for (let i = 0; i < items.length; i++)
+            flags.push(i === index)
+        return flags
+    }
     function setPaneSelectedAt(index, on) {
         syncingPane = true
         const flags = (paneSelected || []).slice()
@@ -333,12 +340,18 @@ Dialog {
             return
         syncingPane = true
         stashCurrentPane()
+        sessionDialog.applyDirtyToSelected()
+        const followFocused = sessionDialog.selectedPaneCount === 1 && !!(paneSelected && paneSelected[paneIndex])
         paneIndex = index
         editingId = templateMembers[index].id || editingId
         loadPaneCoordinates(templateMembers[index])
         panePicker.model = sessionDialog.paneChoices()
         panePicker.currentIndex = index
+        if (followFocused)
+            paneSelected = sessionDialog.flagsForOnlyPane(index)
+        dirtyFields = ({})
         syncingPane = false
+        sessionDialog.loadCommonFields(sessionDialog.selectedMembers())
     }
     function memberPayloads() {
         stashCurrentPane()
@@ -527,15 +540,15 @@ Dialog {
                     index = i
             }
             templateMembers = cloned
-            paneSelected = cloned.map(() => true)
             paneIndex = index
+            paneSelected = sessionDialog.flagsForOnlyPane(index)
             editingId = cloned[index].id || data.id
             syncingPane = true
             loadPaneCoordinates(cloned[index])
             panePicker.model = sessionDialog.paneChoices()
             panePicker.currentIndex = index
             syncingPane = false
-            sessionDialog.loadCommonFields(cloned)
+            sessionDialog.loadCommonFields(sessionDialog.selectedMembers())
         } else {
             templateMembers = []
         }
@@ -553,7 +566,8 @@ Dialog {
         editingAnchorId = cloned[0].id || data.id
         editingDeviceId = backend.selectedDeviceId
         templateMembers = cloned
-        paneSelected = cloned.map(() => true)
+        paneIndex = 0
+        paneSelected = sessionDialog.flagsForOnlyPane(0)
         editingId = cloned[0].id || data.id
         syncingPane = true
         fillForm(data)
@@ -563,7 +577,7 @@ Dialog {
         panePicker.currentIndex = 0
         syncingPane = false
         if (cloned.length > 1)
-            sessionDialog.loadCommonFields(cloned)
+            sessionDialog.loadCommonFields(sessionDialog.selectedMembers())
         open()
     }
     function editableItems(items, templates) {
