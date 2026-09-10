@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import math
 import re
+import sys
+from datetime import datetime
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
 from typing import Any
-from zoneinfo import TZPATH, available_timezones
+from zoneinfo import TZPATH, ZoneInfo, available_timezones
 
 import requests
 
@@ -168,3 +170,115 @@ def resolve_location(query: str) -> dict[str, Any] | None:
     ):
         return local
     return geocode_location(query) or local
+
+
+def has_site_coordinates(latitude: Any, longitude: Any) -> bool:
+    """True when the telescope has a real observing site (not lat/long 0,0)."""
+    try:
+        lat = float(latitude or 0)
+        lon = float(longitude or 0)
+    except (TypeError, ValueError):
+        return False
+    return abs(lat) >= 1e-9 or abs(lon) >= 1e-9
+
+
+# Windows TimeZoneKeyName → IANA, from CLDR windowsZones (common entries).
+_WINDOWS_TZ = {
+    "AUS Eastern Standard Time": "Australia/Melbourne",
+    "AUS Central Standard Time": "Australia/Darwin",
+    "Cen. Australia Standard Time": "Australia/Adelaide",
+    "E. Australia Standard Time": "Australia/Brisbane",
+    "Tasmania Standard Time": "Australia/Hobart",
+    "W. Australia Standard Time": "Australia/Perth",
+    "New Zealand Standard Time": "Pacific/Auckland",
+    "UTC": "UTC",
+    "GMT Standard Time": "Europe/London",
+    "Romance Standard Time": "Europe/Paris",
+    "W. Europe Standard Time": "Europe/Berlin",
+    "Central Europe Standard Time": "Europe/Budapest",
+    "Central European Standard Time": "Europe/Warsaw",
+    "GTB Standard Time": "Europe/Bucharest",
+    "FLE Standard Time": "Europe/Helsinki",
+    "Russian Standard Time": "Europe/Moscow",
+    "Eastern Standard Time": "America/New_York",
+    "US Eastern Standard Time": "America/Indianapolis",
+    "Central Standard Time": "America/Chicago",
+    "Mountain Standard Time": "America/Denver",
+    "US Mountain Standard Time": "America/Phoenix",
+    "Pacific Standard Time": "America/Los_Angeles",
+    "Alaskan Standard Time": "America/Anchorage",
+    "Hawaiian Standard Time": "Pacific/Honolulu",
+    "Atlantic Standard Time": "America/Halifax",
+    "Pacific SA Standard Time": "America/Santiago",
+    "SA Pacific Standard Time": "America/Bogota",
+    "SA Western Standard Time": "America/La_Paz",
+    "SA Eastern Standard Time": "America/Cayenne",
+    "China Standard Time": "Asia/Shanghai",
+    "Tokyo Standard Time": "Asia/Tokyo",
+    "Korea Standard Time": "Asia/Seoul",
+    "Singapore Standard Time": "Asia/Singapore",
+    "India Standard Time": "Asia/Kolkata",
+    "Arabian Standard Time": "Asia/Dubai",
+    "Israel Standard Time": "Asia/Jerusalem",
+    "South Africa Standard Time": "Africa/Johannesburg",
+    "GMT+12": "Pacific/Auckland",
+}
+
+
+def _windows_timezone_key_name() -> str:
+    if sys.platform != "win32":
+        return ""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\TimeZoneInformation",
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "TimeZoneKeyName")
+    except OSError:
+        return ""
+    return str(value or "").strip()
+
+
+def _timezone_with_coords(name: str | None) -> dict[str, Any] | None:
+    if not name:
+        return None
+    matched = match_timezone(name)
+    if matched and has_site_coordinates(matched.get("latitude"), matched.get("longitude")):
+        return matched
+    return None
+
+
+def _timezone_matching_offset() -> dict[str, Any] | None:
+    offset = datetime.now().astimezone().utcoffset()
+    if offset is None:
+        return None
+    for item in timezone_locations():
+        name = str(item.get("name") or "")
+        if name in {"UTC", "Etc/UTC"} or not has_site_coordinates(item.get("latitude"), item.get("longitude")):
+            continue
+        try:
+            zone_offset = datetime.now(ZoneInfo(name)).utcoffset()
+        except Exception:
+            continue
+        if zone_offset == offset:
+            return item
+    return None
+
+
+def suggested_timezone() -> dict[str, Any] | None:
+    """Best observing timezone for this computer: IANA key, Windows map, then UTC offset."""
+    tzinfo = datetime.now().astimezone().tzinfo
+    key = getattr(tzinfo, "key", None) or getattr(tzinfo, "zone", None)
+    matched = _timezone_with_coords(str(key) if key else "")
+    if matched:
+        return matched
+    windows_name = _windows_timezone_key_name()
+    mapped = _WINDOWS_TZ.get(windows_name)
+    if not mapped and windows_name:
+        mapped = _WINDOWS_TZ.get(windows_name.replace("\x00", ""))
+    matched = _timezone_with_coords(mapped)
+    if matched:
+        return matched
+    return _timezone_matching_offset()

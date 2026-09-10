@@ -63,7 +63,7 @@ from .services import (
     store_local_iso,
     zoneinfo_from_name,
 )
-from .location import match_timezone, resolve_location, timezone_locations
+from .location import has_site_coordinates, match_timezone, resolve_location, suggested_timezone, timezone_locations
 from .runtime import PROCESS_CREATION_FLAGS, kill_pid_tree, prepare_worker_environment, worker_command
 from .storage import SessionStore
 from .stream_preview import LiveFrames, StreamPlayer, port_is_open, preview_window_is_live, set_live_frames, stream_port
@@ -775,6 +775,10 @@ class AppBackend(QObject):
     @Property("QVariantList", constant=True)
     def timezones(self) -> list[dict[str, Any]]:
         return list(timezone_locations())
+
+    @Property("QVariant", constant=True)
+    def suggestedLocation(self) -> dict[str, Any]:
+        return suggested_timezone() or {}
 
     @Property("QVariantList", notify=devicesChanged)
     def devices(self) -> list[dict[str, Any]]:
@@ -1834,7 +1838,7 @@ class AppBackend(QObject):
             )
             if not timezone_name:
                 raise ValueError("A timezone is required")
-            if abs(latitude) < 1e-9 and abs(longitude) < 1e-9 and timezone_name not in {"UTC", "Etc/UTC"}:
+            if not has_site_coordinates(latitude, longitude):
                 raise ValueError("Choose a timezone from the list, or press Enter to look up a city")
             model = current.model if current else DeviceModel.DWARF_3
             if values.get("model"):
@@ -1846,7 +1850,7 @@ class AppBackend(QObject):
                 timezone_name=timezone_name,
                 latitude=latitude,
                 longitude=longitude,
-                location_configured=True,
+                location_configured=has_site_coordinates(latitude, longitude),
             )
             self.store.devices.save(device)
             self._devices.append(device)
@@ -2052,7 +2056,7 @@ class AppBackend(QObject):
                 latitude=latitude,
                 longitude=longitude,
                 timezone_name=timezone_name,
-                location_configured=True,
+                location_configured=has_site_coordinates(latitude, longitude),
                 stellarium_url=values.get("stellarium_url", current.stellarium_url),
                 wifi_ssid=values.get("wifi_ssid", current.wifi_ssid),
                 wifi_password=values.get("wifi_password", current.wifi_password),
@@ -2075,8 +2079,8 @@ class AppBackend(QObject):
         except Exception as exc:
             self._toast(f"Could not save device: {exc}", "error")
 
-    @Slot(str)
-    def saveObservingLocation(self, payload: str) -> None:
+    @Slot(str, result=bool)
+    def saveObservingLocation(self, payload: str) -> bool:
         try:
             values = json.loads(payload)
             current = self._device_by_id(values.get("id") or self._selected_device_id)
@@ -2087,7 +2091,7 @@ class AppBackend(QObject):
             )
             if not timezone_name:
                 raise ValueError("A timezone is required")
-            if abs(latitude) < 1e-9 and abs(longitude) < 1e-9 and timezone_name not in {"UTC", "Etc/UTC"}:
+            if not has_site_coordinates(latitude, longitude):
                 raise ValueError("Choose a timezone from the list, or press Enter to look up a city")
             model = current.model
             if values.get("model"):
@@ -2098,7 +2102,7 @@ class AppBackend(QObject):
                 latitude=latitude,
                 longitude=longitude,
                 timezone_name=timezone_name,
-                location_configured=True,
+                location_configured=has_site_coordinates(latitude, longitude),
             )
             self.store.devices.save(updated)
             self._devices = [updated if item.id == updated.id else item for item in self._devices]
@@ -2107,8 +2111,10 @@ class AppBackend(QObject):
             self.selectedDeviceChanged.emit()
             self.clockChanged.emit()
             self._toast("Observing location saved", "success")
+            return True
         except Exception as exc:
             self._toast(f"Could not save location: {exc}", "error")
+            return False
 
     @Slot(str)
     def lookupLocation(self, query: str) -> None:

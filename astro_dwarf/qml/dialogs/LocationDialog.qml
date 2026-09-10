@@ -35,18 +35,23 @@ Dialog {
     onClosed: addingDevice = false
     onOpened: {
         const d = backend.selectedDevice
-        const tz = String(d.timezone_name || "")
-        const configured = !!d.location_configured
-        const inherited = !configured && tz !== "" && tz !== "UTC" && tz !== "Etc/UTC"
         locationModel.currentIndex = Math.max(0, locationDialog.modelOptions.indexOf(d.model || "Dwarf 3"))
-        if (addingDevice || configured || inherited) {
-            locationTimezone.setFromName(tz)
+        const lat = Number(d.latitude || 0)
+        const lon = Number(d.longitude || 0)
+        const hasCoords = Math.abs(lat) > 1e-9 || Math.abs(lon) > 1e-9
+        if (!addingDevice && hasCoords) {
+            locationTimezone.setFromName(d.timezone_name || "")
             locationLat.text = d.latitude
             locationLon.text = d.longitude
         } else {
-            locationTimezone.setFromName("")
-            locationLat.text = ""
-            locationLon.text = ""
+            const suggestion = backend.suggestedLocation
+            if (suggestion && suggestion.name) {
+                locationDialog.applyLocation(suggestion)
+            } else {
+                locationTimezone.setFromName("")
+                locationLat.text = ""
+                locationLon.text = ""
+            }
         }
     }
     contentItem: ColumnLayout {
@@ -87,7 +92,12 @@ Dialog {
             HudButton { text: "CANCEL"; onClicked: locationDialog.close() }
             HudButton {
                 text: locationDialog.addingDevice ? "ADD DEVICE" : "SAVE LOCATION"
-                enabled: locationTimezone.selectedName.length > 0 || locationTimezone.editText.length > 0
+                enabled: {
+                    const lat = Number(locationLat.text)
+                    const lon = Number(locationLon.text)
+                    const named = locationTimezone.selectedName.length > 0 || locationTimezone.editText.length > 0
+                    return named && (Math.abs(lat) > 1e-9 || Math.abs(lon) > 1e-9)
+                }
                 busyText: locationDialog.addingDevice ? "ADDING…" : "SAVING…"
                 buttonColor: Theme.fillActive
                 foregroundColor: Theme.accent
@@ -102,8 +112,8 @@ Dialog {
                     if (locationDialog.addingDevice) {
                         if (backend.addDevice(payload))
                             locationDialog.close()
-                    } else {
-                        backend.saveObservingLocation(payload)
+                    } else if (backend.saveObservingLocation(payload)) {
+                        locationDialog.close()
                     }
                 }
             }

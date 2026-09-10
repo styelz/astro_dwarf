@@ -322,6 +322,38 @@ def configure(device: dict[str, Any]) -> bool:
     return True
 
 
+def _site_coordinates() -> tuple[float, float]:
+    try:
+        latitude = float(_device.get("latitude") or 0)
+        longitude = float(_device.get("longitude") or 0)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+    return latitude, longitude
+
+
+def _set_location() -> Any:
+    """CMD_SYSTEM_SET_LOCATION (13010) using the worker's device coordinates.
+
+    The SDK wrapper reads config.ini from the process cwd. Sending the proto
+    from ``_device`` keeps a cwd/config miss from silently writing 0,0.
+    """
+    from dwarf_python_api.proto import system_pb2
+
+    latitude, longitude = _site_coordinates()
+    if abs(latitude) < 1e-9 and abs(longitude) < 1e-9:
+        log(
+            "Telescope location is lat=0, long=0 — set your site coordinates or polar alignment and tracking will be wrong",
+            "warning",
+        )
+        return False
+    message = system_pb2.ReqSetLocation()
+    message.latitude = latitude
+    message.longitude = longitude
+    message.altitude = 0
+    log(f"Location is : lat={latitude}, long={longitude}", "notice")
+    return _send_request("location", message, 13010, 4, "Set Location")
+
+
 def _motor_position(motor_id: int) -> float | None:
     """Read one axis via CMD 14011. Position is degrees.
 
@@ -450,6 +482,8 @@ def sdk_call(operation: str, *args: Any) -> Any:
     global _motors_unhomed
     if _api is None:
         raise RuntimeError("Telescope worker is not configured")
+    if operation == "location":
+        return _set_location()
     if operation in ("calibrate", "polar", "goto", "goto_solar"):
         # These home the steppers, so let the next centre tap probe positions again.
         _motors_unhomed = False
@@ -511,8 +545,9 @@ def sdk_call(operation: str, *args: Any) -> Any:
                 message.ra = float(args[0])
                 message.dec = float(args[1])
                 message.target_name = str(args[2] if len(args) > 2 else "")
-                # We start stacking ourselves after GOTO finishes.
-                message.goto_only = bool(args[3]) if len(args) > 3 else True
+                # Match astro_dwarf_session / perform_goto: goto_only=False so
+                # the firmware starts sidereal tracking after the slew/solve.
+                message.goto_only = bool(args[3]) if len(args) > 3 else False
                 if len(args) > 4 and args[4] is not None:
                     message.rotation = int(args[4])
                 return send_without_response(message, 11002, 3)
@@ -1119,26 +1154,23 @@ def _await_operation(name: str, operation: str, since: float) -> None:
     without waiting for the slew/solve to finish. The session watches
     telemetry: calibration/EQ/autofocus send a reply when they end, GOTO
     is acknowledged up front, and state notifications report
-    running → solving → idle/stopped. The SDK's own GOTO wrapper instead
-    blocks until tracking starts and never times out, so sessions send
-    GOTO fire-and-forget and wait here.
+    running → solving → idle/stopped. GOTO then has to hand off to
+    tracking (same as astro_dwarf_session) before capture can start.
     """
     if _tap is None:
         return
     reply_cmd, state_key, done_on_reply, timeout = _V3_OPERATION_WAITS[operation]
+    goto = operation in ("goto", "goto_solar")
     seen_running = False
     snapshot = _tap.snapshot()
     state = snapshot.get(state_key) if state_key else None
     if state in _BUSY_ASTRO:
         seen_running = True
-    elif (
-        operation in ("goto", "goto_solar")
-        and snapshot.get("tracking_state") == "running"
-        and (time.monotonic() - since) > 5
-    ):
+    elif goto and snapshot.get("tracking_state") == "running" and (time.monotonic() - since) > 5:
         # GOTO already handed off to tracking before we started waiting.
         return
     log(f"{name} started; waiting for the telescope to finish…")
+    logged_tracking_wait = False
     while True:
         if _stop.is_set():
             raise InterruptedError("Session stopped")
@@ -1151,19 +1183,21 @@ def _await_operation(name: str, operation: str, since: float) -> None:
         state = snapshot.get(state_key) if state_key else None
         if state in _BUSY_ASTRO:
             seen_running = True
-        elif seen_running and state in ("idle", "stopped"):
-            if operation in ("goto", "goto_solar") and snapshot.get("tracking_state") != "running":
-                log("GOTO finished; tracking has not started yet — continuing to capture", "notice")
+        tracking = snapshot.get("tracking_state") == "running"
+        if goto and tracking:
             return
-        if (
-            operation in ("goto", "goto_solar")
-            and seen_running
-            and snapshot.get("tracking_state") == "running"
-            and state not in _BUSY_ASTRO
-        ):
+        if goto and seen_running and state in ("idle", "stopped") and not logged_tracking_wait:
+            log("GOTO finished; waiting for tracking to start…")
+            logged_tracking_wait = True
+        if seen_running and state in ("idle", "stopped") and not goto:
             return
         elapsed = time.monotonic() - since
         if elapsed > timeout:
+            if goto and not tracking:
+                raise RuntimeError(
+                    f"{name} finished but tracking did not start. "
+                    "Set the telescope to your observing site, then retry."
+                )
             raise RuntimeError(f"{name} timed out after {int(timeout)} s")
         if state_key and not seen_running and elapsed > 30:
             raise RuntimeError(f"{name} did not start")
@@ -1446,15 +1480,10 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         if _stop.is_set():
             raise InterruptedError("Session stopped")
         raise RuntimeError("Could not connect to telescope")
-    try:
-        latitude = float(_device.get("latitude") or 0)
-        longitude = float(_device.get("longitude") or 0)
-    except (TypeError, ValueError):
-        latitude = longitude = 0.0
+    latitude, longitude = _site_coordinates()
     if abs(latitude) < 1e-9 and abs(longitude) < 1e-9:
-        log(
-            "Telescope location is lat=0, long=0 — set your site coordinates or polar alignment and tracking will be wrong",
-            "warning",
+        raise RuntimeError(
+            "Telescope location is lat=0, long=0. Set your observing site before running a session."
         )
     step("Closing previous capture", "go_live")
     if target.get("kind") == "solar":
@@ -1484,8 +1513,7 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         _clear_tracking()
         _run_v3_until_ready("Calibration", "calibrate", step)
     if workflow.get("goto") and target.get("ra_hours") is not None:
-        # goto_only=True: we start stacking ourselves after GOTO finishes.
-        step("GOTO target", "goto", target["ra_hours"], target["dec_degrees"], target["name"], True)
+        step("GOTO target", "goto", target["ra_hours"], target["dec_degrees"], target["name"], False)
     elif workflow.get("goto") and target.get("kind") == "solar":
         ids = {"mercury": 1, "venus": 2, "mars": 3, "jupiter": 4, "saturn": 5, "uranus": 6, "neptune": 7, "moon": 8, "sun": 9}
         name = (target.get("solar_name") or target["name"]).lower()

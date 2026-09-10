@@ -6,6 +6,8 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
+from .location import has_site_coordinates
+
 
 def new_id() -> str:
     return uuid4().hex
@@ -214,7 +216,7 @@ def hardware_from_dict(data: dict[str, Any]) -> HardwareProfile:
 def device_from_dict(data: dict[str, Any]) -> Device:
     data = dict(data)
     data.pop("demo_mode", None)
-    configured = data.pop("location_configured", None)
+    data.pop("location_configured", None)
     data["model"] = DeviceModel(data.get("model", DeviceModel.DWARF_3))
     data["camera"] = Camera(data.get("camera", Camera.TELE))
     try:
@@ -222,15 +224,7 @@ def device_from_dict(data: dict[str, Any]) -> Device:
     except ValueError:
         data["wifi_mode"] = WifiMode.AUTO
     data["hardware"] = hardware_from_dict(data.get("hardware", {}))
-    if configured is None:
-        timezone_name = str(data.get("timezone_name") or "UTC")
-        latitude = float(data.get("latitude") or 0)
-        longitude = float(data.get("longitude") or 0)
-        data["location_configured"] = not (
-            timezone_name in {"", "UTC"} and abs(latitude) < 1e-9 and abs(longitude) < 1e-9
-        )
-    else:
-        data["location_configured"] = bool(configured)
+    data["location_configured"] = has_site_coordinates(data.get("latitude"), data.get("longitude"))
     allowed = set(Device.__dataclass_fields__)
     return Device(**{key: value for key, value in data.items() if key in allowed})
 
