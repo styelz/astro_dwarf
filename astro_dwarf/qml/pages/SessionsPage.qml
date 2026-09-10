@@ -479,7 +479,7 @@ Item {
                                 anchors.bottom: parent.bottom
                                 anchors.margins: 12
                                 HudButton { text: "EDIT"; busyText: "OPENING…"; onClicked: sessionDialog.openTemplate(templateCard.modelData) }
-                                HudButton { text: "SCHEDULE"; Layout.fillWidth: true; busyText: "SCHEDULING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: backend.scheduleTemplate(templateCard.modelData.id) }
+                                HudButton { text: "SCHEDULE"; Layout.fillWidth: true; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: scheduleTemplateDialog.openFor(templateCard.modelData) }
                                 HudButton { text: "DELETE"; busyText: "DELETING…"; onClicked: backend.deleteTemplate(templateCard.modelData.id) }
                             },
                             HudMenu {
@@ -497,7 +497,7 @@ Item {
                                 HudMenuItem {
                                     text: "Schedule"
                                     glyph: "\uE768"
-                                    onTriggered: backend.scheduleTemplate(templateCard.modelData.id)
+                                    onTriggered: scheduleTemplateDialog.openFor(templateCard.modelData)
                                 }
                                 HudMenuSeparator {}
                                 HudMenuItem {

@@ -956,6 +956,7 @@ ApplicationWindow {
     LocationDialog { id: locationDialog }
     SettingsLeaveDialog { id: settingsLeaveDialog }
     ConfirmDialog { id: confirmDialog }
+    ScheduleTemplateDialog { id: scheduleTemplateDialog }
 
     FileDialog {
         id: telescopiusDialog

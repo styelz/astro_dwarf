@@ -2949,11 +2949,11 @@ class AppBackend(QObject):
             cursor += timedelta(seconds=max(60, item.planned_duration_seconds))
         self.sessionsChanged.emit()
 
-    @Slot(str)
-    def scheduleTemplate(self, template_id: str) -> None:
+    @Slot(str, str, result=bool)
+    def scheduleTemplate(self, template_id: str, scheduled_start: str) -> bool:
         template = self.store.templates.get(template_id)
         if not template:
-            return
+            return False
         group_id = template.mosaic.group_id
         templates = (
             [item for item in self.store.templates.all() if item.mosaic.group_id == group_id]
@@ -2961,23 +2961,24 @@ class AppBackend(QObject):
         )
         device = self._device_by_id(self._selected_device_id)
         tz = self._zone_for(device)
-        start = self._now_local(device).replace(second=0, microsecond=0)
+        try:
+            start = parse_in_zone(str(scheduled_start).strip(), tz).replace(second=0, microsecond=0)
+        except ValueError:
+            self._toast("Enter a start time like 2026-09-10T22:00", "error")
+            return False
         sessions = [
             self.store.clone_template(item, self._selected_device_id, start)
             for item in templates
         ]
         staggered = stagger_mosaic_sessions(sessions, start, device.hardware)
-        span_start = min(parse_in_zone(item.scheduled_start, tz) for item in staggered)
-        span_end = max(self._session_window(item, tz)[1] for item in staggered)
-        free = next_free_start(self._occupied_windows(device.id, set()), start, span_end - span_start)
-        if free != start:
-            staggered = stagger_mosaic_sessions(sessions, free, device.hardware)
-        for session in staggered:
-            self.store.sessions.save(session)
-        self.sessionsChanged.emit()
+        try:
+            self._commit_device_sessions(staggered, device)
+        except ValueError as exc:
+            self._toast(str(exc), "warning")
+            return False
         count = len(sessions)
-        placed = " after the previous session" if free != start else ""
-        self._toast(f"Scheduled {count} pane{'s' if count != 1 else ''}{placed}", "success")
+        self._toast(f"Scheduled {count} pane{'s' if count != 1 else ''}", "success")
+        return True
 
     @Slot(str)
     def importTelescopius(self, raw_path: str) -> None:
