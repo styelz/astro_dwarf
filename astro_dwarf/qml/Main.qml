@@ -54,6 +54,7 @@ ApplicationWindow {
     }
     readonly property bool previewStarting: backend.previewActive && !backend.previewPlaying && !previewFailed
     readonly property bool scopeOccupied: scopeImaging || scopePending !== "" || scopeActivity !== "" || previewStarting
+    readonly property bool scopeStopping: scopePending === "stop_all" || scopePending === "stop_session"
     readonly property bool cameraLiveEnabled: commandEnabled("set_exposure")
     readonly property bool motionEnabled: commandEnabled("joystick")
 
@@ -94,8 +95,23 @@ ApplicationWindow {
         confirmDialog.summary = "Remove " + name + "? This cannot be undone."
         confirmDialog.open()
     }
+    function devicePending(deviceId) {
+        const devices = backend.devices
+        const id = String(deviceId || "")
+        for (let i = 0; i < devices.length; i++) {
+            if (devices[i].id === id)
+                return String(devices[i].pending_action || "")
+        }
+        return ""
+    }
+    function sessionStopping(session) {
+        if (!session || session.status !== "running")
+            return false
+        const pending = root.devicePending(session.device_id)
+        return pending === "stop_all" || pending === "stop_session"
+    }
     function scopeActivityText() {
-        if (root.scopePending === "stop_all")
+        if (root.scopeStopping)
             return (root.scopePendingDetail || "Stopping").toUpperCase()
         if (root.scopePending)
             return "SENDING · " + root.scopePending.replace(/_/g, " ").toUpperCase()
@@ -109,7 +125,7 @@ ApplicationWindow {
     function activityColor() {
         if (!root.scopeOnline)
             return Theme.textSecondary
-        if (root.scopePending === "stop_all")
+        if (root.scopeStopping)
             return Theme.warning
         if (root.scopePending)
             return Theme.accent
@@ -142,7 +158,9 @@ ApplicationWindow {
             goto: "stop_goto"
         }
         if (op === "stop_all")
-            return true
+            return pending !== "stop_session"
+        if (op === "stop_session")
+            return backend.currentSession.status === "running" && !root.scopeStopping
         const isStop = op === "stop_goto" || op.indexOf("stop_") === 0 || op.slice(-5) === "_stop"
         if (isStop) {
             if (op === stopFor[pending] || op === stopFor[activity])
@@ -347,12 +365,22 @@ ApplicationWindow {
                     onClicked: backend.setSchedulerEnabled(!backend.schedulerEnabled)
                 }
                 HudButton {
+                    text: "STOP SESSION"
+                    busy: backend.selectedDevice.pending_action === "stop_session"
+                    busyText: "STOPPING…"
+                    busyMs: 0
+                    enabled: root.commandEnabled("stop_session") || (backend.currentSession.status === "running" && !root.scopeStopping)
+                    buttonColor: Theme.fillDanger
+                    foregroundColor: Theme.danger
+                    onClicked: backend.stopSession(backend.currentSession.id)
+                }
+                HudButton {
                     text: "STOP ALL"
                     busy: backend.selectedDevice.pending_action === "stop_all"
                     busyText: "STOPPING…"
                     busyMs: 0
                     // A running session must always be stoppable, even while the link is still coming up.
-                    enabled: root.commandEnabled("stop_all") || (root.scopeImaging && root.scopePending !== "stop_all")
+                    enabled: root.commandEnabled("stop_all") || (root.scopeImaging && !root.scopeStopping)
                     buttonColor: Theme.fillDanger
                     foregroundColor: Theme.danger
                     onClicked: backend.stopDevice(backend.selectedDeviceId)

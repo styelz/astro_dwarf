@@ -287,7 +287,8 @@ _ACTIVITY_STOP = {
     "stop_calibrate": "calibrate",
     "stop_autofocus": "autofocus",
 }
-_ACTIVITY_CLEAR = {"stop_all", "reboot", "power_down", "go_live"}
+_ACTIVITY_CLEAR = {"stop_all", "stop_session", "reboot", "power_down", "go_live"}
+_STOP_ACTIONS = {"stop_all", "stop_session"}
 _CAPTURE_PREVIEW_STEPS = {
     "Start capture",
     "Start wide capture",
@@ -325,6 +326,7 @@ _ACTION_LABELS = {
     "timelapse_stop": "Timelapse stopped",
     "photo": "Photo captured",
     "stop_all": "Stop sent",
+    "stop_session": "Session stop sent",
     "reboot": "Reboot requested",
     "power_down": "Power down requested",
     "open_camera": "Tele camera opened",
@@ -818,7 +820,7 @@ class AppBackend(QObject):
             if current == action:
                 return
             self._pending_actions[device_id] = action
-            if action != "stop_all":
+            if action not in _STOP_ACTIONS:
                 self._pending_details.pop(device_id, None)
         elif current:
             self._pending_actions.pop(device_id, None)
@@ -841,7 +843,7 @@ class AppBackend(QObject):
         self._notify_devices()
 
     def _on_worker_status(self, device_id: str, kind: str, step: str) -> None:
-        if kind != "stop" or self._pending_actions.get(device_id) != "stop_all":
+        if kind != "stop" or self._pending_actions.get(device_id) not in _STOP_ACTIONS:
             return
         self._set_pending_detail(device_id, step)
 
@@ -2147,26 +2149,44 @@ class AppBackend(QObject):
 
     @Slot(str)
     def stopDevice(self, device_id: str) -> None:
+        self._request_device_stop(device_id, "STOP ALL", "stop_all")
+
+    @Slot(str)
+    def stopSession(self, session_id: str) -> None:
+        session = self.store.sessions.get(session_id)
+        if not session:
+            return
+        if session.status != SessionStatus.RUNNING:
+            self._toast("This session is not running", "warning")
+            return
+        if self._active_sessions.get(session.device_id) != session.id:
+            self._toast("This session is not the active run on that telescope", "warning")
+            return
+        if self._pending_actions.get(session.device_id) in _STOP_ACTIONS:
+            return
+        self._request_device_stop(session.device_id, "STOP SESSION", "stop_session")
+
+    def _request_device_stop(self, device_id: str, reason: str, action: str) -> None:
         worker = self._workers.get(device_id)
         if not worker:
             return
         detail = self._initial_stop_detail(device_id)
-        self._abort_active_session(device_id, "STOP ALL")
+        self._abort_active_session(device_id, reason)
         if not worker.connected:
             if device_id == self._selected_device_id:
                 self.stopPreview()
             self.add_log("warning", "Stop skipped; telescope is not connected", device_id)
             return
-        self._begin_activity(device_id, "stop_all")
+        self._begin_activity(device_id, action)
         self._set_pending_detail(device_id, detail)
 
         def done(ok: bool, result: Any) -> None:
-            self._complete_activity(device_id, "stop_all", ok)
+            self._complete_activity(device_id, action, ok)
             self.add_log(
                 "warning" if ok else "error", "Stop commands sent" if ok else str(result), device_id
             )
 
-        worker.send("stop_all", callback=self._with_pending(device_id, "stop_all", done))
+        worker.send("stop_all", callback=self._with_pending(device_id, action, done))
 
     @Slot(str)
     def copyText(self, text: str) -> None:

@@ -38,6 +38,13 @@ HudMenu {
         onTriggered: backend.runNow(sessionContextMenu.sessionId)
     }
     HudMenuItem {
+        text: "Stop session"
+        glyph: "\uE71A"
+        destructive: true
+        enabled: sessionContextMenu.sessionStatus === "running"
+        onTriggered: backend.stopSession(sessionContextMenu.sessionId)
+    }
+    HudMenuItem {
         text: "Skip"
         glyph: "\uE769"
         enabled: sessionContextMenu.sessionStatus === "planned"

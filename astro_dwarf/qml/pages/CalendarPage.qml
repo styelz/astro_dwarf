@@ -1004,7 +1004,20 @@ Item {
                                         }
                                     }
                                     HudButton { text: "EDIT"; implicitHeight: 24; visible: !timelineSession.tight && timelineSession.width > 260; onClicked: sessionDialog.openExisting(timelineSession.modelData) }
-                                    HudButton { text: "RUN"; implicitHeight: 24; visible: !timelineSession.tight && timelineSession.width > 260; enabled: modelData.status !== "running"; onClicked: backend.runNow(modelData.id) }
+                                    HudButton {
+                                        text: modelData.status === "running" ? "STOP" : "RUN"
+                                        implicitHeight: 24
+                                        visible: !timelineSession.tight && timelineSession.width > 260
+                                        enabled: modelData.status !== "running" || !root.sessionStopping(modelData)
+                                        busy: root.sessionStopping(modelData)
+                                        busyText: modelData.status === "running" ? "STOPPING…" : "STARTING…"
+                                        busyMs: modelData.status === "running" ? 0 : 1400
+                                        buttonColor: modelData.status === "running" ? Theme.fillDanger : Theme.surfaceHigh
+                                        foregroundColor: modelData.status === "running" ? Theme.danger : Theme.textPrimary
+                                        onClicked: modelData.status === "running"
+                                            ? backend.stopSession(modelData.id)
+                                            : backend.runNow(modelData.id)
+                                    }
                                 }
                                 TapHandler { acceptedButtons: Qt.RightButton; onTapped: calendarPage.openSessionMenu(timelineSession.modelData, calendarPage.nightSessions) }
                             }
@@ -1205,7 +1218,19 @@ Item {
                                 RowLayout {
                                     HudButton { text: "EDIT"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
                                     HudButton { text: "RESET"; implicitHeight: 24; visible: Util.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
-                                    HudButton { text: "RUN"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "STARTING…"; onClicked: backend.runNow(modelData.id) }
+                                    HudButton {
+                                        text: modelData.status === "running" ? "STOP" : "RUN"
+                                        implicitHeight: 24
+                                        enabled: modelData.status !== "running" || !root.sessionStopping(modelData)
+                                        busy: root.sessionStopping(modelData)
+                                        busyText: modelData.status === "running" ? "STOPPING…" : "STARTING…"
+                                        busyMs: modelData.status === "running" ? 0 : 1400
+                                        buttonColor: modelData.status === "running" ? Theme.fillDanger : Theme.surfaceHigh
+                                        foregroundColor: modelData.status === "running" ? Theme.danger : Theme.textPrimary
+                                        onClicked: modelData.status === "running"
+                                            ? backend.stopSession(modelData.id)
+                                            : backend.runNow(modelData.id)
+                                    }
                                 }
                             }
                             TapHandler {

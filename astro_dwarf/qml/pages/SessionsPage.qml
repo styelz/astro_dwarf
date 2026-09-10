@@ -355,12 +355,18 @@ Item {
                                             onClicked: backend.resetSession(scheduledRow.modelData.id)
                                         }
                                         HudButton {
-                                            text: "RUN"
+                                            text: scheduledRow.modelData.status === "running" ? "STOP" : "RUN"
                                             implicitHeight: 30
                                             Layout.preferredWidth: 68
-                                            enabled: scheduledRow.modelData.status !== "running"
-                                            busyText: "STARTING…"
-                                            onClicked: backend.runNow(scheduledRow.modelData.id)
+                                            enabled: scheduledRow.modelData.status !== "running" || !root.sessionStopping(scheduledRow.modelData)
+                                            busy: root.sessionStopping(scheduledRow.modelData)
+                                            busyText: scheduledRow.modelData.status === "running" ? "STOPPING…" : "STARTING…"
+                                            busyMs: scheduledRow.modelData.status === "running" ? 0 : 1400
+                                            buttonColor: scheduledRow.modelData.status === "running" ? Theme.fillDanger : Theme.surfaceHigh
+                                            foregroundColor: scheduledRow.modelData.status === "running" ? Theme.danger : Theme.textPrimary
+                                            onClicked: scheduledRow.modelData.status === "running"
+                                                ? backend.stopSession(scheduledRow.modelData.id)
+                                                : backend.runNow(scheduledRow.modelData.id)
                                         }
                                     }
                                 }

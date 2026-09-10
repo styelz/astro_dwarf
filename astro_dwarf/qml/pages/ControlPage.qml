@@ -122,7 +122,7 @@ Item {
                     model: [
                         {label: "ENDPOINT", value: backend.selectedDevice.ip_address || "—", tone: root.scopeOnline ? Theme.textPrimary : Theme.textSecondary},
                         {label: "SCHEDULER", value: backend.schedulerEnabled ? root.nextSessionCountdown() : "Disarmed", tone: backend.schedulerEnabled ? Theme.success : Theme.textSecondary},
-                        {label: "PREVIEW", value: root.scopePending === "stop_all" ? (root.scopePendingDetail || "Stopping") : (backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped")), tone: root.scopePending === "stop_all" ? Theme.warning : (backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary))},
+                        {label: "PREVIEW", value: root.scopeStopping ? (root.scopePendingDetail || "Stopping") : (backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped")), tone: root.scopeStopping ? Theme.warning : (backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary))},
                         {label: "SESSION", value: backend.currentSession.current_step || "No active session", tone: backend.currentSession.id ? Theme.accent : Theme.textSecondary},
                         {label: "REMAINING", value: backend.currentSession.id ? Util.durationLabel(Number(backend.currentSession.planned_duration_seconds || 0) * (1 - backend.sessionProgress)) : "—", tone: Theme.textPrimary},
                         {label: "TIMEZONE", value: backend.selectedDevice.timezone_name || "UTC", tone: Theme.textPrimary},
@@ -398,6 +398,18 @@ Item {
                         }
                     }
                 }
+                HudButton {
+                    Layout.fillWidth: true
+                    visible: backend.currentSession.status === "running"
+                    text: "STOP SESSION"
+                    busy: root.scopeStopping
+                    busyText: "STOPPING…"
+                    busyMs: 0
+                    enabled: !root.scopeStopping
+                    buttonColor: Theme.fillDanger
+                    foregroundColor: Theme.danger
+                    onClicked: backend.stopSession(backend.currentSession.id)
+                }
                 HudMenu {
                     id: targetMenu
                     readonly property string coordinates: Util.targetCoordinates(backend.currentSession)
@@ -420,12 +432,11 @@ Item {
                     }
                     HudMenuSeparator {}
                     HudMenuItem {
-                        text: "Stop all"
+                        text: "Stop session"
                         glyph: "\uE71A"
                         destructive: true
-                        enabled: backend.currentSession.status === "running"
-                            && root.commandEnabled("stop_all")
-                        onTriggered: backend.stopDevice(backend.selectedDeviceId)
+                        enabled: backend.currentSession.status === "running" && !root.scopeStopping
+                        onTriggered: backend.stopSession(backend.currentSession.id)
                     }
                 }
             }
@@ -522,7 +533,7 @@ Item {
                     Layout.preferredHeight: 0
                     property string previewDeviceId: backend.selectedDeviceId
                     readonly property string statusText: {
-                        if (root.scopePending === "stop_all")
+                        if (root.scopeStopping)
                             return root.scopePendingDetail || "Stopping telescope activity"
                         if (backend.previewHeld)
                             return backend.previewHoldMessage
@@ -576,7 +587,7 @@ Item {
                         const s = String(backend.previewStatus || "").toLowerCase()
                         return s.indexOf("fail") >= 0 || s.indexOf("could not") >= 0
                     }
-                    readonly property bool previewStartEnabled: backend.selectedDevice.connected && !root.scopeLinking && root.scopePending !== "stop_all" && (!backend.previewActive || backend.previewPlaying || previewFailed)
+                    readonly property bool previewStartEnabled: backend.selectedDevice.connected && !root.scopeLinking && !root.scopeStopping && (!backend.previewActive || backend.previewPlaying || previewFailed)
                     readonly property string actionLabel: {
                         if (!backend.previewActive || backend.previewPlaying)
                             return "STARTING CAMERA…"
@@ -965,7 +976,7 @@ Item {
                         anchors.centerIn: parent
                         spacing: 10
                         width: Math.min(parent.width - 48, 520)
-                        visible: backend.previewHeld && !backend.previewPlaying && root.scopePending !== "stop_all"
+                        visible: backend.previewHeld && !backend.previewPlaying && !root.scopeStopping
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: "LIVE VIEW PAUSED"
@@ -996,7 +1007,7 @@ Item {
                     Column {
                         anchors.centerIn: parent
                         spacing: 8
-                        visible: !backend.previewPlaying && !backend.previewHeld && root.scopePending !== "stop_all"
+                        visible: !backend.previewPlaying && !backend.previewHeld && !root.scopeStopping
                         Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: Theme.textPrimary; font.pixelSize: 16; font.letterSpacing: 3; font.bold: true }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -1022,7 +1033,7 @@ Item {
                         id: stopOverlay
                         z: 6
                         anchors.fill: parent
-                        visible: root.scopePending === "stop_all"
+                        visible: root.scopeStopping
                         Rectangle {
                             anchors.fill: parent
                             color: Theme.scrim
@@ -1082,7 +1093,7 @@ Item {
                         Behavior on opacity { NumberAnimation { duration: Theme.slow } }
                         Rectangle {
                             id: previewBadge
-                            readonly property bool stopping: root.scopePending === "stop_all"
+                            readonly property bool stopping: root.scopeStopping
                             width: stopping ? 118 : (backend.previewHeld && !backend.previewPlaying ? 108 : 96)
                             height: 28
                             color: Theme.hsl(0.094, 0.333, 0.094, 0.753)
