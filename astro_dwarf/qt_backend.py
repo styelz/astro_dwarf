@@ -7,7 +7,6 @@ import threading
 import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
-from math import ceil
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -54,9 +53,12 @@ from .services import (
     StellariumClient,
     import_telescopius,
     mosaic_group_title,
+    next_free_start,
     observing_date,
     pane_sort_key,
     parse_in_zone,
+    session_window,
+    sessions_overlap,
     stagger_mosaic_sessions,
     store_local_iso,
     zoneinfo_from_name,
@@ -2276,6 +2278,8 @@ class AppBackend(QObject):
                 if group_id and group_id not in grouped:
                     grouped.add(group_id)
                     self._sequence_mosaic_group(session, notify=False)
+            for device_id in {session.device_id for session in saved}:
+                self._pack_device_schedule(device_id, notify=False)
             if updated:
                 self.sessionsChanged.emit()
             if skipped_running and not updated:
@@ -2330,7 +2334,7 @@ class AppBackend(QObject):
             existing = self.store.sessions.get(values.get("id", "")) if values.get("id") else None
             session = self._session_from_payload(values, existing)
             device = self._device_by_id(session.device_id)
-            siblings: list[Session] = []
+            proposed: dict[str, Session] = {session.id: session}
             if existing:
                 family = self._mosaic_siblings(existing)
                 if existing.device_id != device.id and any(item.status == SessionStatus.RUNNING for item in family):
@@ -2338,28 +2342,19 @@ class AppBackend(QObject):
                 old_tz = self._zone_for_id(existing.device_id)
                 new_tz = self._zone_for(device)
                 delta = parse_in_zone(session.scheduled_start, new_tz) - parse_in_zone(existing.scheduled_start, old_tz)
-                if existing.device_id != device.id or delta:
-                    siblings = [item for item in self._session_group(existing) if item.id != existing.id]
-            self._save_session(session, notify=not siblings)
-            if siblings and existing:
-                old_tz = self._zone_for_id(existing.device_id)
-                new_tz = self._zone_for(device)
-                delta = parse_in_zone(session.scheduled_start, new_tz) - parse_in_zone(existing.scheduled_start, old_tz)
-                for sibling in siblings:
-                    sib_start = parse_in_zone(sibling.scheduled_start, old_tz) + delta
-                    self._save_session(
-                        replace(sibling, device_id=device.id, scheduled_start=store_local_iso(sib_start, new_tz)),
-                        notify=False,
-                    )
-            if self._sequence_mosaic_group(session, notify=False):
-                self.sessionsChanged.emit()
-            elif siblings:
-                self.sessionsChanged.emit()
-            if siblings:
-                self._warn_schedule_overlap(
-                    {session.id, *(item.id for item in siblings)},
-                    device.id,
-                )
+                for sibling in self._session_group(existing):
+                    if sibling.id == existing.id:
+                        continue
+                    if existing.device_id != device.id or delta:
+                        sib_start = parse_in_zone(sibling.scheduled_start, old_tz) + delta
+                        proposed[sibling.id] = replace(
+                            sibling,
+                            device_id=device.id,
+                            scheduled_start=store_local_iso(sib_start, new_tz),
+                        )
+                    else:
+                        proposed[sibling.id] = sibling
+            self._commit_device_sessions(list(proposed.values()), device)
             if values.get("save_template"):
                 self.store.templates.save(SessionTemplate(
                     name=session.name,
@@ -2392,7 +2387,7 @@ class AppBackend(QObject):
             parse_in_zone(new_anchor_start, new_tz) - parse_in_zone(existing_anchor.scheduled_start, old_tz)
             if existing_anchor else timedelta(0)
         )
-        saved: list[Session] = []
+        drafts: list[Session] = []
         for pane in panes:
             if not isinstance(pane, dict):
                 continue
@@ -2401,14 +2396,11 @@ class AppBackend(QObject):
             if existing:
                 start = parse_in_zone(existing.scheduled_start, old_tz) + delta
                 merged["scheduled_start"] = store_local_iso(start, new_tz)
-            session = self._session_from_payload(merged, existing)
-            saved.append(self._save_session(session, notify=False))
-        if not saved:
+            drafts.append(self._session_from_payload(merged, existing))
+        if not drafts:
             raise ValueError("No panes to save")
+        saved = self._commit_device_sessions(drafts, device)
         anchor = next((item for item in saved if item.id == anchor_id), saved[0])
-        self._sequence_mosaic_group(anchor, notify=False)
-        self.sessionsChanged.emit()
-        self._warn_schedule_overlap({item.id for item in saved}, device.id)
         if values.get("save_template"):
             self.store.templates.save(SessionTemplate(
                 name=anchor.name,
@@ -2535,25 +2527,28 @@ class AppBackend(QObject):
         source = self.store.sessions.get(session_id)
         if not source:
             return
-        scheduled_start = source.scheduled_start
+        device = self._device_by_id(source.device_id)
+        tz = self._zone_for(device)
+        copy = self._with_duration(replace(
+            source,
+            id=uuid4().hex,
+            name=f"{source.name} copy",
+            scheduled_start=source.scheduled_start,
+            status=SessionStatus.PLANNED,
+            actual_started_at=None,
+            actual_ended_at=None,
+        ))
+        start = parse_in_zone(copy.scheduled_start, tz)
         if source.mosaic.group_id:
-            tz = self._zone_for_id(source.device_id)
             family = [
                 item for item in self._mosaic_siblings(source)
                 if item.status == SessionStatus.PLANNED
             ]
             if family:
-                last_end = max(self._session_window(item, tz)[1] for item in family)
-                scheduled_start = store_local_iso(last_end, tz)
-        self._save_session(replace(
-            source,
-            id=uuid4().hex,
-            name=f"{source.name} copy",
-            scheduled_start=scheduled_start,
-            status=SessionStatus.PLANNED,
-            actual_started_at=None,
-            actual_ended_at=None,
-        ))
+                start = max(self._session_window(item, tz)[1] for item in family)
+        span_start, span_end = self._session_window(copy, tz)
+        free = next_free_start(self._occupied_windows(device.id, set()), start, span_end - span_start)
+        self._save_session(replace(copy, scheduled_start=store_local_iso(free, tz)))
 
     @Slot(str)
     def runNow(self, session_id: str) -> None:
@@ -2617,11 +2612,16 @@ class AppBackend(QObject):
                 and item.device_id == session.device_id
                 and item.status != SessionStatus.RUNNING
             ]
+        device = self._device_by_id(session.device_id)
+        proposed = []
         for item in members:
             tz = self._zone_for_id(item.device_id)
             start = parse_in_zone(item.scheduled_start, tz) + timedelta(days=delta.days)
-            self.store.sessions.save(replace(item, scheduled_start=store_local_iso(start, tz)))
-        self.sessionsChanged.emit()
+            proposed.append(replace(item, scheduled_start=store_local_iso(start, tz)))
+        try:
+            self._commit_device_sessions(proposed, device)
+        except ValueError as exc:
+            self._toast(str(exc), "warning")
 
     def _mosaic_siblings(self, session: Session) -> list[Session]:
         group_id = session.mosaic.group_id
@@ -2675,25 +2675,18 @@ class AppBackend(QObject):
             self._toast("That telescope was not found", "error")
             return
         moving, skipped = self._sessions_to_reassign(session_ids)
-        changed_ids: set[str] = set()
-        for session in moving:
-            if session.device_id == device.id:
-                continue
-            self._save_session(self._reassign_session(session, device), notify=False)
-            changed_ids.add(session.id)
-        if changed_ids:
-            seen_groups: set[tuple[str, str]] = set()
-            for session_id in changed_ids:
-                item = self.store.sessions.get(session_id)
-                if not item or not item.mosaic.group_id:
-                    continue
-                key = (item.mosaic.group_id, item.device_id)
-                if key in seen_groups:
-                    continue
-                seen_groups.add(key)
-                self._sequence_mosaic_group(item, notify=False)
-            self.sessionsChanged.emit()
-            self._warn_schedule_overlap(changed_ids, device.id)
+        proposed = [
+            self._reassign_session(session, device)
+            for session in moving
+            if session.device_id != device.id
+        ]
+        changed_ids = {item.id for item in proposed}
+        if proposed:
+            try:
+                self._commit_device_sessions(proposed, device)
+            except ValueError as exc:
+                self._toast(str(exc), "warning")
+                return
         if skipped and not changed_ids:
             self._toast("Stop running sessions before moving them", "warning")
         elif skipped:
@@ -2707,20 +2700,156 @@ class AppBackend(QObject):
         else:
             self._toast("Those sessions are already on this telescope", "info")
 
-    def _session_occupied_minutes(self, session: Session) -> int:
-        return max(1, int(ceil(max(0, session.planned_duration_seconds) / 60.0)))
+    def _with_duration(self, session: Session) -> Session:
+        device = self._device_by_id(session.device_id)
+        return replace(session, planned_duration_seconds=DurationEngine.calculate(session, device.hardware))
 
     def _session_window(self, session: Session, tz) -> tuple[datetime, datetime]:
-        start = parse_in_zone(session.scheduled_start, tz).replace(second=0, microsecond=0)
-        return start, start + timedelta(minutes=self._session_occupied_minutes(session))
+        return session_window(session, tz)
 
     def _mosaic_members_overlap(self, members: list[Session], tz) -> bool:
-        windows = [self._session_window(item, tz) for item in members]
-        for index, (left_start, left_end) in enumerate(windows):
-            for right_start, right_end in windows[index + 1:]:
-                if left_start < right_end and right_start < left_end:
+        for index, left in enumerate(members):
+            for right in members[index + 1:]:
+                if sessions_overlap(left, right, tz):
                     return True
         return False
+
+    def _schedule_blocks(self, sessions: list[Session]) -> list[list[Session]]:
+        grouped: dict[str, list[Session]] = {}
+        blocks: list[list[Session]] = []
+        for item in sessions:
+            key = item.mosaic.group_id
+            if key:
+                grouped.setdefault(key, []).append(item)
+            else:
+                blocks.append([item])
+        blocks.extend(grouped.values())
+
+        def sort_key(block: list[Session]):
+            first = min(
+                block,
+                key=lambda item: (item.scheduled_start, pane_sort_key(item.name), item.name, item.id),
+            )
+            return (
+                first.scheduled_start,
+                pane_sort_key(first.name),
+                first.mosaic.group_id or first.id,
+                first.name,
+            )
+
+        return sorted(blocks, key=sort_key)
+
+    def _stagger_if_overlapping(self, members: list[Session], device: Device) -> list[Session]:
+        tz = self._zone_for(device)
+        result: list[Session] = []
+        for block in self._schedule_blocks(members):
+            timed = [self._with_duration(item) for item in block]
+            if len(timed) >= 2 and self._mosaic_members_overlap(timed, tz):
+                start = min(parse_in_zone(item.scheduled_start, tz) for item in timed)
+                result.extend(stagger_mosaic_sessions(timed, start, device.hardware))
+            else:
+                result.extend(timed)
+        return result
+
+    def _occupied_windows(self, device_id: str, exclude_ids: set[str]) -> list[tuple[datetime, datetime]]:
+        tz = self._zone_for_id(device_id)
+        windows: list[tuple[datetime, datetime]] = []
+        for item in self.store.sessions.all():
+            if item.device_id != device_id or item.id in exclude_ids:
+                continue
+            if item.status not in (SessionStatus.PLANNED, SessionStatus.RUNNING):
+                continue
+            windows.append(self._session_window(item, tz))
+        return windows
+
+    def _device_busy_error(self, device: Device, other: Session) -> ValueError:
+        tz = self._zone_for(device)
+        start, end = self._session_window(other, tz)
+        label = other.name or other.target.name
+        return ValueError(
+            f"{device.name} already has {label} at {start.strftime('%H:%M')}–{end.strftime('%H:%M')}"
+        )
+
+    def _first_device_overlap(
+        self,
+        proposed: list[Session],
+        device_id: str,
+        exclude_ids: set[str],
+    ) -> Session | None:
+        tz = self._zone_for_id(device_id)
+        others = [
+            item for item in self.store.sessions.all()
+            if item.device_id == device_id
+            and item.id not in exclude_ids
+            and item.status in (SessionStatus.PLANNED, SessionStatus.RUNNING)
+        ]
+        for index, left in enumerate(proposed):
+            left_group = left.mosaic.group_id or left.id
+            for right in proposed[index + 1:]:
+                right_group = right.mosaic.group_id or right.id
+                if left_group == right_group:
+                    continue
+                if sessions_overlap(left, right, tz):
+                    return right
+            for right in others:
+                if sessions_overlap(left, right, tz):
+                    return right
+        return None
+
+    def _commit_device_sessions(self, sessions: list[Session], device: Device) -> list[Session]:
+        proposed = self._stagger_if_overlapping(sessions, device)
+        conflict = self._first_device_overlap(proposed, device.id, {item.id for item in proposed})
+        if conflict:
+            raise self._device_busy_error(device, conflict)
+        saved = [self._save_session(item, notify=False) for item in proposed]
+        self.sessionsChanged.emit()
+        return saved
+
+    def _pack_device_schedule(self, device_id: str, *, notify: bool = False) -> bool:
+        device = self._device_by_id(device_id)
+        tz = self._zone_for(device)
+        planned = [
+            self._with_duration(item)
+            for item in self.store.sessions.all()
+            if item.device_id == device_id and item.status == SessionStatus.PLANNED
+        ]
+        if not planned:
+            return False
+        occupied = [
+            self._session_window(item, tz)
+            for item in self.store.sessions.all()
+            if item.device_id == device_id and item.status == SessionStatus.RUNNING
+        ]
+        originals = {item.id: item for item in planned}
+        changed = False
+        for block in self._schedule_blocks(planned):
+            members = self._stagger_if_overlapping(block, device)
+            span_start = min(parse_in_zone(item.scheduled_start, tz) for item in members)
+            span_end = max(self._session_window(item, tz)[1] for item in members)
+            free = next_free_start(occupied, span_start, span_end - span_start)
+            delta = free - span_start
+            for item in members:
+                updated = item
+                if delta:
+                    start = parse_in_zone(item.scheduled_start, tz) + delta
+                    updated = replace(item, scheduled_start=store_local_iso(start, tz))
+                prev = originals.get(item.id)
+                start_changed = (
+                    not prev
+                    or parse_in_zone(prev.scheduled_start, tz) != parse_in_zone(updated.scheduled_start, tz)
+                )
+                if (
+                    start_changed
+                    or not prev
+                    or abs((prev.planned_duration_seconds or 0) - (updated.planned_duration_seconds or 0)) > 0.05
+                    or prev.workflow != updated.workflow
+                ):
+                    self.store.sessions.save(self._with_duration(updated))
+                    changed = True
+                occupied.append(self._session_window(updated, tz))
+        if changed and notify:
+            self.sessionsChanged.emit()
+        return changed
 
     def _sequence_mosaic_group(self, session: Session, *, notify: bool = False) -> bool:
         group_id = session.mosaic.group_id
@@ -2745,22 +2874,6 @@ class AppBackend(QObject):
             self.sessionsChanged.emit()
         return True
 
-    def _warn_schedule_overlap(self, moved_ids: set[str], device_id: str) -> None:
-        tz = self._zone_for_id(device_id)
-        planned = [
-            item for item in self.store.sessions.all()
-            if item.device_id == device_id and item.status == SessionStatus.PLANNED
-        ]
-        moved = [item for item in planned if item.id in moved_ids]
-        others = [item for item in planned if item.id not in moved_ids]
-        for left in moved:
-            left_start, left_end = self._session_window(left, tz)
-            for right in others:
-                right_start, right_end = self._session_window(right, tz)
-                if left_start < right_end and right_start < left_end:
-                    self._toast("Schedule updated; this session overlaps another planned session", "warning")
-                    return
-
     @Slot(str, str)
     def moveSessionStart(self, session_id: str, iso_datetime: str) -> None:
         session = self.store.sessions.get(session_id)
@@ -2780,15 +2893,16 @@ class AppBackend(QObject):
         delta = target - current
         if not delta:
             return
-        members = self._session_group(session)
-        moved_ids = {item.id for item in members}
-        for item in members:
+        device = self._device_by_id(session.device_id)
+        proposed = []
+        for item in self._session_group(session):
             item_tz = self._zone_for_id(item.device_id)
             start = parse_in_zone(item.scheduled_start, item_tz) + delta
-            self.store.sessions.save(replace(item, scheduled_start=store_local_iso(start, item_tz)))
-        self._sequence_mosaic_group(session, notify=False)
-        self.sessionsChanged.emit()
-        self._warn_schedule_overlap(moved_ids, session.device_id)
+            proposed.append(replace(item, scheduled_start=store_local_iso(start, item_tz)))
+        try:
+            self._commit_device_sessions(proposed, device)
+        except ValueError as exc:
+            self._toast(str(exc), "warning")
 
     @Slot(str, str)
     def reorderPlanned(self, session_id: str, before_session_id: str) -> None:
@@ -2846,16 +2960,24 @@ class AppBackend(QObject):
             if group_id else [template]
         )
         device = self._device_by_id(self._selected_device_id)
+        tz = self._zone_for(device)
         start = self._now_local(device).replace(second=0, microsecond=0)
         sessions = [
             self.store.clone_template(item, self._selected_device_id, start)
             for item in templates
         ]
-        for session in stagger_mosaic_sessions(sessions, start, device.hardware):
+        staggered = stagger_mosaic_sessions(sessions, start, device.hardware)
+        span_start = min(parse_in_zone(item.scheduled_start, tz) for item in staggered)
+        span_end = max(self._session_window(item, tz)[1] for item in staggered)
+        free = next_free_start(self._occupied_windows(device.id, set()), start, span_end - span_start)
+        if free != start:
+            staggered = stagger_mosaic_sessions(sessions, free, device.hardware)
+        for session in staggered:
             self.store.sessions.save(session)
         self.sessionsChanged.emit()
         count = len(sessions)
-        self._toast(f"Scheduled {count} pane{'s' if count != 1 else ''}", "success")
+        placed = " after the previous session" if free != start else ""
+        self._toast(f"Scheduled {count} pane{'s' if count != 1 else ''}{placed}", "success")
 
     @Slot(str)
     def importTelescopius(self, raw_path: str) -> None:
@@ -3057,17 +3179,9 @@ class AppBackend(QObject):
             self._preview_thread.quit()
 
     def _sequence_colliding_mosaics(self) -> None:
-        seen: set[tuple[str, str]] = set()
         changed = False
-        for session in self.store.sessions.all():
-            group_id = session.mosaic.group_id
-            if not group_id or session.status != SessionStatus.PLANNED:
-                continue
-            key = (group_id, session.device_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            if self._sequence_mosaic_group(session, notify=False):
+        for device in self._devices:
+            if self._pack_device_schedule(device.id, notify=False):
                 changed = True
         if changed:
             self.sessionsChanged.emit()

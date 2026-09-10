@@ -110,6 +110,37 @@ def stagger_mosaic_sessions(sessions: list[Session], start: datetime, profile: H
     return result
 
 
+def occupied_minutes(session: Session) -> int:
+    return max(1, int(ceil(max(0, session.planned_duration_seconds) / 60.0)))
+
+
+def session_window(session: Session, tz) -> tuple[datetime, datetime]:
+    start = parse_in_zone(session.scheduled_start, tz).replace(second=0, microsecond=0)
+    return start, start + timedelta(minutes=occupied_minutes(session))
+
+
+def sessions_overlap(left: Session, right: Session, tz) -> bool:
+    left_start, left_end = session_window(left, tz)
+    right_start, right_end = session_window(right, tz)
+    return left_start < right_end and right_start < left_end
+
+
+def next_free_start(
+    occupied: list[tuple[datetime, datetime]],
+    start: datetime,
+    duration: timedelta,
+) -> datetime:
+    cursor = start.replace(second=0, microsecond=0)
+    span = duration if duration > timedelta(0) else timedelta(minutes=1)
+    blocks = sorted(occupied, key=lambda item: item[0])
+    while True:
+        end = cursor + span
+        hit = next((block_end for block_start, block_end in blocks if cursor < block_end and block_start < end), None)
+        if hit is None:
+            return cursor
+        cursor = hit.replace(second=0, microsecond=0)
+
+
 class DurationEngine:
     @staticmethod
     def calculate(session: Session | SessionTemplate, profile: HardwareProfile) -> float:
