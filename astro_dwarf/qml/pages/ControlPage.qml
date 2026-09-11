@@ -450,6 +450,29 @@ Item {
                 SplitView.fillHeight: true
                 SplitView.minimumHeight: 120
                 FieldLabel { text: "FOCUS" }
+                HudField {
+                    id: liveFocus
+                    Layout.fillWidth: true
+                    placeholderText: "steps"
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    enabled: root.commandEnabled("set_focus")
+                    readonly property string liveValue: {
+                        const value = root.scopeTelemetry.focus_text
+                        return value && value !== "—" ? String(value) : ""
+                    }
+                    onLiveValueChanged: if (!activeFocus) text = liveValue
+                    Component.onCompleted: text = liveValue
+                    onEditingFinished: {
+                        const value = text.trim()
+                        if (!value) {
+                            text = liveValue
+                            return
+                        }
+                        if (value === liveValue)
+                            return
+                        backend.setCameraParam(backend.selectedDeviceId, "focus", value)
+                    }
+                }
                 RowLayout {
                     Layout.fillWidth: true
                     HudButton {

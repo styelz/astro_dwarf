@@ -133,6 +133,7 @@ Item {
         height: parent.height
         placeholderText: "Search city or timezone"
         rightPadding: 26
+        releaseFocusOnEnter: false
         Keys.priority: Keys.BeforeItem
         onTextEdited: {
             searchCombo.selectedName = ""

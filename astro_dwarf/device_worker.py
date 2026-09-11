@@ -559,6 +559,92 @@ def _center_wide_view(nx: float, ny: float, fov_h: float, fov_v: float) -> dict[
     return detail
 
 
+_FOCUS_FAR = 0
+_FOCUS_NEAR = 1
+_FOCUS_STEP_CLOSE = 8
+
+
+def _focus_position() -> int | None:
+    snap = _tap.snapshot() if _tap else {}
+    value = snap.get("focus_position")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _set_focus_position(target: int) -> bool:
+    """Move the focus motor to an absolute step count reported by telemetry."""
+    from dwarf_python_api.proto import focus_pb2
+
+    target = int(target)
+    current = _focus_position()
+    if current is None:
+        raise RuntimeError("Focus position is unknown. Wait for telemetry, then try again.")
+    if abs(current - target) <= 1:
+        return True
+
+    def direction_for(position: int) -> int:
+        return _FOCUS_NEAR if target < position else _FOCUS_FAR
+
+    def passed(position: int, direction: int) -> bool:
+        return position <= target if direction == _FOCUS_NEAR else position >= target
+
+    deadline = time.monotonic() + 45.0
+    while abs(current - target) > 1:
+        if _stop.is_set():
+            raise InterruptedError("Focus move stopped")
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Focus move timed out")
+        direction = direction_for(current)
+        if abs(current - target) > _FOCUS_STEP_CLOSE:
+            message = focus_pb2.ReqManualContinuFocus()
+            message.direction = direction
+            if send_without_response(message, 15002, 8) is False:
+                return False
+            burst_from = current
+            burst_started = time.monotonic()
+            try:
+                while time.monotonic() < deadline:
+                    if _stop.is_set():
+                        raise InterruptedError("Focus move stopped")
+                    time.sleep(0.05)
+                    position = _focus_position()
+                    if position is None:
+                        continue
+                    current = position
+                    if passed(current, direction) or abs(current - target) <= _FOCUS_STEP_CLOSE:
+                        break
+                    if current == burst_from and time.monotonic() - burst_started > 2.5:
+                        raise RuntimeError("Focus motor did not move")
+                else:
+                    raise RuntimeError("Focus move timed out")
+            finally:
+                send_without_response(focus_pb2.ReqStopManualContinuFocus(), 15003, 8)
+            updated = _focus_position()
+            current = current if updated is None else updated
+            continue
+        message = focus_pb2.ReqManualSingleStepFocus()
+        message.direction = direction
+        if send_without_response(message, 15001, 8) is False:
+            return False
+        time.sleep(0.08)
+        position = _focus_position()
+        if position is None:
+            continue
+        if position == current:
+            time.sleep(0.12)
+            position = _focus_position()
+            if position is None or position == current:
+                if abs(current - target) <= _FOCUS_STEP_CLOSE:
+                    return True
+                raise RuntimeError("Focus motor did not move")
+        current = position
+        if passed(current, direction):
+            break
+    return True
+
+
 def sdk_call(operation: str, *args: Any) -> Any:
     global _motors_unhomed
     if _api is None:
@@ -602,9 +688,11 @@ def sdk_call(operation: str, *args: Any) -> Any:
         message = focus_pb2.ReqManualSingleStepFocus()
         message.direction = int(args[0])
         return send_without_response(message, 15001, 8)
+    if operation == "set_focus":
+        return _set_focus_position(int(args[0]))
     if operation == "normal_autofocus":
-        # Live/photo AF (15000). Does not switch the tele stream or exposure.
-        # Distinct from astro AF (15004) used by sessions and INFINITY.
+        # Live/photo AF (15000). Contrast-detects a bright scene; on a night
+        # sky it racks toward infinity or fails. Keep for photo mode only.
         from dwarf_python_api.proto import focus_pb2
 
         return send_without_response(focus_pb2.ReqNormalAutoFocus(), 15000, 8)
@@ -2329,7 +2417,7 @@ def dispatch(message: dict[str, Any]) -> Any:
     if command in {"disconnect", "reboot", "power_down"}:
         _mark_disconnected()
         return sdk_call(command)
-    if command in {"calibrate", "infinity", "polar"}:
+    if command in {"calibrate", "autofocus", "infinity", "polar"}:
         if _ensure_astro_mode() is False:
             return False
     if command == "astro_mode":
@@ -2338,7 +2426,8 @@ def dispatch(message: dict[str, Any]) -> Any:
             request_state_refresh()
         return result
     if command == "autofocus":
-        result = sdk_call("normal_autofocus")
+        # Astro AF mode 0. Mode 1 is infinity (the INFINITY pad).
+        result = sdk_call("autofocus", False)
     elif command == "infinity":
         result = sdk_call("autofocus", True)
     else:

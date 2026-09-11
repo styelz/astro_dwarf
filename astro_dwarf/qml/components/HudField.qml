@@ -7,6 +7,7 @@ import ".."
 
 TextField {
     id: field
+    property bool releaseFocusOnEnter: true
     color: field.enabled ? Theme.textPrimary : Theme.textSecondary
     placeholderTextColor: Theme.textSecondary
     selectedTextColor: Theme.hsl(0.046, 0.714, 0.055)
@@ -14,6 +15,15 @@ TextField {
     opacity: field.enabled ? 1 : 0.45
     hoverEnabled: true
     font.pixelSize: 13
+    Keys.priority: Keys.BeforeItem
+    Keys.onPressed: function (event) {
+        if (!field.releaseFocusOnEnter)
+            return
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            event.accepted = true
+            field.focus = false
+        }
+    }
     leftPadding: 10
     rightPadding: 10
     clip: true

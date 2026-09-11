@@ -314,11 +314,11 @@ _MEDIA_LOCKED_STATUS = (
     "The telescope album isn't available while it's capturing. "
     "Wait until imaging finishes, or switch to Local."
 )
-_ACTIVITY_TRANSIENT = {"calibrate", "autofocus"}
+_ACTIVITY_TRANSIENT = {"calibrate"}
 _ACTION_LABELS = {
     "calibrate": "Calibration started",
     "stop_calibrate": "Calibration stopped",
-    "autofocus": "Live autofocus started",
+    "autofocus": "Autofocus started",
     "infinity": "Infinity focus started",
     "stop_autofocus": "Autofocus stopped",
     "polar": "Polar alignment started",
@@ -2597,6 +2597,12 @@ class AppBackend(QObject):
         model_id = {DeviceModel.DWARF_II: "2", DeviceModel.DWARF_3: "3", DeviceModel.DWARF_MINI: "5"}.get(device.model, "3")
         if name == "exposure":
             operation, args = "set_exposure", [firmware_exposure_name(value), model_id, camera]
+        elif name == "focus":
+            try:
+                operation, args = "set_focus", [int(round(float(value)))]
+            except (TypeError, ValueError):
+                self._toast("Focus must be a number", "error")
+                return
         elif name == "gain":
             operation, args = "set_gain", [int(value), camera]
         elif name == "ir":
@@ -2623,9 +2629,18 @@ class AppBackend(QObject):
             operation, args = "set_auto_calibration", [value.strip().lower() in {"1", "true", "yes", "on"}]
         else:
             return
-        worker.send(operation, {"args": args}, lambda ok, result: self._toast(
-            f"{name.replace('_', ' ').title()} set" if ok else str(result), "success" if ok else "error"
-        ))
+
+        def done(ok: bool, result: Any) -> None:
+            self._toast(
+                f"{name.replace('_', ' ').title()} set" if ok else str(result),
+                "success" if ok else "error",
+            )
+
+        worker.send(
+            operation,
+            {"args": args},
+            self._with_pending(device_id, "set_focus", done) if name == "focus" else done,
+        )
 
     def _album_dir(self) -> Path:
         folder = self.store.root / "album"
