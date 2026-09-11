@@ -229,12 +229,16 @@ class AlertEngine:
         def changed(key: str) -> bool:
             return key in current and current.get(key) != previous.get(key)
 
-        # Battery thresholds
+        # Battery thresholds. Skip the low-battery toast on the first sample —
+        # a coarse 20% notify often arrives before the real 22% BatteryInfo.
         if changed("battery_percent"):
             new = int(current["battery_percent"])
             old = previous.get("battery_percent")
-            old = int(old) if old is not None else 101
-            if new <= BATTERY_CRITICAL < old:
+            old = int(old) if old is not None else None
+            if old is None:
+                if new <= BATTERY_CRITICAL:
+                    add("error", f"Battery critical · {new}%", "Shut down or connect power soon")
+            elif new <= BATTERY_CRITICAL < old:
                 add("error", f"Battery critical · {new}%", "Shut down or connect power soon")
             elif new <= BATTERY_WARN < old:
                 add("warning", f"Battery low · {new}%", "Plan remaining captures accordingly")
