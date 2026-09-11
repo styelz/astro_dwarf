@@ -80,7 +80,7 @@ if (-not (Test-Path $venvPython)) {
 }
 
 Write-Step "Checking the packages Astro Dwarf needs..."
-& $venvPython -c "import sys, PySide6, dwarf_python_api; raise SystemExit(sys.version_info < (3, 11))" 2>$null
+& $venvPython -c "import sys, PySide6; from dwarf_python_api.lib.dwarf_utils import perform_read_camera_params_http_v3, perform_enter_astro_mode; raise SystemExit(sys.version_info < (3, 11))" 2>$null
 if ($LASTEXITCODE -ne 0) {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Fail "Git is needed for the first install. Install Git, then run this script again."

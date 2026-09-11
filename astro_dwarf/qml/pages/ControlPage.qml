@@ -512,6 +512,111 @@ Item {
                         onEditingFinished: backend.setCameraParam(backend.selectedDeviceId, "gain", text)
                     }
                 }
+                FieldLabel { text: "WHITE BALANCE" }
+                HudCombo {
+                    id: liveWb
+                    Layout.fillWidth: true
+                    enabled: root.commandEnabled("set_wb_preset")
+                    model: ["Incandescent", "Warm Fluorescent", "Fluorescent", "Sunlight", "Cloudy", "Shadow", "Twilight"]
+                    onActivated: backend.setCameraParam(backend.selectedDeviceId, "wb_preset", currentText)
+                }
+                HudField {
+                    id: liveWbKelvin
+                    Layout.fillWidth: true
+                    enabled: root.commandEnabled("set_wb")
+                    placeholderText: "Kelvin 2800–7500"
+                    onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "wb", text)
+                }
+                FieldLabel { text: "IMAGE" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    HudField { Layout.fillWidth: true; placeholderText: "bri"; enabled: root.commandEnabled("set_brightness"); onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "brightness", text) }
+                    HudField { Layout.fillWidth: true; placeholderText: "con"; enabled: root.commandEnabled("set_contrast"); onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "contrast", text) }
+                    HudField { Layout.fillWidth: true; placeholderText: "sat"; enabled: root.commandEnabled("set_saturation"); onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "saturation", text) }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    HudField { Layout.fillWidth: true; placeholderText: "hue"; enabled: root.commandEnabled("set_hue"); onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "hue", text) }
+                    HudField { Layout.fillWidth: true; placeholderText: "shp"; enabled: root.commandEnabled("set_sharpness"); onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "sharpness", text) }
+                    HudCombo {
+                        Layout.fillWidth: true
+                        enabled: root.commandEnabled("set_stack_format")
+                        model: ["FITS", "TIFF"]
+                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "stack_format", String(currentIndex))
+                    }
+                }
+                FieldLabel { text: "BURST / TIMELAPSE" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    HudField { Layout.fillWidth: true; placeholderText: "burst #"; enabled: root.commandEnabled("set_burst_count"); onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "burst_count", text) }
+                    HudCombo {
+                        Layout.fillWidth: true
+                        enabled: root.commandEnabled("set_burst_interval")
+                        model: ["1", "2", "3", "5", "10", "15", "20"]
+                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "burst_interval", currentText)
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    HudCombo {
+                        Layout.fillWidth: true
+                        enabled: root.commandEnabled("set_timelapse_interval")
+                        model: ["1", "2", "5", "10", "15", "30", "60"]
+                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "timelapse_interval", currentText)
+                    }
+                    HudCombo {
+                        Layout.fillWidth: true
+                        enabled: root.commandEnabled("set_timelapse_duration")
+                        model: ["30", "60", "120", "300", "600"]
+                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "timelapse_duration", currentText)
+                    }
+                }
+                HudCheck {
+                    text: "Auto calibration (unconfirmed)"
+                    enabled: root.commandEnabled("set_auto_calibration")
+                    onClicked: backend.setCameraParam(backend.selectedDeviceId, "auto_calibration", checked ? "true" : "false")
+                }
+                FieldLabel { text: "ALBUM" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    HudButton {
+                        text: "LIST"
+                        Layout.fillWidth: true
+                        enabled: backend.selectedDevice.connected && backend.albumBusy === ""
+                        busy: backend.albumBusy === "list"
+                        busyText: "LISTING…"
+                        onClicked: backend.listAlbum(backend.selectedDeviceId)
+                    }
+                    HudButton {
+                        text: "LAST"
+                        Layout.fillWidth: true
+                        enabled: backend.selectedDevice.connected && backend.albumBusy === ""
+                        busy: backend.albumBusy === "download"
+                        busyText: "SAVING…"
+                        onClicked: backend.downloadAlbumPhoto(backend.selectedDeviceId, liveAlbum.currentText || "")
+                    }
+                }
+                HudCombo {
+                    id: liveAlbum
+                    Layout.fillWidth: true
+                    enabled: backend.albumItems.length > 0
+                    model: {
+                        const items = backend.albumItems
+                        const names = []
+                        for (let i = 0; i < items.length; i++)
+                            names.push(items[i].file)
+                        return names
+                    }
+                }
+                Image {
+                    visible: backend.lastAlbumUrl !== ""
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 96
+                    fillMode: Image.PreserveAspectFit
+                    source: backend.lastAlbumUrl
+                    asynchronous: true
+                    cache: false
+                }
             }
         }
 
@@ -1288,7 +1393,7 @@ Item {
                     id: commandGrid
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    readonly property int padCount: 12
+                    readonly property int padCount: 14
                     // pick the widest column count that still divides the pads into full rows
                     columns: {
                         const fit = Math.max(2, Math.floor((width + columnSpacing) / (150 + columnSpacing)))
@@ -1307,6 +1412,8 @@ Item {
                         {label: "INFINITY", glyph: "∞", start: "infinity", stop: "stop_autofocus", state: "autofocus", detail: "FOCUS"},
                         {label: "POLAR / EQ", glyph: "⌖", start: "polar", stop: "stop_polar", state: "polar", detail: "ALIGN"},
                         {label: "LIGHTS", glyph: "✦", start: "lights_on", stop: "lights_off", state: "lights", detail: "CHASSIS"},
+                        {label: "INDICATOR", glyph: "◉", start: "indicator_on", stop: "indicator_off", state: "indicator", detail: "CHASSIS"},
+                        {label: "PHOTO", glyph: "▣", start: "photo", stop: "", state: "", detail: "CAPTURE"},
                         {label: "GO LIVE", glyph: "▶", start: "go_live", stop: "", state: "", detail: "CAMERA"},
                         {label: "STOP GOTO", glyph: "■", start: "stop_goto", stop: "", state: "goto", detail: "MOUNT"},
                         {label: "BURST", glyph: "◫", start: "burst_start", stop: "burst_stop", state: "burst", detail: "CAPTURE"},
@@ -1321,7 +1428,9 @@ Item {
                         readonly property var t: root.scopeTelemetry
                         readonly property bool activeForState: modelData.state === "lights"
                             ? !!backend.selectedDevice.lights_on
-                            : modelData.state !== "" && root.scopeActivity === modelData.state
+                            : modelData.state === "indicator"
+                                ? !!backend.selectedDevice.indicator_on
+                                : modelData.state !== "" && root.scopeActivity === modelData.state
                         readonly property string effectiveOperation: activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
                         readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop)
                         function deviceDetail() {
@@ -1338,6 +1447,8 @@ Item {
                                 return "REC · " + (root.scopeActivityDetail || "00:00")
                             case "lights":
                                 return "ON · TAP TO STOP"
+                            case "indicator":
+                                return "ON · TAP TO STOP"
                             default:
                                 return root.scopeActivityDetail ? root.scopeActivityDetail + " · STOP" : "ACTIVE · STOP"
                             }
@@ -1352,8 +1463,15 @@ Item {
                         activeState: activeForState
                         pending: isPending
                         destructive: !!modelData.destructive
-                        enabled: root.commandEnabled(effectiveOperation)
-                        onClicked: root.requestDeviceAction(effectiveOperation, modelData.label)
+                        enabled: modelData.start === "go_live"
+                            ? previewHost.previewStartEnabled
+                            : root.commandEnabled(effectiveOperation)
+                        onClicked: {
+                            if (modelData.start === "go_live")
+                                previewHost.startPreview()
+                            else
+                                root.requestDeviceAction(effectiveOperation, modelData.label)
+                        }
                         Connections {
                             target: backend
                             function onCommandFeedback(deviceId, operation, ok) {

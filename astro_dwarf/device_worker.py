@@ -280,7 +280,28 @@ FUNCTIONS = {
     "record_stop": "perform_stop_record_v3",
     "timelapse_start": "perform_start_timelapse_v3",
     "timelapse_stop": "perform_stop_timelapse_v3",
+    "photo": "perform_takePhoto",
+    "wide_photo": "perform_takeWidePhoto",
+    "photo_autofocus": "perform_auto_focus_v3",
+    "set_wb": "perform_set_wb_v3",
+    "set_wb_preset": "perform_set_wb_preset_by_name_v3",
+    "set_brightness": "perform_set_brightness_v3",
+    "set_contrast": "perform_set_contrast_v3",
+    "set_saturation": "perform_set_saturation_v3",
+    "set_hue": "perform_set_hue_v3",
+    "set_sharpness": "perform_set_sharpness_v3",
+    "set_burst_count": "perform_set_burst_count_v3",
+    "set_burst_interval": "perform_set_burst_interval_by_name_v3",
+    "set_timelapse_interval": "perform_set_timelapse_interval_by_name_v3",
+    "set_timelapse_duration": "perform_set_timelapse_duration_by_name_v3",
+    "set_stack_format": "perform_set_astro_stack_format_v3",
+    "set_auto_calibration": "perform_set_astro_auto_calibration_v3",
+    "read_camera": "perform_read_camera_params_http_v3",
 }
+
+# Firmware DSO stacking mode. Sun/Moon/Planet use 8/9/10 instead.
+_ASTRO_SHOOTING_MODE = 2
+_ASTRO_SHOOTING_TECH = 2
 
 
 def configure(device: dict[str, Any]) -> bool:
@@ -330,6 +351,49 @@ def configure(device: dict[str, Any]) -> bool:
     threading.Thread(target=_telemetry_loop, name="telemetry", daemon=True).start()
     log(f"Worker ready for {device.get('name')} at {device.get('ip_address')}")
     return True
+
+
+def _timezone_values() -> list[str]:
+    name = str(_device.get("timezone_name") or "UTC").strip() or "UTC"
+    values = [name]
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        offset = datetime.now(ZoneInfo(name)).utcoffset()
+        if offset is not None:
+            total = int(offset.total_seconds() // 60)
+            sign = "+" if total >= 0 else "-"
+            hours, minutes = divmod(abs(total), 60)
+            for prefix in ("GMT", "UTC"):
+                stamp = f"{prefix}{sign}{hours:02d}:{minutes:02d}"
+                if stamp not in values:
+                    values.append(stamp)
+    except Exception:
+        pass
+    return values
+
+
+def _set_timezone() -> Any:
+    """CMD_SYSTEM_SET_TIME_ZONE (13001). Try IANA name, then GMT/UTC offsets."""
+    from dwarf_python_api.proto import system_pb2
+
+    last: Any = False
+    for value in _timezone_values():
+        message = system_pb2.ReqSetTimezone()
+        message.timezone = value
+        log(f"Timezone is : {value}", "notice")
+        last = _send_request("timezone", message, 13001, 4, "Set Timezone")
+        if last == 0:
+            return True
+        if last is False:
+            return False
+        log(f"Timezone {value} rejected ({last}), trying next format", "warning")
+    log(
+        "Firmware rejected timezone strings; clock offset was already applied by SET_TIME",
+        "warning",
+    )
+    return False
 
 
 def _site_coordinates() -> tuple[float, float]:
@@ -492,6 +556,10 @@ def sdk_call(operation: str, *args: Any) -> Any:
     global _motors_unhomed
     if _api is None:
         raise RuntimeError("Telescope worker is not configured")
+    if operation == "astro_mode":
+        return _ensure_astro_mode()
+    if operation == "timezone":
+        return _set_timezone()
     if operation == "location":
         return _set_location()
     if operation in ("calibrate", "polar", "goto", "goto_solar"):
@@ -1016,13 +1084,22 @@ def _safe_disconnect() -> None:
 
 
 def _handshake() -> dict[str, Any] | None:
+    try:
+        if sdk_call("host_master") is False:
+            log("MASTER LOCK: no response (expected on V3). Continuing.", "warning")
+    except NotImplementedError as exc:
+        log(str(exc), "warning")
+    except Exception as exc:
+        log(f"MASTER LOCK skipped: {exc}", "warning")
     if sdk_call("time") is False:
         return None
-    for operation in ("host_master", "device_state", "location"):
+    for operation in ("timezone", "location", "device_state"):
         try:
             sdk_call(operation)
         except NotImplementedError as exc:
             log(str(exc), "warning")
+        except Exception as exc:
+            log(f"{operation} skipped: {exc}", "warning")
     _connected.set()
     # Sessions connect on their own; tell the UI so STOP/DISCONNECT stay usable.
     emit({"event": "connected", "ip_address": str(_device.get("ip_address") or "")})
@@ -1772,20 +1849,104 @@ def stop_all() -> bool:
     return True
 
 
-_REFRESH_AFTER = {"lights_on", "lights_off", "indicator_on", "indicator_off", "go_live", "photo_mode", "astro_mode", "shooting_mode", "set_ir", "set_binning"}
-_ASTRO_SHOOTING_MODE = 2
+_REFRESH_AFTER = {
+    "lights_on", "lights_off", "indicator_on", "indicator_off", "go_live",
+    "photo_mode", "astro_mode", "shooting_mode", "set_ir", "set_binning",
+    "photo", "wide_photo", "set_wb", "set_wb_preset", "set_brightness",
+    "set_contrast", "set_saturation", "set_hue", "set_sharpness",
+}
 
 
 def _ensure_astro_mode() -> Any:
-    """Enter astro mode unless the telescope already reports it.
+    """Enter DSO mode (2) unless the telescope already reports it.
 
-    The Dwarf 3 does not answer SWITCH SHOOTING MODE when the requested mode is
-    already active, which leaves the SDK waiting for its full 150 s timeout.
+    Firmware mode 8 is Sun, not generic astro. The SDK helper also runs
+    ENTER_CAMERA and SWITCH_SHOOTING_TECH. Skip the whole sequence when
+    already in mode 2 — the Dwarf 3 otherwise waits out a 150 s timeout.
     """
     if _tap is not None and _tap.snapshot().get("shooting_mode") == _ASTRO_SHOOTING_MODE:
-        log("Already in astro mode", "debug")
+        log("Already in DSO astro mode", "debug")
         return True
-    return sdk_call("astro_mode")
+    function = getattr(_api, "perform_enter_astro_mode", None) if _api is not None else None
+    if function is None:
+        return sdk_call("shooting_mode", _ASTRO_SHOOTING_MODE, _ASTRO_SHOOTING_TECH)
+    return _invoke_sdk("astro_mode", function)
+
+
+def _album_camera(name: str = "") -> str:
+    choice = str(name or _device.get("camera") or "tele").strip().lower()
+    return "WIDE" if choice == "wide" else "TELE"
+
+
+def _album_connect():
+    from ftplib import FTP, error_perm
+
+    ip = str(_device.get("ip_address") or "").strip()
+    if not ip:
+        raise RuntimeError("Telescope IP is not set")
+    ftp = FTP()
+    ftp.connect(ip, timeout=12)
+    ftp.login("Anonymous", "")
+    ftp.set_pasv(True)
+    model = str(_device.get("model") or "")
+    prefixes = {
+        "Dwarf II": ("DWARF_",),
+        "Dwarf 3": ("DWARF3_",),
+        "Dwarf Mini": ("DWARF_mini_", "DWARF3_"),
+    }.get(model, ("DWARF3_", "DWARF_mini_", "DWARF_"))
+    for remote in ("/Normal_Photos", "/DWARF_II/Normal_Photos"):
+        try:
+            ftp.cwd(remote)
+            return ftp, remote, prefixes
+        except error_perm:
+            continue
+    ftp.close()
+    raise RuntimeError("Could not open the telescope photo album over FTP")
+
+
+def album_list(limit: int = 12, camera: str = "") -> dict[str, Any]:
+    ftp, remote, prefixes = _album_connect()
+    try:
+        names = ftp.nlst()
+    finally:
+        try:
+            ftp.close()
+        except Exception:
+            pass
+    camera_name = _album_camera(camera)
+    starts = tuple(f"{prefix}{camera_name}" for prefix in prefixes)
+    photos = sorted(
+        (name for name in names if name.endswith(".jpg") and name.startswith(starts)),
+        reverse=True,
+    )[: max(1, int(limit))]
+    return {"camera": camera_name.lower(), "directory": remote, "files": photos}
+
+
+def album_download(name: str = "", dest_dir: str = "", camera: str = "") -> dict[str, Any]:
+    listing = album_list(1 if not name else 40, camera)
+    files = listing.get("files") or []
+    chosen = str(name or (files[0] if files else "")).strip()
+    if not chosen:
+        raise RuntimeError("No stills found on the telescope")
+    if chosen not in files and name:
+        listing = album_list(80, camera)
+        files = listing.get("files") or []
+        if chosen not in files:
+            raise RuntimeError(f"{chosen} is not in the telescope album")
+    folder = Path(dest_dir) if dest_dir else Path(tempfile.mkdtemp(prefix="astro-dwarf-album-"))
+    folder.mkdir(parents=True, exist_ok=True)
+    local = folder / chosen
+    ftp, remote, _prefixes = _album_connect()
+    try:
+        with local.open("wb") as handle:
+            ftp.retrbinary(f"RETR {chosen}", handle.write)
+    finally:
+        try:
+            ftp.close()
+        except Exception:
+            pass
+    log(f"Downloaded {chosen} from {remote}")
+    return {"path": str(local), "file": chosen, "directory": remote, "camera": listing.get("camera")}
 
 
 def dispatch(message: dict[str, Any]) -> Any:
@@ -1809,6 +1970,24 @@ def dispatch(message: dict[str, Any]) -> Any:
         return serializable_state(result)
     if command == "stack_status":
         return serializable_state(sdk_call(command))
+    if command == "album_list":
+        args = list(message.get("args") or [])
+        limit = int(args[0]) if args else 12
+        camera = str(args[1]) if len(args) > 1 else ""
+        return album_list(limit, camera)
+    if command == "album_download":
+        args = list(message.get("args") or [])
+        return album_download(
+            str(args[0] if args else ""),
+            str(args[1] if len(args) > 1 else ""),
+            str(args[2] if len(args) > 2 else ""),
+        )
+    if command == "read_camera":
+        args = list(message.get("args") or [])
+        mode_id = int(args[0]) if args else 1
+        return serializable_state(sdk_call("read_camera", mode_id))
+    if command == "photo" and str(_device.get("camera") or "") == "wide":
+        command = "wide_photo"
     if command in {"disconnect", "reboot", "power_down"}:
         _mark_disconnected()
         return sdk_call(command)
@@ -1826,6 +2005,8 @@ def dispatch(message: dict[str, Any]) -> Any:
         result = sdk_call("autofocus", True)
     else:
         capture_techniques = {
+            "photo": 1,
+            "wide_photo": 1,
             "burst_start": 3,
             "record_start": 4,
             "timelapse_start": 5,

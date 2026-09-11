@@ -8,7 +8,7 @@ Sessions can be created by hand, from templates, from Stellarium's current targe
 
 <img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/2829f378-cd9c-4ca1-a4b0-189e61be7790" />
 
-Hardware commands go through [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api).
+Hardware commands go through [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api) on the **`multi_V3`** branch (V3 protobuf/WebSocket protocol). Connect sends time, timezone, and site location; DSO sessions use shooting mode 2. Live camera parameters can be read from the telescope HTTP API on port `8082` after the WebSocket session is up. Still photos can be listed and downloaded from Control (FTP album).
 
 ## Run from source
 
@@ -21,7 +21,7 @@ cd astro_dwarf
 .\start.bat         # Windows
 ```
 
-The first run creates a local `.venv` and installs packages. Later runs skip that and start the app.
+The first run creates a local `.venv` and installs packages, including `dwarf_python_api@multi_V3`. Later runs skip that unless the V3 helpers are missing. If you already had an older venv, delete `.venv` or run `pip install -e ".[device]"` inside it.
 
 Set each telescope's IP, model, and location in Settings. The scheduler stays stopped until you start it from Control. Dwarf 3 and Mini live view needs `ffmpeg` on `PATH` (installers already include it). With the camera set to Wide, double-click a spot on the live view and the telescope slews the tele camera onto it (the official app's Dual Lenses Locating).
 
@@ -52,6 +52,7 @@ settings.json  shared night cutoff and Stellarium URL
 templates/  reusable session recipes
 sessions/   scheduled and running sessions
 history/    completed runs
+album/      stills downloaded from the telescope
 ```
 
 Old `Astro_Sessions` JSON can be imported from Settings. The old app's files are not changed.

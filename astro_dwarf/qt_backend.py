@@ -327,6 +327,20 @@ _ACTION_LABELS = {
     "timelapse_start": "Timelapse started",
     "timelapse_stop": "Timelapse stopped",
     "photo": "Photo captured",
+    "wide_photo": "Wide photo captured",
+    "set_wb_preset": "White balance set",
+    "set_wb": "White balance set",
+    "set_brightness": "Brightness set",
+    "set_contrast": "Contrast set",
+    "set_saturation": "Saturation set",
+    "set_hue": "Hue set",
+    "set_sharpness": "Sharpness set",
+    "set_burst_count": "Burst count set",
+    "set_burst_interval": "Burst interval set",
+    "set_timelapse_interval": "Timelapse interval set",
+    "set_timelapse_duration": "Timelapse duration set",
+    "set_stack_format": "Stack format set",
+    "set_auto_calibration": "Auto calibration updated",
     "stop_all": "Stop sent",
     "stop_session": "Session stop sent",
     "reboot": "Reboot requested",
@@ -540,6 +554,7 @@ class AppBackend(QObject):
     previewTeleGenerationChanged = Signal()
     previewWideGenerationChanged = Signal()
     previewHoldChanged = Signal()
+    albumChanged = Signal()
     appSettingsChanged = Signal()
     _openTeleStream = Signal(str)
     _openWideStream = Signal(str)
@@ -581,6 +596,10 @@ class AppBackend(QObject):
         self._alerts = AlertEngine()
         self._last_toast: tuple[str, str, float] = ("", "", 0.0)
         self._device_lights: dict[str, bool] = {}
+        self._device_indicators: dict[str, bool] = {}
+        self._album_items: list[dict[str, Any]] = []
+        self._album_path = ""
+        self._album_busy = ""
         self._telemetry_tick = 0
         self._joystick_inflight: set[str] = set()
         self._joystick_pending: dict[str, tuple[float, float]] = {}
@@ -751,6 +770,8 @@ class AppBackend(QObject):
         self._telemetry_updated[device_id] = time.time()
         if "lights_on" in data:
             self._device_lights[device_id] = bool(data["lights_on"])
+        if "indicator_on" in data:
+            self._device_indicators[device_id] = bool(data["indicator_on"])
         for alert in self._alerts.evaluate(previous, current):
             self.add_log(alert["level"], alert["message"] + (f" — {alert['detail']}" if alert["detail"] else ""), device_id)
             if alert["toast"]:
@@ -939,10 +960,13 @@ class AppBackend(QObject):
             raw_telemetry = self._device_telemetry.get(device.id, {})
             if not connected:
                 lights_on = False
+                indicator_on = False
             elif "lights_on" in raw_telemetry:
                 lights_on = bool(raw_telemetry["lights_on"])
+                indicator_on = bool(raw_telemetry.get("indicator_on", self._device_indicators.get(device.id, False)))
             else:
                 lights_on = self._device_lights.get(device.id, False)
+                indicator_on = self._device_indicators.get(device.id, False)
             data.update({
                 "connected": connected,
                 "busy": bool(worker and worker.busy),
@@ -955,6 +979,7 @@ class AppBackend(QObject):
                 "activity_from_device": bool(telemetry["activity"]),
                 "status": status,
                 "lights_on": lights_on,
+                "indicator_on": indicator_on,
                 "telemetry": telemetry,
             })
             result.append(data)
@@ -1446,6 +1471,24 @@ class AppBackend(QObject):
     @Property(bool, notify=previewHoldChanged)
     def previewHeld(self) -> bool:
         return bool(self._preview_hold_device_id) and self._preview_hold_device_id == self._selected_device_id
+
+    @Property("QVariantList", notify=albumChanged)
+    def albumItems(self) -> list[dict[str, Any]]:
+        return list(self._album_items)
+
+    @Property(str, notify=albumChanged)
+    def lastAlbumPath(self) -> str:
+        return self._album_path
+
+    @Property(str, notify=albumChanged)
+    def lastAlbumUrl(self) -> str:
+        if not self._album_path:
+            return ""
+        return Path(self._album_path).resolve().as_uri()
+
+    @Property(str, notify=albumChanged)
+    def albumBusy(self) -> str:
+        return self._album_busy
 
     @Property(str, notify=previewHoldChanged)
     def previewHoldMessage(self) -> str:
@@ -2042,6 +2085,8 @@ class AppBackend(QObject):
                 self._on_telemetry(device_id, telemetry)
             self._maybe_resume_interrupted_session(device_id)
             QTimer.singleShot(8000, lambda did=device_id: self._release_recovered_if_idle(did))
+            delay_ms = 8000 if device and device.model == DeviceModel.DWARF_3 else 2500
+            QTimer.singleShot(delay_ms, lambda did=device_id: self.refreshCameraParams(did))
         else:
             self._toast("Connection failed", "error", str(result))
             self._disarm_scheduler_if_offline()
@@ -2087,6 +2132,7 @@ class AppBackend(QObject):
             self._telemetry_updated.pop(device_id, None)
             self._hold_session_capture.discard(device_id)
             self._device_lights.pop(device_id, None)
+            self._device_indicators.pop(device_id, None)
             self.add_log("info" if ok else "error", "Disconnected" if ok else str(result), device_id)
             self._toast("Telescope disconnected" if ok else "Disconnect failed", "info" if ok else "error", "" if ok else str(result))
             self._disarm_scheduler_if_offline()
@@ -2110,6 +2156,9 @@ class AppBackend(QObject):
             self._complete_activity(device_id, operation, ok)
             if ok and operation in {"lights_on", "lights_off"}:
                 self._device_lights[device_id] = operation == "lights_on"
+                self._notify_devices()
+            if ok and operation in {"indicator_on", "indicator_off"}:
+                self._device_indicators[device_id] = operation == "indicator_on"
                 self._notify_devices()
             self.commandFeedback.emit(device_id, operation, bool(ok))
             if ok:
@@ -2337,6 +2386,7 @@ class AppBackend(QObject):
         self._telemetry_updated.pop(device_id, None)
         self._hold_session_capture.discard(device_id)
         self._device_lights.pop(device_id, None)
+        self._device_indicators.pop(device_id, None)
         if self._selected_device_id == device_id:
             self._selected_device_id = self._devices[0].id
         self.devicesChanged.emit()
@@ -2452,11 +2502,118 @@ class AppBackend(QObject):
             if camera == Camera.WIDE.value:
                 return
             operation, args = "set_ir", [value]
+        elif name == "wb_preset":
+            operation, args = "set_wb_preset", [value]
+        elif name == "wb":
+            operation, args = "set_wb", [int(value), 0]
+        elif name in {"brightness", "contrast", "saturation", "hue", "sharpness"}:
+            operation, args = f"set_{name}", [int(value)]
+        elif name == "burst_count":
+            operation, args = "set_burst_count", [int(value)]
+        elif name == "burst_interval":
+            operation, args = "set_burst_interval", [value]
+        elif name == "timelapse_interval":
+            operation, args = "set_timelapse_interval", [value]
+        elif name == "timelapse_duration":
+            operation, args = "set_timelapse_duration", [value]
+        elif name == "stack_format":
+            operation, args = "set_stack_format", [int(value)]
+        elif name == "auto_calibration":
+            operation, args = "set_auto_calibration", [value.strip().lower() in {"1", "true", "yes", "on"}]
         else:
             return
         worker.send(operation, {"args": args}, lambda ok, result: self._toast(
-            f"{name.title()} set" if ok else str(result), "success" if ok else "error"
+            f"{name.replace('_', ' ').title()} set" if ok else str(result), "success" if ok else "error"
         ))
+
+    def _album_dir(self) -> Path:
+        folder = self.store.root / "album"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def _camera_mode_id(self, device_id: str) -> int:
+        mode = self._device_telemetry.get(device_id, {}).get("shooting_mode")
+        try:
+            return int(mode) if mode is not None else 1
+        except (TypeError, ValueError):
+            return 1
+
+    @Slot(str)
+    def refreshCameraParams(self, device_id: str) -> None:
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            return
+        mode_id = self._camera_mode_id(device_id)
+
+        def done(ok: bool, result: Any) -> None:
+            if not ok or not isinstance(result, dict):
+                return
+            cameras = result.get("cameras") or {}
+            camera = cameras.get(0) or cameras.get("0") or {}
+            wide = cameras.get(1) or cameras.get("1") or {}
+            changes: dict[str, Any] = {}
+            exposure = (camera.get("exposure") or {}) if isinstance(camera, dict) else {}
+            gain = (camera.get("gain") or {}) if isinstance(camera, dict) else {}
+            if exposure.get("name"):
+                changes["exposure_text"] = str(exposure["name"])
+            if gain.get("value") is not None:
+                changes["gain"] = int(gain["value"])
+            wide_exposure = (wide.get("exposure") or {}) if isinstance(wide, dict) else {}
+            wide_gain = (wide.get("gain") or {}) if isinstance(wide, dict) else {}
+            if wide_exposure.get("name"):
+                changes["wide_exposure_text"] = str(wide_exposure["name"])
+            if wide_gain.get("value") is not None:
+                changes["wide_gain"] = int(wide_gain["value"])
+            if changes:
+                self._on_telemetry(device_id, changes)
+
+        worker.send("read_camera", {"args": [mode_id]}, done)
+
+    @Slot(str)
+    def listAlbum(self, device_id: str) -> None:
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            return
+        device = self._device_by_id(device_id)
+        camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
+        self._album_busy = "list"
+        self.albumChanged.emit()
+
+        def done(ok: bool, result: Any) -> None:
+            self._album_busy = ""
+            if ok and isinstance(result, dict):
+                self._album_items = [{"file": name} for name in (result.get("files") or [])]
+                self._toast(f"{len(self._album_items)} stills on telescope", "success")
+            else:
+                self._toast("Album list failed", "error", str(result))
+            self.albumChanged.emit()
+
+        worker.send("album_list", {"args": [12, camera]}, done)
+
+    @Slot(str, str)
+    def downloadAlbumPhoto(self, device_id: str, name: str = "") -> None:
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            return
+        device = self._device_by_id(device_id)
+        camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
+        dest = str(self._album_dir())
+        self._album_busy = "download"
+        self.albumChanged.emit()
+
+        def done(ok: bool, result: Any) -> None:
+            self._album_busy = ""
+            if ok and isinstance(result, dict) and result.get("path"):
+                self._album_path = str(result["path"])
+                chosen = str(result.get("file") or Path(self._album_path).name)
+                if not any(item.get("file") == chosen for item in self._album_items):
+                    self._album_items = [{"file": chosen}, *self._album_items]
+                self._toast("Photo downloaded", "success", chosen)
+            else:
+                self._toast("Album download failed", "error", str(result))
+            self.albumChanged.emit()
+
+        worker.send("album_download", {"args": [name, dest, camera]}, done)
 
     def _resolved_location(self, timezone_name: Any, latitude: Any, longitude: Any) -> tuple[str, float, float]:
         name = str(timezone_name or "").strip()
