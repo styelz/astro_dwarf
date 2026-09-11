@@ -273,9 +273,9 @@ QtObject {
             : ((item && (item.image_url || item.thumbnail_url)) || "")
         if (!raw)
             return ""
-        if (!Theme.enhanceImages || !Util.shouldEnhanceMedia(item))
+        if (which === "thumb" || !Theme.enhanceImages || !Util.shouldEnhanceMedia(item))
             return raw
-        const profile = (Theme.deepCleanImages && which !== "thumb") ? "deep" : "std"
+        const profile = Theme.deepCleanImages ? "deep" : "std"
         return backend.mediaEnhanceSource(raw, profile)
     }
     function clusterSessions(items) {

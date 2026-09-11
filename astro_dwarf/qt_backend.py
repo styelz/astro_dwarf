@@ -75,7 +75,14 @@ from .duration_suggest import suggest_hardware_profile
 from .location import has_site_coordinates, match_timezone, resolve_location, suggested_timezone, timezone_locations
 from .runtime import PROCESS_CREATION_FLAGS, kill_pid_tree, prepare_worker_environment, worker_command
 from .storage import SessionStore
-from .image_enhance import PreviewEnhanceJob, PreviewEnhanceSignals, register_enhance_url, set_model_dir
+from .image_enhance import (
+    CacheEnhanceJob,
+    CacheEnhanceSignals,
+    PreviewEnhanceJob,
+    PreviewEnhanceSignals,
+    enhance_cache_key,
+    set_model_dir,
+)
 from .stream_preview import LiveFrames, StreamPlayer, port_is_open, preview_window_is_live, set_live_frames, stream_port
 from .telemetry_view import AlertEngine, derive_activity, format_telemetry
 
@@ -618,6 +625,7 @@ class AppBackend(QObject):
     previewStackingChanged = Signal()
     enhanceImagesChanged = Signal()
     deepCleanImagesChanged = Signal()
+    enhanceCacheChanged = Signal()
     albumChanged = Signal()
     mediaChanged = Signal()
     mediaItemsChanged = Signal()
@@ -734,6 +742,10 @@ class AppBackend(QObject):
         self._enhance_pool.setMaxThreadCount(1)
         self._preview_enhance_signals = PreviewEnhanceSignals(self)
         self._preview_enhance_signals.finished.connect(self._on_preview_enhanced)
+        self._enhance_cache_rev = 0
+        self._enhance_inflight: set[str] = set()
+        self._cache_enhance_signals = CacheEnhanceSignals(self)
+        self._cache_enhance_signals.finished.connect(self._on_enhance_cache_ready)
         self._shut_down = False
         self._preview_thread = QThread(self)
         self._tele_player = StreamPlayer()
@@ -1730,14 +1742,37 @@ class AppBackend(QObject):
         self.deepCleanImagesChanged.emit()
         self._refresh_preview_enhance()
 
+    @Property(int, notify=enhanceCacheChanged)
+    def enhanceCacheGeneration(self) -> int:
+        return self._enhance_cache_rev
+
     @Slot(str, str, result=str)
     def mediaEnhanceSource(self, url: str, profile: str) -> str:
-        """image:// id with a hex token so Qt cannot parse file:// out of the URL."""
+        """Return a file:// JPEG of the enhanced image, building it in the background."""
         text = str(url or "").strip()
         if not text:
             return ""
         kind = "deep" if str(profile or "").strip().lower() == "deep" else "std"
-        return f"image://enhance/{kind}--{register_enhance_url(text)}"
+        key = enhance_cache_key(text, kind)
+        dest = self._enhance_cache_dir() / f"{key}.jpg"
+        if dest.is_file() and dest.stat().st_size > 1000:
+            return dest.resolve().as_uri()
+        if key not in self._enhance_inflight:
+            self._enhance_inflight.add(key)
+            self._enhance_pool.start(
+                CacheEnhanceJob(key, text, "deep" if kind == "deep" else "standard", dest, self._cache_enhance_signals)
+            )
+        return ""
+
+    def _enhance_cache_dir(self) -> Path:
+        folder = self.store.root / "enhance-cache"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def _on_enhance_cache_ready(self, key: str) -> None:
+        self._enhance_inflight.discard(str(key or ""))
+        self._enhance_cache_rev += 1
+        self.enhanceCacheChanged.emit()
 
     @Property("QVariantList", notify=albumChanged)
     def albumItems(self) -> list[dict[str, Any]]:

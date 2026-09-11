@@ -63,8 +63,13 @@ def lookup_enhance_url(key: str) -> str:
         return _URLS.get(str(key or "").strip(), "")
 
 
+def enhance_cache_key(url: str, profile: str) -> str:
+    kind = "deep" if str(profile or "").strip().lower() == "deep" else "std"
+    return hashlib.sha1(f"v4:{kind}:{url}".encode("utf-8", "replace")).hexdigest()
+
+
 def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standard") -> QImage:
-    """Display-only asinh stretch and denoise. profile is 'standard' or 'deep'."""
+    """Darken exposure and smooth noise. Does not stretch or sharpen."""
     if image is None or image.isNull() or np is None:
         return image
     rgb = _qimage_to_rgb(image)
@@ -72,64 +77,33 @@ def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standa
         return image
     work = rgb.astype(np.float32) * (1.0 / 255.0)
     deep = str(profile or "standard").strip().lower() == "deep"
-    stretched = _asinh_display(work, punch=22.0 if deep else 16.0)
     if denoise:
-        stretched = _denoise_starsafe(stretched, deep=deep)
+        work = _smooth_noise(work, deep=deep)
         if deep:
-            stretched = _onnx_denoise(stretched)
-    out = np.clip(stretched * 255.0 + 0.5, 0.0, 255.0).astype(np.uint8)
+            work = _onnx_denoise(work)
+    # Exposure down, then a little extra sky crush so the frame is quieter.
+    ev = -1.25 if deep else -0.90
+    work = np.clip(work * (2.0 ** ev), 0.0, 1.0)
+    work = np.clip((work - 0.025) / 0.975, 0.0, 1.0)
+    out = np.clip(work * 255.0 + 0.5, 0.0, 255.0).astype(np.uint8)
     return _rgb_to_qimage(out)
-
-
-def _asinh_display(rgb, punch: float):
-    lum = _luminance(rgb)
-    step = max(1, min(lum.shape) // 320)
-    sample = lum[::step, ::step]
-    if sample.size < 16:
-        return rgb
-    sky = float(np.median(sample))
-    mad = float(np.median(np.abs(sample - sky))) * 1.4826
-    # Clip through the sky floor so already-stretched Dwarf JPEGs still lose fog.
-    black = max(0.0, min(float(np.percentile(sample, 8.0)), sky + 0.15 * max(mad, 1e-4)))
-    white = max(float(np.percentile(sample, 99.6)), black + 0.10)
-    scale = max(white - black, 1e-4)
-    x = np.clip((rgb - black) / scale, 0.0, None)
-    stretched = np.arcsinh(x * punch) / np.arcsinh(punch)
-    return np.clip(stretched, 0.0, 1.0)
 
 
 def _luminance(rgb):
     return rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
 
 
-def _star_weight(lum):
-    """0 = sky (safe to denoise), 1 = star core (keep sharp)."""
+def _smooth_noise(rgb, *, deep: bool):
+    cleaned = _nlmeans(rgb, h=16.0 if deep else 12.0, search=21)
     if cv2 is not None:
-        blur = cv2.GaussianBlur(lum, (9, 9), 0)
-        excess = lum - blur
-        thresh = max(0.028, float(np.percentile(excess, 93)))
-        mask = (excess > thresh).astype(np.uint8)
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        mask = cv2.dilate(mask, kernel)
-        return cv2.GaussianBlur(mask.astype(np.float32), (7, 7), 0)
-    padded = np.pad(lum, 2, mode="edge")
-    acc = np.zeros_like(lum)
-    for dy in range(5):
-        for dx in range(5):
-            acc += padded[dy : dy + lum.shape[0], dx : dx + lum.shape[1]]
-    blur = acc / 25.0
-    excess = lum - blur
-    thresh = max(0.028, float(np.percentile(excess, 93)))
-    return np.clip((excess - thresh) / 0.08, 0.0, 1.0)
-
-
-def _denoise_starsafe(rgb, *, deep: bool):
-    stars = _star_weight(_luminance(rgb))[..., None]
-    cleaned = _nlmeans(rgb, h=11.0 if deep else 7.0, search=21 if deep else 15)
-    if deep and cv2 is not None:
         u8 = np.clip(cleaned * 255.0, 0, 255).astype(np.uint8)
-        cleaned = cv2.bilateralFilter(u8, 7, 28, 28).astype(np.float32) * (1.0 / 255.0)
-    return np.clip(cleaned * (1.0 - stars) + rgb * stars, 0.0, 1.0)
+        blur = cv2.bilateralFilter(u8, 11 if deep else 9, 52 if deep else 36, 52 if deep else 36)
+        blur = blur.astype(np.float32) * (1.0 / 255.0)
+        lum = _luminance(cleaned)
+        # Dark sky gets most of the extra blur; bright cores stay a bit tighter.
+        sky = np.clip(1.0 - lum * 2.8, 0.25, 1.0)[..., None]
+        cleaned = blur * sky + cleaned * (1.0 - sky)
+    return np.clip(cleaned, 0.0, 1.0)
 
 
 def _nlmeans(rgb, *, h: float, search: int):
@@ -381,6 +355,45 @@ class EnhanceImageProvider(QQuickAsyncImageProvider):
     def requestImageResponse(self, identity: str, requested_size: QSize) -> QQuickImageResponse:
         profile, url = parse_enhance_id(identity)
         return EnhanceImageResponse(url, requested_size, profile)
+
+
+class CacheEnhanceSignals(QObject):
+    finished = Signal(str)
+
+
+class CacheEnhanceJob(QRunnable):
+    """Write an enhanced JPEG to dest, then notify with the cache key."""
+
+    def __init__(self, key: str, url: str, profile: str, dest: Path, signals: CacheEnhanceSignals):
+        super().__init__()
+        self._key = key
+        self._url = url
+        self._profile = profile
+        self._dest = Path(dest)
+        self._signals = signals
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        try:
+            image = load_image(self._url)
+            if image.isNull():
+                raise RuntimeError(f"Could not load {self._url}")
+            out = enhance_image(image, denoise=True, profile=self._profile)
+            self._dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._dest.with_suffix(".part.jpg")
+            if not out.save(str(tmp), "JPG", 90):
+                raise RuntimeError("Could not write enhanced JPEG")
+            tmp.replace(self._dest)
+        except Exception:
+            _log.exception("Enhance cache failed for %s", self._key)
+            try:
+                self._dest.with_suffix(".part.jpg").unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            self._signals.finished.emit(self._key)
+        except RuntimeError:
+            pass
 
 
 class PreviewEnhanceSignals(QObject):

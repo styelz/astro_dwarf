@@ -205,11 +205,7 @@ Item {
                                         fillMode: Image.PreserveAspectCrop
                                         asynchronous: true
                                         cache: true
-                                        source: {
-                                            Theme.enhanceImages
-                                            Theme.deepCleanImages
-                                            return Util.mediaDisplayUrl(tile.modelData, "thumb")
-                                        }
+                                        source: tile.modelData.thumbnail_url || tile.modelData.image_url || ""
                                         visible: source !== "" && status === Image.Ready
                                     }
                                     Rectangle {
@@ -288,18 +284,21 @@ Item {
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                     cache: false
+                    visible: source !== "" && status === Image.Ready
                     source: {
                         Theme.enhanceImages
                         Theme.deepCleanImages
+                        backend.enhanceCacheGeneration
                         return Util.mediaDisplayUrl(mediaPage.selected, "image")
                     }
                 }
                 Text {
                     anchors.centerIn: parent
                     visible: lightboxImage.source == "" || lightboxImage.status !== Image.Ready
-                    text: lightboxImage.status === Image.Loading
-                        ? (Theme.deepCleanImages && Theme.enhanceImages ? "DEEP CLEAN…" : "LOADING…")
-                        : (mediaPage.busy ? "LOADING…" : "NO PREVIEW")
+                    text: (lightboxImage.source == "" || lightboxImage.status === Image.Loading)
+                        && Theme.enhanceImages && Util.shouldEnhanceMedia(mediaPage.selected)
+                        ? "SMOOTHING…"
+                        : (mediaPage.busy || lightboxImage.status === Image.Loading ? "LOADING…" : "NO PREVIEW")
                     color: Theme.muted
                     font.pixelSize: 12
                     font.letterSpacing: 1.4
