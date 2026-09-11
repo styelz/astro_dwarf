@@ -81,6 +81,7 @@ from .image_enhance import (
     PreviewEnhanceJob,
     PreviewEnhanceSignals,
     canonical_image_url,
+    enhance_available,
     enhance_cache_key,
     is_enhance_cache_valid,
     set_model_dir,
@@ -656,6 +657,7 @@ class AppBackend(QObject):
         self._scheduler_enabled = False
         self._clock_text = datetime.now(self._zone_for()).strftime("%H:%M:%S")
         self._connecting_ids: set[str] = set()
+        self._cancel_connect_ids: set[str] = set()
         self._disconnecting_ids: set[str] = set()
         self._pending_reconnect_ids: set[str] = set()
         self._pending_actions: dict[str, str] = {}
@@ -929,8 +931,11 @@ class AppBackend(QObject):
             worker = self._workers.get(device.id)
             data = to_dict(device)
             connecting = device.id in self._connecting_ids
+            cancelling = device.id in self._cancel_connect_ids
             disconnecting = device.id in self._disconnecting_ids
-            if connecting:
+            if cancelling:
+                status = "Cancelling"
+            elif connecting:
                 status = "Connecting"
             elif disconnecting:
                 status = "Disconnecting"
@@ -966,6 +971,7 @@ class AppBackend(QObject):
                 "connected": connected,
                 "busy": bool(worker and worker.busy),
                 "connecting": connecting,
+                "cancelling": cancelling,
                 "disconnecting": disconnecting,
                 "pending_action": self._pending_actions.get(device.id, ""),
                 "pending_detail": self._pending_details.get(device.id, ""),
@@ -1238,7 +1244,22 @@ class AppBackend(QObject):
         device = next((item for item in self._devices if item.id == session.device_id), None)
         data = to_dict(session)
         start = parse_in_zone(session.scheduled_start, self._zone_for(device))
-        finish = start + timedelta(seconds=max(0, session.planned_duration_seconds))
+        planned = max(0.0, float(session.planned_duration_seconds or 0))
+        if device and planned <= 0:
+            planned = max(0.0, float(DurationEngine.calculate(session, device.hardware)))
+        finish = start + timedelta(seconds=planned)
+        actual_seconds = 0.0
+        if session.actual_started_at and session.actual_ended_at:
+            try:
+                actual_seconds = max(
+                    0.0,
+                    (
+                        datetime.fromisoformat(session.actual_ended_at)
+                        - datetime.fromisoformat(session.actual_started_at)
+                    ).total_seconds(),
+                )
+            except ValueError:
+                actual_seconds = 0.0
         data["device_name"] = device.name if device else "Unknown"
         data["device_color"] = device.color if device else "#4DE8FF"
         data["target_name"] = session.target.name
@@ -1247,7 +1268,10 @@ class AppBackend(QObject):
         data["start_time"] = start.strftime("%H:%M")
         data["end_time"] = store_local_iso(finish, start.tzinfo or self._zone_for(device))
         data["start_epoch_ms"] = int(start.timestamp() * 1000)
-        data["duration_text"] = self._duration_text(session.planned_duration_seconds)
+        data["end_epoch_ms"] = int(finish.timestamp() * 1000)
+        data["planned_duration_seconds"] = planned
+        data["actual_duration_seconds"] = actual_seconds
+        data["duration_text"] = self._duration_text(planned)
         data["summary"] = f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s"
         group_id = session.mosaic.group_id or ""
         data["group_id"] = group_id
@@ -1754,6 +1778,8 @@ class AppBackend(QObject):
         text = canonical_image_url(str(url or "").strip()) or str(url or "").strip()
         if not text:
             return ""
+        if not enhance_available():
+            return text
         kind = "deep" if str(profile or "").strip().lower() == "deep" else "std"
         key = enhance_cache_key(text, kind)
         dest = self._enhance_cache_dir() / f"{key}.jpg"
@@ -2474,6 +2500,33 @@ class AppBackend(QObject):
         self.add_log("info", "Connection requested; UI remains available", device_id)
         worker.connect_device(lambda ok, result: self._connection_done(device_id, ok, result))
 
+    @Slot(str)
+    def cancelConnect(self, device_id: str) -> None:
+        worker = self._workers.get(device_id)
+        if not worker or device_id not in self._connecting_ids or device_id in self._cancel_connect_ids:
+            return
+        if device_id == self._selected_device_id:
+            self.stopPreview()
+        self._cancel_connect_ids.add(device_id)
+        self.add_log("info", "Cancelling connection", device_id)
+        self._notify_devices()
+
+        def done(_ok: bool, _result: Any) -> None:
+            self._cancel_connect_ids.discard(device_id)
+            self._set_activity(device_id, "")
+            self._device_telemetry.pop(device_id, None)
+            self._telemetry_updated.pop(device_id, None)
+            self._hold_session_capture.discard(device_id)
+            self._pending_session_finish.pop(device_id, None)
+            self._device_lights.pop(device_id, None)
+            self._device_indicators.pop(device_id, None)
+            self.add_log("info", "Connection cancelled", device_id)
+            self._toast("Connection cancelled", "info")
+            self._disarm_scheduler_if_offline()
+            self._notify_devices()
+
+        worker.disconnect_device(done)
+
     def _persist_discovered_ip(self, device_id: str, ip_address: str) -> None:
         current = self._device_by_id(device_id)
         if not current or not ip_address or current.ip_address == ip_address:
@@ -2487,9 +2540,18 @@ class AppBackend(QObject):
         self.add_log("info", f"Saved Bluetooth IP {ip_address}", device_id)
 
     def _connection_done(self, device_id: str, ok: bool, result: Any) -> None:
+        cancelled = (
+            device_id in self._cancel_connect_ids
+            or (not ok and "connection cancelled" in str(result or "").lower())
+        )
         self._connecting_ids.discard(device_id)
         if ok and isinstance(result, dict) and result.get("ip_address"):
             self._persist_discovered_ip(device_id, str(result["ip_address"]))
+        if cancelled:
+            if ok:
+                self.add_log("info", "Connected, dropping the link after cancel", device_id)
+            self._notify_devices()
+            return
         self.add_log("success" if ok else "error", "Connected" if ok else f"Connection failed: {result}", device_id)
         if ok:
             device = self._device_by_id(device_id)
@@ -2534,6 +2596,9 @@ class AppBackend(QObject):
 
     @Slot(str)
     def disconnectDevice(self, device_id: str) -> None:
+        if device_id in self._connecting_ids:
+            self.cancelConnect(device_id)
+            return
         worker = self._workers.get(device_id)
         if not worker or device_id in self._disconnecting_ids:
             return
@@ -4064,9 +4129,10 @@ class AppBackend(QObject):
         if not device.location_configured:
             self._toast("Choose an observing location before running a session", "warning")
             return
+        # Keep the planned slot on the calendar. Actual start/end live on
+        # actual_* so a short failed run does not shrink or relocate the block.
         self._save_session(replace(
             session,
-            scheduled_start=self._store_session_time(self._now_local(device), device),
             status=SessionStatus.PLANNED,
             current_step="Waiting",
             actual_started_at=None,
@@ -4599,7 +4665,11 @@ class AppBackend(QObject):
         for device in self._devices:
             if device.id in self._active_sessions or not device.location_configured:
                 continue
-            if device.id in self._disconnecting_ids or device.id in self._connecting_ids:
+            if (
+                device.id in self._disconnecting_ids
+                or device.id in self._connecting_ids
+                or device.id in self._cancel_connect_ids
+            ):
                 continue
             worker = self._workers[device.id]
             if worker.busy or not worker.connected:
@@ -4987,7 +5057,11 @@ class AppBackend(QObject):
             if updated.id in self._active_sessions:
                 self._toast("Stop the running session before changing connection settings", "warning")
                 return False
-            if updated.id in self._connecting_ids or updated.id in self._disconnecting_ids:
+            if (
+                updated.id in self._connecting_ids
+                or updated.id in self._disconnecting_ids
+                or updated.id in self._cancel_connect_ids
+            ):
                 self._toast("Wait for the connection to finish before changing those settings", "warning")
                 return False
         self.store.devices.save(updated)

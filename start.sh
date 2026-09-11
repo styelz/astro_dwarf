@@ -84,7 +84,7 @@ else
 fi
 
 step "Checking the packages Astro Dwarf needs..."
-if ! "$VENV_PYTHON" -c 'import sys, PySide6; from dwarf_python_api.lib.dwarf_utils import perform_read_camera_params_http_v3, perform_enter_astro_mode; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+if ! "$VENV_PYTHON" -c 'import sys, PySide6, numpy, cv2; from dwarf_python_api.lib.dwarf_utils import perform_read_camera_params_http_v3, perform_enter_astro_mode; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
     if ! command -v git >/dev/null 2>&1; then
         fail "Git is needed for the first install. Install Git, then run this script again."
         exit 1

@@ -48,6 +48,8 @@ _command_sequence = itertools.count()
 _PRIORITY_URGENT = 0
 _PRIORITY_NORMAL = 1
 _connected = threading.Event()
+_connecting = threading.Event()
+_connect_cancel = threading.Event()
 _session_active = threading.Event()
 _session_phase: str | None = None
 _stop_phase: str | None = None
@@ -906,9 +908,14 @@ def _run_async(factory):
 
     thread = threading.Thread(target=target, name="dwarf-ble", daemon=True)
     thread.start()
-    thread.join(timeout=90)
-    if thread.is_alive():
-        raise TimeoutError("Bluetooth operation timed out")
+    deadline = time.monotonic() + 90
+    while thread.is_alive():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Bluetooth operation timed out")
+        thread.join(timeout=min(0.2, remaining))
+        if _stop.is_set() or _connect_cancel.is_set():
+            raise InterruptedError("Connection cancelled")
     if "error" in result:
         raise result["error"]
     return result.get("value")
@@ -1054,10 +1061,12 @@ def _join_dwarf_hotspot(preferred_ssid: str, control_ip: str) -> None:
         if "error" in connected.lower() and "success" not in connected.lower():
             raise RuntimeError(f"Could not join {ssid}: {connected.strip() or 'netsh failed'}")
     for _ in range(20):
+        _check_connect_cancelled()
         if _host_reachable(control_ip):
             log(f"Reached the telescope at {control_ip}")
             return
-        time.sleep(1)
+        if _stop.wait(1):
+            _check_connect_cancelled()
     raise RuntimeError(
         f"This computer joined {ssid}, but {control_ip} is still unreachable."
     )
@@ -1199,7 +1208,36 @@ def _safe_disconnect() -> None:
         pass
 
 
+def _check_connect_cancelled() -> None:
+    if not (_stop.is_set() or _connect_cancel.is_set()):
+        return
+    _mark_disconnected()
+    raise InterruptedError("Connection cancelled")
+
+
+def _cancel_queued_connects() -> bool:
+    dropped: list[dict[str, Any]] = []
+    with _commands.mutex:
+        retained = [item for item in _commands.queue if item[2].get("command") != "connect"]
+        dropped = [item[2] for item in _commands.queue if item[2].get("command") == "connect"]
+        if not dropped:
+            return False
+        _commands.queue.clear()
+        _commands.queue.extend(retained)
+        heapq.heapify(_commands.queue)
+    _connecting.clear()
+    for queued in dropped:
+        emit({
+            "event": "response",
+            "id": queued.get("id"),
+            "ok": False,
+            "error": "Connection cancelled",
+        })
+    return True
+
+
 def _handshake() -> dict[str, Any] | None:
+    _check_connect_cancelled()
     try:
         if sdk_call("host_master") is False:
             log("MASTER LOCK: no response (expected on V3). Continuing.", "warning")
@@ -1207,15 +1245,19 @@ def _handshake() -> dict[str, Any] | None:
         log(str(exc), "warning")
     except Exception as exc:
         log(f"MASTER LOCK skipped: {exc}", "warning")
+    _check_connect_cancelled()
     if sdk_call("time") is False:
+        _check_connect_cancelled()
         return None
     for operation in ("timezone", "location", "device_state"):
+        _check_connect_cancelled()
         try:
             sdk_call(operation)
         except NotImplementedError as exc:
             log(str(exc), "warning")
         except Exception as exc:
             log(f"{operation} skipped: {exc}", "warning")
+    _check_connect_cancelled()
     _connected.set()
     # Sessions connect on their own; tell the UI so STOP/DISCONNECT stay usable.
     emit({"event": "connected", "ip_address": str(_device.get("ip_address") or "")})
@@ -1253,8 +1295,10 @@ def provision_bluetooth() -> str:
         else:
             log("Scanning Bluetooth to read the telescope Wi-Fi…")
 
+    _check_connect_cancelled()
     with contextlib.redirect_stdout(sys.stderr):
         found = _run_async(discover_dwarf_devices)
+    _check_connect_cancelled()
     devices = (found or {}).get("dwarf_devices") or []
     if found and found.get("error"):
         raise RuntimeError(f"Bluetooth scan failed: {found['error']}")
@@ -1265,9 +1309,11 @@ def provision_bluetooth() -> str:
     log(f"Bluetooth found: {names}")
     dwarf = _pick_ble_device(devices, str(_device.get("model") or ""))
     log(f"Connecting to {dwarf.name} over Bluetooth…")
+    _check_connect_cancelled()
 
     with contextlib.redirect_stdout(sys.stderr):
         state = _run_async(lambda: _ble_wifi_session(dwarf, ble_password, sta_ssid, sta_password, preferred))
+    _check_connect_cancelled()
     if not state or not state.get("ip_address"):
         raise RuntimeError("Bluetooth connected but did not return an IP address")
 
@@ -1279,6 +1325,20 @@ def provision_bluetooth() -> str:
 
 
 def connect() -> bool | dict[str, Any]:
+    # Mark in-flight even if stdin already did, so disconnect can abort this
+    # call. A leftover session stop must not abort a fresh connect; a cancel
+    # latched on _connect_cancel still wins after that clear.
+    _connecting.set()
+    try:
+        _stop.clear()
+        _check_connect_cancelled()
+        return _connect()
+    finally:
+        _connecting.clear()
+
+
+def _connect() -> bool | dict[str, Any]:
+    _check_connect_cancelled()
     ip = str(_device.get("ip_address") or "").strip()
     ble_enabled = bool(_device.get("ble_enabled"))
     if ip:
@@ -1288,6 +1348,7 @@ def connect() -> bool | dict[str, Any]:
         telemetry = _handshake()
         if telemetry is not None:
             return {"ip_address": ip, "telemetry": telemetry}
+        _check_connect_cancelled()
         log("IP connection failed" + (", trying Bluetooth…" if ble_enabled else ""), "warning")
         _safe_disconnect()
     elif not ble_enabled:
@@ -1297,13 +1358,16 @@ def connect() -> bool | dict[str, Any]:
         return False
 
     discovered = provision_bluetooth()
+    _check_connect_cancelled()
     _ensure_hotspot_link(discovered)
     for attempt in range(1, 6):
         telemetry = _handshake()
         if telemetry is not None:
             return {"ip_address": discovered, "telemetry": telemetry}
+        _check_connect_cancelled()
         log(f"Waiting for the telescope at {discovered} ({attempt}/5)…")
-        time.sleep(3)
+        if _stop.wait(3):
+            _check_connect_cancelled()
         _safe_disconnect()
     hotspot = str(_device.get("_ble_ssid") or "")
     mode = str(_device.get("wifi_mode") or "auto").lower()
@@ -2653,11 +2717,24 @@ def main() -> None:
                 log(f"Invalid worker message: {raw!r}", "error")
                 continue
             command = message.get("command")
-            if command in _URGENT_COMMANDS:
+            if command == "connect":
+                _connecting.set()
+                _connect_cancel.clear()
+                enqueue_command(message)
+            elif command in _URGENT_COMMANDS:
                 # The SDK is not thread-safe, so stop/disconnect never run alongside
                 # another SDK call. Instead they wake the blocked call (which then
                 # fails fast) and jump ahead of everything else in the queue.
-                if command == "stop_all" or _session_active.is_set() or _in_flight is not None:
+                if command == "disconnect":
+                    _cancel_queued_connects()
+                    if _connecting.is_set():
+                        _connect_cancel.set()
+                if (
+                    command == "stop_all"
+                    or _session_active.is_set()
+                    or _in_flight is not None
+                    or _connecting.is_set()
+                ):
                     request_stop("Session stopped" if command == "stop_all" else "Telescope disconnected")
                 enqueue_command(message, _PRIORITY_URGENT)
             else:

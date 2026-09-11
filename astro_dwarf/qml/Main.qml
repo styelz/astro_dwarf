@@ -47,7 +47,7 @@ ApplicationWindow {
     readonly property bool dataPage: currentPage !== 0
     readonly property bool scopeOnline: !!(backend.selectedDevice && backend.selectedDevice.connected)
     readonly property bool scopeImaging: !!(backend.selectedDevice && backend.selectedDevice.busy)
-    readonly property bool scopeLinking: !!(backend.selectedDevice && (backend.selectedDevice.connecting || backend.selectedDevice.disconnecting))
+    readonly property bool scopeLinking: !!(backend.selectedDevice && (backend.selectedDevice.connecting || backend.selectedDevice.cancelling || backend.selectedDevice.disconnecting))
     readonly property string scopePending: String((backend.selectedDevice && backend.selectedDevice.pending_action) || "")
     readonly property string scopePendingDetail: String((backend.selectedDevice && backend.selectedDevice.pending_detail) || "")
     readonly property string scopeActivity: String((backend.selectedDevice && backend.selectedDevice.activity) || "")
@@ -361,15 +361,25 @@ ApplicationWindow {
                 DeviceCombo {}
                 HudButton {
                     text: backend.selectedDevice.connected ? "DISCONNECT" : "CONNECT"
-                    busy: backend.selectedDevice.connecting || backend.selectedDevice.disconnecting
-                    busyText: backend.selectedDevice.connecting ? "CONNECTING…" : "DISCONNECTING…"
+                    busy: backend.selectedDevice.connecting || backend.selectedDevice.cancelling || backend.selectedDevice.disconnecting
+                    busyText: backend.selectedDevice.disconnecting ? "DISCONNECTING…"
+                              : backend.selectedDevice.cancelling ? "CANCELLING…"
+                              : "CANCEL"
                     busyMs: 0
-                    enabled: !busy
-                    buttonColor: backend.selectedDevice.connected ? Theme.fillSuccess : Theme.fillActive
-                    foregroundColor: Theme.accent
-                    onClicked: backend.selectedDevice.connected
-                        ? backend.disconnectDevice(backend.selectedDeviceId)
-                        : backend.connectDevice(backend.selectedDeviceId)
+                    enabled: !backend.selectedDevice.disconnecting && !backend.selectedDevice.cancelling
+                    buttonColor: backend.selectedDevice.connecting || backend.selectedDevice.cancelling
+                                 ? Theme.fillDanger
+                                 : backend.selectedDevice.connected ? Theme.fillSuccess : Theme.fillActive
+                    foregroundColor: backend.selectedDevice.connecting || backend.selectedDevice.cancelling
+                                     ? Theme.danger : Theme.accent
+                    onClicked: {
+                        if (backend.selectedDevice.connecting)
+                            backend.cancelConnect(backend.selectedDeviceId)
+                        else if (backend.selectedDevice.connected)
+                            backend.disconnectDevice(backend.selectedDeviceId)
+                        else
+                            backend.connectDevice(backend.selectedDeviceId)
+                    }
                 }
                 HudButton {
                     text: backend.schedulerEnabled ? "SCHEDULER ON" : "SCHEDULER OFF"
@@ -595,7 +605,7 @@ ApplicationWindow {
                                 border.color: deviceCard.modelData.connected ? Theme.hsl(-0.021, 1.000, 0.924) : "transparent"
                                 border.width: deviceCard.modelData.connected ? 1 : 0
                                 SequentialAnimation on opacity {
-                                    running: deviceCard.modelData.connecting || deviceCard.modelData.disconnecting
+                                    running: deviceCard.modelData.connecting || deviceCard.modelData.cancelling || deviceCard.modelData.disconnecting
                                     loops: Animation.Infinite
                                     NumberAnimation { from: 1; to: 0.25; duration: 500 }
                                     NumberAnimation { from: 0.25; to: 1; duration: 500 }
@@ -617,12 +627,18 @@ ApplicationWindow {
                         HudMenu {
                             id: deviceMenu
                             HudMenuItem {
-                                text: deviceCard.modelData.connected ? "Disconnect" : "Connect"
-                                glyph: deviceCard.modelData.connected ? "\uE8CD" : "\uE774"
-                                enabled: !deviceCard.modelData.connecting && !deviceCard.modelData.disconnecting
+                                text: deviceCard.modelData.cancelling ? "Cancelling…"
+                                      : deviceCard.modelData.connecting ? "Cancel connect"
+                                      : deviceCard.modelData.connected ? "Disconnect" : "Connect"
+                                glyph: deviceCard.modelData.connecting || deviceCard.modelData.cancelling
+                                       ? "\uE711"
+                                       : deviceCard.modelData.connected ? "\uE8CD" : "\uE774"
+                                enabled: !deviceCard.modelData.disconnecting && !deviceCard.modelData.cancelling
                                 onTriggered: {
                                     backend.selectDevice(deviceCard.modelData.id)
-                                    if (deviceCard.modelData.connected)
+                                    if (deviceCard.modelData.connecting)
+                                        backend.cancelConnect(deviceCard.modelData.id)
+                                    else if (deviceCard.modelData.connected)
                                         backend.disconnectDevice(deviceCard.modelData.id)
                                     else
                                         backend.connectDevice(deviceCard.modelData.id)

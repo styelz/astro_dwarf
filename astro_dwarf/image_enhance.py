@@ -26,6 +26,19 @@ _log = logging.getLogger(__name__)
 _URLS: dict[str, str] = {}
 _URL_LOCK = threading.Lock()
 _DISPLAY_EDGE = 1920
+_NUMPY_WARNED = False
+
+
+def enhance_available() -> bool:
+    return np is not None
+
+
+def _warn_numpy_missing() -> None:
+    global _NUMPY_WARNED
+    if _NUMPY_WARNED:
+        return
+    _NUMPY_WARNED = True
+    _log.warning("numpy is not installed; showing original images instead of enhanced ones")
 
 
 def set_model_dir(path: Path | str | None) -> None:
@@ -96,7 +109,8 @@ def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standa
     if image is None or image.isNull():
         return image
     if np is None:
-        raise RuntimeError("numpy is not installed; enhance cannot run")
+        _warn_numpy_missing()
+        return _fit_display(image)
     image = _fit_display(image)
     rgb = _qimage_to_rgb(image)
     if rgb.size == 0:
@@ -380,31 +394,34 @@ class CacheEnhanceJob(QRunnable):
 
     def run(self) -> None:
         try:
-            image = load_image(canonical_image_url(self._url) or self._url)
-            if image.isNull():
-                raise RuntimeError(f"Could not load {self._url}")
-            out = enhance_image(image, denoise=True, profile=self._profile)
-            if out is None or out.isNull():
-                raise RuntimeError("Enhance returned an empty image")
-            if max(out.width(), out.height()) > _DISPLAY_EDGE + 2:
-                raise RuntimeError(
-                    f"Enhance left a full-size frame {out.width()}x{out.height()}; refusing to cache it"
+            if not enhance_available():
+                _warn_numpy_missing()
+            else:
+                image = load_image(canonical_image_url(self._url) or self._url)
+                if image.isNull():
+                    raise RuntimeError(f"Could not load {self._url}")
+                out = enhance_image(image, denoise=True, profile=self._profile)
+                if out is None or out.isNull():
+                    raise RuntimeError("Enhance returned an empty image")
+                if max(out.width(), out.height()) > _DISPLAY_EDGE + 2:
+                    raise RuntimeError(
+                        f"Enhance left a full-size frame {out.width()}x{out.height()}; refusing to cache it"
+                    )
+                saved = QImage(out)
+                self._dest.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self._dest.with_suffix(".part.jpg")
+                if not saved.save(str(tmp), "JPG", 90):
+                    raise RuntimeError("Could not write enhanced JPEG")
+                tmp.replace(self._dest)
+                _log.info(
+                    "Enhance cache %s %s %sx%s -> %sx%s",
+                    self._profile,
+                    self._key[:8],
+                    image.width(),
+                    image.height(),
+                    saved.width(),
+                    saved.height(),
                 )
-            saved = QImage(out)
-            self._dest.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._dest.with_suffix(".part.jpg")
-            if not saved.save(str(tmp), "JPG", 90):
-                raise RuntimeError("Could not write enhanced JPEG")
-            tmp.replace(self._dest)
-            _log.info(
-                "Enhance cache %s %s %sx%s -> %sx%s",
-                self._profile,
-                self._key[:8],
-                image.width(),
-                image.height(),
-                saved.width(),
-                saved.height(),
-            )
         except Exception:
             _log.exception("Enhance cache failed for %s", self._key)
             try:

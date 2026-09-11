@@ -190,8 +190,14 @@ Item {
         }
         return ids
     }
+    function sessionSpanSeconds(item) {
+        return Math.max(0, Number(item.planned_duration_seconds || 0))
+    }
     function sessionEndMs(item) {
-        return Number(item.start_epoch_ms || 0) + Number(item.planned_duration_seconds || 0) * 1000
+        const marked = Number(item.end_epoch_ms || 0)
+        if (marked > 0)
+            return marked
+        return Number(item.start_epoch_ms || 0) + calendarPage.sessionSpanSeconds(item) * 1000
     }
     // Two sessions share lanes only when they genuinely overlap in time; a 500 ms
     // slack keeps back-to-back sessions out of each other's lane.
@@ -707,7 +713,7 @@ Item {
                 // a sliver of a very tall, empty track, so the scale follows the content
                 // until the user zooms with Ctrl+wheel.
                 property bool zoomLocked: false
-                readonly property real minHourHeight: 40
+                readonly property real minHourHeight: 72
                 readonly property real maxHourHeight: 260
                 function firstSessionMinutes() {
                     const items = calendarPage.nightSessions
@@ -946,7 +952,7 @@ Item {
                                     return minutes / 60 * nightTimeline.hourHeight + nightTimeline.itemOffset
                                 }
                                 width: slot.width
-                                height: Math.max(26, Number(modelData.planned_duration_seconds || 0) / 3600 * nightTimeline.hourHeight - 4)
+                                height: Math.max(26, calendarPage.sessionSpanSeconds(modelData) / 3600 * nightTimeline.hourHeight - 4)
                                 readonly property bool tight: height < 44
                                 readonly property bool narrow: width < 210
                                 radius: 3
@@ -955,6 +961,21 @@ Item {
                                 border.color: Util.statusColor(modelData.status)
                                 border.width: 1
                                 opacity: DragCoordinator.active && DragCoordinator.data.id === sessionId ? 0.35 : 0.96
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    height: {
+                                        const planned = calendarPage.sessionSpanSeconds(timelineSession.modelData)
+                                        const actual = Number(timelineSession.modelData.actual_duration_seconds || 0)
+                                        if (planned <= 0 || actual <= 0 || actual >= planned)
+                                            return 0
+                                        return Math.max(2, timelineSession.height * actual / planned)
+                                    }
+                                    color: Util.statusColor(timelineSession.modelData.status)
+                                    opacity: 0.28
+                                    visible: height > 0
+                                }
                                 SessionDragArea {
                                     dragItem: timelineSession.modelData
                                     onEditRequested: session => sessionDialog.openExisting(session)
@@ -1063,7 +1084,7 @@ Item {
                             x: slot.x
                             y: DragCoordinator.previewMinutes / 60 * nightTimeline.hourHeight + nightTimeline.itemOffset
                             width: slot.width
-                            height: Math.max(26, Number(DragCoordinator.data.planned_duration_seconds || 0) / 3600 * nightTimeline.hourHeight - 4)
+                            height: Math.max(26, calendarPage.sessionSpanSeconds(DragCoordinator.data) / 3600 * nightTimeline.hourHeight - 4)
                             radius: 3
                             color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.12)
                             border.color: Theme.accent
@@ -1097,7 +1118,7 @@ Item {
         HudPanel {
             id: nightPanel
             readonly property var nightSessions: calendarPage.sidebarSessions
-            readonly property int nightSeconds: nightSessions.reduce((sum, item) => sum + Number(item.planned_duration_seconds || 0), 0)
+            readonly property int nightSeconds: nightSessions.reduce((sum, item) => sum + calendarPage.sessionSpanSeconds(item), 0)
             visible: calendarPage.viewMode === 0
             title: {
                 calendarPage.selectedDayKeys
