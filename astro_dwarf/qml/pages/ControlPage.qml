@@ -662,6 +662,7 @@ Item {
                         return previewHost.stackCount < 1
                     }
                     readonly property bool pipPlaying: pipAvailable && pipEnabled
+                    readonly property bool idlePreviewArt: !backend.previewPlaying && !backend.previewStacking && !previewHost.awaitingFirstStack
                     readonly property real teleFovH: {
                         const tele = Number(root.scopeTelemetry.tele_fov_h)
                         const wide = Number(root.scopeTelemetry.wide_fov_h)
@@ -734,9 +735,11 @@ Item {
                     }
 
                     // Chrome model: status (LIVE/REC badges, readout strip) is always on
-                    // while streaming; controls (stop button, grid) appear on
-                    // pointer motion or a touch tap and fade after a short idle, unless
-                    // the pointer is resting on a control. First stream ever shows a hint.
+                    // while streaming; controls (stop button) appear on pointer motion
+                    // or a touch tap and fade after a short idle, unless the pointer is
+                    // resting on a control. First stream ever shows a hint.
+                    // Idle art (telescope image + scanline grid) stays off while live
+                    // view or stacking is up, including on hover.
                     property bool controlsVisible: false
                     property bool controlHovered: false
                     readonly property bool chromeShown: !backend.previewPlaying || controlsVisible
@@ -993,7 +996,7 @@ Item {
                     }
                     Image {
                         anchors.fill: parent
-                        visible: !backend.previewPlaying
+                        visible: previewHost.idlePreviewArt
                         source: {
                             const model = String((backend.selectedDevice && backend.selectedDevice.model) || "")
                             if (model === "Dwarf II")
@@ -1006,10 +1009,10 @@ Item {
                         opacity: 0.18
                     }
                     Canvas {
-                        // faint scanline grid
+                        // faint scanline grid — idle placeholder only, never over a live/stack frame
                         anchors.fill: parent
                         visible: opacity > 0
-                        opacity: !backend.previewPlaying ? 0.22 : (previewHost.chromeShown ? 0.10 : 0)
+                        opacity: previewHost.idlePreviewArt ? 0.22 : 0
                         Behavior on opacity { NumberAnimation { duration: 220 } }
                         readonly property color ink: Theme.accent
                         onInkChanged: requestPaint()
