@@ -14,8 +14,12 @@ Item {
     readonly property bool busy: backend.mediaBusy !== ""
     readonly property bool hasIp: !!(backend.selectedDevice && backend.selectedDevice.ip_address)
     readonly property bool onDevice: backend.mediaSource !== "local"
+    readonly property bool albumLocked: backend.mediaLocked && mediaPage.onDevice
     property string loadedKey: ""
+    property string boundDeviceId: ""
     readonly property string emptyText: {
+        if (mediaPage.albumLocked)
+            return backend.mediaStatus || "The telescope album isn't available while it's capturing. Wait until imaging finishes, or switch to Local."
         if (backend.mediaBusy === "list")
             return "Reading the telescope album…"
         if (backend.mediaStatus)
@@ -29,6 +33,15 @@ Item {
         return "No astro sessions found on this telescope. Finished DSO stacks show up here."
     }
 
+    onAlbumLockedChanged: {
+        if (mediaPage.albumLocked) {
+            lightbox.close()
+            return
+        }
+        mediaPage.loadedKey = ""
+        mediaPage.maybeLoad()
+    }
+
     function sourceKey() {
         return backend.selectedDeviceId + ":" + backend.mediaSource
     }
@@ -38,6 +51,8 @@ Item {
     }
     function maybeLoad() {
         if (root.currentPage !== root.mediaPageIndex)
+            return
+        if (mediaPage.albumLocked)
             return
         const key = mediaPage.sourceKey()
         if (mediaPage.loadedKey === key && backend.mediaSource === "local")
@@ -53,7 +68,7 @@ Item {
         lightbox.open()
     }
     function downloadSelected() {
-        if (!mediaPage.onDevice || !backend.selectedMedia.id)
+        if (mediaPage.albumLocked || !mediaPage.onDevice || !backend.selectedMedia.id)
             return
         backend.downloadMedia(backend.selectedDeviceId, backend.selectedMedia.id)
     }
@@ -66,6 +81,9 @@ Item {
     Connections {
         target: backend
         function onSelectedDeviceChanged() {
+            if (mediaPage.boundDeviceId === backend.selectedDeviceId)
+                return
+            mediaPage.boundDeviceId = backend.selectedDeviceId
             mediaPage.loadedKey = ""
             if (root.currentPage !== root.mediaPageIndex)
                 return
@@ -86,9 +104,11 @@ Item {
 
         PageHeader {
             title: "MEDIA"
-            subtitle: backend.mediaSource === "local"
-                ? (mediaPage.items.length + " downloaded file" + (mediaPage.items.length === 1 ? "" : "s") + "  ·  local album")
-                : (mediaPage.items.length + " on " + (backend.selectedDevice.name || "telescope") + (mediaPage.hasIp ? "  ·  " + backend.selectedDevice.ip_address : ""))
+            subtitle: mediaPage.albumLocked
+                ? "Unavailable while the telescope is capturing"
+                : (backend.mediaSource === "local"
+                    ? (mediaPage.items.length + " downloaded file" + (mediaPage.items.length === 1 ? "" : "s") + "  ·  local album")
+                    : (mediaPage.items.length + " on " + (backend.selectedDevice.name || "telescope") + (mediaPage.hasIp ? "  ·  " + backend.selectedDevice.ip_address : "")))
             HudButton {
                 text: "ASTRO"
                 buttonColor: backend.mediaSource === "astro" ? Theme.fillActive : Theme.inputBg
@@ -109,14 +129,14 @@ Item {
             }
             HudButton {
                 text: backend.mediaBusy === "list" ? "LISTING…" : "REFRESH"
-                enabled: !mediaPage.busy && (backend.mediaSource === "local" || mediaPage.hasIp)
+                enabled: !mediaPage.albumLocked && !mediaPage.busy && (backend.mediaSource === "local" || mediaPage.hasIp)
                 busy: backend.mediaBusy === "list"
                 busyText: "LISTING…"
                 onClicked: mediaPage.refresh()
             }
             HudButton {
                 text: backend.mediaBusy === "download" ? "SAVING…" : "DOWNLOAD"
-                enabled: mediaPage.onDevice && !mediaPage.busy && !!(backend.selectedMedia && backend.selectedMedia.id)
+                enabled: mediaPage.onDevice && !mediaPage.albumLocked && !mediaPage.busy && !!(backend.selectedMedia && backend.selectedMedia.id)
                 busy: backend.mediaBusy === "download"
                 busyText: "SAVING…"
                 onClicked: mediaPage.downloadSelected()
@@ -130,7 +150,9 @@ Item {
         HudPanel {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            title: backend.mediaSource === "astro" ? "ON DEVICE  ·  ASTRO SESSIONS" : (backend.mediaSource === "stills" ? "ON DEVICE  ·  STILLS" : "LOCAL ALBUM")
+            title: mediaPage.albumLocked
+                ? "ON DEVICE  ·  UNAVAILABLE"
+                : (backend.mediaSource === "astro" ? "ON DEVICE  ·  ASTRO SESSIONS" : (backend.mediaSource === "stills" ? "ON DEVICE  ·  STILLS" : "LOCAL ALBUM"))
 
             Item {
                 Layout.fillWidth: true
@@ -140,7 +162,7 @@ Item {
                     id: mediaGrid
                     anchors.fill: parent
                     clip: true
-                    visible: mediaPage.items.length > 0
+                    visible: !mediaPage.albumLocked && mediaPage.items.length > 0
                     cellWidth: Math.max(148, Math.floor(width / Math.max(1, Math.floor(width / 168))))
                     cellHeight: cellWidth + 36
                     model: backend.mediaItems
@@ -231,8 +253,8 @@ Item {
 
                 EmptyHint {
                     anchors.centerIn: parent
-                    visible: mediaPage.items.length === 0
-                    glyph: backend.mediaSource === "local" ? "▤" : "◈"
+                    visible: mediaPage.albumLocked || mediaPage.items.length === 0
+                    glyph: mediaPage.albumLocked ? "⊘" : (backend.mediaSource === "local" ? "▤" : "◈")
                     text: mediaPage.emptyText
                 }
             }
@@ -295,7 +317,7 @@ Item {
                         HudButton {
                             text: "DOWNLOAD"
                             visible: mediaPage.onDevice
-                            enabled: !mediaPage.busy && !!(mediaPage.selected.id)
+                            enabled: !mediaPage.albumLocked && !mediaPage.busy && !!(mediaPage.selected.id)
                             busy: backend.mediaBusy === "download"
                             busyText: "SAVING…"
                             onClicked: mediaPage.downloadSelected()
