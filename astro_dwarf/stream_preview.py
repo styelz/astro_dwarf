@@ -92,6 +92,7 @@ class LiveFrameItem(QQuickPaintedItem):
     cameraChanged = Signal()
     playingChanged = Signal()
     paintedSizeChanged = Signal()
+    imageSizeChanged = Signal()
 
     def __init__(self, parent: Optional[QQuickItem] = None):
         super().__init__(parent)
@@ -106,6 +107,8 @@ class LiveFrameItem(QQuickPaintedItem):
         self._painted_h = 0.0
         self._painted_x = 0.0
         self._painted_y = 0.0
+        self._image_w = 0.0
+        self._image_h = 0.0
         hub = live_frames()
         if hub is not None:
             hub.frameChanged.connect(self._on_hub_frame)
@@ -162,6 +165,16 @@ class LiveFrameItem(QQuickPaintedItem):
         return self._painted_y
 
     paintedY = Property(float, getPaintedY, notify=paintedSizeChanged)
+
+    def getImageWidth(self) -> float:
+        return self._image_w
+
+    imageWidth = Property(float, getImageWidth, notify=imageSizeChanged)
+
+    def getImageHeight(self) -> float:
+        return self._image_h
+
+    imageHeight = Property(float, getImageHeight, notify=imageSizeChanged)
 
     @Slot(float, float, result="QVariant")
     def mapToFrame(self, px: float, py: float) -> dict:
@@ -243,15 +256,24 @@ class LiveFrameItem(QQuickPaintedItem):
         height = 0.0
         left = 0.0
         top = 0.0
+        image_w = 0.0
+        image_h = 0.0
         if self._playing:
             hub = live_frames()
             image = hub.peek(self._camera) if hub is not None else QImage()
+            if not image.isNull():
+                image_w = float(image.width())
+                image_h = float(image.height())
             rect = self._fit_rect(image)
             if rect is not None:
                 width = rect.width()
                 height = rect.height()
                 left = rect.x()
                 top = rect.y()
+        if image_w != self._image_w or image_h != self._image_h:
+            self._image_w = image_w
+            self._image_h = image_h
+            self.imageSizeChanged.emit()
         if (
             width == self._painted_w
             and height == self._painted_h

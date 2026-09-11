@@ -22,6 +22,11 @@ Item {
     property real footprintNh: 0
     readonly property real paintedWidth: frame.paintedWidth
     readonly property real paintedHeight: frame.paintedHeight
+    // Native decoded frame size. Used for PiP aspect so the box does not
+    // resize from the letterboxed fit, which would feed back into painted size.
+    readonly property real imageWidth: frame.imageWidth
+    readonly property real imageHeight: frame.imageHeight
+    readonly property real sourceAspect: (imageWidth > 0 && imageHeight > 0) ? imageHeight / imageWidth : 9 / 16
     // Same fit rect paint() draws with, so overlays and taps track the pixels.
     readonly property real frameX: frame.paintedX
     readonly property real frameY: frame.paintedY

@@ -120,6 +120,16 @@ def run() -> int:
         persist_scene(True)
     if callable(persist_graphics):
         persist_graphics(True)
+
+    def _release_graphics() -> None:
+        try:
+            if callable(persist_scene):
+                persist_scene(False)
+            if callable(persist_graphics):
+                persist_graphics(False)
+        except RuntimeError:
+            pass
+
     backend.bindPreviewWindow(window)
     # Wire the hook after load: QML already queued the saved theme during onCompleted.
     backend.bindWindowFrame(lambda caption, border, text: _apply_windows_frame(window, caption, border, text))
@@ -155,6 +165,7 @@ def run() -> int:
             _request_quit()
 
     application.aboutToQuit.connect(_mark_quit)
+    application.aboutToQuit.connect(_release_graphics)
     application.aboutToQuit.connect(backend.shutdown)
     threading.Thread(target=_watchdog, daemon=True, name="force-exit").start()
 

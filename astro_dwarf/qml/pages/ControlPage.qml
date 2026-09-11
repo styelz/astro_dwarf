@@ -849,11 +849,7 @@ Item {
                         width: Math.round(Math.max(168, Math.min(parent.width * 0.32, parent.height * 0.38, 300)))
                         height: Math.round(width * pipAspect)
                         property bool floating: false
-                        readonly property real pipAspect: {
-                            const w = pipPane.paintedWidth
-                            const h = pipPane.paintedHeight
-                            return (w > 0 && h > 0) ? h / w : 9 / 16
-                        }
+                        readonly property real pipAspect: pipPane.sourceAspect
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         anchors.rightMargin: 14

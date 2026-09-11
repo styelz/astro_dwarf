@@ -4689,6 +4689,7 @@ class AppBackend(QObject):
             worker.shutdown(wait=False)
         if self._preview_thread.isRunning():
             self._preview_thread.quit()
+            self._preview_thread.wait(500)
 
     def _sequence_colliding_mosaics(self) -> None:
         changed = False
