@@ -33,21 +33,29 @@ class JsonRepository(Generic[T]):
         self.folder = folder
         self.loader = loader
         folder.mkdir(parents=True, exist_ok=True)
+        self._by_id: dict[str, T] | None = None
 
-    def all(self) -> list[T]:
-        values: list[T] = []
-        for path in sorted(self.folder.glob("*.json")):
+    def _ensure_loaded(self) -> dict[str, T]:
+        if self._by_id is not None:
+            return self._by_id
+        by_id: dict[str, T] = {}
+        for path in self.folder.glob("*.json"):
             try:
-                values.append(self.loader(json.loads(path.read_text(encoding="utf-8"))))
+                value = self.loader(json.loads(path.read_text(encoding="utf-8")))
             except (OSError, ValueError, TypeError):
                 continue
-        return values
+            item_id = getattr(value, "id", None)
+            if item_id:
+                by_id[str(item_id)] = value
+        self._by_id = by_id
+        return by_id
+
+    def all(self) -> list[T]:
+        by_id = self._ensure_loaded()
+        return [by_id[key] for key in sorted(by_id)]
 
     def get(self, item_id: str) -> T | None:
-        path = self.folder / f"{item_id}.json"
-        if not path.exists():
-            return None
-        return self.loader(json.loads(path.read_text(encoding="utf-8")))
+        return self._ensure_loaded().get(item_id)
 
     def save(self, value: T) -> T:
         item_id = getattr(value, "id")
@@ -63,14 +71,17 @@ class JsonRepository(Generic[T]):
                     temporary.unlink(missing_ok=True)
                     raise
                 time.sleep(0.01 * (attempt + 1))
+        self._ensure_loaded()[str(item_id)] = value
         return value
 
     def delete(self, item_id: str) -> bool:
         path = self.folder / f"{item_id}.json"
-        if path.exists():
+        existed = path.exists()
+        if existed:
             path.unlink()
-            return True
-        return False
+        if self._by_id is not None:
+            self._by_id.pop(item_id, None)
+        return existed
 
     def clear(self) -> None:
         for path in self.folder.glob("*.json"):
@@ -78,6 +89,8 @@ class JsonRepository(Generic[T]):
                 path.unlink()
             except OSError:
                 continue
+        if self._by_id is not None:
+            self._by_id.clear()
 
 
 class SessionStore:

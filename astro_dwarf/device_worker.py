@@ -326,7 +326,7 @@ def configure(device: dict[str, Any]) -> bool:
                 'TIMEOUT_CMD = "0"',
                 'LOG_FILE = "False"',
                 "DEBUG = False",
-                "TRACE = True",
+                "TRACE = False",
             ]
         ),
         encoding="utf-8",

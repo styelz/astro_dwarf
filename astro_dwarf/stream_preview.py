@@ -67,8 +67,7 @@ class LiveFrames(QObject):
 
     def peek(self, key: str) -> QImage:
         with self._lock:
-            stored = self._images.get(key) or QImage()
-            return QImage(stored) if not stored.isNull() else QImage()
+            return self._images.get(key) or QImage()
 
     def clear(self, key: str | None = None) -> None:
         with self._lock:
@@ -529,6 +528,7 @@ class StreamPlayer(QObject):
             process.setCreateProcessArgumentsModifier(
                 lambda args: args.setCreateFlags(int(args.createFlags()) | PROCESS_CREATION_FLAGS)
             )
+        process.started.connect(self._on_process_started)
         process.readyReadStandardOutput.connect(self._on_stdout)
         process.readyReadStandardError.connect(self._on_stderr)
         process.errorOccurred.connect(self._on_process_error)
@@ -540,13 +540,6 @@ class StreamPlayer(QObject):
         self._latest_image = None
         self._flush_scheduled = False
         process.start(program, arguments)
-        if not process.waitForStarted(4000):
-            if not self._cancelled:
-                self._retry_or_fail(f"Could not start ffmpeg ({ffmpeg_path()})", fatal=True)
-            return
-        with self._pid_lock:
-            self._pid = int(process.processId() or 0)
-        self._watchdog.start(self._FIRST_FRAME_MS)
 
     def abort(self) -> None:
         """Kill ffmpeg / HTTP from any thread without waiting on Qt."""
@@ -566,7 +559,7 @@ class StreamPlayer(QObject):
         self._buffer = b""
         if process is None:
             return
-        for signal_name in ("readyReadStandardOutput", "readyReadStandardError", "errorOccurred", "finished"):
+        for signal_name in ("started", "readyReadStandardOutput", "readyReadStandardError", "errorOccurred", "finished"):
             try:
                 getattr(process, signal_name).disconnect()
             except (RuntimeError, TypeError):
@@ -579,6 +572,13 @@ class StreamPlayer(QObject):
         if pid:
             kill_pid_tree(pid)
         process.deleteLater()
+
+    def _on_process_started(self) -> None:
+        if self._cancelled or self._process is None:
+            return
+        with self._pid_lock:
+            self._pid = int(self._process.processId() or 0)
+        self._watchdog.start(self._FIRST_FRAME_MS)
 
     def _on_stdout(self) -> None:
         if self._process is None:

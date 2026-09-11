@@ -541,6 +541,7 @@ class _PreviewWindowFilter(QObject):
 class AppBackend(QObject):
     devicesChanged = Signal()
     sessionsChanged = Signal()
+    currentSessionChanged = Signal()
     templatesChanged = Signal()
     historyChanged = Signal()
     durationSuggestionChanged = Signal()
@@ -624,6 +625,21 @@ class AppBackend(QObject):
         self._media_status = ""
         self._media_locked = False
         self._telemetry_tick = 0
+        self._sessions_view: list[dict[str, Any]] | None = None
+        self._upcoming_sessions_view: list[dict[str, Any]] | None = None
+        self._current_session_view: dict[str, Any] | None = None
+        self._devices_view: list[dict[str, Any]] | None = None
+        self._selected_device_view: dict[str, Any] | None = None
+        self._devices_dirty = True
+        self._devices_notify_timer = QTimer(self)
+        self._devices_notify_timer.setSingleShot(True)
+        self._devices_notify_timer.setInterval(200)
+        self._devices_notify_timer.timeout.connect(self._flush_devices_notify)
+        self._retarget_timer = QTimer(self)
+        self._retarget_timer.setSingleShot(True)
+        self._retarget_timer.setInterval(250)
+        self._retarget_timer.timeout.connect(self._flush_preview_retarget)
+        self._pending_retarget: tuple[str, str, float] | None = None
         self._joystick_inflight: set[str] = set()
         self._joystick_pending: dict[str, tuple[float, float]] = {}
         self._ui_busy = ""
@@ -760,10 +776,149 @@ class AppBackend(QObject):
         self._disarm_scheduler_if_offline()
         self._notify_devices()
 
-    def _notify_devices(self) -> None:
+    def _invalidate_session_views(self) -> None:
+        self._sessions_view = None
+        self._upcoming_sessions_view = None
+        self._current_session_view = None
+
+    def _emit_sessions_changed(self) -> None:
+        self._invalidate_session_views()
+        sessions_changed = self.sessionsChanged
+        sessions_changed.emit()
+        self.currentSessionChanged.emit()
+
+    def _refresh_selected_session_views(self) -> None:
+        self._upcoming_sessions_view = None
+        self._current_session_view = None
+        sessions_changed = self.sessionsChanged
+        sessions_changed.emit()
+        self.currentSessionChanged.emit()
+
+    def _rebuild_sessions_view(self) -> None:
+        items = self._decorate_session_groups([
+            self._session_dict(session)
+            for session in sorted(
+                self.store.sessions.all(),
+                key=lambda item: (item.scheduled_start, pane_sort_key(item.name), item.name),
+            )
+        ])
+        self._sessions_view = items
+        self._refresh_session_derived()
+
+    def _refresh_session_derived(self) -> None:
+        items = self._sessions_view or []
+        session_id = self._active_sessions.get(self._selected_device_id)
+        if session_id:
+            self._current_session_view = next((item for item in items if item["id"] == session_id), {})
+        else:
+            self._current_session_view = {}
+        self._upcoming_sessions_view = [
+            item for item in items
+            if item["status"] == SessionStatus.PLANNED and item["device_id"] == self._selected_device_id
+        ][:8]
+
+    def _ensure_sessions_view(self) -> list[dict[str, Any]]:
+        if self._sessions_view is None:
+            self._rebuild_sessions_view()
+        assert self._sessions_view is not None
+        if self._current_session_view is None or self._upcoming_sessions_view is None:
+            self._refresh_session_derived()
+        return self._sessions_view
+
+    def _apply_session_step(self, session: Session, step: str) -> Session:
+        updated = replace(session, current_step=step)
+        self.store.sessions.save(updated)
+        timing = self._session_timing.get(updated.id) or {}
+        started_at = float(timing.get("step_started_at") or 0)
+        wait_seconds = float(timing.get("step_wait_seconds") or 0)
+        if self._sessions_view:
+            for item in self._sessions_view:
+                if item.get("id") == updated.id:
+                    item["current_step"] = step
+                    item["step_started_at"] = started_at
+                    item["step_wait_seconds"] = wait_seconds
+                    break
+        if self._current_session_view and self._current_session_view.get("id") == updated.id:
+            self._current_session_view["current_step"] = step
+            self._current_session_view["step_started_at"] = started_at
+            self._current_session_view["step_wait_seconds"] = wait_seconds
+        elif self._active_sessions.get(self._selected_device_id) == updated.id:
+            self._current_session_view = None
+        self.currentSessionChanged.emit()
+        self.sessionProgressChanged.emit()
+        return updated
+
+    def _rebuild_devices_view(self) -> None:
+        result = []
+        now = time.time()
+        for device in self._devices:
+            worker = self._workers.get(device.id)
+            data = to_dict(device)
+            connecting = device.id in self._connecting_ids
+            disconnecting = device.id in self._disconnecting_ids
+            if connecting:
+                status = "Connecting"
+            elif disconnecting:
+                status = "Disconnecting"
+            elif worker and worker.busy:
+                status = "Imaging"
+            elif worker and worker.connected:
+                status = "Connected"
+            else:
+                status = "Offline"
+            connected = bool(worker and worker.connected)
+            telemetry = format_telemetry(
+                self._device_telemetry.get(device.id, {}) if connected else {},
+                self._telemetry_updated.get(device.id) if connected else None,
+                now,
+            )
+            activity = telemetry["activity"] or self._device_activity.get(device.id, "")
+            raw_telemetry = self._device_telemetry.get(device.id, {})
+            if not connected:
+                lights_on = False
+                indicator_on = False
+            elif "lights_on" in raw_telemetry:
+                lights_on = bool(raw_telemetry["lights_on"])
+                indicator_on = bool(raw_telemetry.get("indicator_on", self._device_indicators.get(device.id, False)))
+            else:
+                lights_on = self._device_lights.get(device.id, False)
+                indicator_on = self._device_indicators.get(device.id, False)
+            data.update({
+                "connected": connected,
+                "busy": bool(worker and worker.busy),
+                "connecting": connecting,
+                "disconnecting": disconnecting,
+                "pending_action": self._pending_actions.get(device.id, ""),
+                "pending_detail": self._pending_details.get(device.id, ""),
+                "activity": activity,
+                "activity_detail": telemetry["activity_detail"],
+                "activity_from_device": bool(telemetry["activity"]),
+                "status": status,
+                "lights_on": lights_on,
+                "indicator_on": indicator_on,
+                "telemetry": telemetry,
+            })
+            result.append(data)
+        self._devices_view = result
+        selected = next((item for item in result if item["id"] == self._selected_device_id), None)
+        self._selected_device_view = selected if selected is not None else (result[0] if result else {})
+        self._devices_dirty = False
+
+    def _flush_devices_notify(self) -> None:
+        if self._devices_dirty or self._devices_view is None:
+            self._rebuild_devices_view()
         self.devicesChanged.emit()
         self.selectedDeviceChanged.emit()
         self.statusChanged.emit()
+
+    def _notify_devices(self, immediate: bool = True) -> None:
+        self._devices_dirty = True
+        if immediate:
+            self._devices_notify_timer.stop()
+            self._flush_devices_notify()
+            return
+        if not self._devices_notify_timer.isActive():
+            self._devices_notify_timer.start()
 
     def _on_telemetry(self, device_id: str, data: dict[str, Any]) -> None:
         """Merge a telemetry delta from the worker and raise transition alerts."""
@@ -821,7 +976,7 @@ class AppBackend(QObject):
         self._maybe_resume_held_preview(device_id)
         self._maybe_resume_interrupted_session(device_id)
         self._sync_preview_for_capture(device_id, previous, current)
-        self._notify_devices()
+        self._notify_devices(immediate=False)
         self._sync_media_lock()
 
     def _toast(self, message: str, level: str = "info", detail: str = "") -> None:
@@ -966,57 +1121,9 @@ class AppBackend(QObject):
 
     @Property("QVariantList", notify=devicesChanged)
     def devices(self) -> list[dict[str, Any]]:
-        result = []
-        now = time.time()
-        for device in self._devices:
-            worker = self._workers.get(device.id)
-            data = to_dict(device)
-            connecting = device.id in self._connecting_ids
-            disconnecting = device.id in self._disconnecting_ids
-            if connecting:
-                status = "Connecting"
-            elif disconnecting:
-                status = "Disconnecting"
-            elif worker and worker.busy:
-                status = "Imaging"
-            elif worker and worker.connected:
-                status = "Connected"
-            else:
-                status = "Offline"
-            connected = bool(worker and worker.connected)
-            telemetry = format_telemetry(
-                self._device_telemetry.get(device.id, {}) if connected else {},
-                self._telemetry_updated.get(device.id) if connected else None,
-                now,
-            )
-            activity = telemetry["activity"] or self._device_activity.get(device.id, "")
-            raw_telemetry = self._device_telemetry.get(device.id, {})
-            if not connected:
-                lights_on = False
-                indicator_on = False
-            elif "lights_on" in raw_telemetry:
-                lights_on = bool(raw_telemetry["lights_on"])
-                indicator_on = bool(raw_telemetry.get("indicator_on", self._device_indicators.get(device.id, False)))
-            else:
-                lights_on = self._device_lights.get(device.id, False)
-                indicator_on = self._device_indicators.get(device.id, False)
-            data.update({
-                "connected": connected,
-                "busy": bool(worker and worker.busy),
-                "connecting": connecting,
-                "disconnecting": disconnecting,
-                "pending_action": self._pending_actions.get(device.id, ""),
-                "pending_detail": self._pending_details.get(device.id, ""),
-                "activity": activity,
-                "activity_detail": telemetry["activity_detail"],
-                "activity_from_device": bool(telemetry["activity"]),
-                "status": status,
-                "lights_on": lights_on,
-                "indicator_on": indicator_on,
-                "telemetry": telemetry,
-            })
-            result.append(data)
-        return result
+        if self._devices_dirty or self._devices_view is None:
+            self._rebuild_devices_view()
+        return self._devices_view or []
 
     @Property(str, notify=selectedDeviceChanged)
     def selectedDeviceId(self) -> str:
@@ -1024,7 +1131,9 @@ class AppBackend(QObject):
 
     @Property("QVariantMap", notify=selectedDeviceChanged)
     def selectedDevice(self) -> dict[str, Any]:
-        return next((item for item in self.devices if item["id"] == self._selected_device_id), self.devices[0])
+        if self._devices_dirty or self._selected_device_view is None:
+            self._rebuild_devices_view()
+        return self._selected_device_view or {}
 
     def _session_dict(self, session: Session) -> dict[str, Any]:
         device = next((item for item in self._devices if item.id == session.device_id), None)
@@ -1080,13 +1189,7 @@ class AppBackend(QObject):
 
     @Property("QVariantList", notify=sessionsChanged)
     def sessions(self) -> list[dict[str, Any]]:
-        return self._decorate_session_groups([
-            self._session_dict(session)
-            for session in sorted(
-                self.store.sessions.all(),
-                key=lambda item: (item.scheduled_start, pane_sort_key(item.name), item.name),
-            )
-        ])
+        return self._ensure_sessions_view()
 
     def _template_dict(self, template: SessionTemplate, members: list[SessionTemplate] | None = None) -> dict[str, Any]:
         members = members or [template]
@@ -1283,10 +1386,9 @@ class AppBackend(QObject):
                 planned_duration_seconds=DurationEngine.calculate(session, updated.hardware),
             ), notify=False)
         self._sequence_colliding_mosaics()
-        self.devicesChanged.emit()
-        self.selectedDeviceChanged.emit()
+        self._notify_devices()
         self.clockChanged.emit()
-        self.sessionsChanged.emit()
+        self._emit_sessions_changed()
         self.durationSuggestionChanged.emit()
         self._toast("Duration profile updated from history", "success")
 
@@ -1342,12 +1444,10 @@ class AppBackend(QObject):
             lines.append(f"{entry['time']}  {entry['level']:<8}[{entry['device']}]  {entry['message']}{suffix}")
         return "\n".join(lines)
 
-    @Property("QVariantMap", notify=sessionsChanged)
+    @Property("QVariantMap", notify=currentSessionChanged)
     def currentSession(self) -> dict[str, Any]:
-        session_id = self._active_sessions.get(self._selected_device_id)
-        if not session_id:
-            return {}
-        return next((item for item in self.sessions if item["id"] == session_id), {})
+        self._ensure_sessions_view()
+        return self._current_session_view or {}
 
     @Property(str, notify=clockChanged)
     def clockText(self) -> str:
@@ -1402,7 +1502,8 @@ class AppBackend(QObject):
 
     @Property(float, notify=sessionProgressChanged)
     def sessionProgress(self) -> float:
-        session = self.currentSession
+        self._ensure_sessions_view()
+        session = self._current_session_view or {}
         planned = float(session.get("planned_duration_seconds") or 0)
         started = session.get("actual_started_at")
         if not session or not started or planned <= 0:
@@ -1418,12 +1519,6 @@ class AppBackend(QObject):
             self.clockChanged.emit()
         if self._active_sessions:
             self.sessionProgressChanged.emit()
-        if self._preview_active and self._selected_device_id:
-            self._sync_preview_for_capture(
-                self._selected_device_id,
-                dict(self._device_telemetry.get(self._selected_device_id) or {}),
-                dict(self._device_telemetry.get(self._selected_device_id) or {}),
-            )
         self._telemetry_tick += 1
         if self._telemetry_tick % 15 == 0 and any(worker.connected for worker in self._workers.values()):
             # Refresh the derived "stale" markers even when the device is quiet.
@@ -1466,10 +1561,8 @@ class AppBackend(QObject):
 
     @Property("QVariantList", notify=sessionsChanged)
     def upcomingSessions(self) -> list[dict[str, Any]]:
-        return [
-            item for item in self.sessions
-            if item["status"] == SessionStatus.PLANNED and item["device_id"] == self._selected_device_id
-        ][:8]
+        self._ensure_sessions_view()
+        return self._upcoming_sessions_view or []
 
     @Property(str, notify=selectedDeviceChanged)
     def videoUrl(self) -> str:
@@ -1800,6 +1893,8 @@ class AppBackend(QObject):
 
     def _stop_preview_streams(self) -> None:
         self._preview_token += 1
+        self._pending_retarget = None
+        self._retarget_timer.stop()
         if self._preview_active or self._preview_playing:
             self._closePreviewStreams.emit()
         self._preview_active = False
@@ -1910,6 +2005,16 @@ class AppBackend(QObject):
 
     def _retarget_preview_streams(self, tele_url: str, wide_url: str, timeout: float = 20) -> None:
         """Switch stream URLs without clearing the last frame or sending go_live."""
+        self._pending_retarget = (tele_url, wide_url, timeout)
+        if not self._retarget_timer.isActive():
+            self._retarget_timer.start()
+
+    def _flush_preview_retarget(self) -> None:
+        pending = self._pending_retarget
+        self._pending_retarget = None
+        if not pending or not self._preview_active:
+            return
+        tele_url, wide_url, timeout = pending
         self._preview_token += 1
         token = self._preview_token
         self._preview_tele_url = tele_url
@@ -1947,10 +2052,10 @@ class AppBackend(QObject):
         telemetry = self._device_telemetry.get(device_id) or {}
         if telemetry.get("capture_active") or telemetry.get("capture_state") == "running":
             return True
-        return any(
-            item.device_id == device_id and item.status == SessionStatus.RUNNING
-            for item in self.store.sessions.all()
-        )
+        for item in self._ensure_sessions_view():
+            if item.get("device_id") == device_id and item.get("status") == SessionStatus.RUNNING:
+                return True
+        return False
 
     def _attach_preview_streams(self, device_id: str, status: str, timeout: float = 20) -> None:
         if device_id != self._selected_device_id:
@@ -2110,9 +2215,10 @@ class AppBackend(QObject):
             self._selected_device_id = device_id
             if previous != device_id and self._media_source != "local":
                 self._clear_media()
+            self._rebuild_devices_view()
             self.selectedDeviceChanged.emit()
             self.durationSuggestionChanged.emit()
-            self.sessionsChanged.emit()
+            self._refresh_selected_session_views()
             self.clockChanged.emit()
             self.previewHoldChanged.emit()
             self._sync_media_lock()
@@ -2195,8 +2301,7 @@ class AppBackend(QObject):
         session = self.store.sessions.get(session_id)
         name = session.target.name if session else "session"
         if session:
-            self.store.sessions.save(replace(session, current_step="Stopping"))
-            self.sessionsChanged.emit()
+            self._apply_session_step(session, "Stopping")
         self.add_log("warning", f"Stopping session · {name} ({reason})", device_id)
         return True
 
@@ -2450,8 +2555,7 @@ class AppBackend(QObject):
             self._devices.append(device)
             self._create_worker(device)
             self._selected_device_id = device.id
-            self.devicesChanged.emit()
-            self.selectedDeviceChanged.emit()
+            self._notify_devices()
             self.durationSuggestionChanged.emit()
             self.clockChanged.emit()
             self._toast("Device added", "success")
@@ -2490,10 +2594,9 @@ class AppBackend(QObject):
         self._device_indicators.pop(device_id, None)
         if self._selected_device_id == device_id:
             self._selected_device_id = self._devices[0].id
-        self.devicesChanged.emit()
-        self.selectedDeviceChanged.emit()
+        self._notify_devices()
         self.durationSuggestionChanged.emit()
-        self.sessionsChanged.emit()
+        self._emit_sessions_changed()
         if history_ids:
             self.historyChanged.emit()
         extra = []
@@ -2552,7 +2655,7 @@ class AppBackend(QObject):
             self._toast("Only planned sessions can be skipped", "warning")
             return
         self.store.transition(session_id, SessionStatus.SKIPPED, current_step="Skipped")
-        self.sessionsChanged.emit()
+        self._emit_sessions_changed()
 
     @Slot(str)
     def resetSession(self, session_id: str) -> None:
@@ -2584,8 +2687,7 @@ class AppBackend(QObject):
         updated = replace(current, camera=Camera(camera))
         self.store.devices.save(updated)
         self._devices = [updated if item.id == updated.id else item for item in self._devices]
-        self.devicesChanged.emit()
-        self.selectedDeviceChanged.emit()
+        self._notify_devices()
 
     @Slot(str, str, str)
     def setCameraParam(self, device_id: str, name: str, value: str) -> None:
@@ -3218,8 +3320,7 @@ class AppBackend(QObject):
             for session in self.store.upcoming(updated.id):
                 self._save_session(replace(session, planned_duration_seconds=DurationEngine.calculate(session, updated.hardware)))
             self._sequence_colliding_mosaics()
-            self.devicesChanged.emit()
-            self.selectedDeviceChanged.emit()
+            self._notify_devices()
             self.durationSuggestionChanged.emit()
             self.clockChanged.emit()
             self.appSettingsChanged.emit()
@@ -3254,8 +3355,7 @@ class AppBackend(QObject):
             )
             if not self._commit_device(current, updated):
                 return False
-            self.devicesChanged.emit()
-            self.selectedDeviceChanged.emit()
+            self._notify_devices()
             self.clockChanged.emit()
             self._toast("Observing location saved", "success")
             return True
@@ -3434,7 +3534,7 @@ class AppBackend(QObject):
             for device_id in {session.device_id for session in saved}:
                 self._pack_device_schedule(device_id, notify=False)
             if updated:
-                self.sessionsChanged.emit()
+                self._emit_sessions_changed()
             if skipped_running and not updated:
                 self._toast("Stop running sessions before editing them", "warning")
             elif skipped_running:
@@ -3621,7 +3721,7 @@ class AppBackend(QObject):
         session = replace(session, planned_duration_seconds=DurationEngine.calculate(session, device.hardware))
         self.store.sessions.save(session)
         if notify:
-            self.sessionsChanged.emit()
+            self._emit_sessions_changed()
         return session
 
     @Slot(str)
@@ -3643,7 +3743,7 @@ class AppBackend(QObject):
             self.store.sessions.delete(session_id)
             deleted += 1
         if deleted:
-            self.sessionsChanged.emit()
+            self._emit_sessions_changed()
         if skipped_running and not deleted:
             self._toast("Stop running sessions before deleting them", "warning")
         elif skipped_running:
@@ -3955,7 +4055,7 @@ class AppBackend(QObject):
         if conflict:
             raise self._device_busy_error(device, conflict)
         saved = [self._save_session(item, notify=False) for item in proposed]
-        self.sessionsChanged.emit()
+        self._emit_sessions_changed()
         return saved
 
     def _pack_device_schedule(self, device_id: str, *, notify: bool = False) -> bool:
@@ -4001,7 +4101,7 @@ class AppBackend(QObject):
                     changed = True
                 occupied.append(self._session_window(updated, tz))
         if changed and notify:
-            self.sessionsChanged.emit()
+            self._emit_sessions_changed()
         return changed
 
     def _sequence_mosaic_group(self, session: Session, *, notify: bool = False) -> bool:
@@ -4024,7 +4124,7 @@ class AppBackend(QObject):
         for item in stagger_mosaic_sessions(members, start, device.hardware):
             self.store.sessions.save(item)
         if notify:
-            self.sessionsChanged.emit()
+            self._emit_sessions_changed()
         return True
 
     @Slot(str, str)
@@ -4100,7 +4200,7 @@ class AppBackend(QObject):
         for item in ordered:
             self.store.sessions.save(replace(item, scheduled_start=store_local_iso(cursor, self._zone_for(device))))
             cursor += timedelta(seconds=max(60, item.planned_duration_seconds))
-        self.sessionsChanged.emit()
+        self._emit_sessions_changed()
 
     def _schedule_device(self, device_id: str = "") -> Device | None:
         wanted = device_id or self._selected_device_id
@@ -4370,7 +4470,7 @@ class AppBackend(QObject):
                 )
         self._set_activity(session.device_id, "")
         self._hold_preview_for_session(session.device_id, session.target.name)
-        self.sessionsChanged.emit()
+        self._emit_sessions_changed()
         if not resuming:
             self._notify_devices()
         if resuming:
@@ -4400,8 +4500,7 @@ class AppBackend(QObject):
             timing["step_wait_seconds"] = max(0.0, float(wait_seconds or 0))
         except (TypeError, ValueError):
             timing["step_wait_seconds"] = 0.0
-        self.store.sessions.save(replace(session, current_step=step))
-        self.sessionsChanged.emit()
+        self._apply_session_step(session, step)
         if self._preview_hold_device_id == session.device_id:
             self._refresh_preview_hold()
             self._maybe_resume_held_preview(session.device_id)
@@ -4453,14 +4552,14 @@ class AppBackend(QObject):
         self._stop_requested.discard(session_id)
         if not session:
             self._session_timing.pop(session_id, None)
-            self.sessionsChanged.emit()
+            self._emit_sessions_changed()
             if restore_preview:
                 self._restore_held_preview(device_id)
             return
         if session.status != SessionStatus.RUNNING:
             # Already finalised (for example the worker died and reported it first).
             self._session_timing.pop(session_id, None)
-            self.sessionsChanged.emit()
+            self._emit_sessions_changed()
             if restore_preview:
                 self._restore_held_preview(device_id)
             return
@@ -4501,7 +4600,7 @@ class AppBackend(QObject):
         else:
             self.add_log("error", f"Session failed · {final.target.name}: {outcome}", final.device_id)
             self._toast(f"Session failed · {final.target.name}", "error", outcome)
-        self.sessionsChanged.emit()
+        self._emit_sessions_changed()
         self.historyChanged.emit()
         telemetry = dict(self._device_telemetry.get(final.device_id) or {})
         self._sync_preview_for_capture(final.device_id, telemetry, telemetry)
@@ -4518,6 +4617,8 @@ class AppBackend(QObject):
             self.timer.stop()
         except RuntimeError:
             pass
+        self._devices_notify_timer.stop()
+        self._retarget_timer.stop()
         self.stopPreview()
         self._tele_player.abort()
         self._wide_player.abort()
@@ -4533,7 +4634,7 @@ class AppBackend(QObject):
             if self._pack_device_schedule(device.id, notify=False):
                 changed = True
         if changed:
-            self.sessionsChanged.emit()
+            self._emit_sessions_changed()
 
     def _reset_device_capture_progress(self, device_id: str, total: int = 0, target: str = "") -> None:
         """Clear leftover stacking counts on the HUD after a session starts or ends."""
@@ -4595,9 +4696,8 @@ class AppBackend(QObject):
         self._sync_shared_device_fields()
         self.appSettingsChanged.emit()
         self.clockChanged.emit()
-        self.sessionsChanged.emit()
-        self.devicesChanged.emit()
-        self.selectedDeviceChanged.emit()
+        self._emit_sessions_changed()
+        self._notify_devices()
 
     def _sync_shared_device_fields(self) -> None:
         cutoff = self._cutoff_hour()
