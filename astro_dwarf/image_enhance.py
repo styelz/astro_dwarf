@@ -21,32 +21,16 @@ try:
 except ImportError:  # pragma: no cover
     cv2 = None
 
-try:
-    import onnxruntime as ort
-except ImportError:  # pragma: no cover
-    ort = None
-
 _log = logging.getLogger(__name__)
 
-_MODEL_DIR: Path | None = None
 _URLS: dict[str, str] = {}
 _URL_LOCK = threading.Lock()
-_ONNX_LOCK = threading.Lock()
-_ONNX_SESSION = None
-_ONNX_INPUT = ""
-_ONNX_FAILED = False
-
-# Single-file general denoiser (~30 MB). Cached under the app data dir on first Deep Clean.
-_ONNX_NAME = "1xDeNoise_realplksr_otf.onnx"
-_ONNX_URL = (
-    "https://huggingface.co/hugglyberry/upscale-and-refine-models/resolve/main/"
-    "1xDeNoise_realplksr_otf.onnx"
-)
+_DISPLAY_EDGE = 1920
 
 
 def set_model_dir(path: Path | str | None) -> None:
-    global _MODEL_DIR
-    _MODEL_DIR = Path(path) if path else None
+    """Kept so older callers still import; models are no longer downloaded."""
+    return
 
 
 def register_enhance_url(url: str) -> str:
@@ -65,13 +49,17 @@ def lookup_enhance_url(key: str) -> str:
 
 def enhance_cache_key(url: str, profile: str) -> str:
     kind = "deep" if str(profile or "").strip().lower() == "deep" else "std"
-    return hashlib.sha1(f"v4:{kind}:{url}".encode("utf-8", "replace")).hexdigest()
+    return hashlib.sha1(f"v5:{kind}:{url}".encode("utf-8", "replace")).hexdigest()
 
 
 def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standard") -> QImage:
-    """Darken exposure and smooth noise. Does not stretch or sharpen."""
-    if image is None or image.isNull() or np is None:
+    """Display-only: smooth grain, clip the sky to black, keep nebula/stars."""
+    if image is None or image.isNull():
         return image
+    if np is None:
+        _log.warning("numpy is not installed; enhance cannot run")
+        return image
+    image = _fit_display(image)
     rgb = _qimage_to_rgb(image)
     if rgb.size == 0:
         return image
@@ -79,14 +67,21 @@ def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standa
     deep = str(profile or "standard").strip().lower() == "deep"
     if denoise:
         work = _smooth_noise(work, deep=deep)
-        if deep:
-            work = _onnx_denoise(work)
-    # Exposure down, then a little extra sky crush so the frame is quieter.
-    ev = -1.25 if deep else -0.90
-    work = np.clip(work * (2.0 ** ev), 0.0, 1.0)
-    work = np.clip((work - 0.025) / 0.975, 0.0, 1.0)
+    work = _crush_sky(work, deep=deep)
     out = np.clip(work * 255.0 + 0.5, 0.0, 255.0).astype(np.uint8)
     return _rgb_to_qimage(out)
+
+
+def _fit_display(image: QImage, max_edge: int = _DISPLAY_EDGE) -> QImage:
+    width, height = image.width(), image.height()
+    if max(width, height) <= max_edge:
+        return image
+    return image.scaled(
+        max_edge,
+        max_edge,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
 
 
 def _luminance(rgb):
@@ -94,16 +89,32 @@ def _luminance(rgb):
 
 
 def _smooth_noise(rgb, *, deep: bool):
-    cleaned = _nlmeans(rgb, h=16.0 if deep else 12.0, search=21)
+    cleaned = _nlmeans(rgb, h=20.0 if deep else 14.0, search=21)
     if cv2 is not None:
         u8 = np.clip(cleaned * 255.0, 0, 255).astype(np.uint8)
-        blur = cv2.bilateralFilter(u8, 11 if deep else 9, 52 if deep else 36, 52 if deep else 36)
+        blur = cv2.bilateralFilter(u8, 11 if deep else 9, 56 if deep else 48, 56 if deep else 48)
         blur = blur.astype(np.float32) * (1.0 / 255.0)
         lum = _luminance(cleaned)
-        # Dark sky gets most of the extra blur; bright cores stay a bit tighter.
-        sky = np.clip(1.0 - lum * 2.8, 0.25, 1.0)[..., None]
+        sky = np.clip(1.0 - lum * 3.2, 0.0, 1.0)[..., None]
         cleaned = blur * sky + cleaned * (1.0 - sky)
     return np.clip(cleaned, 0.0, 1.0)
+
+
+def _crush_sky(rgb, *, deep: bool):
+    """Clip through the noisy sky floor. Gamma < 1 brings nebula back; clipped sky stays black."""
+    lum = _luminance(rgb)
+    step = max(1, min(lum.shape) // 280)
+    sample = lum[::step, ::step]
+    if sample.size < 16:
+        return rgb
+    sky = float(np.percentile(sample, 20 if deep else 18))
+    mad = float(np.median(np.abs(sample - np.median(sample)))) * 1.4826
+    extra = 0.90 if deep else 0.65
+    cap = float(np.percentile(sample, 38 if deep else 35))
+    black = min(sky + extra * max(mad, 1e-4), cap)
+    crushed = np.clip(rgb - black, 0.0, 1.0)
+    gamma = 0.90 if deep else 0.88
+    return np.clip(np.power(np.maximum(crushed, 0.0), gamma), 0.0, 1.0)
 
 
 def _nlmeans(rgb, *, h: float, search: int):
@@ -127,123 +138,6 @@ def _numpy_sky_blur(rgb):
     mixed = np.where(star, lum, blur * 0.78 + lum * 0.22)
     scale = mixed / np.clip(lum, 1e-6, None)
     return np.clip(rgb * np.clip(scale, 0.4, 1.6)[..., None], 0.0, 1.0)
-
-
-def _onnx_denoise(rgb):
-    session, input_name = _onnx_session()
-    if session is None or not input_name:
-        return rgb
-    try:
-        return _onnx_run(session, input_name, rgb)
-    except Exception:
-        _log.exception("ONNX denoise failed; using classical result")
-        return rgb
-
-
-def _onnx_session():
-    global _ONNX_SESSION, _ONNX_INPUT, _ONNX_FAILED
-    if ort is None or _ONNX_FAILED:
-        return None, ""
-    with _ONNX_LOCK:
-        if _ONNX_SESSION is not None:
-            return _ONNX_SESSION, _ONNX_INPUT
-        path = _ensure_onnx_model()
-        if path is None:
-            _ONNX_FAILED = True
-            return None, ""
-        try:
-            session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
-            _ONNX_SESSION = session
-            _ONNX_INPUT = session.get_inputs()[0].name
-            return session, _ONNX_INPUT
-        except Exception:
-            _log.exception("Could not load ONNX denoise model")
-            _ONNX_FAILED = True
-            return None, ""
-
-
-def _ensure_onnx_model() -> Path | None:
-    folder = _MODEL_DIR or (Path.home() / ".astro-dwarf" / "models")
-    folder.mkdir(parents=True, exist_ok=True)
-    dest = folder / _ONNX_NAME
-    if dest.is_file() and dest.stat().st_size > 1_000_000:
-        return dest
-    tmp = dest.with_suffix(".part")
-    try:
-        request = urllib.request.Request(_ONNX_URL, headers={"User-Agent": "AstroDwarf"})
-        with urllib.request.urlopen(request, timeout=120) as response, tmp.open("wb") as handle:
-            while True:
-                chunk = response.read(256 * 1024)
-                if not chunk:
-                    break
-                handle.write(chunk)
-        if tmp.stat().st_size < 1_000_000:
-            tmp.unlink(missing_ok=True)
-            return None
-        tmp.replace(dest)
-        return dest
-    except Exception:
-        _log.exception("Could not download ONNX denoise model")
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        return None
-
-
-def _onnx_run(session, input_name: str, rgb):
-    height, width = rgb.shape[:2]
-    tile = 512
-    overlap = 24
-    if height * width <= tile * tile:
-        return _onnx_infer(session, input_name, rgb)
-    out = np.zeros_like(rgb)
-    weight = np.zeros((height, width, 1), dtype=np.float32)
-    ramp = np.linspace(0.15, 1.0, overlap, dtype=np.float32)
-    for y0 in range(0, height, tile - overlap):
-        for x0 in range(0, width, tile - overlap):
-            y1 = min(height, y0 + tile)
-            x1 = min(width, x0 + tile)
-            patch = rgb[y0:y1, x0:x1]
-            cleaned = _onnx_infer(session, input_name, patch)
-            mask = np.ones((y1 - y0, x1 - x0, 1), dtype=np.float32)
-            if y0 > 0:
-                mask[:overlap, :, 0] *= ramp
-            if x0 > 0:
-                mask[:, :overlap, 0] *= ramp
-            if y1 < height:
-                mask[-overlap:, :, 0] *= ramp[::-1]
-            if x1 < width:
-                mask[:, -overlap:, 0] *= ramp[::-1]
-            out[y0:y1, x0:x1] += cleaned * mask
-            weight[y0:y1, x0:x1] += mask
-    return np.clip(out / np.clip(weight, 1e-6, None), 0.0, 1.0)
-
-
-def _onnx_infer(session, input_name: str, rgb):
-    src_h, src_w = rgb.shape[:2]
-    padded, src_h, src_w = _pad_hw(rgb, 16)
-    nchw = np.transpose(padded, (2, 0, 1))[None, ...].astype(np.float32)
-    raw = session.run(None, {input_name: nchw})[0]
-    out = np.squeeze(raw)
-    if out.ndim == 3 and out.shape[0] in (1, 3, 4):
-        out = np.transpose(out, (1, 2, 0))
-    if out.ndim == 2:
-        out = np.repeat(out[..., None], 3, axis=2)
-    out = out[:src_h, :src_w, :3].astype(np.float32)
-    # Residual models stay near zero; reconstruction models stay in 0-1.
-    if float(np.mean(np.abs(out))) < 0.18 or float(out.min()) < -0.02:
-        out = padded[:src_h, :src_w] - out
-    return np.clip(out, 0.0, 1.0)
-
-
-def _pad_hw(rgb, multiple: int):
-    height, width = rgb.shape[:2]
-    pad_h = (multiple - height % multiple) % multiple
-    pad_w = (multiple - width % multiple) % multiple
-    if pad_h or pad_w:
-        rgb = np.pad(rgb, ((0, pad_h), (0, pad_w), (0, 0)), mode="edge")
-    return rgb, height, width
 
 
 def _qimage_to_rgb(image: QImage):
