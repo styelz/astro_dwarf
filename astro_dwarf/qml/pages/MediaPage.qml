@@ -275,10 +275,18 @@ Item {
         background: DialogFrame {}
         readonly property bool enhanceOn: Theme.enhanceImages && Util.shouldEnhanceMedia(mediaPage.selected)
         readonly property string selectedKey: String((mediaPage.selected && mediaPage.selected.id) || "")
-        readonly property string rawUrl: (mediaPage.selected && (mediaPage.selected.image_url || mediaPage.selected.thumbnail_url)) || ""
+        readonly property string rawUrl: {
+            const item = mediaPage.selected
+            if (!item)
+                return ""
+            if (item.local_path)
+                return backend.mediaFileUrl(String(item.local_path))
+            return String(item.image_url || item.thumbnail_url || "")
+        }
         property string heldCleanUrl: ""
         readonly property string cleanUrl: {
             lightbox.selectedKey
+            Theme.enhanceImages
             Theme.deepCleanImages
             backend.enhanceCacheGeneration
             if (!lightbox.enhanceOn || !lightbox.rawUrl)
@@ -383,6 +391,7 @@ Item {
                             onClicked: Theme.enhanceImages = !Theme.enhanceImages
                         }
                         HudButton {
+                            objectName: "lightboxDeepButton"
                             text: Theme.deepCleanImages ? "DEEP ON" : "DEEP CLEAN"
                             visible: Util.shouldEnhanceMedia(mediaPage.selected) && Theme.enhanceImages
                             buttonColor: Theme.deepCleanImages ? Theme.fillActive : Theme.inputBg

@@ -270,7 +270,7 @@ QtObject {
     function mediaDisplayUrl(item, which) {
         const raw = which === "thumb"
             ? ((item && (item.thumbnail_url || item.image_url)) || "")
-            : ((item && (item.image_url || item.thumbnail_url)) || "")
+            : ((item && (item.local_path ? backend.mediaFileUrl(String(item.local_path)) : (item.image_url || item.thumbnail_url))) || "")
         if (!raw)
             return ""
         if (which === "thumb" || !Theme.enhanceImages || !Util.shouldEnhanceMedia(item))

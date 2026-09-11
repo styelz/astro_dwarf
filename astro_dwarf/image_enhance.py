@@ -7,7 +7,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import unquote
 
-from PySide6.QtCore import QObject, QSize, Qt, QThreadPool, QUrl, QRunnable, Signal
+from PySide6.QtCore import QEventLoop, QObject, QSize, Qt, QThreadPool, QTimer, QUrl, QRunnable, Signal
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickAsyncImageProvider, QQuickImageResponse, QQuickTextureFactory
 
@@ -47,9 +47,48 @@ def lookup_enhance_url(key: str) -> str:
         return _URLS.get(str(key or "").strip(), "")
 
 
+def canonical_image_url(url: str) -> str:
+    """One encoding for cache keys and loaders: local files are FullyEncoded file:// URLs."""
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    as_path = Path(text)
+    if as_path.is_file():
+        return QUrl.fromLocalFile(str(as_path.resolve())).toString(QUrl.ComponentFormattingOption.FullyEncoded)
+    parsed = QUrl(text)
+    if parsed.isLocalFile() or text.startswith("file:"):
+        path = parsed.toLocalFile() or unquote(text.split("file:", 1)[-1].lstrip("/"))
+        local = Path(path)
+        if not local.is_file() and path:
+            trimmed = path.lstrip("/")
+            if len(trimmed) >= 2 and trimmed[1] == ":":
+                local = Path(trimmed)
+        if local.is_file():
+            return QUrl.fromLocalFile(str(local.resolve())).toString(QUrl.ComponentFormattingOption.FullyEncoded)
+        if path:
+            return QUrl.fromLocalFile(str(Path(path))).toString(QUrl.ComponentFormattingOption.FullyEncoded)
+    if parsed.scheme() in {"http", "https"} or text.startswith(("http://", "https://")):
+        return text
+    return text
+
+
 def enhance_cache_key(url: str, profile: str) -> str:
     kind = "deep" if str(profile or "").strip().lower() == "deep" else "std"
-    return hashlib.sha1(f"v7:{kind}:{url}".encode("utf-8", "replace")).hexdigest()
+    return hashlib.sha1(f"v8:{kind}:{canonical_image_url(url) or url}".encode("utf-8", "replace")).hexdigest()
+
+
+def is_enhance_cache_valid(path: Path | str) -> bool:
+    """Reject leftover full-size originals that used to be stored as 'enhanced'."""
+    dest = Path(path)
+    try:
+        if not dest.is_file() or dest.stat().st_size < 1000:
+            return False
+    except OSError:
+        return False
+    image = QImage(str(dest))
+    if image.isNull():
+        return False
+    return max(image.width(), image.height()) <= _DISPLAY_EDGE + 2
 
 
 def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standard") -> QImage:
@@ -57,8 +96,7 @@ def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standa
     if image is None or image.isNull():
         return image
     if np is None:
-        _log.warning("numpy is not installed; enhance cannot run")
-        return image
+        raise RuntimeError("numpy is not installed; enhance cannot run")
     image = _fit_display(image)
     rgb = _qimage_to_rgb(image)
     if rgb.size == 0:
@@ -163,27 +201,88 @@ def load_image(url: str) -> QImage:
     text = (url or "").strip()
     if not text:
         return QImage()
-    parsed = QUrl(text)
-    if parsed.isLocalFile():
-        path = parsed.toLocalFile()
-        image = QImage(path)
+    as_path = Path(text)
+    if as_path.is_file():
+        image = QImage(str(as_path))
         if not image.isNull():
             return image
-        return QImage(text)
+    parsed = QUrl(text)
+    if parsed.isLocalFile() or text.startswith("file:"):
+        path = parsed.toLocalFile() or unquote(text.split("file:", 1)[-1].lstrip("/"))
+        for candidate in (path, path.lstrip("/")):
+            if not candidate:
+                continue
+            image = QImage(candidate)
+            if not image.isNull():
+                return image
+        return QImage()
     if parsed.scheme() in {"http", "https"} or text.startswith(("http://", "https://")):
-        fetch = parsed.toString() or text
-        request = urllib.request.Request(
-            fetch,
-            headers={"User-Agent": "AstroDwarf", "Accept": "image/jpeg,image/*,*/*"},
-            method="GET",
-        )
-        with urllib.request.urlopen(request, timeout=90) as response:
-            data = response.read()
-        image = QImage.fromData(data)
-        if image.isNull():
-            raise RuntimeError(f"Could not decode image from {fetch}")
+        return _load_http_image(text, parsed)
+    image = QImage(text)
+    if not image.isNull():
         return image
-    return QImage(text)
+    return QImage()
+
+
+def _load_http_image(text: str, parsed: QUrl) -> QImage:
+    fetches: list[str] = []
+    for fetch in (
+        text,
+        parsed.toString(QUrl.ComponentFormattingOption.FullyEncoded),
+        parsed.toString(),
+    ):
+        if fetch and fetch not in fetches:
+            fetches.append(fetch)
+    last_error: Exception | None = None
+    for fetch in fetches:
+        try:
+            request = urllib.request.Request(
+                fetch,
+                headers={"User-Agent": "AstroDwarf", "Accept": "image/jpeg,image/*,*/*"},
+                method="GET",
+            )
+            with urllib.request.urlopen(request, timeout=90) as response:
+                data = response.read()
+            image = QImage.fromData(data)
+            if not image.isNull():
+                return image
+            last_error = RuntimeError(f"Could not decode image from {fetch}")
+        except Exception as exc:
+            last_error = exc
+    image = _load_http_qt(parsed)
+    if not image.isNull():
+        return image
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"Could not load image from {text}")
+
+
+def _load_http_qt(parsed: QUrl) -> QImage:
+    try:
+        from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
+    except ImportError:
+        return QImage()
+    manager = QNetworkAccessManager()
+    request = QNetworkRequest(parsed)
+    request.setRawHeader(b"User-Agent", b"AstroDwarf")
+    request.setRawHeader(b"Accept", b"image/jpeg,image/*,*/*")
+    reply = manager.get(request)
+    loop = QEventLoop()
+    timer = QTimer()
+    timer.setSingleShot(True)
+    timer.timeout.connect(loop.quit)
+    reply.finished.connect(loop.quit)
+    timer.start(90_000)
+    loop.exec()
+    try:
+        if reply.error() != QNetworkReply.NetworkError.NoError:
+            _log.warning("Qt HTTP enhance fetch failed: %s", reply.errorString())
+            return QImage()
+        image = QImage.fromData(bytes(reply.readAll()))
+        return image
+    finally:
+        reply.deleteLater()
+        manager.deleteLater()
 
 
 def parse_enhance_id(identity: str) -> tuple[str, str]:
@@ -210,7 +309,7 @@ class _EnhanceJob(QRunnable):
 
     def run(self) -> None:
         try:
-            image = load_image(self._url)
+            image = load_image(canonical_image_url(self._url) or self._url)
             if image.isNull():
                 self._signals.finished.emit(None, "Could not load image")
                 return
@@ -281,15 +380,31 @@ class CacheEnhanceJob(QRunnable):
 
     def run(self) -> None:
         try:
-            image = load_image(self._url)
+            image = load_image(canonical_image_url(self._url) or self._url)
             if image.isNull():
                 raise RuntimeError(f"Could not load {self._url}")
             out = enhance_image(image, denoise=True, profile=self._profile)
+            if out is None or out.isNull():
+                raise RuntimeError("Enhance returned an empty image")
+            if max(out.width(), out.height()) > _DISPLAY_EDGE + 2:
+                raise RuntimeError(
+                    f"Enhance left a full-size frame {out.width()}x{out.height()}; refusing to cache it"
+                )
+            saved = QImage(out)
             self._dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._dest.with_suffix(".part.jpg")
-            if not out.save(str(tmp), "JPG", 90):
+            if not saved.save(str(tmp), "JPG", 90):
                 raise RuntimeError("Could not write enhanced JPEG")
             tmp.replace(self._dest)
+            _log.info(
+                "Enhance cache %s %s %sx%s -> %sx%s",
+                self._profile,
+                self._key[:8],
+                image.width(),
+                image.height(),
+                saved.width(),
+                saved.height(),
+            )
         except Exception:
             _log.exception("Enhance cache failed for %s", self._key)
             try:

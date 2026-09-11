@@ -80,7 +80,9 @@ from .image_enhance import (
     CacheEnhanceSignals,
     PreviewEnhanceJob,
     PreviewEnhanceSignals,
+    canonical_image_url,
     enhance_cache_key,
+    is_enhance_cache_valid,
     set_model_dir,
 )
 from .stream_preview import LiveFrames, StreamPlayer, port_is_open, preview_window_is_live, set_live_frames, stream_port
@@ -1749,13 +1751,13 @@ class AppBackend(QObject):
     @Slot(str, str, result=str)
     def mediaEnhanceSource(self, url: str, profile: str) -> str:
         """Return a file:// JPEG of the enhanced image, building it in the background."""
-        text = str(url or "").strip()
+        text = canonical_image_url(str(url or "").strip()) or str(url or "").strip()
         if not text:
             return ""
         kind = "deep" if str(profile or "").strip().lower() == "deep" else "std"
         key = enhance_cache_key(text, kind)
         dest = self._enhance_cache_dir() / f"{key}.jpg"
-        if dest.is_file() and dest.stat().st_size > 1000:
+        if is_enhance_cache_valid(dest):
             return QUrl.fromLocalFile(str(dest.resolve())).toString()
         if key not in self._enhance_inflight:
             self._enhance_inflight.add(key)
@@ -1764,6 +1766,10 @@ class AppBackend(QObject):
             )
         return ""
 
+    @Slot(str, result=str)
+    def mediaFileUrl(self, path: str) -> str:
+        return self._media_file_url(path)
+
     def _enhance_cache_dir(self) -> Path:
         folder = self.store.root / "enhance-cache"
         folder.mkdir(parents=True, exist_ok=True)
@@ -1771,6 +1777,9 @@ class AppBackend(QObject):
 
     def _on_enhance_cache_ready(self, key: str) -> None:
         self._enhance_inflight.discard(str(key or ""))
+        dest = self._enhance_cache_dir() / f"{str(key or '')}.jpg"
+        if not is_enhance_cache_valid(dest):
+            return
         self._enhance_cache_rev += 1
         self.enhanceCacheChanged.emit()
 
@@ -3014,7 +3023,7 @@ class AppBackend(QObject):
     def _media_file_url(self, path: str) -> str:
         if not path:
             return ""
-        return Path(path).resolve().as_uri()
+        return QUrl.fromLocalFile(str(Path(path).resolve())).toString(QUrl.ComponentFormattingOption.FullyEncoded)
 
     def _local_name_for_remote(self, file_path: str) -> str:
         parts = [part for part in Path(str(file_path).replace("\\", "/")).parts if part not in {"/", "\\"}]
