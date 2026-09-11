@@ -80,18 +80,30 @@ if (-not (Test-Path $venvPython)) {
 }
 
 Write-Step "Checking the packages Astro Dwarf needs..."
-& $venvPython -c "import sys, PySide6, numpy, cv2; from dwarf_python_api.lib.dwarf_utils import perform_read_camera_params_http_v3, perform_enter_astro_mode; raise SystemExit(sys.version_info < (3, 11))" 2>$null
+$ensureDeps = Join-Path $PSScriptRoot "packaging\ensure_deps.py"
+$depReason = & $venvPython $ensureDeps 2>$null
 if ($LASTEXITCODE -ne 0) {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         Write-Fail "Git is needed for the first install. Install Git, then run this script again."
         exit 1
     }
 
+    if ($depReason) {
+        Write-Info $depReason
+    }
     Write-Info "Installing packages. The first run can take a minute."
     & $venvPython -m pip install -e ".[device]"
     if ($LASTEXITCODE -ne 0) {
         Write-Fail "Package install failed. Check the messages above, then try again."
         exit $LASTEXITCODE
+    }
+    $depReason = & $venvPython $ensureDeps 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        if ($depReason) {
+            Write-Fail $depReason
+        }
+        Write-Fail "Packages are still missing after install."
+        exit 1
     }
     Write-Ok "Packages are installed."
 } else {

@@ -84,17 +84,24 @@ else
 fi
 
 step "Checking the packages Astro Dwarf needs..."
-if ! "$VENV_PYTHON" -c 'import sys, PySide6, numpy, cv2; from dwarf_python_api.lib.dwarf_utils import perform_read_camera_params_http_v3, perform_enter_astro_mode; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+ENSURE_DEPS="$SCRIPT_DIR/packaging/ensure_deps.py"
+if DEP_REASON=$("$VENV_PYTHON" "$ENSURE_DEPS"); then
+    ok "Packages are already installed. Skipping this step."
+else
     if ! command -v git >/dev/null 2>&1; then
         fail "Git is needed for the first install. Install Git, then run this script again."
         exit 1
     fi
 
+    [ -n "$DEP_REASON" ] && info "$DEP_REASON"
     info "Installing packages. The first run can take a minute."
     "$VENV_PYTHON" -m pip install -e ".[device]"
+    if ! POST_REASON=$("$VENV_PYTHON" "$ENSURE_DEPS"); then
+        [ -n "$POST_REASON" ] && fail "$POST_REASON"
+        fail "Packages are still missing after install."
+        exit 1
+    fi
     ok "Packages are installed."
-else
-    ok "Packages are already installed. Skipping this step."
 fi
 
 printf '\n'
