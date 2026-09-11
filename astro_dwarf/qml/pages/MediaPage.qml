@@ -276,6 +276,7 @@ Item {
         readonly property bool enhanceOn: Theme.enhanceImages && Util.shouldEnhanceMedia(mediaPage.selected)
         readonly property string selectedKey: String((mediaPage.selected && mediaPage.selected.id) || "")
         readonly property string rawUrl: (mediaPage.selected && (mediaPage.selected.image_url || mediaPage.selected.thumbnail_url)) || ""
+        property string heldCleanUrl: ""
         readonly property string cleanUrl: {
             lightbox.selectedKey
             Theme.deepCleanImages
@@ -284,6 +285,9 @@ Item {
                 return ""
             return backend.mediaEnhanceSource(lightbox.rawUrl, Theme.deepCleanImages ? "deep" : "std")
         }
+        onSelectedKeyChanged: heldCleanUrl = ""
+        onEnhanceOnChanged: if (!enhanceOn) heldCleanUrl = ""
+        onCleanUrlChanged: if (cleanUrl !== "") heldCleanUrl = cleanUrl
         contentItem: ColumnLayout {
             spacing: 0
             Rectangle {
@@ -310,7 +314,7 @@ Item {
                     asynchronous: true
                     cache: false
                     visible: lightbox.enhanceOn && source !== "" && status === Image.Ready
-                    source: lightbox.cleanUrl
+                    source: lightbox.cleanUrl !== "" ? lightbox.cleanUrl : lightbox.heldCleanUrl
                 }
                 Rectangle {
                     anchors.left: parent.left
@@ -338,6 +342,16 @@ Item {
                     text: lightbox.enhanceOn ? "SMOOTHING…" : (mediaPage.busy ? "LOADING…" : "NO PREVIEW")
                     color: Theme.muted
                     font.pixelSize: 12
+                    font.letterSpacing: 1.4
+                }
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 16
+                    visible: lightbox.enhanceOn && lightbox.cleanUrl === "" && cleanImage.visible
+                    text: "SMOOTHING…"
+                    color: Theme.accent
+                    font.pixelSize: 11
                     font.letterSpacing: 1.4
                 }
             }

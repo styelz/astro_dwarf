@@ -265,7 +265,7 @@ QtObject {
             const name = String(item.file_name || item.target || item.id || "")
             return /_stacked/i.test(name)
         }
-        return item.source === "astro"
+        return !!(item.image_url || item.thumbnail_url)
     }
     function mediaDisplayUrl(item, which) {
         const raw = which === "thumb"

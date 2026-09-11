@@ -49,7 +49,7 @@ def lookup_enhance_url(key: str) -> str:
 
 def enhance_cache_key(url: str, profile: str) -> str:
     kind = "deep" if str(profile or "").strip().lower() == "deep" else "std"
-    return hashlib.sha1(f"v6:{kind}:{url}".encode("utf-8", "replace")).hexdigest()
+    return hashlib.sha1(f"v7:{kind}:{url}".encode("utf-8", "replace")).hexdigest()
 
 
 def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standard") -> QImage:
@@ -89,10 +89,10 @@ def _luminance(rgb):
 
 
 def _smooth_noise(rgb, *, deep: bool):
-    cleaned = _nlmeans(rgb, h=20.0 if deep else 14.0, search=21)
+    cleaned = _nlmeans(rgb, h=14.0 if deep else 9.0, search=21)
     if cv2 is not None:
         u8 = np.clip(cleaned * 255.0, 0, 255).astype(np.uint8)
-        blur = cv2.bilateralFilter(u8, 11 if deep else 9, 56 if deep else 48, 56 if deep else 48)
+        blur = cv2.bilateralFilter(u8, 9 if deep else 7, 36 if deep else 24, 36 if deep else 24)
         blur = blur.astype(np.float32) * (1.0 / 255.0)
         lum = _luminance(cleaned)
         sky = np.clip(1.0 - lum * 3.2, 0.0, 1.0)[..., None]
@@ -101,20 +101,20 @@ def _smooth_noise(rgb, *, deep: bool):
 
 
 def _crush_sky(rgb, *, deep: bool):
-    """Clip through the noisy sky floor. Gamma < 1 brings nebula back; clipped sky stays black."""
+    """Pull the grainy sky down a bit without burying the object."""
     lum = _luminance(rgb)
     step = max(1, min(lum.shape) // 280)
     sample = lum[::step, ::step]
     if sample.size < 16:
         return rgb
-    sky = float(np.percentile(sample, 20 if deep else 18))
+    sky = float(np.median(sample))
+    floor = float(np.percentile(sample, 10 if deep else 8))
     mad = float(np.median(np.abs(sample - np.median(sample)))) * 1.4826
-    extra = 0.90 if deep else 0.65
-    cap = float(np.percentile(sample, 38 if deep else 35))
-    black = min(sky + extra * max(mad, 1e-4), cap)
+    extra = 0.35 if deep else 0.18
+    cap = 0.10 if deep else 0.07
+    black = min(floor + extra * max(mad, 1e-4), cap, sky * (0.55 if deep else 0.40))
     crushed = np.clip(rgb - black, 0.0, 1.0)
-    gamma = 0.90 if deep else 0.88
-    return np.clip(np.power(np.maximum(crushed, 0.0), gamma), 0.0, 1.0)
+    return crushed
 
 
 def _nlmeans(rgb, *, h: float, search: int):
@@ -165,12 +165,24 @@ def load_image(url: str) -> QImage:
         return QImage()
     parsed = QUrl(text)
     if parsed.isLocalFile():
-        return QImage(parsed.toLocalFile())
-    if text.startswith(("http://", "https://")):
-        request = urllib.request.Request(text, method="GET")
-        with urllib.request.urlopen(request, timeout=30) as response:
+        path = parsed.toLocalFile()
+        image = QImage(path)
+        if not image.isNull():
+            return image
+        return QImage(text)
+    if parsed.scheme() in {"http", "https"} or text.startswith(("http://", "https://")):
+        fetch = parsed.toString() or text
+        request = urllib.request.Request(
+            fetch,
+            headers={"User-Agent": "AstroDwarf", "Accept": "image/jpeg,image/*,*/*"},
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=90) as response:
             data = response.read()
-        return QImage.fromData(data)
+        image = QImage.fromData(data)
+        if image.isNull():
+            raise RuntimeError(f"Could not decode image from {fetch}")
+        return image
     return QImage(text)
 
 
