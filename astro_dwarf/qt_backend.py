@@ -75,7 +75,7 @@ from .duration_suggest import suggest_hardware_profile
 from .location import has_site_coordinates, match_timezone, resolve_location, suggested_timezone, timezone_locations
 from .runtime import PROCESS_CREATION_FLAGS, kill_pid_tree, prepare_worker_environment, worker_command
 from .storage import SessionStore
-from .image_enhance import PreviewEnhanceJob, PreviewEnhanceSignals, set_model_dir
+from .image_enhance import PreviewEnhanceJob, PreviewEnhanceSignals, register_enhance_url, set_model_dir
 from .stream_preview import LiveFrames, StreamPlayer, port_is_open, preview_window_is_live, set_live_frames, stream_port
 from .telemetry_view import AlertEngine, derive_activity, format_telemetry
 
@@ -1729,6 +1729,15 @@ class AppBackend(QObject):
         self._deep_clean_images = on
         self.deepCleanImagesChanged.emit()
         self._refresh_preview_enhance()
+
+    @Slot(str, str, result=str)
+    def mediaEnhanceSource(self, url: str, profile: str) -> str:
+        """image:// id with a hex token so Qt cannot parse file:// out of the URL."""
+        text = str(url or "").strip()
+        if not text:
+            return ""
+        kind = "deep" if str(profile or "").strip().lower() == "deep" else "std"
+        return f"image://enhance/{kind}--{register_enhance_url(text)}"
 
     @Property("QVariantList", notify=albumChanged)
     def albumItems(self) -> list[dict[str, Any]]:

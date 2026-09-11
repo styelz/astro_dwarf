@@ -276,7 +276,7 @@ QtObject {
         if (!Theme.enhanceImages || !Util.shouldEnhanceMedia(item))
             return raw
         const profile = (Theme.deepCleanImages && which !== "thumb") ? "deep" : "std"
-        return "image://enhance/" + profile + "/" + encodeURIComponent(raw)
+        return backend.mediaEnhanceSource(raw, profile)
     }
     function clusterSessions(items) {
         const list = items || []

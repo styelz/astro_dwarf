@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import urllib.request
@@ -28,6 +29,8 @@ except ImportError:  # pragma: no cover
 _log = logging.getLogger(__name__)
 
 _MODEL_DIR: Path | None = None
+_URLS: dict[str, str] = {}
+_URL_LOCK = threading.Lock()
 _ONNX_LOCK = threading.Lock()
 _ONNX_SESSION = None
 _ONNX_INPUT = ""
@@ -46,6 +49,20 @@ def set_model_dir(path: Path | str | None) -> None:
     _MODEL_DIR = Path(path) if path else None
 
 
+def register_enhance_url(url: str) -> str:
+    """Store a file/http URL and return a slash-free token for image://enhance."""
+    text = (url or "").strip()
+    key = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
+    with _URL_LOCK:
+        _URLS[key] = text
+    return key
+
+
+def lookup_enhance_url(key: str) -> str:
+    with _URL_LOCK:
+        return _URLS.get(str(key or "").strip(), "")
+
+
 def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standard") -> QImage:
     """Display-only asinh stretch and denoise. profile is 'standard' or 'deep'."""
     if image is None or image.isNull() or np is None:
@@ -55,7 +72,7 @@ def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standa
         return image
     work = rgb.astype(np.float32) * (1.0 / 255.0)
     deep = str(profile or "standard").strip().lower() == "deep"
-    stretched = _asinh_display(work, punch=14.0 if deep else 9.0)
+    stretched = _asinh_display(work, punch=22.0 if deep else 16.0)
     if denoise:
         stretched = _denoise_starsafe(stretched, deep=deep)
         if deep:
@@ -72,9 +89,9 @@ def _asinh_display(rgb, punch: float):
         return rgb
     sky = float(np.median(sample))
     mad = float(np.median(np.abs(sample - sky))) * 1.4826
-    # Sit black on the sky so fog clips; only stars and DSO enter the asinh curve.
-    black = max(0.0, sky - 0.35 * max(mad, 1e-4))
-    white = max(float(np.percentile(sample, 99.85)), black + 0.12)
+    # Clip through the sky floor so already-stretched Dwarf JPEGs still lose fog.
+    black = max(0.0, min(float(np.percentile(sample, 8.0)), sky + 0.15 * max(mad, 1e-4)))
+    white = max(float(np.percentile(sample, 99.6)), black + 0.10)
     scale = max(white - black, 1e-4)
     x = np.clip((rgb - black) / scale, 0.0, None)
     stretched = np.arcsinh(x * punch) / np.arcsinh(punch)
@@ -291,11 +308,11 @@ def load_image(url: str) -> QImage:
 
 def parse_enhance_id(identity: str) -> tuple[str, str]:
     text = unquote(str(identity or "").lstrip("/"))
-    if text.startswith("deep/"):
-        return "deep", unquote(text[5:])
-    if text.startswith("std/"):
-        return "standard", unquote(text[4:])
-    return "standard", text
+    for prefix, profile in (("deep--", "deep"), ("std--", "standard"), ("deep/", "deep"), ("std/", "standard")):
+        if text.startswith(prefix):
+            rest = unquote(text[len(prefix) :])
+            return profile, lookup_enhance_url(rest) or rest
+    return "standard", lookup_enhance_url(text) or text
 
 
 class _EnhanceSignals(QObject):
@@ -359,7 +376,7 @@ class EnhanceImageResponse(QQuickImageResponse):
 
 
 class EnhanceImageProvider(QQuickAsyncImageProvider):
-    """`image://enhance/std|<urlencoded>` or `image://enhance/deep|<urlencoded>`."""
+    """`image://enhance/std--<sha1>` or `image://enhance/deep--<sha1>`."""
 
     def requestImageResponse(self, identity: str, requested_size: QSize) -> QQuickImageResponse:
         profile, url = parse_enhance_id(identity)
