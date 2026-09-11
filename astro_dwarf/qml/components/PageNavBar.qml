@@ -22,7 +22,8 @@ RowLayout {
             {label: "CALENDAR", idx: 1},
             {label: "SESSIONS", idx: 2},
             {label: "HISTORY", idx: 3},
-            {label: "SETTINGS", idx: 4}
+            {label: "MEDIA", idx: 4},
+            {label: "SETTINGS", idx: 5}
         ]
         delegate: HudButton {
             required property var modelData

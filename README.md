@@ -2,13 +2,13 @@
 
 Desktop app for controlling and scheduling [Dwarf II](https://dwarflab.com/), Dwarf 3, and Dwarf Mini telescopes. Each telescope is a separate profile with its own IP, location, and session queue.
 
-The Control page shows live view, device status, camera settings, commands, the upcoming queue, and a log. Calendar, Templates, History, and Settings are the other pages.
+The Control page shows live view, device status, camera settings, commands, the upcoming queue, and a log. Calendar, Sessions, History, Media, and Settings are the other pages. Media lists real astro sessions on the telescope (thumbnails, capture details, download) and files already saved locally.
 
 Sessions can be created by hand, from templates, from Stellarium's current target, or from a Telescopius CSV. Duration includes hardware overheads you can edit per telescope (slew, settle, calibration, focus, and so on). Tele/wide cameras and mosaics are supported.
 
 <img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/2829f378-cd9c-4ca1-a4b0-189e61be7790" />
 
-Hardware commands go through [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api) on the **`multi_V3`** branch (V3 protobuf/WebSocket protocol). Connect sends time, timezone, and site location; DSO sessions use shooting mode 2. Live camera parameters can be read from the telescope HTTP API on port `8082` after the WebSocket session is up. Still photos can be listed and downloaded from Control (FTP album).
+Hardware commands go through [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api) on the **`multi_V3`** branch (V3 protobuf/WebSocket protocol). Connect sends time, timezone, and site location; DSO sessions use shooting mode 2. Live camera parameters can be read from the telescope HTTP API on port `8082` after the WebSocket session is up. The Media page lists astro sessions from that same HTTP album API and can download stacked frames; still photos are still available there over FTP. Polar / EQ shows the last azimuth and altitude correction after solving, and Polar Pos homes the mount into the polar-alignment pose.
 
 ## Run from source
 
@@ -52,7 +52,7 @@ settings.json  shared night cutoff and Stellarium URL
 templates/  reusable session recipes
 sessions/   scheduled and running sessions
 history/    completed runs
-album/      stills downloaded from the telescope
+album/      stacked frames and stills downloaded from the telescope
 ```
 
 Old `Astro_Sessions` JSON can be imported from Settings. The old app's files are not changed.

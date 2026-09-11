@@ -27,7 +27,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 from .version import __version__
 from .domain import (
@@ -44,6 +44,8 @@ from .domain import (
     TargetKind,
     WifiMode,
     Workflow,
+    album_http_url,
+    album_path_matches_model,
     clamp_cutoff_hour,
     device_from_dict,
     firmware_exposure_name,
@@ -313,6 +315,7 @@ _ACTION_LABELS = {
     "stop_autofocus": "Autofocus stopped",
     "polar": "Polar alignment started",
     "stop_polar": "Polar alignment stopped",
+    "polar_position": "Polar positioning started",
     "go_live": "Live view",
     "photo_mode": "Photo mode",
     "astro_mode": "Astro mode",
@@ -351,6 +354,7 @@ _ACTION_LABELS = {
 _ACTION_DETAILS = {
     "calibrate": "Device will plate-solve and report progress",
     "autofocus": "Watch the focus position in VITALS",
+    "polar_position": "Homes and slews the mount to the polar-alignment pose",
     "reboot": "The connection will drop for ~60 s",
     "power_down": "The connection will drop",
 }
@@ -555,6 +559,8 @@ class AppBackend(QObject):
     previewWideGenerationChanged = Signal()
     previewHoldChanged = Signal()
     albumChanged = Signal()
+    mediaChanged = Signal()
+    mediaItemsChanged = Signal()
     appSettingsChanged = Signal()
     _openTeleStream = Signal(str)
     _openWideStream = Signal(str)
@@ -600,6 +606,12 @@ class AppBackend(QObject):
         self._album_items: list[dict[str, Any]] = []
         self._album_path = ""
         self._album_busy = ""
+        self._media_source = "astro"
+        self._media_items: list[dict[str, Any]] = []
+        self._media_selected_id = ""
+        self._media_device_id = ""
+        self._media_request_id = 0
+        self._media_status = ""
         self._telemetry_tick = 0
         self._joystick_inflight: set[str] = set()
         self._joystick_pending: dict[str, tuple[float, float]] = {}
@@ -1476,6 +1488,26 @@ class AppBackend(QObject):
     def albumItems(self) -> list[dict[str, Any]]:
         return list(self._album_items)
 
+    @Property(str, notify=mediaChanged)
+    def mediaSource(self) -> str:
+        return self._media_source
+
+    @Property("QVariantList", notify=mediaItemsChanged)
+    def mediaItems(self) -> list[dict[str, Any]]:
+        return list(self._media_items)
+
+    @Property(str, notify=mediaChanged)
+    def mediaStatus(self) -> str:
+        return self._media_status
+
+    @Property(str, notify=mediaChanged)
+    def mediaSelectedId(self) -> str:
+        return self._media_selected_id
+
+    @Property("QVariantMap", notify=mediaChanged)
+    def selectedMedia(self) -> dict[str, Any]:
+        return next((item for item in self._media_items if item.get("id") == self._media_selected_id), {})
+
     @Property(str, notify=albumChanged)
     def lastAlbumPath(self) -> str:
         return self._album_path
@@ -1489,6 +1521,14 @@ class AppBackend(QObject):
     @Property(str, notify=albumChanged)
     def albumBusy(self) -> str:
         return self._album_busy
+
+    @Property(str, notify=mediaChanged)
+    def mediaBusy(self) -> str:
+        return self._album_busy
+
+    @Property(str, notify=mediaChanged)
+    def albumFolderUrl(self) -> str:
+        return self._album_dir().resolve().as_uri()
 
     @Property(str, notify=previewHoldChanged)
     def previewHoldMessage(self) -> str:
@@ -2021,7 +2061,10 @@ class AppBackend(QObject):
     @Slot(str)
     def selectDevice(self, device_id: str) -> None:
         if any(device.id == device_id for device in self._devices):
+            previous = self._selected_device_id
             self._selected_device_id = device_id
+            if previous != device_id and self._media_source != "local":
+                self._clear_media()
             self.selectedDeviceChanged.emit()
             self.durationSuggestionChanged.emit()
             self.sessionsChanged.emit()
@@ -2339,6 +2382,7 @@ class AppBackend(QObject):
                 name=f"Dwarf {len(self._devices) + 1}",
                 color=colors[len(self._devices) % len(colors)],
                 model=model,
+                ip_address="",
                 timezone_name=timezone_name,
                 latitude=latitude,
                 longitude=longitude,
@@ -2531,6 +2575,199 @@ class AppBackend(QObject):
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
+    def _emit_media(self, items: bool = False) -> None:
+        self.albumChanged.emit()
+        self.mediaChanged.emit()
+        if items:
+            self.mediaItemsChanged.emit()
+
+    def _set_media_busy(self, busy: str) -> None:
+        if self._album_busy == busy:
+            return
+        self._album_busy = busy
+        self._emit_media()
+
+    def _set_media_status(self, status: str) -> None:
+        text = str(status or "")
+        if self._media_status == text:
+            return
+        self._media_status = text
+        self._emit_media()
+
+    def _media_signature(self, items: list[dict[str, Any]]) -> tuple[tuple[Any, ...], ...]:
+        return tuple(
+            (item.get("id"), item.get("thumbnail_url"), item.get("image_url"), item.get("downloaded"))
+            for item in items
+        )
+
+    def _media_file_url(self, path: str) -> str:
+        if not path:
+            return ""
+        return Path(path).resolve().as_uri()
+
+    def _local_name_for_remote(self, file_path: str) -> str:
+        parts = [part for part in Path(str(file_path).replace("\\", "/")).parts if part not in {"/", "\\"}]
+        if len(parts) >= 2:
+            return f"{parts[-2]}_{parts[-1]}"
+        return parts[-1] if parts else "stacked.jpg"
+
+    def _astro_details(self, entry: dict[str, Any]) -> dict[str, Any]:
+        for key in ("astroImageDetails", "astroMosaicImageDetails", "astroMultiImageDetails"):
+            details = entry.get(key)
+            if isinstance(details, dict) and details:
+                return details
+        return {}
+
+    def _format_media_time(self, unix_ts: Any) -> str:
+        try:
+            value = int(unix_ts)
+        except (TypeError, ValueError):
+            return ""
+        if value <= 0:
+            return ""
+        try:
+            return datetime.fromtimestamp(value).strftime("%d/%m/%Y %H:%M")
+        except (OSError, OverflowError, ValueError):
+            return ""
+
+    def _local_album_paths(self) -> dict[str, Path]:
+        found: dict[str, Path] = {}
+        for path in self._album_dir().iterdir():
+            if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".fits", ".fit"}:
+                found[path.name] = path
+        return found
+
+    def _normalize_astro_item(self, entry: dict[str, Any], ip: str, local_files: dict[str, Path]) -> dict[str, Any] | None:
+        thumb = str(entry.get("thumbnailPath") or "").strip()
+        remote = str(entry.get("filePath") or "").strip()
+        if not thumb and not remote:
+            return None
+        details = self._astro_details(entry)
+        params = details.get("params") if isinstance(details.get("params"), dict) else {}
+        target = str(details.get("target") or entry.get("fileName") or "Untitled")
+        local_name = self._local_name_for_remote(remote or thumb)
+        local = local_files.get(local_name)
+        thumb_url = album_http_url(ip, thumb) if thumb and ip else ""
+        image_url = album_http_url(ip, remote) if remote and ip else thumb_url
+        item_id = remote or thumb or local_name
+        return {
+            "id": item_id,
+            "source": "astro",
+            "target": target,
+            "file_name": str(entry.get("fileName") or local_name),
+            "file_path": remote,
+            "thumbnail_path": thumb,
+            "thumbnail_url": self._media_file_url(str(local)) if local else thumb_url,
+            "image_url": self._media_file_url(str(local)) if local else image_url,
+            "date": self._format_media_time(entry.get("modificationTime")),
+            "modification_time": int(entry.get("modificationTime") or 0),
+            "exposure": str(params.get("exp") or ""),
+            "gain": str(params.get("gain") or ""),
+            "ir_filter": str(params.get("filter") or ""),
+            "local_path": str(local) if local else "",
+            "downloaded": bool(local),
+        }
+
+    def _normalize_still_item(self, name: str, local_files: dict[str, Path]) -> dict[str, Any]:
+        local = local_files.get(name)
+        return {
+            "id": name,
+            "source": "stills",
+            "target": name,
+            "file_name": name,
+            "file_path": name,
+            "thumbnail_path": "",
+            "thumbnail_url": self._media_file_url(str(local)) if local else "",
+            "image_url": self._media_file_url(str(local)) if local else "",
+            "date": "",
+            "modification_time": int(local.stat().st_mtime) if local else 0,
+            "exposure": "",
+            "gain": "",
+            "ir_filter": "",
+            "local_path": str(local) if local else "",
+            "downloaded": bool(local),
+        }
+
+    def _normalize_local_item(self, path: Path) -> dict[str, Any]:
+        url = self._media_file_url(str(path))
+        try:
+            mtime = int(path.stat().st_mtime)
+        except OSError:
+            mtime = 0
+        return {
+            "id": str(path),
+            "source": "local",
+            "target": path.stem,
+            "file_name": path.name,
+            "file_path": str(path),
+            "thumbnail_path": "",
+            "thumbnail_url": url,
+            "image_url": url,
+            "date": self._format_media_time(mtime),
+            "modification_time": mtime,
+            "exposure": "",
+            "gain": "",
+            "ir_filter": "",
+            "local_path": str(path),
+            "downloaded": True,
+        }
+
+    def _select_media_id(self, item_id: str) -> None:
+        if item_id and any(item.get("id") == item_id for item in self._media_items):
+            self._media_selected_id = item_id
+            local = next((item.get("local_path") for item in self._media_items if item.get("id") == item_id), "")
+            if local:
+                self._album_path = str(local)
+        elif self._media_items:
+            self._media_selected_id = str(self._media_items[0].get("id") or "")
+        else:
+            self._media_selected_id = ""
+
+    def _replace_media_items(self, items: list[dict[str, Any]], keep_id: str = "") -> None:
+        items = [item for item in items if item]
+        items.sort(key=lambda item: int(item.get("modification_time") or 0), reverse=True)
+        changed = self._media_signature(items) != self._media_signature(self._media_items)
+        self._media_items = items
+        self._select_media_id(keep_id or self._media_selected_id)
+        if changed:
+            self._media_status = ""
+        self._emit_media(items=changed)
+
+    def _clear_media(self, status: str = "") -> None:
+        self._media_request_id += 1
+        self._media_items = []
+        self._media_selected_id = ""
+        self._album_items = []
+        self._media_status = str(status or "")
+        self._emit_media(items=True)
+
+    def _begin_media_request(self, device_id: str, source: str) -> int:
+        self._media_request_id += 1
+        self._media_device_id = device_id
+        self._media_source = source
+        return self._media_request_id
+
+    def _media_request_current(self, request_id: int, device_id: str, source: str) -> bool:
+        return (
+            request_id == self._media_request_id
+            and self._media_device_id == device_id
+            and self._media_source == source
+        )
+
+    def _media_can_auto_list(self, device_id: str) -> bool:
+        worker = self._workers.get(device_id)
+        if worker and worker.connected:
+            return True
+        device = next((item for item in self._devices if item.id == device_id), None)
+        ip = str(getattr(device, "ip_address", "") or "").strip()
+        if not device or not ip:
+            return False
+        claimants = [
+            other for other in self._devices
+            if str(other.ip_address or "").strip() == ip
+        ]
+        return len(claimants) == 1
+
     def _camera_mode_id(self, device_id: str) -> int:
         mode = self._device_telemetry.get(device_id, {}).get("shooting_mode")
         try:
@@ -2570,50 +2807,245 @@ class AppBackend(QObject):
         worker.send("read_camera", {"args": [mode_id]}, done)
 
     @Slot(str)
-    def listAlbum(self, device_id: str) -> None:
-        worker = self._workers.get(device_id)
-        if not worker or not worker.connected:
+    def setMediaSource(self, source: str) -> None:
+        choice = str(source or "astro").strip().lower()
+        if choice not in {"astro", "stills", "local"}:
+            choice = "astro"
+        if self._media_source == choice:
             return
-        device = self._device_by_id(device_id)
-        camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
-        self._album_busy = "list"
-        self.albumChanged.emit()
+        self._media_source = choice
+        self._media_selected_id = ""
+        self._media_items = []
+        self._media_status = ""
+        self._emit_media(items=True)
+        self.refreshMedia(self._selected_device_id, True)
+
+    @Slot(str)
+    def selectMedia(self, item_id: str) -> None:
+        previous = self._media_selected_id
+        self._select_media_id(str(item_id or ""))
+        if previous != self._media_selected_id:
+            self._emit_media()
+
+    @Slot(str)
+    @Slot(str, bool)
+    def refreshMedia(self, device_id: str, quiet: bool = False) -> None:
+        if self._media_source == "local":
+            self.listLocalAlbum()
+            return
+        if quiet and not self._media_can_auto_list(device_id):
+            device = next((item for item in self._devices if item.id == device_id), None)
+            ip = str(getattr(device, "ip_address", "") or "").strip()
+            if not ip:
+                self._clear_media("Set the telescope IP in Settings, then refresh to browse sessions on the device.")
+            else:
+                self._clear_media(
+                    "Connect this telescope to browse its album. "
+                    "Other profiles share this IP, so media is not shown until this device is connected."
+                )
+            return
+        if self._media_source == "stills":
+            self.listAlbum(device_id, quiet)
+            return
+        self.listAstroSessions(device_id, quiet)
+
+    @Slot()
+    def listLocalAlbum(self) -> None:
+        self._media_source = "local"
+        self._media_device_id = ""
+        items = [self._normalize_local_item(path) for path in self._local_album_paths().values()]
+        self._replace_media_items(items, self._media_selected_id)
+        self._set_media_status("" if items else "No downloaded files in the local album yet.")
+
+    @Slot(str)
+    @Slot(str, bool)
+    def listAstroSessions(self, device_id: str, quiet: bool = False) -> None:
+        worker = self._workers.get(device_id)
+        device = next((item for item in self._devices if item.id == device_id), None)
+        if not worker or not device or not str(device.ip_address or "").strip():
+            self._clear_media("Set the telescope IP in Settings before listing sessions.")
+            if not quiet:
+                self._toast("Set the telescope IP before listing sessions", "warning")
+            return
+        request_id = self._begin_media_request(device_id, "astro")
+        self._set_media_busy("list")
 
         def done(ok: bool, result: Any) -> None:
-            self._album_busy = ""
+            if not self._media_request_current(request_id, device_id, "astro"):
+                return
+            self._set_media_busy("")
             if ok and isinstance(result, dict):
-                self._album_items = [{"file": name} for name in (result.get("files") or [])]
-                self._toast(f"{len(self._album_items)} stills on telescope", "success")
-            else:
-                self._toast("Album list failed", "error", str(result))
-            self.albumChanged.emit()
+                ip = str(result.get("ip") or device.ip_address)
+                local_files = self._local_album_paths()
+                items = [
+                    self._normalize_astro_item(entry, ip, local_files)
+                    for entry in (result.get("sessions") or [])
+                    if isinstance(entry, dict) and album_path_matches_model(
+                        str(entry.get("filePath") or entry.get("thumbnailPath") or ""),
+                        device.model,
+                    )
+                ]
+                self._replace_media_items([item for item in items if item], self._media_selected_id)
+                if not self._media_items:
+                    self._set_media_status("No astro sessions found on this telescope.")
+                elif not quiet:
+                    self._toast(f"{len(self._media_items)} astro sessions on telescope", "success")
+                return
+            self._replace_media_items([])
+            self._set_media_status(str(result) if result else "Could not reach the telescope album. Connect it, then tap Refresh.")
+            if not quiet:
+                self._toast("Astro session list failed", "error", str(result))
 
-        worker.send("album_list", {"args": [12, camera]}, done)
+        worker.send("astro_sessions_list", {}, done)
+
+    @Slot(str)
+    @Slot(str, bool)
+    def listAlbum(self, device_id: str, quiet: bool = False) -> None:
+        worker = self._workers.get(device_id)
+        device = next((item for item in self._devices if item.id == device_id), None)
+        if not worker or not device or not str(device.ip_address or "").strip():
+            self._clear_media("Set the telescope IP in Settings before listing stills.")
+            return
+        camera = device.camera.value if hasattr(device.camera, "value") else "tele"
+        request_id = self._begin_media_request(device_id, "stills")
+        self._set_media_busy("list")
+
+        def done(ok: bool, result: Any) -> None:
+            if not self._media_request_current(request_id, device_id, "stills"):
+                return
+            self._set_media_busy("")
+            if ok and isinstance(result, dict):
+                names = [str(name) for name in (result.get("files") or [])]
+                self._album_items = [{"file": name} for name in names]
+                local_files = self._local_album_paths()
+                self._replace_media_items(
+                    [self._normalize_still_item(name, local_files) for name in names],
+                    self._media_selected_id,
+                )
+                if not names:
+                    self._set_media_status("No still photos found on this telescope.")
+                elif not quiet:
+                    self._toast(f"{len(names)} stills on telescope", "success")
+                return
+            self._replace_media_items([])
+            self._set_media_status(str(result) if result else "Could not reach the telescope album. Connect it, then tap Refresh.")
+            if not quiet:
+                self._toast("Album list failed", "error", str(result))
+
+        worker.send("album_list", {"args": [80, camera]}, done)
+
+    @Slot(str, str)
+    def downloadMedia(self, device_id: str, item_id: str = "") -> None:
+        chosen = str(item_id or self._media_selected_id or "").strip()
+        if self._media_source == "local":
+            self._select_media_id(chosen)
+            self._emit_media()
+            return
+        if self._media_device_id and self._media_device_id != device_id:
+            self._toast("Switch back to the telescope that listed this file before downloading", "warning")
+            return
+        if self._media_source == "stills":
+            self.downloadAlbumPhoto(device_id, chosen)
+            return
+        item = next((entry for entry in self._media_items if entry.get("id") == chosen), None)
+        remote = str((item or {}).get("file_path") or chosen)
+        worker = self._workers.get(device_id)
+        if not worker or not remote:
+            self._toast("Nothing to download", "warning")
+            return
+        dest = str(self._album_dir())
+        request_id = self._media_request_id
+        source = self._media_source
+        self._set_media_busy("download")
+
+        def done(ok: bool, result: Any) -> None:
+            if not self._media_request_current(request_id, device_id, source):
+                return
+            self._set_media_busy("")
+            if ok and isinstance(result, dict) and result.get("path"):
+                self._album_path = str(result["path"])
+                local_url = self._media_file_url(self._album_path)
+                local_files = self._local_album_paths()
+                updated = []
+                for entry in self._media_items:
+                    if entry.get("id") == chosen or entry.get("file_path") == remote:
+                        entry = dict(entry)
+                        entry["local_path"] = self._album_path
+                        entry["downloaded"] = True
+                        entry["thumbnail_url"] = local_url
+                        entry["image_url"] = local_url
+                    elif entry.get("file_name") in local_files:
+                        local = local_files[str(entry.get("file_name"))]
+                        entry = dict(entry)
+                        entry["local_path"] = str(local)
+                        entry["downloaded"] = True
+                    updated.append(entry)
+                self._media_items = updated
+                self._select_media_id(chosen)
+                self._toast("Session downloaded", "success", Path(self._album_path).name)
+                self._emit_media(items=True)
+                return
+            self._toast("Session download failed", "error", str(result))
+
+        worker.send("astro_session_download", {"args": [remote, dest]}, done)
 
     @Slot(str, str)
     def downloadAlbumPhoto(self, device_id: str, name: str = "") -> None:
         worker = self._workers.get(device_id)
-        if not worker or not worker.connected:
+        if not worker:
             return
         device = self._device_by_id(device_id)
         camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
         dest = str(self._album_dir())
-        self._album_busy = "download"
-        self.albumChanged.emit()
+        request_id = self._media_request_id
+        source = self._media_source
+        self._set_media_busy("download")
 
         def done(ok: bool, result: Any) -> None:
-            self._album_busy = ""
+            if not self._media_request_current(request_id, device_id, source):
+                return
+            self._set_media_busy("")
             if ok and isinstance(result, dict) and result.get("path"):
                 self._album_path = str(result["path"])
                 chosen = str(result.get("file") or Path(self._album_path).name)
                 if not any(item.get("file") == chosen for item in self._album_items):
                     self._album_items = [{"file": chosen}, *self._album_items]
+                local_files = self._local_album_paths()
+                updated = []
+                found = False
+                for entry in self._media_items:
+                    if entry.get("id") == name or entry.get("file_name") == chosen:
+                        entry = dict(entry)
+                        entry["local_path"] = self._album_path
+                        entry["downloaded"] = True
+                        if not entry.get("thumbnail_url"):
+                            entry["thumbnail_url"] = self._media_file_url(self._album_path)
+                            entry["image_url"] = self._media_file_url(self._album_path)
+                        found = True
+                    updated.append(entry)
+                if not found:
+                    updated.insert(0, self._normalize_still_item(chosen, local_files))
+                self._media_items = updated
+                self._select_media_id(chosen)
                 self._toast("Photo downloaded", "success", chosen)
-            else:
-                self._toast("Album download failed", "error", str(result))
-            self.albumChanged.emit()
+                self._emit_media(items=True)
+                return
+            self._toast("Album download failed", "error", str(result))
 
         worker.send("album_download", {"args": [name, dest, camera]}, done)
+
+    @Slot()
+    def openAlbumFolder(self) -> None:
+        folder = self._album_dir()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder.resolve())))
+
+    @Slot(str)
+    def revealMediaFile(self, path: str) -> None:
+        target = Path(str(path or self._album_path or "")).expanduser()
+        if not target.exists():
+            self.openAlbumFolder()
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.resolve())))
 
     def _resolved_location(self, timezone_name: Any, latitude: Any, longitude: Any) -> tuple[str, float, float]:
         name = str(timezone_name or "").strip()

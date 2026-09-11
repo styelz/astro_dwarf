@@ -24,7 +24,14 @@ from pathlib import Path
 from typing import Any
 
 from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_sdk_logging
-from .domain import firmware_binning, firmware_exposure_name
+from .domain import (
+    album_http_path,
+    album_http_url,
+    album_path_matches_model,
+    device_name_model,
+    firmware_binning,
+    firmware_exposure_name,
+)
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -1878,12 +1885,35 @@ def _album_camera(name: str = "") -> str:
     return "WIDE" if choice == "wide" else "TELE"
 
 
+def _album_model_matches() -> bool:
+    """Raise if the telescope at this IP is a different model. True if confirmed."""
+    expected = str(_device.get("model") or "")
+    if not expected:
+        return False
+    try:
+        result = _http_json(f"http://{_device_ip()}:8082/deviceInfo", {})
+    except Exception:
+        return False
+    payload = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(payload, dict):
+        payload = result if isinstance(result, dict) else {}
+    name = str(payload.get("deviceName") or payload.get("device_name") or "")
+    actual = device_name_model(name)
+    if actual and actual != expected:
+        raise RuntimeError(
+            f"This telescope is a {actual}, not a {expected}. "
+            "Select the matching profile or update Settings."
+        )
+    return bool(actual) and actual == expected
+
+
 def _album_connect():
     from ftplib import FTP, error_perm
 
     ip = str(_device.get("ip_address") or "").strip()
     if not ip:
         raise RuntimeError("Telescope IP is not set")
+    confirmed = _album_model_matches()
     ftp = FTP()
     ftp.connect(ip, timeout=12)
     ftp.login("Anonymous", "")
@@ -1892,7 +1922,7 @@ def _album_connect():
     prefixes = {
         "Dwarf II": ("DWARF_",),
         "Dwarf 3": ("DWARF3_",),
-        "Dwarf Mini": ("DWARF_mini_", "DWARF3_"),
+        "Dwarf Mini": ("DWARF_mini_", "DWARF3_") if confirmed else ("DWARF_mini_",),
     }.get(model, ("DWARF3_", "DWARF_mini_", "DWARF_"))
     for remote in ("/Normal_Photos", "/DWARF_II/Normal_Photos"):
         try:
@@ -1949,6 +1979,139 @@ def album_download(name: str = "", dest_dir: str = "", camera: str = "") -> dict
     return {"path": str(local), "file": chosen, "directory": remote, "camera": listing.get("camera")}
 
 
+def _device_ip() -> str:
+    ip = str(_device.get("ip_address") or "").strip()
+    if not ip:
+        raise RuntimeError("Telescope IP is not set")
+    return ip
+
+
+def _http_json(url: str, payload: dict[str, Any], timeout: float = 20) -> Any:
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"HTTP {exc.code} from {url}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not reach {url}: {exc.reason}") from exc
+
+
+def _http_download(url: str, dest: Path, timeout: float = 90) -> None:
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response, dest.open("wb") as handle:
+            while True:
+                chunk = response.read(64 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"HTTP {exc.code} from {url}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not reach {url}: {exc.reason}") from exc
+
+
+def _media_url(ip: str, path: str) -> str:
+    return album_http_url(ip, path)
+
+
+def _ftp_download_file(ip: str, remote_path: str, dest: Path) -> None:
+    from ftplib import FTP
+
+    path = album_http_path(remote_path)
+    parts = [part for part in path.split("/") if part]
+    if not parts:
+        raise RuntimeError("No session file path to download")
+    ftp = FTP()
+    ftp.connect(ip, timeout=12)
+    ftp.login("Anonymous", "")
+    ftp.set_pasv(True)
+    try:
+        if len(parts) > 1:
+            ftp.cwd("/" + "/".join(parts[:-1]))
+        with dest.open("wb") as handle:
+            ftp.retrbinary(f"RETR {parts[-1]}", handle.write)
+    finally:
+        try:
+            ftp.close()
+        except Exception:
+            pass
+
+
+def astro_sessions_list() -> dict[str, Any]:
+    ip = _device_ip()
+    _album_model_matches()
+    result = _http_json(
+        f"http://{ip}:8082/album/list/mediaInfos",
+        {"mediaType": 6, "pageIndex": 0, "pageSize": 0},
+    )
+    if not isinstance(result, dict) or result.get("code") != 0:
+        raise RuntimeError(f"Unexpected album response: {result}")
+    sessions = result.get("data") or []
+    if not isinstance(sessions, list):
+        sessions = []
+    model = str(_device.get("model") or "")
+    if model:
+        sessions = [
+            entry for entry in sessions
+            if isinstance(entry, dict) and album_path_matches_model(
+                str(entry.get("filePath") or entry.get("thumbnailPath") or ""),
+                model,
+            )
+        ]
+    log(f"Listed {len(sessions)} astro sessions on {ip}")
+    return {"ip": ip, "sessions": sessions}
+
+
+def astro_session_download(file_path: str = "", dest_dir: str = "") -> dict[str, Any]:
+    ip = _device_ip()
+    remote = str(file_path or "").strip()
+    if not remote:
+        raise RuntimeError("No session file path to download")
+    url = _media_url(ip, remote)
+    folder = Path(dest_dir) if dest_dir else Path(tempfile.mkdtemp(prefix="astro-dwarf-album-"))
+    folder.mkdir(parents=True, exist_ok=True)
+    web_path = album_http_path(remote)
+    parts = [part for part in Path(web_path).parts if part not in {"/", "\\"}]
+    name = f"{parts[-2]}_{parts[-1]}" if len(parts) >= 2 else (parts[-1] if parts else "stacked.jpg")
+    local = folder / name
+    try:
+        _http_download(url, local)
+    except RuntimeError as exc:
+        try:
+            _ftp_download_file(ip, web_path, local)
+        except Exception as ftp_exc:
+            raise RuntimeError(f"{exc}; FTP fallback failed: {ftp_exc}") from ftp_exc
+    if not local.exists() or local.stat().st_size <= 0:
+        raise RuntimeError(f"Download produced an empty file from {url}")
+    log(f"Downloaded {name} from {url}")
+    return {"path": str(local), "file": name, "url": url, "file_path": remote}
+
+
+def polar_position() -> bool:
+    function = getattr(_api, "motor_action", None) if _api is not None else None
+    if function is None:
+        raise RuntimeError("motor_action is not available in this SDK")
+    model = str(_device.get("model") or "")
+    steps = (5, 6, 9, 7) if model in {"Dwarf 3", "Dwarf Mini"} else (5, 6, 2, 3)
+    for action in steps:
+        if function(action) is False:
+            return False
+    return True
+
+
 def dispatch(message: dict[str, Any]) -> Any:
     command = message["command"]
     if command == "configure":
@@ -1982,6 +2145,16 @@ def dispatch(message: dict[str, Any]) -> Any:
             str(args[1] if len(args) > 1 else ""),
             str(args[2] if len(args) > 2 else ""),
         )
+    if command == "astro_sessions_list":
+        return astro_sessions_list()
+    if command == "astro_session_download":
+        args = list(message.get("args") or [])
+        return astro_session_download(
+            str(args[0] if args else ""),
+            str(args[1] if len(args) > 1 else ""),
+        )
+    if command == "polar_position":
+        return polar_position()
     if command == "read_camera":
         args = list(message.get("args") or [])
         mode_id = int(args[0]) if args else 1

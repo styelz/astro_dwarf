@@ -39,6 +39,8 @@ ApplicationWindow {
     readonly property string scopeActivityDetail: String((backend.selectedDevice && backend.selectedDevice.activity_detail) || "")
     readonly property bool scopeActivityFromDevice: !!(backend.selectedDevice && backend.selectedDevice.activity_from_device)
     property int currentPage: 0
+    readonly property int mediaPageIndex: 4
+    readonly property int settingsPageIndex: 5
     property real joySpeed: 1
     readonly property bool targetLocked: backend.selectedDevice.connected && backend.currentSession.status === "running"
     readonly property bool dataPage: currentPage !== 0
@@ -211,16 +213,16 @@ ApplicationWindow {
     }
     function goToPage(idx) {
         if (idx === root.currentPage) {
-            if (idx === 4 && !settingsPage.isDirty())
+            if (idx === root.settingsPageIndex && !settingsPage.isDirty())
                 settingsPage.load()
             return
         }
-        if (root.currentPage === 4 && settingsPage.isDirty()) {
+        if (root.currentPage === root.settingsPageIndex && settingsPage.isDirty()) {
             root.askLeaveSettings(idx, "")
             return
         }
         root.currentPage = idx
-        if (idx === 4)
+        if (idx === root.settingsPageIndex)
             settingsPage.load()
     }
 
@@ -620,7 +622,7 @@ ApplicationWindow {
                                 glyph: "\uE713"
                                 onTriggered: {
                                     backend.selectDevice(deviceCard.modelData.id)
-                                    root.currentPage = 4
+                                    root.goToPage(root.settingsPageIndex)
                                 }
                             }
                             HudMenuSeparator {}
@@ -664,6 +666,7 @@ ApplicationWindow {
             CalendarPage { id: calendarPage }
             SessionsPage { id: sessionsPage }
             HistoryPage { id: historyPage }
+            MediaPage { id: mediaPage }
             SettingsPage { id: settingsPage }
         }
 

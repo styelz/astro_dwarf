@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from fractions import Fraction
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 from .location import has_site_coordinates
@@ -22,6 +23,57 @@ class DeviceModel(StrEnum):
     DWARF_II = "Dwarf II"
     DWARF_3 = "Dwarf 3"
     DWARF_MINI = "Dwarf Mini"
+
+
+def album_http_path(path: str) -> str:
+    value = str(path or "").strip().replace("\\", "/")
+    if value.startswith("/sdcard/"):
+        value = value[7:]
+    elif value.startswith("/sdcard"):
+        value = value[7:] or "/"
+    if value and not value.startswith("/"):
+        value = "/" + value
+    return value
+
+
+def album_http_url(ip: str, path: str) -> str:
+    host = str(ip or "").strip()
+    value = album_http_path(path)
+    if not host or not value:
+        return ""
+    encoded = "/".join(quote(part, safe="") for part in value.split("/"))
+    return f"http://{host}{encoded}"
+
+
+def device_name_model(name: str) -> str:
+    token = str(name or "").upper().replace(" ", "").replace("-", "_")
+    if token.startswith("DWARF3"):
+        return DeviceModel.DWARF_3
+    if "MINI" in token or token.startswith("DWARF5"):
+        return DeviceModel.DWARF_MINI
+    if token.startswith("DWARF2") or token.startswith("DWARFII") or token.startswith("DWARF_II"):
+        return DeviceModel.DWARF_II
+    return ""
+
+
+def album_path_matches_model(path: str, model: DeviceModel | str) -> bool:
+    text = album_http_path(path).upper()
+    if not text:
+        return False
+    has_dwarf3 = "DWARF3" in text
+    has_mini = "DWARF_MINI" in text or "DWARFMINI" in text
+    has_ii = "DWARF_II" in text or "DWARF2" in text or "DWARFII" in text
+    has_generic = "/DWARF/" in text
+    if not (has_dwarf3 or has_mini or has_ii or has_generic):
+        return True
+    expected = str(model)
+    if expected == DeviceModel.DWARF_3:
+        return has_dwarf3
+    if expected == DeviceModel.DWARF_MINI:
+        return has_mini
+    if expected == DeviceModel.DWARF_II:
+        return (has_ii or has_generic) and not has_dwarf3 and not has_mini
+    return True
 
 
 class Camera(StrEnum):
