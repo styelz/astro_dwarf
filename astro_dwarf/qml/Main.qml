@@ -247,6 +247,7 @@ ApplicationWindow {
         DragCoordinator.proxy = sessionDragProxy
         DragCoordinator.timeline = calendarPage
         root.syncWindowFrame()
+        backend.setEnhanceImages(Theme.enhanceImages)
     }
 
     // Keep the native Windows caption in step with the theme hue (debounced while the slider moves).
@@ -258,6 +259,7 @@ ApplicationWindow {
         target: Theme
         function onHueChanged() { frameSyncTimer.restart() }
         function onBrightnessChanged() { frameSyncTimer.restart() }
+        function onEnhanceImagesChanged() { backend.setEnhanceImages(Theme.enhanceImages) }
     }
     Timer {
         id: frameSyncTimer

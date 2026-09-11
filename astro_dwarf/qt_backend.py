@@ -27,7 +27,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
 
 from .version import __version__
 from .domain import (
@@ -74,6 +74,7 @@ from .duration_suggest import suggest_hardware_profile
 from .location import has_site_coordinates, match_timezone, resolve_location, suggested_timezone, timezone_locations
 from .runtime import PROCESS_CREATION_FLAGS, kill_pid_tree, prepare_worker_environment, worker_command
 from .storage import SessionStore
+from .image_enhance import enhance_image
 from .stream_preview import LiveFrames, StreamPlayer, port_is_open, preview_window_is_live, set_live_frames, stream_port
 from .telemetry_view import AlertEngine, derive_activity, format_telemetry
 
@@ -614,6 +615,7 @@ class AppBackend(QObject):
     previewWideGenerationChanged = Signal()
     previewHoldChanged = Signal()
     previewStackingChanged = Signal()
+    enhanceImagesChanged = Signal()
     albumChanged = Signal()
     mediaChanged = Signal()
     mediaItemsChanged = Signal()
@@ -721,6 +723,8 @@ class AppBackend(QObject):
         self._preview_tele_url = ""
         self._preview_wide_url = ""
         self._preview_stack_mode = False
+        self._enhance_images = True
+        self._raw_preview_images = {"tele": QImage(), "wide": QImage()}
         self._shut_down = False
         self._preview_thread = QThread(self)
         self._tele_player = StreamPlayer()
@@ -1683,6 +1687,23 @@ class AppBackend(QObject):
     def previewStacking(self) -> bool:
         return bool(self._preview_stack_mode)
 
+    @Property(bool, notify=enhanceImagesChanged)
+    def enhanceImages(self) -> bool:
+        return bool(self._enhance_images)
+
+    @enhanceImages.setter
+    def enhanceImages(self, value: bool) -> None:
+        self.setEnhanceImages(value)
+
+    @Slot(bool)
+    def setEnhanceImages(self, value: bool) -> None:
+        on = bool(value)
+        if on == self._enhance_images:
+            return
+        self._enhance_images = on
+        self.enhanceImagesChanged.emit()
+        self._refresh_preview_enhance()
+
     @Property("QVariantList", notify=albumChanged)
     def albumItems(self) -> list[dict[str, Any]]:
         return list(self._album_items)
@@ -1874,6 +1895,7 @@ class AppBackend(QObject):
         self._preview_tele_playing = False
         self._preview_wide_playing = False
         self.live_images.clear()
+        self._raw_preview_images = {"tele": QImage(), "wide": QImage()}
         self._last_preview_ui.clear()
         self._preview_tele_url = ""
         self._preview_wide_url = ""
@@ -1974,6 +1996,7 @@ class AppBackend(QObject):
         self._preview_tele_playing = False
         self._preview_wide_playing = False
         self.live_images.clear()
+        self._raw_preview_images = {"tele": QImage(), "wide": QImage()}
         self._last_preview_ui.clear()
         self._preview_tele_url = ""
         self._preview_wide_url = ""
@@ -2197,6 +2220,27 @@ class AppBackend(QObject):
             return
         self.live_images.notify("*")
 
+    def _should_enhance_preview(self) -> bool:
+        return bool(self._enhance_images) and bool(self._preview_stack_mode)
+
+    def _display_preview_frame(self, image: QImage) -> QImage:
+        if image is None or image.isNull() or not self._should_enhance_preview():
+            return image
+        try:
+            return enhance_image(image, denoise=True)
+        except Exception:
+            return image
+
+    def _refresh_preview_enhance(self) -> None:
+        if not self._preview_active:
+            return
+        for camera in ("tele", "wide"):
+            raw = self._raw_preview_images.get(camera) or QImage()
+            if raw.isNull():
+                continue
+            self.live_images.update(camera, self._display_preview_frame(raw))
+            self.live_images.notify(camera)
+
     def _on_tele_frame(self, image) -> None:
         self._on_camera_frame("tele", image)
 
@@ -2206,7 +2250,9 @@ class AppBackend(QObject):
     def _on_camera_frame(self, camera: str, image) -> None:
         if not self._preview_active:
             return
-        self.live_images.update(camera, image)
+        raw = image.copy() if isinstance(image, QImage) and not image.isNull() else QImage()
+        self._raw_preview_images[camera] = raw
+        self.live_images.update(camera, self._display_preview_frame(raw))
         first_frame = (camera == "wide" and not self._preview_wide_playing) or (
             camera == "tele" and not self._preview_tele_playing
         )

@@ -1314,6 +1314,29 @@ Item {
                             }
                         }
                         Rectangle {
+                            visible: backend.previewStacking || previewHost.awaitingFirstStack
+                            width: enhanceLabel.implicitWidth + 16
+                            height: 28
+                            color: Theme.enhanceImages ? Theme.fillActive : Theme.hsl(0.094, 0.333, 0.094, 0.753)
+                            border.color: Theme.enhanceImages ? Theme.accent : Theme.outline
+                            Text {
+                                id: enhanceLabel
+                                anchors.centerIn: parent
+                                text: "ENHANCE"
+                                color: Theme.enhanceImages ? Theme.accent : Theme.textSecondary
+                                font.pixelSize: 11
+                                font.bold: true
+                                font.letterSpacing: 1
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onContainsMouseChanged: previewHost.holdControls(containsMouse)
+                                onClicked: Theme.enhanceImages = !Theme.enhanceImages
+                            }
+                        }
+                        Rectangle {
                             id: recBadge
                             readonly property var t: root.scopeTelemetry
                             readonly property bool rec: root.scopeOnline && (root.scopeActivity === "record" || !!t.capture_active)

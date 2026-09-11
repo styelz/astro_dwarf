@@ -205,7 +205,10 @@ Item {
                                         fillMode: Image.PreserveAspectCrop
                                         asynchronous: true
                                         cache: true
-                                        source: tile.modelData.thumbnail_url || tile.modelData.image_url || ""
+                                        source: {
+                                            Theme.enhanceImages
+                                            return Util.mediaDisplayUrl(tile.modelData, "thumb")
+                                        }
                                         visible: source !== "" && status === Image.Ready
                                     }
                                     Rectangle {
@@ -284,7 +287,10 @@ Item {
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                     cache: false
-                    source: mediaPage.selected.image_url || mediaPage.selected.thumbnail_url || ""
+                    source: {
+                        Theme.enhanceImages
+                        return Util.mediaDisplayUrl(mediaPage.selected, "image")
+                    }
                 }
                 Text {
                     anchors.centerIn: parent
@@ -313,6 +319,13 @@ Item {
                             font.pixelSize: 16
                             font.bold: true
                             elide: Text.ElideRight
+                        }
+                        HudButton {
+                            text: Theme.enhanceImages ? "ENHANCE ON" : "ENHANCE OFF"
+                            visible: Util.shouldEnhanceMedia(mediaPage.selected)
+                            buttonColor: Theme.enhanceImages ? Theme.fillActive : Theme.inputBg
+                            foregroundColor: Theme.enhanceImages ? Theme.accent : Theme.textSecondary
+                            onClicked: Theme.enhanceImages = !Theme.enhanceImages
                         }
                         HudButton {
                             text: "DOWNLOAD"

@@ -256,6 +256,27 @@ QtObject {
             return Util.groupTone(item.group_id)
         return (item && item.device_color) || Theme.accent
     }
+    function shouldEnhanceMedia(item) {
+        if (!item)
+            return false
+        if (item.source === "stills")
+            return false
+        if (item.source === "local") {
+            const name = String(item.file_name || item.target || item.id || "")
+            return /_stacked/i.test(name)
+        }
+        return item.source === "astro"
+    }
+    function mediaDisplayUrl(item, which) {
+        const raw = which === "thumb"
+            ? ((item && (item.thumbnail_url || item.image_url)) || "")
+            : ((item && (item.image_url || item.thumbnail_url)) || "")
+        if (!raw)
+            return ""
+        if (!Theme.enhanceImages || !Util.shouldEnhanceMedia(item))
+            return raw
+        return "image://enhance/" + encodeURIComponent(raw)
+    }
     function clusterSessions(items) {
         const list = items || []
         const groups = []
