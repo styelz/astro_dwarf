@@ -465,10 +465,22 @@ class LogListModel(QAbstractListModel):
         return self._filter
 
     def warning_count(self) -> int:
-        return self._counts.get("WARNING", 0)
+        return self._unread.get("WARNING", 0)
 
     def error_count(self) -> int:
-        return self._counts.get("ERROR", 0)
+        return self._unread.get("ERROR", 0)
+
+    def _clear_unread(self) -> None:
+        if not any(self._unread.values()):
+            return
+        self._unread = {"WARNING": 0, "ERROR": 0}
+        self.countsChanged.emit()
+
+    def _note_unread(self, level: str) -> None:
+        if level not in self._unread or self._filter == "alerts":
+            return
+        self._unread[level] += 1
+        self.countsChanged.emit()
 
     def append(self, entry: dict[str, Any]) -> None:
         last = self._all[-1] if self._all else None
@@ -480,6 +492,7 @@ class LogListModel(QAbstractListModel):
         ):
             last["count"] = int(last.get("count", 1)) + 1
             last["time"] = entry["time"]
+            self._note_unread(last["level"])
             if self._visible and self._visible[-1] is last:
                 row = len(self._visible) - 1
                 self.dataChanged.emit(self.index(row), self.index(row), [self.TimeRole, self.CountRole])
@@ -489,7 +502,7 @@ class LogListModel(QAbstractListModel):
         level = entry["level"]
         if level in self._counts:
             self._counts[level] += 1
-            self.countsChanged.emit()
+            self._note_unread(level)
         if self._is_visible(entry):
             row = len(self._visible)
             self.beginInsertRows(QModelIndex(), row, row)
@@ -505,6 +518,8 @@ class LogListModel(QAbstractListModel):
         for entry in removed:
             if entry["level"] in self._counts:
                 self._counts[entry["level"]] = max(0, self._counts[entry["level"]] - 1)
+        for level in self._unread:
+            self._unread[level] = min(self._unread[level], self._counts[level])
         drop = 0
         while drop < len(self._visible) and id(self._visible[drop]) in removed_ids:
             drop += 1
@@ -519,11 +534,14 @@ class LogListModel(QAbstractListModel):
         self._all.clear()
         self._visible.clear()
         self._counts = {"WARNING": 0, "ERROR": 0}
+        self._unread = {"WARNING": 0, "ERROR": 0}
         self.endResetModel()
         self.countsChanged.emit()
 
     def set_filter(self, name: str) -> None:
         name = name if name in _LOG_FILTERS else "all"
+        if name == "alerts":
+            self._clear_unread()
         if name == self._filter:
             return
         self._filter = name
