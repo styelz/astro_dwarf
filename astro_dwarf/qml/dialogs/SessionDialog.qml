@@ -23,26 +23,15 @@ Dialog {
     property bool bulkTemplates: false
     property var bulkIds: []
     property var templateMembers: []
-    property var paneSelected: []
     property var dirtyFields: ({})
     property int paneIndex: 0
+    property bool applyToAllPanes: true
     property bool syncingPane: false
     property bool syncingCommon: false
     property bool importedPlan: false
     readonly property int paneCount: templateMembers.length
     readonly property bool multiPane: paneCount > 1
-    readonly property int selectedPaneCount: {
-        const flags = paneSelected || []
-        let count = 0
-        for (let i = 0; i < flags.length; i++) {
-            if (flags[i])
-                count++
-        }
-        return count
-    }
-    readonly property bool commonMulti: bulkMode || (multiPane && selectedPaneCount > 1)
-    // camera, wait, and workflow edits need at least one checked pane to land on
-    readonly property bool sharedEnabled: !multiPane || selectedPaneCount > 0
+    readonly property bool commonMulti: bulkMode || (multiPane && applyToAllPanes)
     readonly property bool uniqueVisible: !bulkMode
     readonly property bool mosaicVisible: !bulkMode
     readonly property bool equatorialTarget: targetType.currentIndex === 0
@@ -67,11 +56,6 @@ Dialog {
         return r * c > 1
     }
     readonly property bool dirty: Object.keys(dirtyFields || {}).length > 0
-    readonly property bool focusedPaneSelected: {
-        selectedPaneCount
-        paneIndex
-        return !!(paneSelected && paneSelected[paneIndex])
-    }
     padding: 0
 
     component FieldCaption: Text {
@@ -216,16 +200,15 @@ Dialog {
     }
     function selectedMembers() {
         const items = templateMembers || []
-        const flags = paneSelected || []
-        const result = []
-        for (let i = 0; i < items.length; i++) {
-            if (flags[i])
-                result.push(items[i])
-        }
-        return result
+        if (!sessionDialog.multiPane || sessionDialog.applyToAllPanes)
+            return items
+        const item = items[paneIndex]
+        return item ? [item] : []
+    }
+    function paneReceivesShared(index) {
+        return !sessionDialog.multiPane || sessionDialog.applyToAllPanes || index === paneIndex
     }
     function loadCommonFields(items, keepDirty) {
-        // with no pane checked the shared fields are read-only, so preview the focused pane
         const focused = templateMembers[paneIndex]
         const source = (items && items.length) ? items : (focused ? [focused] : [])
         const dirty = keepDirty ? (dirtyFields || {}) : {}
@@ -285,9 +268,8 @@ Dialog {
     function applyDirtyToSelected() {
         const dirty = dirtyFields || {}
         const members = templateMembers.slice()
-        const flags = paneSelected || []
         for (let i = 0; i < members.length; i++) {
-            if (!flags[i])
+            if (!sessionDialog.paneReceivesShared(i))
                 continue
             const pane = sessionDialog.cloneValue(members[i] || {})
             pane.camera = sessionDialog.cameraOf(pane)
@@ -322,33 +304,23 @@ Dialog {
         }
         templateMembers = members
     }
-    function flagsForOnlyPane(index) {
-        const items = templateMembers || []
-        const flags = []
-        for (let i = 0; i < items.length; i++)
-            flags.push(i === index)
-        return flags
-    }
-    // pending edits belong to the panes that were checked while they were typed
     function commitPendingEdits() {
         if (!sessionDialog.dirty)
             return
         sessionDialog.applyDirtyToSelected()
         dirtyFields = ({})
     }
-    function setPaneSelectedAt(index, on) {
-        sessionDialog.commitPendingEdits()
+    function setApplyToAll(on) {
+        if (sessionDialog.applyToAllPanes === !!on)
+            return
         syncingPane = true
-        const flags = (paneSelected || []).slice()
-        flags[index] = !!on
-        paneSelected = flags
-        syncingPane = false
-        sessionDialog.loadCommonFields(sessionDialog.selectedMembers())
-    }
-    function selectAllPanes(on) {
-        sessionDialog.commitPendingEdits()
-        syncingPane = true
-        paneSelected = (templateMembers || []).map(() => !!on)
+        if (on) {
+            applyToAllPanes = true
+            sessionDialog.commitPendingEdits()
+        } else {
+            sessionDialog.commitPendingEdits()
+            applyToAllPanes = false
+        }
         syncingPane = false
         sessionDialog.loadCommonFields(sessionDialog.selectedMembers())
     }
@@ -408,14 +380,11 @@ Dialog {
         syncingPane = true
         stashCurrentPane()
         sessionDialog.applyDirtyToSelected()
-        const followFocused = sessionDialog.selectedPaneCount === 1 && !!(paneSelected && paneSelected[paneIndex])
         paneIndex = index
         editingId = templateMembers[index].id || editingId
         loadPaneCoordinates(templateMembers[index])
         panePicker.model = sessionDialog.paneChoices()
         panePicker.currentIndex = index
-        if (followFocused)
-            paneSelected = sessionDialog.flagsForOnlyPane(index)
         dirtyFields = ({})
         syncingPane = false
         sessionDialog.loadCommonFields(sessionDialog.selectedMembers())
@@ -546,9 +515,9 @@ Dialog {
         bulkMode = false
         bulkTemplates = false
         bulkIds = []
-        paneSelected = []
         dirtyFields = ({})
         paneIndex = 0
+        applyToAllPanes = true
         importedPlan = false
         saveTemplate.checked = false
     }
@@ -610,7 +579,7 @@ Dialog {
             }
             templateMembers = cloned
             paneIndex = index
-            paneSelected = sessionDialog.flagsForOnlyPane(index)
+            applyToAllPanes = true
             editingId = cloned[index].id || data.id
             syncingPane = true
             loadPaneCoordinates(cloned[index])
@@ -636,7 +605,7 @@ Dialog {
         editingDeviceId = backend.selectedDeviceId
         templateMembers = cloned
         paneIndex = 0
-        paneSelected = sessionDialog.flagsForOnlyPane(0)
+        applyToAllPanes = cloned.length > 1
         editingId = cloned[0].id || data.id
         syncingPane = true
         fillForm(data)
@@ -722,20 +691,19 @@ Dialog {
             visible: sessionDialog.multiPane
             Layout.fillWidth: true
             spacing: 8
-            HudCheck {
-                id: thisPane
+            HudButton {
                 text: "THIS PANE"
-                onClicked: sessionDialog.setPaneSelectedAt(sessionDialog.paneIndex, checked)
-                Binding on checked {
-                    value: sessionDialog.focusedPaneSelected
-                    when: !thisPane.pressed
-                    restoreMode: Binding.RestoreNone
-                }
+                busyMs: 0
+                buttonColor: !sessionDialog.applyToAllPanes ? Theme.fillActive : Theme.surfaceHigh
+                foregroundColor: !sessionDialog.applyToAllPanes ? Theme.accent : Theme.textSecondary
+                onClicked: sessionDialog.setApplyToAll(false)
             }
             HudButton {
-                text: sessionDialog.selectedPaneCount === sessionDialog.paneCount ? "NONE" : "ALL PANES"
+                text: "ALL PANES"
                 busyMs: 0
-                onClicked: sessionDialog.selectAllPanes(sessionDialog.selectedPaneCount !== sessionDialog.paneCount)
+                buttonColor: sessionDialog.applyToAllPanes ? Theme.fillActive : Theme.surfaceHigh
+                foregroundColor: sessionDialog.applyToAllPanes ? Theme.accent : Theme.textSecondary
+                onClicked: sessionDialog.setApplyToAll(true)
             }
             HudButton {
                 text: "‹ PREV"
@@ -761,9 +729,9 @@ Dialog {
             text: {
                 if (sessionDialog.bulkMode)
                     return "Name, coordinates, start time, and device stay unchanged. Camera, wait, and workflow apply to every selected item."
-                if (!sessionDialog.sharedEnabled)
-                    return "No pane is checked, so camera, wait, and workflow are read-only and show the focused pane. Name and coordinates follow the focused pane; mosaic and notes apply to every pane."
-                return "Name and coordinates follow the focused pane. Camera, wait, and workflow apply to checked panes. Mosaic and notes apply to every pane."
+                if (sessionDialog.applyToAllPanes)
+                    return "Camera, wait, and workflow apply to every pane. Name and coordinates follow the pane you're viewing. Mosaic and notes apply to every pane."
+                return "Camera, wait, and workflow apply only to this pane. Name and coordinates also follow this pane. Mosaic and notes still apply to every pane."
             }
             color: Theme.textSecondary
             font.pixelSize: 12
@@ -818,7 +786,6 @@ Dialog {
                 id: camera
                 model: ["Tele", "Wide"]
                 emptyText: "Mixed"
-                enabled: sessionDialog.sharedEnabled
                 Layout.fillWidth: true
                 Layout.columnSpan: currentIndex === 1 ? 2 : 1
                 onActivated: sessionDialog.markDirty("camera")
@@ -828,7 +795,6 @@ Dialog {
                 visible: camera.currentIndex !== 1
                 model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
                 emptyText: "Mixed"
-                enabled: sessionDialog.sharedEnabled
                 Layout.fillWidth: true
                 onActivated: sessionDialog.markDirty("ir_filter")
             }
@@ -839,7 +805,6 @@ Dialog {
                 FieldCaption { text: "SECONDS" }
                 HudField {
                     id: exposure
-                    enabled: sessionDialog.sharedEnabled
                     Layout.fillWidth: true
                     onTextEdited: sessionDialog.markDirty("exposure")
                 }
@@ -850,7 +815,6 @@ Dialog {
                 FieldCaption { text: "GAIN" }
                 HudField {
                     id: gain
-                    enabled: sessionDialog.sharedEnabled
                     Layout.fillWidth: true
                     onTextEdited: sessionDialog.markDirty("gain")
                 }
@@ -862,7 +826,6 @@ Dialog {
                 FieldCaption { text: "FRAMES" }
                 HudField {
                     id: frames
-                    enabled: sessionDialog.sharedEnabled
                     Layout.fillWidth: true
                     onTextEdited: sessionDialog.markDirty("frame_count")
                 }
@@ -875,7 +838,6 @@ Dialog {
                     id: binning
                     model: ["4K", "2K"]
                     emptyText: "Mixed"
-                    enabled: sessionDialog.sharedEnabled
                     Layout.fillWidth: true
                     onActivated: sessionDialog.markDirty("binning")
                 }
@@ -947,7 +909,6 @@ Dialog {
                 FieldCaption { text: "BEFORE" }
                 HudField {
                     id: waitBefore
-                    enabled: sessionDialog.sharedEnabled
                     Layout.fillWidth: true
                     onTextEdited: sessionDialog.markDirty("wait_before")
                 }
@@ -958,7 +919,6 @@ Dialog {
                 FieldCaption { text: "AFTER" }
                 HudField {
                     id: waitAfter
-                    enabled: sessionDialog.sharedEnabled
                     Layout.fillWidth: true
                     onTextEdited: sessionDialog.markDirty("wait_after")
                 }
@@ -974,7 +934,6 @@ Dialog {
                 HudCheck {
                     id: calibrate
                     text: "Calibrate"
-                    enabled: sessionDialog.sharedEnabled
                     tristate: sessionDialog.commonMulti
                     // a click always lands on a real value; the dash only ever reports mixed panes
                     nextCheckState: function() { return calibrate.checkState === Qt.Checked ? Qt.Unchecked : Qt.Checked }
@@ -991,7 +950,6 @@ Dialog {
                 HudCheck {
                     id: autofocus
                     text: "Auto focus"
-                    enabled: sessionDialog.sharedEnabled
                     tristate: sessionDialog.commonMulti
                     nextCheckState: function() { return autofocus.checkState === Qt.Checked ? Qt.Unchecked : Qt.Checked }
                     onClicked: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
@@ -1007,7 +965,6 @@ Dialog {
                 HudCheck {
                     id: infiniteFocus
                     text: "Infinity focus"
-                    enabled: sessionDialog.sharedEnabled
                     tristate: sessionDialog.commonMulti
                     nextCheckState: function() { return infiniteFocus.checkState === Qt.Checked ? Qt.Unchecked : Qt.Checked }
                     onClicked: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
@@ -1023,7 +980,6 @@ Dialog {
                 HudCheck {
                     id: polar
                     text: "Polar / EQ"
-                    enabled: sessionDialog.sharedEnabled
                     tristate: sessionDialog.commonMulti
                     nextCheckState: function() { return polar.checkState === Qt.Checked ? Qt.Unchecked : Qt.Checked }
                     onClicked: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
@@ -1039,7 +995,6 @@ Dialog {
                 HudCheck {
                     id: doGoto
                     text: "GOTO"
-                    enabled: sessionDialog.sharedEnabled
                     tristate: sessionDialog.commonMulti
                     nextCheckState: function() { return doGoto.checkState === Qt.Checked ? Qt.Unchecked : Qt.Checked }
                     onClicked: if (!sessionDialog.syncingPane && !sessionDialog.syncingCommon) {
