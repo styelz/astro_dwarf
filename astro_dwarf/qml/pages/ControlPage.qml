@@ -623,6 +623,21 @@ Item {
                     readonly property bool mainIsWide: backend.previewStacking ? false : preferredWide
                     readonly property bool displayWide: backend.previewStacking ? false : (pipAvailable ? preferredWide : backend.previewWidePlaying)
                     readonly property bool mainPlaying: displayWide ? backend.previewWidePlaying : backend.previewTelePlaying
+                    readonly property int stackCount: {
+                        const n = Number(root.scopeTelemetry.capture_stacked)
+                        return isFinite(n) && n > 0 ? n : 0
+                    }
+                    readonly property int stackTotal: {
+                        const n = Number(root.scopeTelemetry.capture_total)
+                        return isFinite(n) && n > 0 ? n : 0
+                    }
+                    readonly property bool awaitingFirstStack: {
+                        if (root.scopeStopping)
+                            return false
+                        if (!backend.previewStacking && !root.scopeTelemetry.capture_active)
+                            return false
+                        return previewHost.stackCount < 1
+                    }
                     readonly property bool pipPlaying: pipAvailable && pipEnabled
                     readonly property real teleFovH: {
                         const tele = Number(root.scopeTelemetry.tele_fov_h)
@@ -1053,7 +1068,7 @@ Item {
                         anchors.centerIn: parent
                         spacing: 10
                         width: Math.min(parent.width - 48, 520)
-                        visible: backend.previewHeld && !backend.previewPlaying && !root.scopeStopping
+                        visible: backend.previewHeld && !backend.previewPlaying && !root.scopeStopping && !previewHost.awaitingFirstStack
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: "LIVE VIEW PAUSED"
@@ -1084,7 +1099,7 @@ Item {
                     Column {
                         anchors.centerIn: parent
                         spacing: 8
-                        visible: !backend.previewPlaying && !backend.previewHeld && !root.scopeStopping
+                        visible: !backend.previewPlaying && !backend.previewHeld && !root.scopeStopping && !previewHost.awaitingFirstStack
                         Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: Theme.textPrimary; font.pixelSize: 16; font.letterSpacing: 3; font.bold: true }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -1104,6 +1119,58 @@ Item {
                             buttonColor: Theme.fillActive
                             foregroundColor: Theme.accent
                             onClicked: previewHost.startPreview()
+                        }
+                    }
+                    Item {
+                        id: stackWaitOverlay
+                        z: 5
+                        anchors.fill: parent
+                        visible: previewHost.awaitingFirstStack
+                        Rectangle {
+                            anchors.fill: parent
+                            color: Theme.scrim
+                            opacity: backend.previewPlaying ? 0.55 : 0.28
+                        }
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: 10
+                            width: Math.min(parent.width - 48, 520)
+                            Text {
+                                id: stackWaitHeading
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "WAITING FOR FIRST STACKED FRAME"
+                                color: Theme.warning
+                                font.pixelSize: 16
+                                font.letterSpacing: 2
+                                font.bold: true
+                                SequentialAnimation on opacity {
+                                    running: stackWaitOverlay.visible
+                                    loops: Animation.Infinite
+                                    NumberAnimation { from: 1; to: 0.45; duration: 700; easing.type: Easing.InOutSine }
+                                    NumberAnimation { from: 0.45; to: 1; duration: 700; easing.type: Easing.InOutSine }
+                                    onRunningChanged: if (!running) stackWaitHeading.opacity = 1
+                                }
+                            }
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: parent.width
+                                wrapMode: Text.Wrap
+                                horizontalAlignment: Text.AlignHCenter
+                                text: previewHost.stackTotal > 0
+                                    ? "0 / " + previewHost.stackTotal + " frames stacked"
+                                    : "No stacked frames yet"
+                                color: Theme.textPrimary
+                                font.pixelSize: 13
+                            }
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: parent.width
+                                wrapMode: Text.Wrap
+                                horizontalAlignment: Text.AlignHCenter
+                                text: "Live video stops when stacking starts. The stacked preview appears after the first frame is captured and added to the stack — this can take one full exposure."
+                                color: Theme.textSecondary
+                                font.pixelSize: 11
+                            }
                         }
                     }
                     Item {

@@ -169,6 +169,14 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
         view["capture_text"] = ""
         view["capture_fraction"] = 0.0
     view["stacked_text"] = f"{int(stacked)} STACKED" if capturing and stacked is not None else ""
+    try:
+        view["capture_stacked"] = int(stacked or 0)
+    except (TypeError, ValueError):
+        view["capture_stacked"] = 0
+    try:
+        view["capture_total"] = int(total_frames or 0)
+    except (TypeError, ValueError):
+        view["capture_total"] = 0
     view["capture_active"] = capturing
     view["capture_target"] = raw.get("capture_target") or ""
     view["tracking_active"] = raw.get("tracking_state") == "running"

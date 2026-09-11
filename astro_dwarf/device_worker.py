@@ -1855,6 +1855,10 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
 # active, which stalls the SDK for its full 150 s timeout.
 _FALLBACK_STOPS = ("stop_astro", "stop_goto", "stop_calibrate", "stop_autofocus", "stop_polar")
 _STOP_COMMAND_TIMEOUT = 6.0
+# START_CAPTURE can be accepted before the firmware is actually stacking.
+# A stop sent in that gap is a no-op, then stacking starts and keeps going.
+_CAPTURE_STOP_GRACE_S = 8.0
+_CAPTURE_STOP_WAIT_S = 35.0
 _STOP_STEP_LABELS = {
     "stop_astro": "Stopping capture",
     "stop_wide": "Stopping wide capture",
@@ -1891,11 +1895,72 @@ def _stop_step_label(operation: str) -> str:
     return _STOP_STEP_LABELS.get(operation, operation.replace("_", " ").title())
 
 
+def _activity_still_running(snapshot: dict[str, Any]) -> bool:
+    if _capture_running(snapshot):
+        return True
+    if snapshot.get("goto_state") in _BUSY_ASTRO:
+        return True
+    if snapshot.get("calibration_state") in _BUSY_ASTRO:
+        return True
+    if snapshot.get("autofocus_state") == "running":
+        return True
+    if snapshot.get("eq_state") in _BUSY_ASTRO:
+        return True
+    return False
+
+
+def _retry_stop_capture(snapshot: dict[str, Any]) -> None:
+    wide = snapshot.get("capture_camera") == "wide"
+    operation = "stop_wide" if wide else "stop_astro"
+    label = _stop_step_label(operation)
+    report_status("stop", label)
+    log(f"Capture still running after stop; {label.lower()} again", "warning")
+    try:
+        _sdk_call_bounded(operation, _STOP_COMMAND_TIMEOUT)
+    except Exception as exc:
+        log(f"{label} retry skipped: {exc}", "debug")
+
+
+def _wait_for_stop_idle() -> None:
+    """Stay on the stop until stacking actually ends, and catch a late start.
+
+    Firmware often accepts START_CAPTURE, then begins stacking a few seconds
+    later. A stop sent in that window looks successful and the session is
+    already unwound, so we have to watch and send stop again.
+    """
+    if _tap is None:
+        return
+    snapshot = _tap.snapshot()
+    if not _activity_still_running(snapshot):
+        report_status("stop", "Waiting to confirm the telescope stopped")
+        grace = time.monotonic() + _CAPTURE_STOP_GRACE_S
+        while time.monotonic() < grace:
+            snapshot = _tap.snapshot()
+            if _activity_still_running(snapshot):
+                break
+            time.sleep(0.3)
+        else:
+            return
+    report_status("stop", "Waiting for the telescope to stop")
+    deadline = time.monotonic() + _CAPTURE_STOP_WAIT_S
+    retried = False
+    while time.monotonic() < deadline:
+        snapshot = _tap.snapshot()
+        if not _activity_still_running(snapshot):
+            return
+        if _capture_running(snapshot) and not retried:
+            retried = True
+            _retry_stop_capture(snapshot)
+        time.sleep(0.4)
+    if _activity_still_running(_tap.snapshot()):
+        log("Telescope is still busy after stop commands", "warning")
+
+
 def _stop_targets() -> list[str]:
     """Pick the stop commands that match what the telescope is actually doing."""
-    phase = _stop_phase
+    phase = _stop_phase or _session_phase
     snapshot = _tap.snapshot() if _tap is not None else {}
-    capturing = bool(snapshot.get("capture_active"))
+    capturing = _capture_running(snapshot)
     wide_capture = capturing and snapshot.get("capture_camera") == "wide"
     operations: list[str] = []
     if phase in ("astro", "wait_astro", "wait_astro_resume", "mosaic", "set_mosaic_count") or (capturing and not wide_capture):
@@ -1949,6 +2014,7 @@ def stop_all() -> bool:
             _sdk_call_bounded(operation, _STOP_COMMAND_TIMEOUT)
         except Exception as exc:
             log(f"{label} skipped: {exc}", "debug")
+    _wait_for_stop_idle()
     report_status("stop", "Stop complete")
     if _connected.is_set():
         request_state_refresh()

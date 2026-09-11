@@ -310,6 +310,10 @@ _CAPTURE_PREVIEW_STEPS = {
     "Imaging",
     "Imaging (wide)",
 }
+_MEDIA_LOCKED_STATUS = (
+    "The telescope album isn't available while it's capturing. "
+    "Wait until imaging finishes, or switch to Local."
+)
 _ACTIVITY_TRANSIENT = {"calibrate", "autofocus"}
 _ACTION_LABELS = {
     "calibrate": "Calibration started",
@@ -375,8 +379,8 @@ _LOG_GLYPHS = {
 }
 _LOG_FILTERS = {
     # filter name -> levels shown (None = everything)
-    "all": {"INFO", "NOTICE", "SUCCESS", "WARNING", "ERROR"},
-    "device": {"NOTICE", "SUCCESS", "WARNING", "ERROR"},
+    "all": {"INFO", "NOTICE", "SUCCESS"},
+    "device": {"NOTICE", "SUCCESS"},
     "alerts": {"WARNING", "ERROR"},
     "debug": None,
 }
@@ -600,6 +604,7 @@ class AppBackend(QObject):
         self._session_capture_peak: dict[str, int] = {}
         self._session_timing: dict[str, dict[str, Any]] = {}
         self._hold_session_capture: set[str] = set()
+        self._pending_session_finish: dict[str, tuple[str, bool, Any]] = {}
         self.historyChanged.connect(self.durationSuggestionChanged)
         self._recovered_sessions: dict[str, str] = {}
         self._resume_attempted: set[str] = set()
@@ -617,6 +622,7 @@ class AppBackend(QObject):
         self._media_device_id = ""
         self._media_request_id = 0
         self._media_status = ""
+        self._media_locked = False
         self._telemetry_tick = 0
         self._joystick_inflight: set[str] = set()
         self._joystick_pending: dict[str, tuple[float, float]] = {}
@@ -734,6 +740,7 @@ class AppBackend(QObject):
             self._device_telemetry.pop(device_id, None)
             self._telemetry_updated.pop(device_id, None)
             self._hold_session_capture.discard(device_id)
+            self._pending_session_finish.pop(device_id, None)
         if selected_offline:
             self.stopPreview()
         self._disarm_scheduler_if_offline()
@@ -812,6 +819,7 @@ class AppBackend(QObject):
         self._maybe_resume_interrupted_session(device_id)
         self._sync_preview_for_capture(device_id, previous, current)
         self._notify_devices()
+        self._sync_media_lock()
 
     def _toast(self, message: str, level: str = "info", detail: str = "") -> None:
         """Emit a toast, collapsing identical messages fired within two seconds."""
@@ -1549,6 +1557,10 @@ class AppBackend(QObject):
     def mediaBusy(self) -> str:
         return self._album_busy
 
+    @Property(bool, notify=mediaChanged)
+    def mediaLocked(self) -> bool:
+        return self._session_is_capturing(self._selected_device_id)
+
     @Property(str, notify=mediaChanged)
     def albumFolderUrl(self) -> str:
         return self._album_dir().resolve().as_uri()
@@ -1600,6 +1612,9 @@ class AppBackend(QObject):
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
             self.add_log("warning", "Preview needs an active telescope connection", device_id)
+            return
+        if self._device_is_stopping(device_id):
+            self.add_log("info", "Live view stays paused while the telescope stops", device_id)
             return
         if self._preview_should_attach_only(device_id):
             self._clear_preview_hold()
@@ -1819,14 +1834,37 @@ class AppBackend(QObject):
     def _hold_preview_for_session(self, device_id: str, target_name: str) -> None:
         """Keep RTSP live view up until stacking; `_sync_preview_for_capture` switches it."""
 
-    def _session_is_capturing(self, device_id: str) -> bool:
+    def _device_is_stopping(self, device_id: str) -> bool:
+        return self._pending_actions.get(device_id) in _STOP_ACTIONS
+
+    def _telemetry_capturing(self, device_id: str) -> bool:
         telemetry = self._device_telemetry.get(device_id) or {}
-        if telemetry.get("capture_active") or telemetry.get("capture_state") == "running":
+        return bool(telemetry.get("capture_active") or telemetry.get("capture_state") == "running")
+
+    def _session_is_capturing(self, device_id: str) -> bool:
+        if self._device_is_stopping(device_id):
+            return False
+        if self._telemetry_capturing(device_id):
             return True
         session_id = self._active_sessions.get(device_id)
         session = self.store.sessions.get(session_id) if session_id else None
         step = str(session.current_step or "").split(" · ")[0].strip() if session else ""
         return bool(session and step in _CAPTURE_PREVIEW_STEPS)
+
+    def _sync_media_lock(self) -> None:
+        locked = self._session_is_capturing(self._selected_device_id)
+        if locked == self._media_locked:
+            if locked and self._media_source != "local" and self._media_status != _MEDIA_LOCKED_STATUS:
+                self._clear_media(_MEDIA_LOCKED_STATUS)
+            return
+        self._media_locked = locked
+        if locked and self._media_source != "local":
+            self._clear_media(_MEDIA_LOCKED_STATUS)
+            return
+        if self._media_status == _MEDIA_LOCKED_STATUS:
+            self._set_media_status("")
+            return
+        self._emit_media()
 
     def _set_preview_stack_mode(self, stacking: bool) -> None:
         stacking = bool(stacking)
@@ -1843,6 +1881,8 @@ class AppBackend(QObject):
     ) -> None:
         """Move Dwarf 3/Mini live view onto the HTTP stacking JPEG during capture."""
         if device_id != self._selected_device_id or not self._preview_active:
+            return
+        if self._device_is_stopping(device_id):
             return
         stacking = self._preview_stacking(device_id)
         device = self._device_by_id(device_id)
@@ -2072,6 +2112,7 @@ class AppBackend(QObject):
             self.sessionsChanged.emit()
             self.clockChanged.emit()
             self.previewHoldChanged.emit()
+            self._sync_media_lock()
 
     @Property(str, notify=uiBusyChanged)
     def uiBusy(self) -> str:
@@ -2176,6 +2217,7 @@ class AppBackend(QObject):
             self._device_telemetry.pop(device_id, None)
             self._telemetry_updated.pop(device_id, None)
             self._hold_session_capture.discard(device_id)
+            self._pending_session_finish.pop(device_id, None)
             self._device_lights.pop(device_id, None)
             self._device_indicators.pop(device_id, None)
             self.add_log("info" if ok else "error", "Disconnected" if ok else str(result), device_id)
@@ -2332,9 +2374,18 @@ class AppBackend(QObject):
 
         def done(ok: bool, result: Any) -> None:
             self._complete_activity(device_id, action, ok)
+            pending_finish = self._pending_session_finish.pop(device_id, None)
+            if pending_finish:
+                self._finalize_session(*pending_finish)
+            if worker and device_id not in self._active_sessions:
+                worker.busy = False
+                worker.availabilityChanged.emit()
             self.add_log(
                 "warning" if ok else "error", "Stop commands sent" if ok else str(result), device_id
             )
+            if ok and self._telemetry_capturing(device_id):
+                self.add_log("warning", "Telescope is still stacking after the stop command", device_id)
+                self._toast("Capture may still be running", "warning", "Use STOP ALL if stacking continues")
 
         worker.send("stop_all", callback=self._with_pending(device_id, action, done))
 
@@ -2431,6 +2482,7 @@ class AppBackend(QObject):
         self._device_telemetry.pop(device_id, None)
         self._telemetry_updated.pop(device_id, None)
         self._hold_session_capture.discard(device_id)
+        self._pending_session_finish.pop(device_id, None)
         self._device_lights.pop(device_id, None)
         self._device_indicators.pop(device_id, None)
         if self._selected_device_id == device_id:
@@ -2740,6 +2792,7 @@ class AppBackend(QObject):
         self._media_items = []
         self._media_selected_id = ""
         self._album_items = []
+        self._album_busy = ""
         self._media_status = str(status or "")
         self._emit_media(items=True)
 
@@ -2835,6 +2888,12 @@ class AppBackend(QObject):
         if self._media_source == "local":
             self.listLocalAlbum()
             return
+        if self._session_is_capturing(device_id):
+            self._media_locked = True
+            self._clear_media(_MEDIA_LOCKED_STATUS)
+            if not quiet:
+                self._toast("Can't browse the album while the telescope is capturing", "warning")
+            return
         if quiet and not self._media_can_auto_list(device_id):
             device = next((item for item in self._devices if item.id == device_id), None)
             ip = str(getattr(device, "ip_address", "") or "").strip()
@@ -2868,6 +2927,12 @@ class AppBackend(QObject):
             self._clear_media("Set the telescope IP in Settings before listing sessions.")
             if not quiet:
                 self._toast("Set the telescope IP before listing sessions", "warning")
+            return
+        if self._session_is_capturing(device_id):
+            self._media_locked = True
+            self._clear_media(_MEDIA_LOCKED_STATUS)
+            if not quiet:
+                self._toast("Can't browse the album while the telescope is capturing", "warning")
             return
         request_id = self._begin_media_request(device_id, "astro")
         self._set_media_busy("list")
@@ -2908,6 +2973,12 @@ class AppBackend(QObject):
         if not worker or not device or not str(device.ip_address or "").strip():
             self._clear_media("Set the telescope IP in Settings before listing stills.")
             return
+        if self._session_is_capturing(device_id):
+            self._media_locked = True
+            self._clear_media(_MEDIA_LOCKED_STATUS)
+            if not quiet:
+                self._toast("Can't browse the album while the telescope is capturing", "warning")
+            return
         camera = device.camera.value if hasattr(device.camera, "value") else "tele"
         request_id = self._begin_media_request(device_id, "stills")
         self._set_media_busy("list")
@@ -2945,6 +3016,10 @@ class AppBackend(QObject):
             return
         if self._media_device_id and self._media_device_id != device_id:
             self._toast("Switch back to the telescope that listed this file before downloading", "warning")
+            return
+        if self._session_is_capturing(device_id):
+            self._media_locked = True
+            self._toast("Can't download while the telescope is capturing", "warning")
             return
         if self._media_source == "stills":
             self.downloadAlbumPhoto(device_id, chosen)
@@ -2995,6 +3070,10 @@ class AppBackend(QObject):
     def downloadAlbumPhoto(self, device_id: str, name: str = "") -> None:
         worker = self._workers.get(device_id)
         if not worker:
+            return
+        if self._session_is_capturing(device_id):
+            self._media_locked = True
+            self._toast("Can't download while the telescope is capturing", "warning")
             return
         device = self._device_by_id(device_id)
         camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
@@ -4313,8 +4392,30 @@ class AppBackend(QObject):
             dict(self._device_telemetry.get(session.device_id) or {}),
             dict(self._device_telemetry.get(session.device_id) or {}),
         )
+        self._sync_media_lock()
 
     def _session_finished(self, session_id: str, ok: bool, result: Any) -> None:
+        session = self.store.sessions.get(session_id)
+        device_id = next(
+            (item_id for item_id, active_id in self._active_sessions.items() if active_id == session_id),
+            session.device_id if session else "",
+        )
+        if (
+            device_id
+            and session_id in self._stop_requested
+            and self._pending_actions.get(device_id) in _STOP_ACTIONS
+        ):
+            # The worker has left the session, but stop_astro may still be in
+            # flight. Keep the HUD on Stopping until that command finishes.
+            self._pending_session_finish[device_id] = (session_id, ok, result)
+            worker = self._workers.get(device_id)
+            if worker:
+                worker.busy = True
+                worker.availabilityChanged.emit()
+            return
+        self._finalize_session(session_id, ok, result)
+
+    def _finalize_session(self, session_id: str, ok: bool, result: Any) -> None:
         active_device = next(
             (device_id for device_id, active_id in self._active_sessions.items() if active_id == session_id),
             None,
@@ -4362,7 +4463,8 @@ class AppBackend(QObject):
         )
         captured = self._captured_frames_for(session.id, final.camera.frame_count, ok)
         self._hold_session_capture.discard(final.device_id)
-        self._reset_device_capture_progress(final.device_id)
+        if not self._telemetry_capturing(final.device_id):
+            self._reset_device_capture_progress(final.device_id)
         device = next((item for item in self._devices if item.id == final.device_id), None)
         self.store.history.save(history_record_for_run(
             final,
@@ -4386,6 +4488,7 @@ class AppBackend(QObject):
         telemetry = dict(self._device_telemetry.get(final.device_id) or {})
         self._sync_preview_for_capture(final.device_id, telemetry, telemetry)
         self._notify_devices()
+        self._sync_media_lock()
         if restore_preview:
             self._restore_held_preview(final.device_id)
 
