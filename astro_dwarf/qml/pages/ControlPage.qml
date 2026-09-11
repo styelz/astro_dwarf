@@ -579,46 +579,11 @@ Item {
                     enabled: root.commandEnabled("set_auto_calibration")
                     onClicked: backend.setCameraParam(backend.selectedDeviceId, "auto_calibration", checked ? "true" : "false")
                 }
-                FieldLabel { text: "ALBUM" }
-                RowLayout {
+                FieldLabel { text: "MEDIA" }
+                HudButton {
+                    text: "OPEN MEDIA"
                     Layout.fillWidth: true
-                    HudButton {
-                        text: "LIST"
-                        Layout.fillWidth: true
-                        enabled: backend.selectedDevice.connected && backend.albumBusy === ""
-                        busy: backend.albumBusy === "list"
-                        busyText: "LISTING…"
-                        onClicked: backend.listAlbum(backend.selectedDeviceId)
-                    }
-                    HudButton {
-                        text: "LAST"
-                        Layout.fillWidth: true
-                        enabled: backend.selectedDevice.connected && backend.albumBusy === ""
-                        busy: backend.albumBusy === "download"
-                        busyText: "SAVING…"
-                        onClicked: backend.downloadAlbumPhoto(backend.selectedDeviceId, liveAlbum.currentText || "")
-                    }
-                }
-                HudCombo {
-                    id: liveAlbum
-                    Layout.fillWidth: true
-                    enabled: backend.albumItems.length > 0
-                    model: {
-                        const items = backend.albumItems
-                        const names = []
-                        for (let i = 0; i < items.length; i++)
-                            names.push(items[i].file)
-                        return names
-                    }
-                }
-                Image {
-                    visible: backend.lastAlbumUrl !== ""
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 96
-                    fillMode: Image.PreserveAspectFit
-                    source: backend.lastAlbumUrl
-                    asynchronous: true
-                    cache: false
+                    onClicked: root.goToPage(root.mediaPageIndex)
                 }
             }
         }
@@ -1392,19 +1357,35 @@ Item {
                 title: "COMMANDS"
                 SplitView.preferredHeight: 244
                 SplitView.minimumHeight: 140
+                headerExtra: Row {
+                    spacing: 8
+                    visible: !!(root.scopeTelemetry.eq_has_result)
+                    Text {
+                        text: String(root.scopeTelemetry.eq_azi_text || "")
+                        color: Number(root.scopeTelemetry.eq_azi_err) > 0 ? Theme.success : (Number(root.scopeTelemetry.eq_azi_err) < 0 ? Theme.danger : Theme.textSecondary)
+                        font.pixelSize: 10
+                        font.family: Theme.fontMono
+                    }
+                    Text {
+                        text: String(root.scopeTelemetry.eq_alt_text || "")
+                        color: Number(root.scopeTelemetry.eq_alt_err) > 0 ? Theme.success : (Number(root.scopeTelemetry.eq_alt_err) < 0 ? Theme.danger : Theme.textSecondary)
+                        font.pixelSize: 10
+                        font.family: Theme.fontMono
+                    }
+                }
                 GridLayout {
                     id: commandGrid
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    readonly property int padCount: 14
+                    readonly property int padCount: 15
                     // pick the widest column count that still divides the pads into full rows
                     columns: {
                         const fit = Math.max(2, Math.floor((width + columnSpacing) / (150 + columnSpacing)))
-                        const options = [6, 4, 3, 2]
+                        const options = [5, 3]
                         for (let i = 0; i < options.length; i++)
                             if (options[i] <= fit)
                                 return options[i]
-                        return 2
+                        return 3
                     }
                     columnSpacing: 8
                     rowSpacing: 8
@@ -1414,6 +1395,7 @@ Item {
                         {label: "AUTO FOCUS", glyph: "◉", start: "autofocus", stop: "stop_autofocus", state: "autofocus", detail: "OPTICS"},
                         {label: "INFINITY", glyph: "∞", start: "infinity", stop: "stop_autofocus", state: "autofocus", detail: "FOCUS"},
                         {label: "POLAR / EQ", glyph: "⌖", start: "polar", stop: "stop_polar", state: "polar", detail: "ALIGN"},
+                        {label: "POLAR POS", glyph: "⊕", start: "polar_position", stop: "", state: "", detail: "MOUNT"},
                         {label: "LIGHTS", glyph: "✦", start: "lights_on", stop: "lights_off", state: "lights", detail: "CHASSIS"},
                         {label: "INDICATOR", glyph: "◉", start: "indicator_on", stop: "indicator_off", state: "indicator", detail: "CHASSIS"},
                         {label: "PHOTO", glyph: "▣", start: "photo", stop: "", state: "", detail: "CAPTURE"},
@@ -1445,6 +1427,8 @@ Item {
                             case "autofocus":
                                 return t.focus_text && t.focus_text !== "—" ? "RUNNING · " + t.focus_text : "RUNNING"
                             case "polar":
+                                if (t.eq_has_result && !activeForState)
+                                    return t.eq_azi_text || "ALIGN"
                                 return root.scopeActivityDetail || "RUNNING"
                             case "record":
                                 return "REC · " + (root.scopeActivityDetail || "00:00")

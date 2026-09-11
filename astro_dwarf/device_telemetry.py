@@ -462,6 +462,22 @@ class TelemetryTap:
             return
         with self._lock:
             self._responses[cmd] = (code, time.monotonic())
+        if cmd == CMD_ASTRO_START_EQ_SOLVING:
+            changes: dict[str, Any] = {}
+            azi = getattr(message, "azi_err", None)
+            alt = getattr(message, "alt_err", None)
+            if azi is not None:
+                try:
+                    changes["eq_azi_err"] = float(azi)
+                except (TypeError, ValueError):
+                    pass
+            if alt is not None:
+                try:
+                    changes["eq_alt_err"] = float(alt)
+                except (TypeError, ValueError):
+                    pass
+            if changes:
+                self.update(changes, force=True)
 
     def _decode(self, cmd: int, kind: int, data: bytes) -> dict[str, Any]:
         if self._notify is None or self._base is None:
@@ -584,7 +600,15 @@ class TelemetryTap:
             }
         if cmd == CMD_NOTIFY_EQ_SOLVING_STATE:
             message = self._parse("EqSolvingState", data)
-            return {"eq_state": OPERATION_STATES.get(int(message.state), str(message.state))}
+            changes = {"eq_state": OPERATION_STATES.get(int(message.state), str(message.state))}
+            for attr, key in (("azi_err", "eq_azi_err"), ("alt_err", "eq_alt_err")):
+                if not hasattr(message, attr):
+                    continue
+                try:
+                    changes[key] = float(getattr(message, attr))
+                except (TypeError, ValueError):
+                    continue
+            return changes
         if cmd in (CMD_NOTIFY_STATE_CAPTURE_RAW_LIVE_STACKING, CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING):
             message = self._parse("CaptureRawState", data)
             state = OPERATION_STATES.get(int(message.state), str(message.state))

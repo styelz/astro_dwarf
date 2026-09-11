@@ -175,6 +175,29 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     view["goto_state"] = raw.get("goto_state") or ""
     view["calibration_state"] = raw.get("calibration_state") or ""
     view["calibration_phase"] = int(raw.get("calibration_phase") or 0)
+    azi = raw.get("eq_azi_err")
+    alt = raw.get("eq_alt_err")
+    try:
+        azi_value = float(azi) if azi is not None else None
+    except (TypeError, ValueError):
+        azi_value = None
+    try:
+        alt_value = float(alt) if alt is not None else None
+    except (TypeError, ValueError):
+        alt_value = None
+    view["eq_azi_err"] = azi_value if azi_value is not None else 0
+    view["eq_alt_err"] = alt_value if alt_value is not None else 0
+    view["eq_has_result"] = azi_value is not None and alt_value is not None
+    if view["eq_has_result"]:
+        azi_glyph = "↻" if azi_value > 0 else ("↺" if azi_value < 0 else "·")
+        alt_glyph = "↑" if alt_value > 0 else ("↓" if alt_value < 0 else "·")
+        azi_dir = "CW" if azi_value > 0 else ("CCW" if azi_value < 0 else "OK")
+        alt_dir = "UP" if alt_value > 0 else ("DOWN" if alt_value < 0 else "OK")
+        view["eq_azi_text"] = f"{azi_glyph} {abs(azi_value):.2f}° AZ {azi_dir}"
+        view["eq_alt_text"] = f"{alt_glyph} {abs(alt_value):.2f}° ALT {alt_dir}"
+    else:
+        view["eq_azi_text"] = ""
+        view["eq_alt_text"] = ""
     activity, detail = derive_activity(raw)
     view["activity"] = activity
     view["activity_detail"] = detail
@@ -245,7 +268,12 @@ class AlertEngine:
                 add("success", "Calibration complete", detail)
         # EQ / polar
         if changed("eq_state") and current["eq_state"] in ("stopped", "idle") and previous.get("eq_state") == "running":
-            add("success", "EQ solving complete", "")
+            azi = current.get("eq_azi_err", previous.get("eq_azi_err"))
+            alt = current.get("eq_alt_err", previous.get("eq_alt_err"))
+            detail = ""
+            if azi is not None and alt is not None:
+                detail = f"Az {abs(float(azi)):.2f}° · Alt {abs(float(alt)):.2f}°"
+            add("success", "EQ solving complete", detail)
         # Autofocus
         if changed("autofocus_state") and current["autofocus_state"] in ("stopped", "idle") and previous.get("autofocus_state") == "running":
             focus = current.get("focus_position") or previous.get("focus_position")
