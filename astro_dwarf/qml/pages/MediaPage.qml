@@ -274,8 +274,10 @@ Item {
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: DialogFrame {}
         readonly property bool enhanceOn: Theme.enhanceImages && Util.shouldEnhanceMedia(mediaPage.selected)
+        readonly property string selectedKey: String((mediaPage.selected && mediaPage.selected.id) || "")
         readonly property string rawUrl: (mediaPage.selected && (mediaPage.selected.image_url || mediaPage.selected.thumbnail_url)) || ""
         readonly property string cleanUrl: {
+            lightbox.selectedKey
             Theme.deepCleanImages
             backend.enhanceCacheGeneration
             if (!lightbox.enhanceOn || !lightbox.rawUrl)

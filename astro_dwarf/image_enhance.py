@@ -49,7 +49,7 @@ def lookup_enhance_url(key: str) -> str:
 
 def enhance_cache_key(url: str, profile: str) -> str:
     kind = "deep" if str(profile or "").strip().lower() == "deep" else "std"
-    return hashlib.sha1(f"v5:{kind}:{url}".encode("utf-8", "replace")).hexdigest()
+    return hashlib.sha1(f"v6:{kind}:{url}".encode("utf-8", "replace")).hexdigest()
 
 
 def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standard") -> QImage:
