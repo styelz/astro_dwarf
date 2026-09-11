@@ -207,10 +207,21 @@ def _stacking_progress_changes(message: Any, mosaic: bool = False) -> dict[str, 
     }
     if mosaic:
         changes["mosaic_active"] = True
-    if update_type in (0, 2):
-        changes["capture_current"] = int(message.current_count)
-    if update_type in (1, 2):
-        changes["capture_stacked"] = int(message.stacked_count)
+    try:
+        current = int(message.current_count)
+    except (TypeError, ValueError):
+        current = 0
+    try:
+        stacked = int(message.stacked_count)
+    except (TypeError, ValueError):
+        stacked = 0
+    # update_type=0 is also the proto3 default, so a full progress packet
+    # that omits the field would otherwise never publish stacked_count.
+    # A positive count is always a real value, never a missing-field zero.
+    if update_type in (0, 2) or current:
+        changes["capture_current"] = current
+    if update_type in (1, 2) or stacked:
+        changes["capture_stacked"] = stacked
     if not mosaic:
         try:
             if message.HasField("shooting_time"):

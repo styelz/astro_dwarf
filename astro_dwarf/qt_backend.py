@@ -771,12 +771,15 @@ class AppBackend(QObject):
             return
         data = dict(data)
         if device_id in self._hold_session_capture:
-            reset = False
-            try:
-                reset = int(data.get("capture_current") or 0) == 0 and int(data.get("capture_stacked") or 0) == 0
-            except (TypeError, ValueError):
-                reset = False
-            if reset and ("capture_current" in data or "capture_stacked" in data):
+            # Firmware often never sends a 0/0 reset — the first packet is
+            # stacked=1. Release as soon as this session's capture starts.
+            starting = (
+                data.get("capture_active") is True
+                or data.get("capture_state") == "running"
+                or "capture_current" in data
+                or "capture_stacked" in data
+            )
+            if starting:
                 self._hold_session_capture.discard(device_id)
             else:
                 for key in ("capture_current", "capture_stacked", "capture_active", "capture_state", "mosaic_active"):

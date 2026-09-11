@@ -1157,8 +1157,10 @@ Item {
                                 wrapMode: Text.Wrap
                                 horizontalAlignment: Text.AlignHCenter
                                 text: previewHost.stackTotal > 0
-                                    ? "0 / " + previewHost.stackTotal + " frames stacked"
-                                    : "No stacked frames yet"
+                                    ? previewHost.stackCount + " / " + previewHost.stackTotal + " frames stacked"
+                                    : (previewHost.stackCount > 0
+                                        ? previewHost.stackCount + " frames stacked"
+                                        : "No stacked frames yet")
                                 color: Theme.textPrimary
                                 font.pixelSize: 13
                             }
