@@ -72,6 +72,8 @@ hiddenimports = [
     "astro_dwarf.image_enhance",
     "astro_dwarf.location",
     "numpy",
+    "cv2",
+    "onnxruntime",
     "astro_dwarf.version",
     "tzdata",
     "PySide6.QtMultimedia",
@@ -94,7 +96,7 @@ def collect_package(name: str) -> None:
     hiddenimports.extend(pkg_hiddenimports)
 
 
-for package in ("dwarf_python_api", "dwarf_ble_connect", "websockets", "google.protobuf", "filelock", "bleak", "tzdata", "numpy"):
+for package in ("dwarf_python_api", "dwarf_ble_connect", "websockets", "google.protobuf", "filelock", "bleak", "tzdata", "numpy", "cv2", "onnxruntime"):
     collect_package(package)
 
 analysis = Analysis(

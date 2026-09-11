@@ -1337,6 +1337,29 @@ Item {
                             }
                         }
                         Rectangle {
+                            visible: (backend.previewStacking || previewHost.awaitingFirstStack) && Theme.enhanceImages
+                            width: deepLabel.implicitWidth + 16
+                            height: 28
+                            color: Theme.deepCleanImages ? Theme.fillActive : Theme.hsl(0.094, 0.333, 0.094, 0.753)
+                            border.color: Theme.deepCleanImages ? Theme.accent : Theme.outline
+                            Text {
+                                id: deepLabel
+                                anchors.centerIn: parent
+                                text: "DEEP"
+                                color: Theme.deepCleanImages ? Theme.accent : Theme.textSecondary
+                                font.pixelSize: 11
+                                font.bold: true
+                                font.letterSpacing: 1
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onContainsMouseChanged: previewHost.holdControls(containsMouse)
+                                onClicked: Theme.deepCleanImages = !Theme.deepCleanImages
+                            }
+                        }
+                        Rectangle {
                             id: recBadge
                             readonly property var t: root.scopeTelemetry
                             readonly property bool rec: root.scopeOnline && (root.scopeActivity === "record" || !!t.capture_active)

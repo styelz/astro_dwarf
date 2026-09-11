@@ -248,6 +248,7 @@ ApplicationWindow {
         DragCoordinator.timeline = calendarPage
         root.syncWindowFrame()
         backend.setEnhanceImages(Theme.enhanceImages)
+        backend.setDeepCleanImages(Theme.deepCleanImages)
     }
 
     // Keep the native Windows caption in step with the theme hue (debounced while the slider moves).
@@ -260,6 +261,7 @@ ApplicationWindow {
         function onHueChanged() { frameSyncTimer.restart() }
         function onBrightnessChanged() { frameSyncTimer.restart() }
         function onEnhanceImagesChanged() { backend.setEnhanceImages(Theme.enhanceImages) }
+        function onDeepCleanImagesChanged() { backend.setDeepCleanImages(Theme.deepCleanImages) }
     }
     Timer {
         id: frameSyncTimer

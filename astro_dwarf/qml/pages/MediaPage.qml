@@ -207,6 +207,7 @@ Item {
                                         cache: true
                                         source: {
                                             Theme.enhanceImages
+                                            Theme.deepCleanImages
                                             return Util.mediaDisplayUrl(tile.modelData, "thumb")
                                         }
                                         visible: source !== "" && status === Image.Ready
@@ -289,13 +290,16 @@ Item {
                     cache: false
                     source: {
                         Theme.enhanceImages
+                        Theme.deepCleanImages
                         return Util.mediaDisplayUrl(mediaPage.selected, "image")
                     }
                 }
                 Text {
                     anchors.centerIn: parent
                     visible: lightboxImage.source == "" || lightboxImage.status !== Image.Ready
-                    text: lightboxImage.status === Image.Loading || mediaPage.busy ? "LOADING…" : "NO PREVIEW"
+                    text: lightboxImage.status === Image.Loading
+                        ? (Theme.deepCleanImages && Theme.enhanceImages ? "DEEP CLEAN…" : "LOADING…")
+                        : (mediaPage.busy ? "LOADING…" : "NO PREVIEW")
                     color: Theme.muted
                     font.pixelSize: 12
                     font.letterSpacing: 1.4
@@ -326,6 +330,13 @@ Item {
                             buttonColor: Theme.enhanceImages ? Theme.fillActive : Theme.inputBg
                             foregroundColor: Theme.enhanceImages ? Theme.accent : Theme.textSecondary
                             onClicked: Theme.enhanceImages = !Theme.enhanceImages
+                        }
+                        HudButton {
+                            text: Theme.deepCleanImages ? "DEEP ON" : "DEEP CLEAN"
+                            visible: Util.shouldEnhanceMedia(mediaPage.selected) && Theme.enhanceImages
+                            buttonColor: Theme.deepCleanImages ? Theme.fillActive : Theme.inputBg
+                            foregroundColor: Theme.deepCleanImages ? Theme.accent : Theme.textSecondary
+                            onClicked: Theme.deepCleanImages = !Theme.deepCleanImages
                         }
                         HudButton {
                             text: "DOWNLOAD"

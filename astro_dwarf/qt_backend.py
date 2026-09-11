@@ -22,6 +22,7 @@ from PySide6.QtCore import (
     QObject,
     Qt,
     QThread,
+    QThreadPool,
     QTimer,
     QUrl,
     Signal,
@@ -74,7 +75,7 @@ from .duration_suggest import suggest_hardware_profile
 from .location import has_site_coordinates, match_timezone, resolve_location, suggested_timezone, timezone_locations
 from .runtime import PROCESS_CREATION_FLAGS, kill_pid_tree, prepare_worker_environment, worker_command
 from .storage import SessionStore
-from .image_enhance import enhance_image
+from .image_enhance import PreviewEnhanceJob, PreviewEnhanceSignals, set_model_dir
 from .stream_preview import LiveFrames, StreamPlayer, port_is_open, preview_window_is_live, set_live_frames, stream_port
 from .telemetry_view import AlertEngine, derive_activity, format_telemetry
 
@@ -616,6 +617,7 @@ class AppBackend(QObject):
     previewHoldChanged = Signal()
     previewStackingChanged = Signal()
     enhanceImagesChanged = Signal()
+    deepCleanImagesChanged = Signal()
     albumChanged = Signal()
     mediaChanged = Signal()
     mediaItemsChanged = Signal()
@@ -629,6 +631,7 @@ class AppBackend(QObject):
     def __init__(self, data_root: Path, parent: QObject | None = None):
         super().__init__(parent)
         self.store = SessionStore(data_root)
+        set_model_dir(Path(data_root) / "models")
         self._devices = self.store.devices.all()
         if not self._devices:
             self._devices = [self.store.seed_device()]
@@ -724,7 +727,13 @@ class AppBackend(QObject):
         self._preview_wide_url = ""
         self._preview_stack_mode = False
         self._enhance_images = True
+        self._deep_clean_images = False
         self._raw_preview_images = {"tele": QImage(), "wide": QImage()}
+        self._enhance_job_token = {"tele": 0, "wide": 0}
+        self._enhance_pool = QThreadPool(self)
+        self._enhance_pool.setMaxThreadCount(1)
+        self._preview_enhance_signals = PreviewEnhanceSignals(self)
+        self._preview_enhance_signals.finished.connect(self._on_preview_enhanced)
         self._shut_down = False
         self._preview_thread = QThread(self)
         self._tele_player = StreamPlayer()
@@ -1704,6 +1713,23 @@ class AppBackend(QObject):
         self.enhanceImagesChanged.emit()
         self._refresh_preview_enhance()
 
+    @Property(bool, notify=deepCleanImagesChanged)
+    def deepCleanImages(self) -> bool:
+        return bool(self._deep_clean_images)
+
+    @deepCleanImages.setter
+    def deepCleanImages(self, value: bool) -> None:
+        self.setDeepCleanImages(value)
+
+    @Slot(bool)
+    def setDeepCleanImages(self, value: bool) -> None:
+        on = bool(value)
+        if on == self._deep_clean_images:
+            return
+        self._deep_clean_images = on
+        self.deepCleanImagesChanged.emit()
+        self._refresh_preview_enhance()
+
     @Property("QVariantList", notify=albumChanged)
     def albumItems(self) -> list[dict[str, Any]]:
         return list(self._album_items)
@@ -1896,6 +1922,7 @@ class AppBackend(QObject):
         self._preview_wide_playing = False
         self.live_images.clear()
         self._raw_preview_images = {"tele": QImage(), "wide": QImage()}
+        self._enhance_job_token = {"tele": self._enhance_job_token.get("tele", 0) + 1, "wide": self._enhance_job_token.get("wide", 0) + 1}
         self._last_preview_ui.clear()
         self._preview_tele_url = ""
         self._preview_wide_url = ""
@@ -1997,6 +2024,7 @@ class AppBackend(QObject):
         self._preview_wide_playing = False
         self.live_images.clear()
         self._raw_preview_images = {"tele": QImage(), "wide": QImage()}
+        self._enhance_job_token = {"tele": self._enhance_job_token.get("tele", 0) + 1, "wide": self._enhance_job_token.get("wide", 0) + 1}
         self._last_preview_ui.clear()
         self._preview_tele_url = ""
         self._preview_wide_url = ""
@@ -2223,13 +2251,31 @@ class AppBackend(QObject):
     def _should_enhance_preview(self) -> bool:
         return bool(self._enhance_images) and bool(self._preview_stack_mode)
 
-    def _display_preview_frame(self, image: QImage) -> QImage:
-        if image is None or image.isNull() or not self._should_enhance_preview():
-            return image
-        try:
-            return enhance_image(image, denoise=True)
-        except Exception:
-            return image
+    def _preview_enhance_profile(self) -> str:
+        return "deep" if self._deep_clean_images else "standard"
+
+    def _queue_preview_enhance(self, camera: str, raw: QImage) -> None:
+        self._enhance_job_token[camera] = int(self._enhance_job_token.get(camera, 0)) + 1
+        token = self._enhance_job_token[camera]
+        job = PreviewEnhanceJob(
+            token,
+            camera,
+            raw.copy(),
+            self._preview_enhance_profile(),
+            self._preview_enhance_signals,
+        )
+        self._enhance_pool.start(job)
+
+    def _on_preview_enhanced(self, token: int, camera: str, image) -> None:
+        if self._shut_down or not self._preview_active:
+            return
+        if token != self._enhance_job_token.get(camera):
+            return
+        if not isinstance(image, QImage) or image.isNull() or not self._should_enhance_preview():
+            return
+        self.live_images.update(camera, image)
+        if preview_window_is_live(self._preview_window):
+            self.live_images.notify(camera)
 
     def _refresh_preview_enhance(self) -> None:
         if not self._preview_active:
@@ -2238,7 +2284,11 @@ class AppBackend(QObject):
             raw = self._raw_preview_images.get(camera) or QImage()
             if raw.isNull():
                 continue
-            self.live_images.update(camera, self._display_preview_frame(raw))
+            if self._should_enhance_preview():
+                self._queue_preview_enhance(camera, raw)
+                continue
+            self._enhance_job_token[camera] = int(self._enhance_job_token.get(camera, 0)) + 1
+            self.live_images.update(camera, raw)
             self.live_images.notify(camera)
 
     def _on_tele_frame(self, image) -> None:
@@ -2252,7 +2302,13 @@ class AppBackend(QObject):
             return
         raw = image.copy() if isinstance(image, QImage) and not image.isNull() else QImage()
         self._raw_preview_images[camera] = raw
-        self.live_images.update(camera, self._display_preview_frame(raw))
+        if self._should_enhance_preview():
+            shown = self.live_images.peek(camera)
+            if shown.isNull():
+                self.live_images.update(camera, raw)
+            self._queue_preview_enhance(camera, raw)
+        else:
+            self.live_images.update(camera, raw)
         first_frame = (camera == "wide" and not self._preview_wide_playing) or (
             camera == "tele" and not self._preview_tele_playing
         )
@@ -4758,6 +4814,7 @@ class AppBackend(QObject):
         self._devices_notify_timer.stop()
         self._retarget_timer.stop()
         self.stopPreview()
+        self._enhance_pool.waitForDone(1500)
         self._tele_player.abort()
         self._wide_player.abort()
         set_live_frames(None)
