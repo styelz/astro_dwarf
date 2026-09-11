@@ -123,7 +123,7 @@ Item {
                         {label: "ENDPOINT", value: backend.selectedDevice.ip_address || "—", tone: root.scopeOnline ? Theme.textPrimary : Theme.textSecondary},
                         {label: "SCHEDULER", value: backend.schedulerEnabled ? root.nextSessionCountdown() : "Disarmed", tone: backend.schedulerEnabled ? Theme.success : Theme.textSecondary},
                         {label: "PREVIEW", value: root.scopeStopping ? (root.scopePendingDetail || "Stopping") : (backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped")), tone: root.scopeStopping ? Theme.warning : (backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary))},
-                        {label: "SESSION", value: Util.sessionStepLabel(backend.currentSession, backend.localNow.epoch_ms) || backend.currentSession.current_step || "No active session", tone: backend.currentSession.id ? Theme.accent : Theme.textSecondary},
+                        {label: "SESSION", value: Util.sessionStepLabel(backend.currentSession, backend.localNow.epoch_ms) || backend.currentSession.current_step || Util.idleScheduleLabel(backend.upcomingSessions, backend.schedulerEnabled, backend.localNow.epoch_ms), tone: backend.currentSession.id ? Theme.accent : Theme.textSecondary},
                         {label: "REMAINING", value: backend.currentSession.id ? Util.durationLabel(Number(backend.currentSession.planned_duration_seconds || 0) * (1 - backend.sessionProgress)) : "—", tone: Theme.textPrimary},
                         {label: "TIMEZONE", value: backend.selectedDevice.timezone_name || "UTC", tone: Theme.textPrimary},
                         {label: "LAT / LON", value: Number(backend.selectedDevice.latitude || 0).toFixed(2) + "°, " + Number(backend.selectedDevice.longitude || 0).toFixed(2) + "°", tone: Theme.textPrimary}
@@ -351,7 +351,7 @@ Item {
                         if (root.scopeActivity === "goto")
                             return "Slewing to " + (t.tracking_target || root.scopeActivityDetail || "target")
                         if (t.tracking_active)
-                            return "Tracking " + (t.tracking_target || "target") + (t.stacked_text ? "  ·  " + t.stacked_text : "")
+                            return "Tracking " + (t.tracking_target || "target") + (t.capture_active && t.stacked_text ? "  ·  " + t.stacked_text : "")
                         return "Telescope ready"
                     }
                     color: root.scopeTelemetry.tracking_active || root.scopeActivity === "goto" ? Theme.notice : Theme.textSecondary
@@ -360,7 +360,7 @@ Item {
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    Text { text: backend.currentSession.duration_text ? "PLANNED  " + backend.currentSession.duration_text : "WAITING FOR SCHEDULE"; color: Theme.accent; font.pixelSize: 11; font.letterSpacing: 0.8; Layout.fillWidth: true; elide: Text.ElideRight }
+                    Text { text: backend.currentSession.duration_text ? "PLANNED  " + backend.currentSession.duration_text : Util.idleScheduleLabel(backend.upcomingSessions, backend.schedulerEnabled, backend.localNow.epoch_ms); color: Theme.accent; font.pixelSize: 11; font.letterSpacing: 0.8; Layout.fillWidth: true; elide: Text.ElideRight }
                     Text { visible: !!backend.currentSession.id; text: Math.round(backend.sessionProgress * 100) + "%"; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono }
                 }
                 ProgressBar {
@@ -370,6 +370,7 @@ Item {
                     to: 1
                     value: backend.sessionProgress
                     readonly property bool idle: !backend.currentSession.id
+                    readonly property bool waitingForNext: idle && backend.schedulerEnabled && backend.upcomingSessions.length > 0
                     background: Rectangle { implicitHeight: 8; color: Theme.inputBg; border.color: Theme.outline }
                     contentItem: Item {
                         implicitHeight: 8
@@ -382,7 +383,7 @@ Item {
                         }
                         Rectangle {
                             id: idleSweep
-                            visible: sessionBar.idle && controlPage.visible
+                            visible: sessionBar.waitingForNext && controlPage.visible
                             width: 46
                             height: parent.height
                             opacity: 0.55
@@ -1029,7 +1030,7 @@ Item {
                             Text { text: "GAIN " + readoutStrip.gain; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono }
                             Text { visible: !readoutStrip.wide; text: liveFilter.currentText.toUpperCase(); color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight }
                             Text {
-                                visible: root.scopeOnline && !!readoutStrip.t.capture_text
+                                visible: root.scopeOnline && readoutStrip.t.capture_active && !!readoutStrip.t.capture_text
                                 text: "FRAMES " + (readoutStrip.t.capture_text || "")
                                 color: readoutStrip.t.capture_active ? Theme.danger : Theme.textPrimary
                                 font.pixelSize: 10; font.family: Theme.fontMono; font.bold: true

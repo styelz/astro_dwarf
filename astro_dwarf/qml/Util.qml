@@ -204,6 +204,20 @@ QtObject {
             return step
         return step + "  ·  " + Util.durationLabel(elapsed)
     }
+    function idleScheduleLabel(upcoming, schedulerEnabled, nowMs) {
+        const next = upcoming && upcoming.length ? upcoming[0] : null
+        if (!next)
+            return schedulerEnabled ? "QUEUE EMPTY" : "IDLE"
+        const name = next.pane_name || next.target_name || "next session"
+        const startMs = Number(next.start_epoch_ms)
+        const start = isNaN(startMs) ? new Date(next.scheduled_start).getTime() : startMs
+        const seconds = Math.floor((start - Number(nowMs || Date.now())) / 1000)
+        if (!schedulerEnabled)
+            return "NEXT  " + name + (next.start_time ? "  ·  " + next.start_time : "") + "  ·  scheduler off"
+        if (seconds <= 0)
+            return "WAITING  ·  " + name + "  ·  due now"
+        return "WAITING  ·  " + name + "  ·  " + Util.durationLabel(seconds)
+    }
     function targetCoordinates(item) {
         const target = item && item.target ? item.target : null
         if (!target || target.ra_hours === undefined || target.ra_hours === null

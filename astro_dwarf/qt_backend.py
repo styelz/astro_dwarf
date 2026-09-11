@@ -4344,6 +4344,7 @@ class AppBackend(QObject):
         )
         captured = self._captured_frames_for(session.id, final.camera.frame_count, ok)
         self._hold_session_capture.discard(final.device_id)
+        self._reset_device_capture_progress(final.device_id)
         device = next((item for item in self._devices if item.id == final.device_id), None)
         self.store.history.save(history_record_for_run(
             final,
@@ -4366,6 +4367,7 @@ class AppBackend(QObject):
         self.historyChanged.emit()
         telemetry = dict(self._device_telemetry.get(final.device_id) or {})
         self._sync_preview_for_capture(final.device_id, telemetry, telemetry)
+        self._notify_devices()
         if restore_preview:
             self._restore_held_preview(final.device_id)
 
@@ -4395,11 +4397,12 @@ class AppBackend(QObject):
             self.sessionsChanged.emit()
 
     def _reset_device_capture_progress(self, device_id: str, total: int = 0, target: str = "") -> None:
-        """Clear leftover stacking counts on the HUD for a freshly started session."""
+        """Clear leftover stacking counts on the HUD after a session starts or ends."""
         telemetry = dict(self._device_telemetry.get(device_id) or {})
         telemetry.update({
             "capture_current": 0,
             "capture_stacked": 0,
+            "capture_total": int(total or 0),
             "capture_active": False,
             "capture_state": "idle",
             "mosaic_active": False,
@@ -4407,8 +4410,6 @@ class AppBackend(QObject):
             "capture_shooting_s": 0,
             "capture_stacked_s": 0,
         })
-        if total:
-            telemetry["capture_total"] = int(total)
         self._device_telemetry[device_id] = telemetry
         self._telemetry_updated[device_id] = time.time()
 

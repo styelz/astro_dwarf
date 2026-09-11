@@ -158,17 +158,18 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     current = _capture_frame_count(raw)
     total_frames = raw.get("capture_total")
     stacked = raw.get("capture_stacked")
-    if current is not None and total_frames:
+    capturing = bool(raw.get("capture_active") or raw.get("capture_state") == "running")
+    if capturing and current is not None and total_frames:
         view["capture_text"] = f"{int(current)}/{int(total_frames)}"
         view["capture_fraction"] = min(1.0, float(current) / float(total_frames))
-    elif current is not None:
+    elif capturing and current is not None:
         view["capture_text"] = str(int(current))
         view["capture_fraction"] = 0.0
     else:
         view["capture_text"] = ""
         view["capture_fraction"] = 0.0
-    view["stacked_text"] = f"{int(stacked)} STACKED" if stacked is not None else ""
-    view["capture_active"] = bool(raw.get("capture_active"))
+    view["stacked_text"] = f"{int(stacked)} STACKED" if capturing and stacked is not None else ""
+    view["capture_active"] = capturing
     view["capture_target"] = raw.get("capture_target") or ""
     view["tracking_active"] = raw.get("tracking_state") == "running"
     view["tracking_target"] = raw.get("tracking_target") or raw.get("goto_target") or ""
