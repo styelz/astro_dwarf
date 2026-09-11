@@ -159,6 +159,7 @@ QtObject {
         case "goto": return "GOTO"
         case "polar": return "POLAR / EQ"
         case "autofocus": return "AUTOFOCUS"
+        case "infinity": return "INFINITY"
         case "dark": return "DARK FRAMES"
         case "imaging": return "STACKING"
         case "record": return "RECORDING"

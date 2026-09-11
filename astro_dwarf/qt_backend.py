@@ -285,8 +285,24 @@ _ACTIVITY_START = {
     "polar": "polar",
     "calibrate": "calibrate",
     "autofocus": "autofocus",
-    "infinity": "autofocus",
+    "infinity": "infinity",
 }
+# Session steps that should light a command pad. Astro autofocus has no
+# firmware state notify (calibrate / GOTO / EQ do), so the pad stays dark
+# unless the running session step is mapped here.
+_SESSION_STEP_ACTIVITY = {
+    "auto focus": "autofocus",
+    "infinity focus": "infinity",
+    "infinity focus before polar alignment": "infinity",
+}
+_SESSION_STEP_ACTIVITIES = frozenset(_SESSION_STEP_ACTIVITY.values())
+
+
+def _activity_for_session_step(step: str) -> str:
+    base = str(step or "").split(" · ")[0].strip().lower()
+    return _SESSION_STEP_ACTIVITY.get(base, "")
+
+
 _ACTIVITY_STOP = {
     "burst_stop": "burst",
     "record_stop": "record",
@@ -403,6 +419,7 @@ class LogListModel(QAbstractListModel):
         self._visible: list[dict[str, Any]] = []
         self._filter = "all"
         self._counts: dict[str, int] = {"WARNING": 0, "ERROR": 0}
+        self._unread: dict[str, int] = {"WARNING": 0, "ERROR": 0}
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         if parent.isValid():
@@ -844,6 +861,7 @@ class AppBackend(QObject):
             self._current_session_view["step_wait_seconds"] = wait_seconds
         elif self._active_sessions.get(self._selected_device_id) == updated.id:
             self._current_session_view = None
+        self._sync_session_activity(updated.device_id, step)
         self.currentSessionChanged.emit()
         self.sessionProgressChanged.emit()
         return updated
@@ -873,6 +891,11 @@ class AppBackend(QObject):
                 now,
             )
             activity = telemetry["activity"] or self._device_activity.get(device.id, "")
+            if not activity:
+                session_id = self._active_sessions.get(device.id)
+                session = self.store.sessions.get(session_id) if session_id else None
+                if session:
+                    activity = _activity_for_session_step(session.current_step)
             raw_telemetry = self._device_telemetry.get(device.id, {})
             if not connected:
                 lights_on = False
@@ -969,6 +992,12 @@ class AppBackend(QObject):
             self._device_activity[device_id] = activity
         elif previous and derive_activity(previous)[0]:
             self._device_activity.pop(device_id, None)
+            session_id = self._active_sessions.get(device_id)
+            session = self.store.sessions.get(session_id) if session_id else None
+            if session:
+                wanted = _activity_for_session_step(session.current_step)
+                if wanted:
+                    self._device_activity[device_id] = wanted
         if data.get("power_off"):
             self._drop_device_link(device_id)
             return
@@ -1004,6 +1033,18 @@ class AppBackend(QObject):
             return
         self._notify_devices()
 
+    def _sync_session_activity(self, device_id: str, step: str) -> None:
+        """Light session command pads when the telescope does not report the action."""
+        if derive_activity(self._device_telemetry.get(device_id, {}))[0]:
+            return
+        wanted = _activity_for_session_step(step)
+        current = self._device_activity.get(device_id, "")
+        if wanted:
+            self._set_activity(device_id, wanted)
+            return
+        if current in _SESSION_STEP_ACTIVITIES:
+            self._set_activity(device_id, "")
+
     def _begin_activity(self, device_id: str, operation: str) -> None:
         if operation in _ACTIVITY_CLEAR:
             self._set_activity(device_id, "")
@@ -1018,7 +1059,9 @@ class AppBackend(QObject):
             return
         expected = _ACTIVITY_STOP.get(operation)
         if expected:
-            if ok and self._device_activity.get(device_id) == expected:
+            current = self._device_activity.get(device_id)
+            aliases = ("autofocus", "infinity") if expected == "autofocus" else (expected,)
+            if ok and current in aliases:
                 self._set_activity(device_id, "")
             return
         mode = _ACTIVITY_START.get(operation)
@@ -4548,6 +4591,7 @@ class AppBackend(QObject):
         self._clear_preview_hold()
         if active_device:
             self._active_sessions.pop(active_device, None)
+            self._sync_session_activity(active_device, "")
         stopped = session_id in self._stop_requested
         self._stop_requested.discard(session_id)
         if not session:

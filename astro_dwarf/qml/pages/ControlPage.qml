@@ -249,7 +249,7 @@ Item {
                             rowSpacing: height > 0 && height < 90 ? 4 : 6
                             VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "♨"; label: "BODY TEMP"; value: vitalsPanel.live ? String(vitalsPanel.t.temperature_c_text || "—") : "—"; unit: vitalsPanel.live ? String(vitalsPanel.t.temperature_f_text || "") : ""; tone: Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
                             VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "◉"; label: backend.selectedDevice.camera === "wide" ? "WIDE SENSOR" : "TELE SENSOR"; value: vitalsPanel.live ? String((backend.selectedDevice.camera === "wide" ? vitalsPanel.t.cmos_wide_c_text : vitalsPanel.t.cmos_tele_c_text) || "—") : "—"; unit: vitalsPanel.live ? String((backend.selectedDevice.camera === "wide" ? vitalsPanel.t.cmos_wide_f_text : vitalsPanel.t.cmos_tele_f_text) || "") : ""; tone: Theme.notice; stale: vitalsPanel.stale; live: vitalsPanel.live }
-                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "⌾"; label: "FOCUS"; value: vitalsPanel.live ? String(vitalsPanel.t.focus_text || "—") : "—"; unit: "STEPS"; tone: root.scopeActivity === "autofocus" ? Theme.notice : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "⌾"; label: "FOCUS"; value: vitalsPanel.live ? String(vitalsPanel.t.focus_text || "—") : "—"; unit: "STEPS"; tone: root.scopeActivity === "autofocus" || root.scopeActivity === "infinity" ? Theme.notice : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
                             VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "⛭"; label: "MOUNT"; value: vitalsPanel.live ? String(vitalsPanel.t.mount_text || "—") : "—"; unit: vitalsPanel.t.mount_mode === "EQ" ? "EQUATORIAL" : vitalsPanel.t.mount_mode === "AZ" ? "ALT-AZ" : ""; tone: vitalsPanel.t.mount_mode === "EQ" ? Theme.success : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
                             VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "▶"; label: "STREAM"; value: vitalsPanel.live ? String(vitalsPanel.t.stream_text || "—") : "—"; unit: vitalsPanel.t.shooting_mode_text && vitalsPanel.t.shooting_mode_text !== "—" ? vitalsPanel.t.shooting_mode_text : ""; tone: backend.previewPlaying ? Theme.danger : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
                             VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "✦"; label: "LIGHTS"; value: vitalsPanel.live ? (vitalsPanel.t.lights_on ? "RING ON" : "RING OFF") : "—"; unit: vitalsPanel.live ? (vitalsPanel.t.indicator_on ? "· LED ON" : "· LED OFF") : ""; tone: vitalsPanel.t.lights_on ? Theme.warning : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
@@ -1492,7 +1492,7 @@ Item {
                     model: [
                         {label: "CALIBRATE", glyph: "◎", start: "calibrate", stop: "stop_calibrate", state: "calibrate", detail: "ALIGN"},
                         {label: "AUTO FOCUS", glyph: "◉", start: "autofocus", stop: "stop_autofocus", state: "autofocus", detail: "OPTICS"},
-                        {label: "INFINITY", glyph: "∞", start: "infinity", stop: "stop_autofocus", state: "autofocus", detail: "FOCUS"},
+                        {label: "INFINITY", glyph: "∞", start: "infinity", stop: "stop_autofocus", state: "infinity", detail: "FOCUS"},
                         {label: "POLAR / EQ", glyph: "⌖", start: "polar", stop: "stop_polar", state: "polar", detail: "ALIGN"},
                         {label: "POLAR POS", glyph: "⊕", start: "polar_position", stop: "", state: "", detail: "MOUNT"},
                         {label: "LIGHTS", glyph: "✦", start: "lights_on", stop: "lights_off", state: "lights", detail: "CHASSIS"},
@@ -1524,6 +1524,7 @@ Item {
                             case "calibrate":
                                 return root.scopeActivityDetail ? (root.scopeActivityDetail.indexOf("SOLVE") === 0 ? "SOLVING · " + root.scopeActivityDetail.replace("SOLVE", "PHASE").trim() : root.scopeActivityDetail) : "RUNNING"
                             case "autofocus":
+                            case "infinity":
                                 return t.focus_text && t.focus_text !== "—" ? "RUNNING · " + t.focus_text : "RUNNING"
                             case "polar":
                                 if (t.eq_has_result && !activeForState)
