@@ -1298,7 +1298,7 @@ def _await_operation(name: str, operation: str, since: float) -> None:
         time.sleep(0.5)
 
 
-def _wait_for_capture_slot() -> None:
+def _wait_for_capture_slot(progress: Any = None) -> None:
     """Do not start stacking while GOTO or calibration still owns the astro engine.
 
     Tracking taking over means the GOTO has finished, even if a stale GOTO
@@ -1320,6 +1320,8 @@ def _wait_for_capture_slot() -> None:
             return
         if not logged:
             log("Waiting for the telescope to finish slewing before capture…")
+            if progress:
+                progress("Waiting for slew to finish")
             logged = True
         time.sleep(0.5)
     log("Telemetry still reports the telescope busy; asking it to start capture anyway", "warning")
@@ -1343,6 +1345,9 @@ _CAPTURE_DARK_WARNINGS = {
 _CAPTURE_BUSY_TIMEOUT_S = 45.0
 _CAPTURE_BUSY_RETRY_S = 5.0
 _CONTINUE_SHOOTING_TIMEOUT_S = 30.0
+_CAPTURE_CONTINUE_AFTER_S = 10.0
+_CAPTURE_START_TIMEOUT_S = 45.0
+_CAPTURE_HEARTBEAT_S = 60.0
 
 
 def _ir_index(name: Any) -> int:
@@ -1438,25 +1443,98 @@ def _same_capture_target(session: dict[str, Any], snapshot: dict[str, Any]) -> b
     return session_name == live_name or session_name in live_name or live_name in session_name
 
 
-def _wait_for_capture_end() -> None:
-    """Watch telemetry until stacking stops. The SDK wait needs a capture this client started."""
+def _format_duration(seconds: float) -> str:
+    value = max(0, int(round(float(seconds or 0))))
+    hours, rem = divmod(value, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def _capture_counts(snapshot: dict[str, Any]) -> tuple[int, int]:
+    try:
+        current = int(snapshot.get("capture_current") or 0)
+    except (TypeError, ValueError):
+        current = 0
+    try:
+        stacked = int(snapshot.get("capture_stacked") or 0)
+    except (TypeError, ValueError):
+        stacked = 0
+    try:
+        total = int(snapshot.get("capture_total") or 0)
+    except (TypeError, ValueError):
+        total = 0
+    return max(current, stacked), total
+
+
+def _capture_wait_label(name: str, snapshot: dict[str, Any]) -> str:
+    frames, total = _capture_counts(snapshot)
+    if total:
+        return f"{name} · {frames}/{total}"
+    if frames:
+        return f"{name} · {frames} frames"
+    return name
+
+
+def _wait_for_capture_end(on_progress: Any = None, name: str = "Waiting for capture") -> None:
+    """Watch telemetry until stacking stops.
+
+    The SDK ``wait_astro`` call parks on an empty socket wait with no HUD
+    updates, and it never sends CONTINUE SHOOTING when firmware accepts
+    START_CAPTURE (code 0) then raises a missing-darks warning.
+    """
     seen = False
+    continued = False
     quiet_since: float | None = None
+    started = time.monotonic()
+    last_label = ""
+    last_heartbeat = started
+    log(f"{name}; watching the telescope for stacking progress…")
     while True:
         if _stop.is_set():
             raise InterruptedError("Session stopped")
         snapshot = _tap.snapshot() if _tap is not None else {}
+        elapsed = time.monotonic() - started
         if _capture_running(snapshot):
+            if not seen:
+                frames, total = _capture_counts(snapshot)
+                detail = f"{frames}/{total}" if total else "stacking started"
+                log(f"Capture running · {detail}")
             seen = True
             quiet_since = None
         elif seen:
             state = str(snapshot.get("capture_state") or "")
             if state in ("stopped", "idle"):
+                log(f"{name} finished after {_format_duration(elapsed)}")
                 return
             if quiet_since is None:
                 quiet_since = time.monotonic()
             elif time.monotonic() - quiet_since >= 20.0:
+                log(f"{name} finished after {_format_duration(elapsed)}")
                 return
+        elif elapsed >= _CAPTURE_CONTINUE_AFTER_S and not continued:
+            continued = True
+            log("Capture has not started yet; trying CONTINUE SHOOTING", "warning")
+            if _continue_shooting("Capture"):
+                continue
+        elif elapsed >= _CAPTURE_START_TIMEOUT_S:
+            raise RuntimeError(
+                f"{name} failed: the telescope never started stacking. "
+                "If dark frames are missing, add matching darks or retry."
+            )
+        if on_progress:
+            label = _capture_wait_label(name, snapshot)
+            if label != last_label:
+                on_progress(label)
+                last_label = label
+        if seen and time.monotonic() - last_heartbeat >= _CAPTURE_HEARTBEAT_S:
+            last_heartbeat = time.monotonic()
+            frames, total = _capture_counts(snapshot)
+            count = f"{frames}/{total}" if total else f"{frames} frames"
+            log(f"Still capturing · {count} · {_format_duration(elapsed)}")
         time.sleep(0.5)
 
 
@@ -1584,11 +1662,16 @@ def run_session(session: dict[str, Any]) -> bool:
     v3_model = _device.get("model") in ("Dwarf 3", "Dwarf Mini")
     completed = False
 
-    def step(name: str, operation: str | None = None, *args: Any) -> None:
+    def step(name: str, operation: str | None = None, *args: Any, wait_seconds: float = 0) -> None:
         global _session_phase
         if _stop.is_set():
             raise InterruptedError("Session stopped")
-        emit({"event": "progress", "session_id": session["id"], "step": name})
+        emit({
+            "event": "progress",
+            "session_id": session["id"],
+            "step": name,
+            "wait_seconds": wait_seconds,
+        })
         if not operation:
             return
         _session_phase = operation
@@ -1596,9 +1679,22 @@ def run_session(session: dict[str, Any]) -> bool:
         if operation in _CAPTURE_STARTS:
             _start_capture(name, operation, list(args))
             return
-        if operation in ("wait_astro_resume", "wait_wide_resume"):
-            _arm_sdk_capture_rejoin(wide=operation == "wait_wide_resume")
-            _wait_for_capture_end()
+        if operation in ("wait_astro", "wait_astro_resume", "wait_wide", "wait_wide_resume"):
+            wide = operation in ("wait_wide", "wait_wide_resume")
+            if _tap is None:
+                sdk_op = "wait_wide_resume" if operation == "wait_wide_resume" else (
+                    "wait_astro_resume" if operation == "wait_astro_resume" else (
+                        "wait_wide" if wide else "wait_astro"
+                    )
+                )
+                if operation.endswith("_resume"):
+                    _arm_sdk_capture_rejoin(wide=wide)
+                if sdk_call(sdk_op) is False:
+                    raise RuntimeError(f"{name} failed")
+                return
+            if operation.endswith("_resume"):
+                _arm_sdk_capture_rejoin(wide=wide)
+            _wait_for_capture_end(on_progress=lambda text: step(text), name=name.split(" · ")[0])
             return
         if sdk_call(operation, *args) is False:
             if _stop.is_set():
@@ -1624,24 +1720,27 @@ def run_session(session: dict[str, Any]) -> bool:
                 log(f"Could not stop leftover activity: {exc}", "debug")
 
 
-def _wait_seconds(seconds: float, message: str | None = None) -> None:
+def _wait_seconds(seconds: float, message: str | None = None, progress: Any = None) -> None:
     seconds = max(0.0, float(seconds or 0))
     if seconds <= 0:
         return
+    label = (message or "Waiting").rstrip("…").strip() or "Waiting"
     if message:
-        log(message)
+        log(f"{label} ({_format_duration(seconds)})")
+    if progress:
+        progress(label, wait_seconds=seconds)
     if _stop.wait(seconds):
         raise InterruptedError("Session stopped")
 
 
-def _clear_tracking() -> None:
+def _clear_tracking(progress: Any = None) -> None:
     """Stop leftover GOTO/tracking so calibration or EQ can own the astro engine."""
     log("Stopping leftover GOTO/tracking")
     try:
         sdk_call("stop_goto")
     except Exception as exc:
         log(f"Stop GOTO skipped: {exc}", "debug")
-    _wait_seconds(5)
+    _wait_seconds(5, "Waiting after stop GOTO", progress)
 
 
 def _engine_busy_error(exc: BaseException) -> bool:
@@ -1660,7 +1759,7 @@ def _run_v3_until_ready(name: str, operation: str, step: Any, *args: Any) -> Non
             if not _engine_busy_error(exc) or time.monotonic() >= deadline:
                 raise
             log(f"{name}: astro engine still busy; clearing GOTO and retrying", "warning")
-            _clear_tracking()
+            _clear_tracking(step)
 
 
 def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
@@ -1697,7 +1796,7 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         step("Entering solar mode", "shooting_mode", 8 if solar_name == "sun" else 9 if solar_name == "moon" else 10, 2)
     else:
         step("Entering astro mode", "astro_mode")
-    _wait_seconds(workflow.get("wait_before_seconds", 0))
+    _wait_seconds(workflow.get("wait_before_seconds", 0), "Waiting before workflow", step)
     # Match astro_dwarf_session: focus, then EQ, then calibration (after stop_goto).
     if workflow.get("autofocus"):
         step("Auto focus", "autofocus", False)
@@ -1706,8 +1805,8 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     if workflow.get("polar_align"):
         if not workflow.get("infinite_focus"):
             step("Infinity focus before polar alignment", "autofocus", True)
-            _wait_seconds(5)
-        _clear_tracking()
+            _wait_seconds(5, "Waiting after infinity focus", step)
+        _clear_tracking(step)
         _run_v3_until_ready("Polar alignment", "polar", step)
     if workflow.get("calibrate"):
         step("Calibration exposure", "set_exposure", "1", model_id, camera["camera"])
@@ -1715,8 +1814,8 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         if camera["camera"] != "wide":
             step("Calibration filter", "set_ir", "1")
         step("Calibration binning", "set_binning", 0)
-        _wait_seconds(5, "Waiting for calibration camera settings to apply…")
-        _clear_tracking()
+        _wait_seconds(5, "Waiting for calibration camera settings to apply", step)
+        _clear_tracking(step)
         _run_v3_until_ready("Calibration", "calibrate", step)
     if workflow.get("goto") and target.get("ra_hours") is not None:
         step("GOTO target", "goto", target["ra_hours"], target["dec_degrees"], target["name"], False)
@@ -1732,10 +1831,10 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         step("Set filter", "set_ir", camera["ir_filter"])
     step("Set count", "set_count", camera["frame_count"], camera["camera"])
     step("Set binning", "set_binning", firmware_binning(camera["binning"]))
-    _wait_seconds(5, "Waiting for capture camera settings to apply…")
-    _wait_seconds(workflow.get("wait_after_seconds", 10))
-    _wait_seconds(2)
-    _wait_for_capture_slot()
+    _wait_seconds(5, "Waiting for capture camera settings to apply", step)
+    _wait_seconds(workflow.get("wait_after_seconds", 10), "Waiting after setup", step)
+    _wait_seconds(2, "Waiting before capture", step)
+    _wait_for_capture_slot(step)
     ir_index = _ir_index(camera.get("ir_filter"))
     imported_plan = int(mosaic.get("grid_rows") or 0) >= 1 and int(mosaic.get("grid_columns") or 0) >= 1
     if not imported_plan and max(1, mosaic["rows"] * mosaic["columns"]) > 1:

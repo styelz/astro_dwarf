@@ -80,7 +80,7 @@ from .telemetry_view import AlertEngine, derive_activity, format_telemetry
 
 class TelescopeProcess(QObject):
     logReceived = Signal(str, str)
-    progressReceived = Signal(str, str)
+    progressReceived = Signal(str, str, float)
     statusReceived = Signal(str, str)
     telemetryReceived = Signal(dict)
     availabilityChanged = Signal()
@@ -233,7 +233,11 @@ class TelescopeProcess(QObject):
                 if isinstance(data, dict) and data:
                     self.telemetryReceived.emit(data)
             elif event == "progress":
-                self.progressReceived.emit(message["session_id"], message["step"])
+                try:
+                    wait_seconds = float(message.get("wait_seconds") or 0)
+                except (TypeError, ValueError):
+                    wait_seconds = 0.0
+                self.progressReceived.emit(message["session_id"], message["step"], wait_seconds)
             elif event == "status":
                 self.statusReceived.emit(str(message.get("kind") or ""), str(message.get("step") or ""))
             elif event == "connected":
@@ -1034,6 +1038,9 @@ class AppBackend(QObject):
         data["pane_index"] = pane_sort_key(session.name)[0]
         data["pane_name"] = session.name
         data["pane_position"] = session.mosaic.position_text
+        timing = self._session_timing.get(session.id) or {}
+        data["step_started_at"] = float(timing.get("step_started_at") or 0)
+        data["step_wait_seconds"] = float(timing.get("step_wait_seconds") or 0)
         return data
 
     def _decorate_session_groups(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1818,7 +1825,8 @@ class AppBackend(QObject):
             return True
         session_id = self._active_sessions.get(device_id)
         session = self.store.sessions.get(session_id) if session_id else None
-        return bool(session and session.current_step in _CAPTURE_PREVIEW_STEPS)
+        step = str(session.current_step or "").split(" · ")[0].strip() if session else ""
+        return bool(session and step in _CAPTURE_PREVIEW_STEPS)
 
     def _sync_preview_for_capture(
         self,
@@ -4242,7 +4250,12 @@ class AppBackend(QObject):
         )
         self._recovered_sessions.pop(session.id, None)
         self._active_sessions[session.device_id] = session.id
-        self._session_timing[session.id] = {"started": time.monotonic(), "steps": []}
+        self._session_timing[session.id] = {
+            "started": time.monotonic(),
+            "steps": [],
+            "step_started_at": time.time(),
+            "step_wait_seconds": 0.0,
+        }
         if resuming:
             self._session_capture_base[session.id] = 0
             self._session_capture_peak[session.id] = self._telemetry_frame_count(session.device_id)
@@ -4277,13 +4290,25 @@ class AppBackend(QObject):
             self._toast(f"Session started · {session.target.name}", "info", f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s")
         worker.run_session(session, lambda ok, result: self._session_finished(session.id, ok, result))
 
-    @Slot(str, str)
-    def _session_progress(self, session_id: str, step: str) -> None:
+    @Slot(str, str, float)
+    def _session_progress(self, session_id: str, step: str, wait_seconds: float = 0.0) -> None:
         session = self.store.sessions.get(session_id)
         if not session:
             return
-        timing = self._session_timing.setdefault(session_id, {"started": time.monotonic(), "steps": []})
-        timing["steps"].append((step, time.monotonic()))
+        timing = self._session_timing.setdefault(
+            session_id,
+            {"started": time.monotonic(), "steps": [], "step_started_at": time.time(), "step_wait_seconds": 0.0},
+        )
+        base = str(step).split(" · ")[0].strip() or str(step)
+        last = timing["steps"][-1][0] if timing["steps"] else ""
+        last_base = str(last).split(" · ")[0].strip() or str(last)
+        if base != last_base:
+            timing["steps"].append((base, time.monotonic()))
+            timing["step_started_at"] = time.time()
+        try:
+            timing["step_wait_seconds"] = max(0.0, float(wait_seconds or 0))
+        except (TypeError, ValueError):
+            timing["step_wait_seconds"] = 0.0
         self.store.sessions.save(replace(session, current_step=step))
         self.sessionsChanged.emit()
         if self._preview_hold_device_id == session.device_id:

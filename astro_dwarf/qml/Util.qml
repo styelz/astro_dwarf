@@ -186,6 +186,24 @@ QtObject {
             ? hours + "h " + String(minutes).padStart(2, "0") + "m"
             : minutes > 0 ? minutes + "m " + String(secs).padStart(2, "0") + "s" : secs + "s"
     }
+    function sessionStepLabel(session, nowMs) {
+        const step = String((session && session.current_step) || "")
+        if (!session || String(session.status || "") !== "running" || !step)
+            return step
+        const started = Number(session.step_started_at || 0)
+        if (started <= 0)
+            return step
+        const now = Number(nowMs || 0) / 1000
+        const elapsed = Math.max(0, Math.round(now - started))
+        const total = Number(session.step_wait_seconds || 0)
+        if (total > 0) {
+            const remaining = Math.max(0, Math.round(total - elapsed))
+            return step + "  ·  " + Util.durationLabel(remaining) + " remaining"
+        }
+        if (elapsed < 1)
+            return step
+        return step + "  ·  " + Util.durationLabel(elapsed)
+    }
     function targetCoordinates(item) {
         const target = item && item.target ? item.target : null
         if (!target || target.ra_hours === undefined || target.ra_hours === null

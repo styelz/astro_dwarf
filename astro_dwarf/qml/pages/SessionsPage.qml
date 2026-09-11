@@ -255,6 +255,11 @@ Item {
                                             Text {
                                                 width: parent.width
                                                 text: {
+                                                    if (scheduledRow.modelData.status === "running") {
+                                                        const step = Util.sessionStepLabel(scheduledRow.modelData, backend.localNow.epoch_ms)
+                                                        if (step)
+                                                            return step
+                                                    }
                                                     const pos = scheduledRow.modelData.pane_position || ""
                                                     const summary = scheduledRow.modelData.summary || ""
                                                     if (pos && summary)

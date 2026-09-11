@@ -54,6 +54,14 @@ _STEP_BUCKETS = {
     "waiting for capture": "imaging",
     "imaging": "imaging",
     "waiting for stack": "imaging",
+    "waiting before workflow": "startup",
+    "waiting after infinity focus": "startup",
+    "waiting after stop goto": "startup",
+    "waiting for calibration camera settings to apply": "startup",
+    "waiting for capture camera settings to apply": "startup",
+    "waiting after setup": "startup",
+    "waiting before capture": "startup",
+    "waiting for slew to finish": "slew",
 }
 
 _FIELD_META = {
@@ -306,7 +314,7 @@ def _bucket_steps(step_seconds: dict[str, float] | None) -> dict[str, float]:
             continue
         if value <= 0:
             continue
-        label = str(name).strip().lower()
+        label = str(name).strip().lower().split(" · ")[0].strip()
         if any(token in label for token in ("stop", "stopping")):
             continue
         bucket = _STEP_BUCKETS.get(label, "startup")

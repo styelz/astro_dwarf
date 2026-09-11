@@ -123,7 +123,7 @@ Item {
                         {label: "ENDPOINT", value: backend.selectedDevice.ip_address || "—", tone: root.scopeOnline ? Theme.textPrimary : Theme.textSecondary},
                         {label: "SCHEDULER", value: backend.schedulerEnabled ? root.nextSessionCountdown() : "Disarmed", tone: backend.schedulerEnabled ? Theme.success : Theme.textSecondary},
                         {label: "PREVIEW", value: root.scopeStopping ? (root.scopePendingDetail || "Stopping") : (backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped")), tone: root.scopeStopping ? Theme.warning : (backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary))},
-                        {label: "SESSION", value: backend.currentSession.current_step || "No active session", tone: backend.currentSession.id ? Theme.accent : Theme.textSecondary},
+                        {label: "SESSION", value: Util.sessionStepLabel(backend.currentSession, backend.localNow.epoch_ms) || backend.currentSession.current_step || "No active session", tone: backend.currentSession.id ? Theme.accent : Theme.textSecondary},
                         {label: "REMAINING", value: backend.currentSession.id ? Util.durationLabel(Number(backend.currentSession.planned_duration_seconds || 0) * (1 - backend.sessionProgress)) : "—", tone: Theme.textPrimary},
                         {label: "TIMEZONE", value: backend.selectedDevice.timezone_name || "UTC", tone: Theme.textPrimary},
                         {label: "LAT / LON", value: Number(backend.selectedDevice.latitude || 0).toFixed(2) + "°, " + Number(backend.selectedDevice.longitude || 0).toFixed(2) + "°", tone: Theme.textPrimary}
@@ -340,8 +340,11 @@ Item {
                     text: {
                         const t = root.scopeTelemetry
                         if (backend.currentSession.current_step) {
+                            const step = Util.sessionStepLabel(backend.currentSession, backend.localNow.epoch_ms) || backend.currentSession.current_step
                             const frames = String(t.capture_text || "")
-                            return frames && t.capture_active ? backend.currentSession.current_step + "  ·  " + frames + " frames" : backend.currentSession.current_step
+                            if (frames && t.capture_active && step.indexOf(frames) < 0)
+                                return step + "  ·  " + frames + " frames"
+                            return step
                         }
                         if (!backend.selectedDevice.connected)
                             return "Connect to acquire a lock"
@@ -1505,7 +1508,7 @@ Item {
                         {label: "LINK", value: backend.selectedDevice.connected ? "Connected" : "Offline"},
                         {label: "ACTIVITY", value: backend.selectedDevice.busy ? "Imaging" : (root.targetLocked ? "On target" : "Idle")},
                         {label: "TARGET", value: backend.currentSession.target_name || "None"},
-                        {label: "STEP", value: backend.currentSession.current_step || backend.selectedDevice.status || "—"}
+                        {label: "STEP", value: Util.sessionStepLabel(backend.currentSession, backend.localNow.epoch_ms) || backend.currentSession.current_step || backend.selectedDevice.status || "—"}
                     ]
                     delegate: RowLayout {
                         required property var modelData
