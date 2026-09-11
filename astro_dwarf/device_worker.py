@@ -395,10 +395,10 @@ def _set_timezone() -> Any:
             return True
         if last is False:
             return False
-        log(f"Timezone {value} rejected ({last}), trying next format", "warning")
+        log(f"Timezone {value} rejected ({last}), trying next format", "debug")
     log(
         "Firmware rejected timezone strings; clock offset was already applied by SET_TIME",
-        "warning",
+        "debug",
     )
     return False
 

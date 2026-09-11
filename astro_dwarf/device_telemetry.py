@@ -83,6 +83,13 @@ ASTRO_STATES = {0: "idle", 1: "running", 2: "stopping", 3: "stopped", 4: "solvin
 CHARGING_STATES = {0: "discharging", 1: "charging", 2: "full"}
 STREAM_TYPES = {0: "OFF", 1: "RTSP", 2: "JPEG"}
 BODY_STATUS = {1: "EQ", 2: "AZ"}
+# BatteryInfo.percentage is the real SoC. CMD_NOTIFY_ELE and the SDK cache
+# (BatteryLevelDwarf) are the same remaining-% notify; the SDK only stores it
+# on 10% jumps, so a 22% BatteryInfo and a latched 20% cache fight and the
+# HUD flickers across the low-battery line.
+_BATTERY_SDK_STEP = 10
+_BATTERY_NOTIFY_JITTER = 3
+_BATTERY_SOURCE_RANK = {"sdk": 0, "notify": 1, "state": 2}
 
 PARAM_ID_PHOTO_TELE_EXPOSURE = 0x0101000000000001
 PARAM_ID_PHOTO_TELE_GAIN = 0x0101000000000002
@@ -240,6 +247,7 @@ class TelemetryTap:
         self._hold_stale_capture = False
         self._accept_sdk_capture_counts = True
         self._stale_capture_peak = 0
+        self._battery_source = ""
 
     # ------------------------------------------------------------------ setup
     def install(self, websockets_utils: Any) -> bool:
@@ -287,6 +295,38 @@ class TelemetryTap:
             merged.update(self._pending)
             return merged
 
+    def _should_apply_battery(self, percent: int, source: str) -> bool:
+        """Keep BatteryInfo.percentage over the coarse ELE / SDK cache reading."""
+        with self._lock:
+            raw = self._pending.get("battery_percent", self._state.get("battery_percent"))
+            held = self._battery_source
+            incoming = _BATTERY_SOURCE_RANK.get(source, 0)
+            held_rank = _BATTERY_SOURCE_RANK.get(held, 0)
+            if raw is None:
+                self._battery_source = source
+                return True
+            try:
+                current = int(raw)
+            except (TypeError, ValueError):
+                self._battery_source = source
+                return True
+            if current == percent:
+                if incoming >= held_rank:
+                    self._battery_source = source
+                return False
+            if incoming > held_rank or source == "state":
+                self._battery_source = source
+                return True
+            delta = abs(current - percent)
+            # SDK cache only moves on 10% jumps — never let it clobber 22% with 20%.
+            if source == "sdk" and delta < _BATTERY_SDK_STEP:
+                return False
+            # Live ELE can update sooner than the next state dump; ignore 1–2% chatter.
+            if percent < current and delta < _BATTERY_NOTIFY_JITTER:
+                return False
+            self._battery_source = source
+            return True
+
     def reset(self) -> None:
         with self._lock:
             self._state.clear()
@@ -296,6 +336,7 @@ class TelemetryTap:
             self._hold_stale_capture = False
             self._accept_sdk_capture_counts = True
             self._stale_capture_peak = 0
+            self._battery_source = ""
 
     def _capture_count_peak(self, data: dict[str, Any] | None = None) -> int:
         source = data if data is not None else self._state
@@ -534,7 +575,13 @@ class TelemetryTap:
         if cmd == CMD_NOTIFY_ELE:
             message = self._base.ComResWithInt()
             message.ParseFromString(data)
-            return {"battery_percent": int(message.value)}
+            try:
+                percent = int(message.value)
+            except (TypeError, ValueError):
+                return {}
+            if not self._should_apply_battery(percent, "notify"):
+                return {}
+            return {"battery_percent": percent}
         if cmd == CMD_NOTIFY_CHARGE:
             message = self._parse("ChargingState", data)
             state = int(message.state)
@@ -682,6 +729,14 @@ class TelemetryTap:
             changes = self.decode_device_state(message)
         except Exception:
             return
+        if "battery_percent" in changes:
+            try:
+                percent = int(changes["battery_percent"])
+            except (TypeError, ValueError):
+                changes.pop("battery_percent", None)
+            else:
+                if not self._should_apply_battery(percent, "state"):
+                    changes.pop("battery_percent", None)
         if changes:
             changes["state_snapshot_at"] = time.time()
             self.update(changes, force=True)
@@ -816,6 +871,14 @@ class TelemetryTap:
         snapshot = self.snapshot()
         with self._lock:
             accept_sdk_counts = self._accept_sdk_capture_counts
+        if "battery_percent" in changes:
+            try:
+                percent = int(changes["battery_percent"])
+            except (TypeError, ValueError):
+                changes.pop("battery_percent", None)
+            else:
+                if not self._should_apply_battery(percent, "sdk"):
+                    changes.pop("battery_percent", None)
         if not accept_sdk_counts:
             changes.pop("capture_current", None)
             changes.pop("capture_stacked", None)
@@ -967,6 +1030,9 @@ _DEMOTE_PREFIXES = (
     # NEED_RESET and the worker falls back to Dual Lenses Locating itself.
     "error motor need reset",
     "error cmd_step_motor_get_position code code_step_motor_need_reset",
+    # Dwarf 3 firmware often rejects IANA/GMT/UTC timezone strings; SET_TIME
+    # already applied the offset, so the worker tries the next format.
+    "error cmd_system_set_time_zone",
     "receive id data >>",
     "receive code data >>",
     "receive position data >>",
