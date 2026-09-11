@@ -9,6 +9,7 @@ import "../components"
 
 Item {
     id: mediaPage
+    objectName: "mediaPage"
     readonly property var items: backend.mediaItems || []
     readonly property var selected: backend.selectedMedia || ({})
     readonly property bool busy: backend.mediaBusy !== ""
@@ -263,6 +264,7 @@ Item {
 
     Popup {
         id: lightbox
+        objectName: "mediaLightbox"
         modal: true
         focus: true
         padding: 0
@@ -271,6 +273,15 @@ Item {
         anchors.centerIn: Overlay.overlay
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: DialogFrame {}
+        readonly property bool enhanceOn: Theme.enhanceImages && Util.shouldEnhanceMedia(mediaPage.selected)
+        readonly property string rawUrl: (mediaPage.selected && (mediaPage.selected.image_url || mediaPage.selected.thumbnail_url)) || ""
+        readonly property string cleanUrl: {
+            Theme.deepCleanImages
+            backend.enhanceCacheGeneration
+            if (!lightbox.enhanceOn || !lightbox.rawUrl)
+                return ""
+            return backend.mediaEnhanceSource(lightbox.rawUrl, Theme.deepCleanImages ? "deep" : "std")
+        }
         contentItem: ColumnLayout {
             spacing: 0
             Rectangle {
@@ -278,27 +289,51 @@ Item {
                 Layout.fillHeight: true
                 color: Theme.windowBase
                 Image {
-                    id: lightboxImage
+                    id: rawImage
+                    objectName: "rawImage"
                     anchors.fill: parent
                     anchors.margins: 8
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                     cache: false
-                    visible: source !== "" && status === Image.Ready
-                    source: {
-                        Theme.enhanceImages
-                        Theme.deepCleanImages
-                        backend.enhanceCacheGeneration
-                        return Util.mediaDisplayUrl(mediaPage.selected, "image")
+                    visible: !lightbox.enhanceOn && source !== "" && status === Image.Ready
+                    source: lightbox.enhanceOn ? "" : lightbox.rawUrl
+                }
+                Image {
+                    id: cleanImage
+                    objectName: "cleanImage"
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    fillMode: Image.PreserveAspectFit
+                    asynchronous: true
+                    cache: false
+                    visible: lightbox.enhanceOn && source !== "" && status === Image.Ready
+                    source: lightbox.cleanUrl
+                }
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.margins: 16
+                    visible: rawImage.visible || cleanImage.visible
+                    color: Theme.surface
+                    border.color: Theme.outline
+                    radius: 2
+                    width: modeLabel.implicitWidth + 12
+                    height: modeLabel.implicitHeight + 8
+                    Text {
+                        id: modeLabel
+                        anchors.centerIn: parent
+                        text: lightbox.enhanceOn ? "SMOOTHED" : "RAW"
+                        color: lightbox.enhanceOn ? Theme.accent : Theme.textSecondary
+                        font.pixelSize: 11
+                        font.letterSpacing: 1.2
+                        font.bold: true
                     }
                 }
                 Text {
                     anchors.centerIn: parent
-                    visible: lightboxImage.source == "" || lightboxImage.status !== Image.Ready
-                    text: (lightboxImage.source == "" || lightboxImage.status === Image.Loading)
-                        && Theme.enhanceImages && Util.shouldEnhanceMedia(mediaPage.selected)
-                        ? "SMOOTHING…"
-                        : (mediaPage.busy || lightboxImage.status === Image.Loading ? "LOADING…" : "NO PREVIEW")
+                    visible: !rawImage.visible && !cleanImage.visible
+                    text: lightbox.enhanceOn ? "SMOOTHING…" : (mediaPage.busy ? "LOADING…" : "NO PREVIEW")
                     color: Theme.muted
                     font.pixelSize: 12
                     font.letterSpacing: 1.4
@@ -324,6 +359,7 @@ Item {
                             elide: Text.ElideRight
                         }
                         HudButton {
+                            objectName: "lightboxEnhanceButton"
                             text: Theme.enhanceImages ? "ENHANCE ON" : "ENHANCE OFF"
                             visible: Util.shouldEnhanceMedia(mediaPage.selected)
                             buttonColor: Theme.enhanceImages ? Theme.fillActive : Theme.inputBg
@@ -370,7 +406,7 @@ Item {
                                 bits.push("IR " + mediaPage.selected.ir_filter)
                             if (mediaPage.selected.downloaded)
                                 bits.push("Saved locally")
-                            return bits.join("  ·  ") || (backend.mediaSource === "local" ? mediaPage.selected.file_name : "On-device session")
+                            return bits.join("  ·  ") || (backend.mediaSource === "local" ? String(mediaPage.selected.file_name || "") : "On-device session")
                         }
                         color: Theme.textSecondary
                         font.pixelSize: 12

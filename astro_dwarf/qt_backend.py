@@ -1756,7 +1756,7 @@ class AppBackend(QObject):
         key = enhance_cache_key(text, kind)
         dest = self._enhance_cache_dir() / f"{key}.jpg"
         if dest.is_file() and dest.stat().st_size > 1000:
-            return dest.resolve().as_uri()
+            return QUrl.fromLocalFile(str(dest.resolve())).toString()
         if key not in self._enhance_inflight:
             self._enhance_inflight.add(key)
             self._enhance_pool.start(

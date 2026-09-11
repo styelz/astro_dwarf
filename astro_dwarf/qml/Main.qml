@@ -12,6 +12,7 @@ import "dialogs"
 
 ApplicationWindow {
     id: root
+    objectName: "astroWindow"
     width: Math.min(1480, Screen.desktopAvailableWidth - 24)
     height: Math.min(920, Screen.desktopAvailableHeight - 48)
     minimumWidth: 1040
@@ -215,6 +216,8 @@ ApplicationWindow {
             return name
         return name + "  ·  " + model
     }
+    function setThemeEnhance(on) { Theme.enhanceImages = !!on }
+    function setThemeDeep(on) { Theme.deepCleanImages = !!on }
     function goToPage(idx) {
         if (idx === root.currentPage) {
             if (idx === root.settingsPageIndex && !settingsPage.isDirty())

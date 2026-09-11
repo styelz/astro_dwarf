@@ -10,6 +10,7 @@ import "../components"
 
 Dialog {
     id: locationDialog
+    objectName: "locationDialog"
     property bool addingDevice: false
     modal: true
     closePolicy: Popup.NoAutoClose
