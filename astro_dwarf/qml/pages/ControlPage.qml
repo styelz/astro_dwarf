@@ -617,10 +617,11 @@ Item {
                             return backend.videoUrl || "Telescope connected — start the stream"
                         return "Connect a telescope to start the stream"
                     }
-                    property bool mainIsWide: backend.selectedDevice.camera === "wide"
+                    property bool preferredWide: backend.selectedDevice.camera === "wide"
                     property bool pipEnabled: true
-                    readonly property bool pipAvailable: backend.previewTelePlaying && backend.previewWidePlaying
-                    readonly property bool displayWide: pipAvailable ? mainIsWide : backend.previewWidePlaying
+                    readonly property bool pipAvailable: backend.previewTelePlaying && backend.previewWidePlaying && !backend.previewStacking
+                    readonly property bool mainIsWide: backend.previewStacking ? false : preferredWide
+                    readonly property bool displayWide: backend.previewStacking ? false : (pipAvailable ? preferredWide : backend.previewWidePlaying)
                     readonly property bool mainPlaying: displayWide ? backend.previewWidePlaying : backend.previewTelePlaying
                     readonly property bool pipPlaying: pipAvailable && pipEnabled
                     readonly property real teleFovH: {
@@ -655,7 +656,7 @@ Item {
                     function swapViews() {
                         if (!pipAvailable)
                             return
-                        mainIsWide = !mainIsWide
+                        preferredWide = !preferredWide
                     }
                     readonly property bool previewFailed: {
                         const s = String(backend.previewStatus || "").toLowerCase()
@@ -686,7 +687,7 @@ Item {
                             backend.uiLog("warning", "Preview needs an active telescope connection")
                             return
                         }
-                        mainIsWide = backend.selectedDevice.camera === "wide"
+                        preferredWide = backend.selectedDevice.camera === "wide"
                         backend.startPreview(backend.selectedDeviceId)
                     }
 
@@ -1188,7 +1189,7 @@ Item {
                                         NumberAnimation { from: 0.3; to: 1; duration: 600 }
                                     }
                                 }
-                                Text { text: previewBadge.stopping ? "STOPPING" : (backend.previewPlaying ? "LIVE" : (backend.previewHeld ? "PAUSED" : (backend.previewActive ? "STARTING" : "STANDBY"))); color: Theme.textPrimary; font.pixelSize: 11; font.bold: true }
+                                Text { text: previewBadge.stopping ? "STOPPING" : (backend.previewPlaying ? (backend.previewStacking ? "STACK" : "LIVE") : (backend.previewHeld ? "PAUSED" : (backend.previewActive ? "STARTING" : "STANDBY"))); color: Theme.textPrimary; font.pixelSize: 11; font.bold: true }
                             }
                         }
                         Rectangle {
@@ -1200,7 +1201,7 @@ Item {
                             Text {
                                 id: mainCamLabel
                                 anchors.centerIn: parent
-                                text: previewHost.displayWide ? "WIDE" : "TELE"
+                                text: previewHost.displayWide ? "WIDE" : (backend.previewStacking ? "STACK" : "TELE")
                                 color: Theme.accent
                                 font.pixelSize: 11
                                 font.bold: true
