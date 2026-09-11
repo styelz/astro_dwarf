@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import http.client
 import socket
 import sys
 import threading
+import time
 from typing import Optional
+from urllib.parse import urlparse
 
 from PySide6.QtCore import Property, QObject, QProcess, QRectF, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QWindow
@@ -298,16 +301,51 @@ def preview_window_is_live(window) -> bool:
         return False
 
 
+def pop_jpegs(buffer: bytes, max_buffer: int = 20_000_000) -> tuple[bytes, list[bytes]]:
+    """Pull complete JPEG payloads out of an MJPEG or image2pipe byte stream."""
+    frames: list[bytes] = []
+    while True:
+        start = buffer.find(b"\xff\xd8")
+        end = buffer.find(b"\xff\xd9", start + 2) if start >= 0 else -1
+        if start < 0 or end < 0:
+            if start > 0:
+                buffer = buffer[start:]
+            elif start == 0 and len(buffer) > max_buffer:
+                buffer = b""
+            elif start < 0 and len(buffer) > max_buffer:
+                buffer = buffer[-64_000:]
+            break
+        frames.append(buffer[start : end + 2])
+        buffer = buffer[end + 2 :]
+    return buffer, frames
+
+
+def _close_http_conn(conn: http.client.HTTPConnection | None) -> None:
+    if conn is None:
+        return
+    sock = getattr(conn, "sock", None)
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    try:
+        conn.close()
+    except OSError:
+        pass
+
+
 class StreamPlayer(QObject):
-    """Live preview via ffmpeg CLI so RTSP matches VLC and stays off Qt Multimedia."""
+    """Live preview: ffmpeg for RTSP, native HTTP MJPEG for stacking snapshots."""
 
     frameReady = Signal(object)
     failed = Signal(str)
     statusChanged = Signal(str)
+    _jpegBytes = Signal(object)
 
     _FIRST_FRAME_MS = 8000
-    _HTTP_STALL_MS = 20000
-    _HTTP_RECONNECT_MS = 8000
+    _HTTP_FIRST_FRAME_MS = 120000
+    _HTTP_RECONNECT_MS = 1500
     _HTTP_RETRY_MS = 1500
 
     def __init__(self, parent: Optional[QObject] = None):
@@ -316,6 +354,7 @@ class StreamPlayer(QObject):
         self._url = ""
         self._transports: list[str | None] = [None]
         self._transport_index = 0
+        self._http_mode = False
         self._keep_alive = False
         self._cancelled = False
         self._got_frame = False
@@ -323,8 +362,12 @@ class StreamPlayer(QObject):
         self._stderr = ""
         self._pid = 0
         self._pid_lock = threading.Lock()
+        self._http_lock = threading.Lock()
+        self._http_conn: http.client.HTTPConnection | None = None
+        self._http_generation = 0
         self._latest_image: QImage | None = None
         self._flush_scheduled = False
+        self._jpegBytes.connect(self._on_jpeg_bytes)
         self._watchdog = QTimer(self)
         self._watchdog.setSingleShot(True)
         self._watchdog.timeout.connect(self._on_watchdog)
@@ -334,9 +377,15 @@ class StreamPlayer(QObject):
 
     @Slot(str)
     def openStream(self, url: str) -> None:
+        self._stop_http()
+        self._teardown()
         self._cancelled = False
         self._url = url
-        self._keep_alive = url.startswith("http://")
+        self._http_mode = url.startswith("http://")
+        self._keep_alive = self._http_mode
+        self._got_frame = False
+        self._latest_image = None
+        self._flush_scheduled = False
         if url.startswith("rtsp://"):
             # VLC typically uses TCP; UDP often never errors, it just stays blank.
             self._transports = ["tcp", "udp"]
@@ -344,33 +393,132 @@ class StreamPlayer(QObject):
             self._transports = [None]
         self._transport_index = 0
         self.statusChanged.emit(
-            "Opening stacking preview…" if self._keep_alive else "Opening camera stream…"
+            "Opening stacking preview…" if self._http_mode else "Opening camera stream…"
         )
+        if self._http_mode:
+            self._start_http()
+            return
         self._start_process()
 
     @Slot()
     def closeStream(self) -> None:
         self._cancelled = True
         self._url = ""
+        self._http_mode = False
         self._keep_alive = False
         self._watchdog.stop()
         self._reconnect_timer.stop()
         self._latest_image = None
         self._flush_scheduled = False
+        self._stop_http()
         self._teardown()
 
-    def _start_process(self) -> None:
-        self._reconnect_timer.stop()
-        self._teardown()
+    def _start_http(self) -> None:
         if self._cancelled or not self._url:
             return
+        with self._http_lock:
+            self._http_generation += 1
+            generation = self._http_generation
+        url = self._url
+        self._watchdog.start(self._HTTP_FIRST_FRAME_MS)
+        threading.Thread(
+            target=self._http_loop,
+            args=(url, generation),
+            name="http-mjpeg",
+            daemon=True,
+        ).start()
+
+    def _stop_http(self) -> None:
+        with self._http_lock:
+            self._http_generation += 1
+            conn = self._http_conn
+            self._http_conn = None
+        _close_http_conn(conn)
+
+    def _restart_http(self) -> None:
+        if self._cancelled or not self._http_mode or not self._url:
+            return
+        self._stop_http()
+        self._start_http()
+
+    def _http_loop(self, url: str, generation: int) -> None:
+        while generation == self._http_generation and not self._cancelled and url:
+            try:
+                self._http_read(url, generation)
+            except Exception:
+                if generation != self._http_generation or self._cancelled:
+                    return
+                self.statusChanged.emit("Waiting for stacking preview…")
+            if generation != self._http_generation or self._cancelled:
+                return
+            time.sleep(self._HTTP_RECONNECT_MS / 1000)
+
+    def _http_read(self, url: str, generation: int) -> None:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        if not host:
+            raise RuntimeError("Stacking preview URL is missing a host")
+        port = parsed.port or 8092
+        path = parsed.path or "/"
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        conn = http.client.HTTPConnection(host, port, timeout=5)
+        with self._http_lock:
+            if generation != self._http_generation:
+                _close_http_conn(conn)
+                return
+            self._http_conn = conn
+        try:
+            conn.request("GET", path, headers={"Accept": "*/*", "Connection": "keep-alive"})
+            response = conn.getresponse()
+            if response.status != 200:
+                raise RuntimeError(f"Stacking preview returned HTTP {response.status}")
+            if conn.sock is not None:
+                conn.sock.settimeout(1.0)
+            buffer = b""
+            announced = False
+            while generation == self._http_generation and not self._cancelled:
+                try:
+                    chunk = response.read1(64 * 1024) if hasattr(response, "read1") else response.read(64 * 1024)
+                except (TimeoutError, socket.timeout):
+                    continue
+                except (OSError, http.client.HTTPException):
+                    break
+                if not chunk:
+                    break
+                if not announced:
+                    announced = True
+                    if not self._got_frame:
+                        self.statusChanged.emit("Downloading stacking preview…")
+                buffer += chunk
+                buffer, frames = pop_jpegs(buffer)
+                for jpeg in frames:
+                    self._jpegBytes.emit(jpeg)
+        finally:
+            with self._http_lock:
+                if self._http_conn is conn:
+                    self._http_conn = None
+            _close_http_conn(conn)
+
+    @Slot(object)
+    def _on_jpeg_bytes(self, data: object) -> None:
+        if self._cancelled or not isinstance(data, (bytes, bytearray)) or not data:
+            return
+        image = QImage.fromData(bytes(data), "JPG")
+        if image.isNull():
+            return
+        self._queue_frame(image)
+
+    def _start_process(self) -> None:
+        if self._http_mode or self._cancelled or not self._url:
+            return
+        self._reconnect_timer.stop()
+        self._teardown()
         transport = self._transports[self._transport_index]
         if transport == "tcp":
             self.statusChanged.emit("Opening camera stream over TCP…")
         elif transport == "udp":
             self.statusChanged.emit("TCP stream failed, retrying over UDP…")
-        elif self._keep_alive:
-            self.statusChanged.emit("Opening stacking preview…")
         command = ffmpeg_mjpeg_command(self._url, transport)
         program, arguments = command[0], command[1:]
         process = QProcess(self)
@@ -401,7 +549,9 @@ class StreamPlayer(QObject):
         self._watchdog.start(self._FIRST_FRAME_MS)
 
     def abort(self) -> None:
-        """Kill ffmpeg from any thread without waiting on Qt."""
+        """Kill ffmpeg / HTTP from any thread without waiting on Qt."""
+        self._cancelled = True
+        self._stop_http()
         with self._pid_lock:
             pid = self._pid
             self._pid = 0
@@ -434,21 +584,10 @@ class StreamPlayer(QObject):
         if self._process is None:
             return
         self._buffer += bytes(self._process.readAllStandardOutput())
-        last = None
-        while True:
-            start = self._buffer.find(b"\xff\xd8")
-            end = self._buffer.find(b"\xff\xd9", start + 2) if start >= 0 else -1
-            if start < 0 or end < 0:
-                if start > 0:
-                    self._buffer = self._buffer[start:]
-                elif len(self._buffer) > 5_000_000:
-                    self._buffer = self._buffer[-64_000:]
-                break
-            last = self._buffer[start : end + 2]
-            self._buffer = self._buffer[end + 2 :]
-        if last is None:
+        self._buffer, frames = pop_jpegs(self._buffer)
+        if not frames:
             return
-        image = QImage.fromData(last, "JPG")
+        image = QImage.fromData(frames[-1], "JPG")
         if image.isNull():
             return
         self._queue_frame(image)
@@ -467,10 +606,7 @@ class StreamPlayer(QObject):
         if image is None or image.isNull() or self._cancelled:
             return
         self._got_frame = True
-        if self._keep_alive:
-            self._watchdog.start(self._HTTP_STALL_MS)
-        else:
-            self._watchdog.stop()
+        self._watchdog.stop()
         self.frameReady.emit(image)
 
     def _on_stderr(self) -> None:
@@ -488,18 +624,17 @@ class StreamPlayer(QObject):
     def _on_finished(self) -> None:
         if self._cancelled or self._process is None:
             return
-        if self._keep_alive:
-            delay = self._HTTP_RECONNECT_MS if self._got_frame else self._HTTP_RETRY_MS
-            self._schedule_reconnect(delay)
-            return
         detail = self._stderr.strip().splitlines()[-1] if self._stderr.strip() else "ffmpeg exited"
         self._retry_or_fail(detail)
 
     def _on_watchdog(self) -> None:
         if self._cancelled:
             return
-        if self._keep_alive:
-            self._schedule_reconnect(0)
+        if self._http_mode:
+            if self._got_frame:
+                return
+            self.statusChanged.emit("Waiting for stacking preview…")
+            self._restart_http()
             return
         if self._got_frame:
             return
@@ -519,10 +654,6 @@ class StreamPlayer(QObject):
 
     def _retry_or_fail(self, message: str, *, fatal: bool = False) -> None:
         if self._cancelled:
-            return
-        if not fatal and self._keep_alive:
-            self.statusChanged.emit("Waiting for stacking preview…")
-            self._schedule_reconnect()
             return
         if self._got_frame:
             return

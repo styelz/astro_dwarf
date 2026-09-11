@@ -1857,30 +1857,6 @@ class AppBackend(QObject):
             elif not stacking and was_stacking:
                 self.add_log("info", "Capture ended — restoring RTSP live view", device_id)
             self._retarget_preview_streams(tele_url, wide_url)
-            return
-        if not stacking:
-            return
-
-        def frame_count(raw: dict[str, Any], key: str) -> int:
-            try:
-                return int(raw.get(key) or 0)
-            except (TypeError, ValueError):
-                return 0
-
-        stacked = frame_count(current, "capture_stacked")
-        taken = frame_count(current, "capture_current")
-        if stacked > frame_count(previous, "capture_stacked") or taken > frame_count(
-            previous, "capture_current"
-        ):
-            token = self._preview_token
-            QTimer.singleShot(400, lambda: self._refresh_stacking_preview(token, tele_url))
-
-    def _refresh_stacking_preview(self, token: int, tele_url: str) -> None:
-        if token != self._preview_token or not self._preview_active or not tele_url:
-            return
-        if not self._preview_stacking(self._selected_device_id):
-            return
-        self._openTeleStream.emit(tele_url)
 
     def _retarget_preview_streams(self, tele_url: str, wide_url: str, timeout: float = 20) -> None:
         """Switch stream URLs without clearing the last frame or sending go_live."""

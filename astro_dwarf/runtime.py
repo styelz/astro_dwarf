@@ -107,9 +107,6 @@ def ffmpeg_mjpeg_command(url: str, rtsp_transport: str | None = None) -> list[st
     ]
     if rtsp_transport:
         command.extend(["-rtsp_transport", rtsp_transport])
-    if url.startswith("http://"):
-        # Snapshot GETs on :8092 can hang; drop them so StreamPlayer can reopen.
-        command.extend(["-rw_timeout", "8000000"])
     command.extend(
         [
             "-i",

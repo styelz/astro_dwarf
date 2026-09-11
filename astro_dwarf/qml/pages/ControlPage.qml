@@ -671,6 +671,8 @@ Item {
                             return "RETRYING UDP…"
                         if (s.indexOf("waiting") >= 0)
                             return "WAITING FOR STREAM…"
+                        if (s.indexOf("download") >= 0)
+                            return "DOWNLOADING PREVIEW…"
                         if (s.indexOf("tcp") >= 0 || s.indexOf("opening") >= 0)
                             return "OPENING STREAM…"
                         if (s.indexOf("starting") >= 0)
