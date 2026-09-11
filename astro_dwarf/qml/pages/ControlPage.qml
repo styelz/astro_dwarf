@@ -310,6 +310,10 @@ Item {
                         tone: locked ? Theme.success : slewing ? Theme.notice : (backend.selectedDevice.connected ? Theme.accent : Theme.danger)
                         glow: locked || slewing
                         dim: !backend.selectedDevice.connected
+                        TapHandler {
+                            enabled: lockBadge.tracking && !lockBadge.slewing && root.commandEnabled("stop_goto")
+                            onTapped: root.requestDeviceAction("stop_goto", "EXIT TRACKING")
+                        }
                     }
                 }
                 Text {
@@ -571,6 +575,16 @@ Item {
                         model: ["FITS", "TIFF"]
                         onActivated: backend.setCameraParam(backend.selectedDeviceId, "stack_format", String(currentIndex))
                     }
+                }
+                FieldLabel { text: "STACK COUNT" }
+                HudField {
+                    id: liveStackCount
+                    Layout.fillWidth: true
+                    enabled: root.commandEnabled("set_count")
+                    placeholderText: "frames"
+                    text: "120"
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    onEditingFinished: backend.setCameraParam(backend.selectedDeviceId, "count", text)
                 }
                 FieldLabel { text: "BURST / TIMELAPSE" }
                 RowLayout {
@@ -1472,11 +1486,11 @@ Item {
                     id: commandGrid
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    readonly property int padCount: 15
+                    readonly property int padCount: 16
                     // pick the widest column count that still divides the pads into full rows
                     columns: {
                         const fit = Math.max(2, Math.floor((width + columnSpacing) / (150 + columnSpacing)))
-                        const options = [5, 3]
+                        const options = [8, 4, 3]
                         for (let i = 0; i < options.length; i++)
                             if (options[i] <= fit)
                                 return options[i]
@@ -1494,8 +1508,9 @@ Item {
                         {label: "LIGHTS", glyph: "✦", start: "lights_on", stop: "lights_off", state: "lights", detail: "CHASSIS"},
                         {label: "INDICATOR", glyph: "◉", start: "indicator_on", stop: "indicator_off", state: "indicator", detail: "CHASSIS"},
                         {label: "PHOTO", glyph: "▣", start: "photo", stop: "", state: "", detail: "CAPTURE"},
+                        {label: "STACK", glyph: "⧉", start: "stack", stop: "stop_astro", state: "imaging", detail: "CAPTURE"},
                         {label: "GO LIVE", glyph: "▶", start: "go_live", stop: "", state: "", detail: "CAMERA"},
-                        {label: "STOP GOTO", glyph: "■", start: "stop_goto", stop: "", state: "goto", detail: "MOUNT"},
+                        {label: "TRACK", glyph: "⊛", start: "track", stop: "stop_goto", state: "goto", detail: "MOUNT"},
                         {label: "BURST", glyph: "◫", start: "burst_start", stop: "burst_stop", state: "burst", detail: "CAPTURE"},
                         {label: "RECORD", glyph: "●", start: "record_start", stop: "record_stop", state: "record", detail: "VIDEO"},
                         {label: "TIMELAPSE", glyph: "◷", start: "timelapse_start", stop: "timelapse_stop", state: "timelapse", detail: "CAPTURE"},
@@ -1506,14 +1521,32 @@ Item {
                         id: pad
                         required property var modelData
                         readonly property var t: root.scopeTelemetry
+                        readonly property bool trackingPad: modelData.start === "track"
+                        readonly property bool trackingNow: trackingPad && !!t.tracking_active
+                        readonly property bool slewingNow: trackingPad && root.scopeActivity === "goto"
                         readonly property bool activeForState: modelData.state === "lights"
                             ? !!backend.selectedDevice.lights_on
                             : modelData.state === "indicator"
                                 ? !!backend.selectedDevice.indicator_on
-                                : modelData.state !== "" && root.scopeActivity === modelData.state
+                                : trackingPad
+                                    ? (slewingNow || trackingNow)
+                                    : modelData.state !== "" && root.scopeActivity === modelData.state
                         readonly property string effectiveOperation: activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
                         readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop)
+                        readonly property string padLabel: {
+                            if (!trackingPad)
+                                return modelData.label
+                            if (slewingNow)
+                                return "STOP GOTO"
+                            if (trackingNow)
+                                return "EXIT TRACKING"
+                            return "TRACK"
+                        }
                         function deviceDetail() {
+                            if (trackingPad && trackingNow && !slewingNow)
+                                return t.tracking_target ? "TRACKING · " + t.tracking_target : "TRACKING · TAP TO STOP"
+                            if (modelData.state === "imaging" && activeForState)
+                                return t.capture_text ? "STACK · " + t.capture_text : "STACKING · TAP TO STOP"
                             if (!activeForState)
                                 return modelData.detail
                             switch (modelData.state) {
@@ -1528,6 +1561,8 @@ Item {
                                 return root.scopeActivityDetail || "RUNNING"
                             case "record":
                                 return "REC · " + (root.scopeActivityDetail || "00:00")
+                            case "imaging":
+                                return t.capture_text ? "STACK · " + t.capture_text : "STACKING"
                             case "lights":
                                 return "ON · TAP TO STOP"
                             case "indicator":
@@ -1540,7 +1575,7 @@ Item {
                         Layout.fillHeight: true
                         Layout.minimumHeight: 44
                         Layout.preferredHeight: 58
-                        text: modelData.label
+                        text: padLabel
                         glyph: modelData.glyph
                         detail: deviceDetail()
                         activeState: activeForState
@@ -1550,10 +1585,21 @@ Item {
                             ? previewHost.previewStartEnabled
                             : root.commandEnabled(effectiveOperation)
                         onClicked: {
-                            if (modelData.start === "go_live")
+                            if (modelData.start === "go_live") {
                                 previewHost.startPreview()
-                            else
-                                root.requestDeviceAction(effectiveOperation, modelData.label)
+                                return
+                            }
+                            if (effectiveOperation === "stack") {
+                                if (liveExposure.text.trim())
+                                    backend.setCameraParam(backend.selectedDeviceId, "exposure", liveExposure.text)
+                                if (liveGain.text.trim())
+                                    backend.setCameraParam(backend.selectedDeviceId, "gain", liveGain.text)
+                                if (liveStackCount.text.trim())
+                                    backend.setCameraParam(backend.selectedDeviceId, "count", liveStackCount.text)
+                                if (liveFilter.visible && liveFilter.currentText)
+                                    backend.setCameraParam(backend.selectedDeviceId, "ir", liveFilter.currentText)
+                            }
+                            root.requestDeviceAction(effectiveOperation, padLabel)
                         }
                         Connections {
                             target: backend

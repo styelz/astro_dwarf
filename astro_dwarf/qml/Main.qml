@@ -159,7 +159,9 @@ ApplicationWindow {
             autofocus: "stop_autofocus",
             infinity: "stop_autofocus",
             polar: "stop_polar",
-            goto: "stop_goto"
+            goto: "stop_goto",
+            imaging: "stop_astro",
+            stack: "stop_astro"
         }
         if (op === "stop_all")
             return pending !== "stop_session"
@@ -169,7 +171,9 @@ ApplicationWindow {
         if (isStop) {
             if (op === stopFor[pending] || op === stopFor[activity])
                 return true
-            return op === "stop_goto" && !root.scopeOccupied
+            if (op === "stop_astro")
+                return !!root.scopeTelemetry.capture_active
+            return op === "stop_goto" && (!root.scopeOccupied || !!root.scopeTelemetry.tracking_active)
         }
         return !root.scopeOccupied
     }

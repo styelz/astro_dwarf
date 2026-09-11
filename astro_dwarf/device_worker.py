@@ -11,6 +11,7 @@ import heapq
 import html
 import itertools
 import json
+import math
 import os
 import socket
 import subprocess
@@ -20,6 +21,7 @@ import threading
 import time
 import traceback
 import queue
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -690,6 +692,25 @@ def sdk_call(operation: str, *args: Any) -> Any:
         return send_without_response(message, 15001, 8)
     if operation == "set_focus":
         return _set_focus_position(int(args[0]))
+    if operation == "set_ir" and args:
+        _device["ir_filter"] = args[0]
+    if operation == "set_count" and args:
+        _device["frame_count"] = args[0]
+    if operation in ("stop_goto", "stop_astro", "stop_wide"):
+        from dwarf_python_api.proto import astro_pb2
+
+        stops = {
+            "stop_goto": ("ReqStopGoto", 11004),
+            "stop_astro": ("ReqStopCaptureRawLiveStacking", 11006),
+            "stop_wide": ("ReqStopCaptureWideRawLiveStacking", 11017),
+        }
+        name, command = stops[operation]
+        factory = getattr(astro_pb2, name, None)
+        if factory is None and operation == "stop_wide":
+            factory = getattr(astro_pb2, "ReqStopCaptureRawLiveStacking", None)
+        if factory is None:
+            raise NotImplementedError(f"Installed SDK does not provide '{operation}'")
+        return send_without_response(factory(), command, 3)
     if operation == "normal_autofocus":
         # Live/photo AF (15000). Contrast-detects a bright scene; on a night
         # sky it racks toward infinity or fails. Keep for photo mode only.
@@ -1422,6 +1443,8 @@ CMD_ASTRO_CONTINUE_SHOOTING = 11050
 CODE_ASTRO_FUNCTION_BUSY = -11501
 CODE_ASTRO_DARK_NOT_FOUND = -11503
 CODE_ASTRO_GOTO_RUNNING = -11508
+CODE_ASTRO_NEED_GOTO = -11513
+CODE_ASTRO_NEED_GOTO_DSO = -11518
 CODE_ASTRO_DARK_TEMP_MISMATCH = -11530
 # The astro engine is still winding down GOTO/calibration; try again shortly.
 _CAPTURE_BUSY_CODES = {CODE_ASTRO_FUNCTION_BUSY, CODE_ASTRO_GOTO_RUNNING}
@@ -1739,6 +1762,8 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
             force_start = True
             label = f"{name} (forced)"
             continue
+        if code in {CODE_ASTRO_NEED_GOTO, CODE_ASTRO_NEED_GOTO_DSO}:
+            raise RuntimeError("Track a target first, then start the stack")
         raise RuntimeError(f"{name} failed: {_error_name(code)}")
 
 
@@ -1806,6 +1831,8 @@ def run_session(session: dict[str, Any]) -> bool:
                 stop_all()
             except Exception as exc:
                 log(f"Could not stop leftover activity: {exc}", "debug")
+        elif completed:
+            _exit_tracking_if_needed("Stopping tracking after session completed")
 
 
 def _wait_seconds(seconds: float, message: str | None = None, progress: Any = None) -> None:
@@ -1819,6 +1846,18 @@ def _wait_seconds(seconds: float, message: str | None = None, progress: Any = No
         progress(label, wait_seconds=seconds)
     if _stop.wait(seconds):
         raise InterruptedError("Session stopped")
+
+
+def _exit_tracking_if_needed(reason: str) -> None:
+    """Send CMD_ASTRO_STOP_GOTO when sidereal tracking is still running."""
+    snapshot = _tap.snapshot() if _tap is not None else {}
+    if snapshot.get("tracking_state") != "running":
+        return
+    log(reason)
+    try:
+        sdk_call("stop_goto")
+    except Exception as exc:
+        log(f"Stop tracking skipped: {exc}", "debug")
 
 
 def _clear_tracking(progress: Any = None) -> None:
@@ -1950,7 +1989,7 @@ _CAPTURE_STOP_WAIT_S = 35.0
 _STOP_STEP_LABELS = {
     "stop_astro": "Stopping capture",
     "stop_wide": "Stopping wide capture",
-    "stop_goto": "Stopping GOTO",
+    "stop_goto": "Stopping GOTO / tracking",
     "stop_calibrate": "Stopping calibration",
     "stop_autofocus": "Stopping autofocus",
     "stop_polar": "Stopping polar alignment",
@@ -1987,6 +2026,8 @@ def _activity_still_running(snapshot: dict[str, Any]) -> bool:
     if _capture_running(snapshot):
         return True
     if snapshot.get("goto_state") in _BUSY_ASTRO:
+        return True
+    if snapshot.get("tracking_state") == "running":
         return True
     if snapshot.get("calibration_state") in _BUSY_ASTRO:
         return True
@@ -2055,7 +2096,11 @@ def _stop_targets() -> list[str]:
         operations.append("stop_astro")
     if phase in ("wide_astro", "wait_wide", "wait_wide_resume") or wide_capture:
         operations.append("stop_wide")
-    if phase in ("goto", "goto_solar") or snapshot.get("goto_state") in _BUSY_ASTRO:
+    if (
+        phase in ("goto", "goto_solar")
+        or snapshot.get("goto_state") in _BUSY_ASTRO
+        or snapshot.get("tracking_state") == "running"
+    ):
         operations.append("stop_goto")
     if phase == "calibrate" or snapshot.get("calibration_state") in _BUSY_ASTRO:
         operations.append("stop_calibrate")
@@ -2353,6 +2398,101 @@ def astro_session_download(file_path: str = "", dest_dir: str = "") -> dict[str,
     return {"path": str(local), "file": name, "url": url, "file_path": remote}
 
 
+def _julian_date(when: datetime) -> float:
+    when = when.astimezone(timezone.utc)
+    year, month, day = when.year, when.month, when.day
+    hour = when.hour + when.minute / 60.0 + when.second / 3600.0 + when.microsecond / 3.6e9
+    if month <= 2:
+        year -= 1
+        month += 12
+    century = year // 100
+    leap = 2 - century + century // 4
+    return int(365.25 * (year + 4716)) + int(30.6001 * (month + 1)) + day + leap - 1524.5 + hour / 24.0
+
+
+def _local_sidereal_hours(longitude_deg: float, when: datetime) -> float:
+    jd = _julian_date(when)
+    centuries = (jd - 2451545.0) / 36525.0
+    gmst = (
+        280.46061837
+        + 360.98564736629 * (jd - 2451545.0)
+        + 0.000387933 * centuries * centuries
+        - centuries ** 3 / 38710000.0
+    )
+    return ((gmst + longitude_deg) % 360.0) / 15.0
+
+
+def _altaz_to_radec(
+    azimuth_deg: float,
+    altitude_deg: float,
+    latitude_deg: float,
+    longitude_deg: float,
+    when: datetime | None = None,
+) -> tuple[float, float]:
+    """Horizon az/alt (az from north, eastward) to RA hours and Dec degrees."""
+    when = when or datetime.now(timezone.utc)
+    lat = math.radians(latitude_deg)
+    az = math.radians(azimuth_deg)
+    alt = math.radians(altitude_deg)
+    sin_dec = math.sin(alt) * math.sin(lat) + math.cos(alt) * math.cos(lat) * math.cos(az)
+    dec = math.asin(max(-1.0, min(1.0, sin_dec)))
+    cos_dec = math.cos(dec)
+    if abs(cos_dec) < 1e-10 or abs(math.cos(lat)) < 1e-10:
+        ha = 0.0
+    else:
+        sin_ha = -math.sin(az) * math.cos(alt) / cos_dec
+        cos_ha = (math.sin(alt) - math.sin(dec) * math.sin(lat)) / (cos_dec * math.cos(lat))
+        ha = math.atan2(sin_ha, cos_ha)
+    ra_hours = (_local_sidereal_hours(longitude_deg, when) - math.degrees(ha) / 15.0) % 24.0
+    return ra_hours, math.degrees(dec)
+
+
+def _start_tracking(target_name: str = "") -> dict[str, Any]:
+    """GOTO the current pointing with tracking enabled (goto_only=False)."""
+    if _ensure_astro_mode() is False:
+        raise RuntimeError("Could not enter astro mode")
+    snapshot = _tap.snapshot() if _tap is not None else {}
+    if snapshot.get("tracking_state") == "running":
+        log("Already tracking", "notice")
+        return {"ok": True, "already": True}
+    latitude, longitude = _site_coordinates()
+    if abs(latitude) < 1e-9 and abs(longitude) < 1e-9:
+        raise RuntimeError("Set your observing site before starting tracking")
+    az = _motor_position(1)
+    alt = _motor_position(2) if az is not None else None
+    if az is None or alt is None:
+        raise RuntimeError(
+            "Mount position is unavailable. Calibrate first, then tap the live view and press TRACK"
+        )
+    ra_hours, dec_degrees = _altaz_to_radec(az, alt, latitude, longitude)
+    name = str(target_name or "").strip() or "Live tap"
+    log(
+        f"TRACK from pointing az={az:.2f}° alt={alt:.2f}° → "
+        f"RA {ra_hours:.4f}h Dec {dec_degrees:+.3f}° ({name})"
+    )
+    if sdk_call("goto", ra_hours, dec_degrees, name, False) is False:
+        raise RuntimeError("GOTO to start tracking failed")
+    return {
+        "ok": True,
+        "ra_hours": ra_hours,
+        "dec_degrees": dec_degrees,
+        "name": name,
+    }
+
+
+def _start_manual_stack(camera: str = "") -> bool:
+    """Start live stacking without waiting for the run to finish."""
+    if _ensure_astro_mode() is False:
+        raise RuntimeError("Could not enter astro mode")
+    choice = str(camera or _device.get("camera") or "tele").strip().lower()
+    _device["camera"] = choice
+    operation = "wide_astro" if choice == "wide" else "astro"
+    ir_index = _ir_index(_device.get("ir_filter"))
+    args = [ir_index] if operation == "astro" else []
+    _start_capture("Stack", operation, args)
+    return True
+
+
 def polar_position() -> bool:
     function = getattr(_api, "motor_action", None) if _api is not None else None
     if function is None:
@@ -2408,6 +2548,12 @@ def dispatch(message: dict[str, Any]) -> Any:
         )
     if command == "polar_position":
         return polar_position()
+    if command == "track":
+        args = list(message.get("args") or [])
+        return _start_tracking(str(args[0]) if args else "")
+    if command == "stack":
+        args = list(message.get("args") or [])
+        return _start_manual_stack(str(args[0]) if args else "")
     if command == "read_camera":
         args = list(message.get("args") or [])
         mode_id = int(args[0]) if args else 1
@@ -2417,7 +2563,7 @@ def dispatch(message: dict[str, Any]) -> Any:
     if command in {"disconnect", "reboot", "power_down"}:
         _mark_disconnected()
         return sdk_call(command)
-    if command in {"calibrate", "autofocus", "infinity", "polar"}:
+    if command in {"calibrate", "autofocus", "infinity", "polar", "track", "stack"}:
         if _ensure_astro_mode() is False:
             return False
     if command == "astro_mode":

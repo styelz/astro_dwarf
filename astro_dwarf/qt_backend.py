@@ -286,6 +286,8 @@ _ACTIVITY_START = {
     "calibrate": "calibrate",
     "autofocus": "autofocus",
     "infinity": "infinity",
+    "track": "goto",
+    "stack": "imaging",
 }
 # Session steps that should light a command pad. Astro autofocus has no
 # firmware state notify (calibrate / GOTO / EQ do), so the pad stays dark
@@ -310,6 +312,8 @@ _ACTIVITY_STOP = {
     "stop_polar": "polar",
     "stop_calibrate": "calibrate",
     "stop_autofocus": "autofocus",
+    "stop_goto": "goto",
+    "stop_astro": "imaging",
 }
 _ACTIVITY_CLEAR = {"stop_all", "stop_session", "reboot", "power_down", "go_live"}
 _STOP_ACTIONS = {"stop_all", "stop_session"}
@@ -367,7 +371,12 @@ _ACTION_LABELS = {
     "set_timelapse_interval": "Timelapse interval set",
     "set_timelapse_duration": "Timelapse duration set",
     "set_stack_format": "Stack format set",
+    "set_count": "Stack count set",
     "set_auto_calibration": "Auto calibration updated",
+    "track": "Tracking started",
+    "stop_goto": "Tracking stopped",
+    "stack": "Stack started",
+    "stop_astro": "Stack stopped",
     "stop_all": "Stop sent",
     "stop_session": "Session stop sent",
     "reboot": "Reboot requested",
@@ -379,6 +388,8 @@ _ACTION_DETAILS = {
     "calibrate": "Device will plate-solve and report progress",
     "autofocus": "Watch the focus position in VITALS",
     "polar_position": "Homes and slews the mount to the polar-alignment pose",
+    "track": "Firmware will plate-solve this pointing and start sidereal tracking",
+    "stack": "Live stacking uses the current exposure, gain and count",
     "reboot": "The connection will drop for ~60 s",
     "power_down": "The connection will drop",
 }
@@ -2424,7 +2435,18 @@ class AppBackend(QObject):
                 self.add_log("error", f"{label} failed: {result}", device_id)
                 self._toast(f"{label} failed", "error", str(result))
 
-        worker.send(operation, callback=self._with_pending(device_id, operation, done))
+        payload: dict[str, Any] = {}
+        if operation == "track":
+            session = self._current_session_view or {}
+            name = ""
+            if session.get("device_id") == device_id:
+                name = str(session.get("target_name") or "")
+            payload = {"args": [name or "Live tap"]}
+        elif operation == "stack":
+            device = self._device_by_id(device_id)
+            camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
+            payload = {"args": [camera]}
+        worker.send(operation, payload, callback=self._with_pending(device_id, operation, done))
         if dropping:
             self._drop_device_link(device_id)
 
@@ -2497,6 +2519,12 @@ class AppBackend(QObject):
         def done(ok: bool, result: Any) -> None:
             if not ok:
                 self.add_log("error", f"Center on tap failed: {result}", device_id)
+                return
+            detail = result if isinstance(result, dict) else {}
+            if detail.get("ok") is False:
+                self.add_log("error", "Center on tap failed", device_id)
+                return
+            self._toast("Target centered", "success", "Press TRACK to start sidereal tracking, then STACK")
 
         worker.send("center_tap", {"args": [nx, ny, fov_h, fov_v]}, done)
 
@@ -2788,6 +2816,8 @@ class AppBackend(QObject):
             operation, args = "set_timelapse_duration", [value]
         elif name == "stack_format":
             operation, args = "set_stack_format", [int(value)]
+        elif name == "count":
+            operation, args = "set_count", [int(value), camera]
         elif name == "auto_calibration":
             operation, args = "set_auto_calibration", [value.strip().lower() in {"1", "true", "yes", "on"}]
         else:
