@@ -8,6 +8,8 @@ maintainer: Astro Dwarf
 description: Native multi-device Dwarf telescope control and scheduling
 homepage: https://github.com/styelz/astro_dwarf
 license: Proprietary
+archlinux:
+  packager: Astro Dwarf
 contents:
   - src: dist/AstroDwarf
     dst: /opt/astro-dwarf

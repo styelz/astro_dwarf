@@ -109,10 +109,26 @@ jobs:
           choco install innosetup --no-progress -y
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" packaging\windows\astro-dwarf.iss
 
+      - name: Package Windows zip archives
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setupExe = "AstroDwarf-Setup-$env:VERSION-win64.exe"
+          if (-not (Test-Path "release\$setupExe")) {
+            throw "Installer $setupExe was not produced."
+          }
+          tar.exe -a -c -f "release\AstroDwarf-Setup-$env:VERSION-win64.zip" -C release $setupExe
+          tar.exe -a -c -f "release\AstroDwarf-$env:VERSION-win64-portable.zip" -C dist AstroDwarf
+          if (-not (Test-Path "release\AstroDwarf-$env:VERSION-win64-portable.zip")) {
+            throw "Portable zip was not produced."
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: release/*.exe
+          path: |
+            release/*.exe
+            release/*.zip
           if-no-files-found: error
 
   macos:
@@ -220,7 +236,7 @@ jobs:
             libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
             libxcb-render-util0 libxcb-shape0 libxcb-shm0 libxcb-sync1 \
             libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 libxcb1 \
-            libxkbcommon-x11-0 libxkbcommon0 xvfb
+            libxkbcommon-x11-0 libxkbcommon0 xvfb zstd
           python -m pip install -e ".[device,build]"
 
       - name: Verify telescope SDK imports
@@ -262,7 +278,7 @@ jobs:
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir \
             "release/AstroDwarf-${VERSION}-linux-x86_64.AppImage"
 
-      - name: Build Debian and RPM packages
+      - name: Build Debian, RPM, and Arch packages
         shell: bash
         run: |
           sed -i 's/\r$//' packaging/linux/astro-dwarf packaging/linux/AppRun
@@ -278,7 +294,14 @@ jobs:
             --config packaging/linux/nfpm.yaml \
             --packager rpm \
             --target "release/AstroDwarf-${VERSION}-linux-x86_64.rpm"
+          "$RUNNER_TEMP/nfpm" package \
+            --config packaging/linux/nfpm.yaml \
+            --packager archlinux \
+            --target "release/AstroDwarf-${VERSION}-linux-x86_64.pkg.tar.zst"
           dpkg-deb -c "release/AstroDwarf-${VERSION}-linux-amd64.deb" | grep -E '/usr/bin/(astro-dwarf|AstroDwarf)$'
+          tar --use-compress-program=zstd -tf \
+            "release/AstroDwarf-${VERSION}-linux-x86_64.pkg.tar.zst" \
+            | grep -E '(^|/)usr/bin/(astro-dwarf|AstroDwarf)$'
 
       - uses: actions/upload-artifact@v4
         with:
@@ -287,6 +310,7 @@ jobs:
             release/*.AppImage
             release/*.deb
             release/*.rpm
+            release/*.pkg.tar.zst
           if-no-files-found: error
 
   release:
