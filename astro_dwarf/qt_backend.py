@@ -2642,9 +2642,22 @@ class AppBackend(QObject):
             self.add_log("warning", message, device_id)
             self._toast("Tracking needs an observing location", "warning", message)
             return
+        shooting_mode = self._device_telemetry.get(device_id, {}).get("shooting_mode")
+        required_mode = (
+            1 if operation in {"photo", "burst_start", "record_start", "timelapse_start"}
+            else 2 if operation in {"calibrate", "polar", "track", "stack"}
+            else None
+        )
+        if required_mode is not None and shooting_mode != required_mode:
+            mode_name = "PHOTO" if required_mode == 1 else "DSO"
+            self._toast(f"Select {mode_name} mode before running this command", "warning")
+            return
+        if operation in {"autofocus", "infinity"} and shooting_mode not in {1, 2}:
+            self._toast("Select PHOTO or DSO mode before focusing", "warning")
+            return
         photo_focus = (
             operation in {"autofocus", "infinity"}
-            and self._device_telemetry.get(device_id, {}).get("shooting_mode") == 1
+            and shooting_mode == 1
         )
         self._begin_activity(device_id, operation)
 
@@ -2657,6 +2670,13 @@ class AppBackend(QObject):
             self._complete_activity(device_id, operation, ok)
             if photo_focus and operation == "infinity":
                 self._set_activity(device_id, "")
+            if ok and operation == "photo_mode":
+                self._on_telemetry(device_id, {"shooting_mode": 1})
+            elif ok and (
+                operation in {"astro_mode", "calibrate", "polar", "track", "stack"}
+                or (operation in {"autofocus", "infinity"} and not photo_focus)
+            ):
+                self._on_telemetry(device_id, {"shooting_mode": 2})
             if ok and operation in {"lights_on", "lights_off"}:
                 self._device_lights[device_id] = operation == "lights_on"
                 self._notify_devices()
@@ -3056,9 +3076,14 @@ class AppBackend(QObject):
         if name == "focus" and camera == Camera.WIDE.value:
             self._toast("Focus is only available on the tele camera", "warning")
             return
+        shooting_mode = self._device_telemetry.get(device_id, {}).get("shooting_mode")
+        if name in {"exposure", "gain"} and shooting_mode not in {1, 2}:
+            self._toast("Select PHOTO or DSO mode before changing camera settings", "warning")
+            return
         model_id = {DeviceModel.DWARF_II: "2", DeviceModel.DWARF_3: "3", DeviceModel.DWARF_MINI: "5"}.get(device.model, "3")
         if name == "exposure":
-            operation, args = "set_exposure", [firmware_exposure_name(value), model_id, camera]
+            operation = "set_photo_exposure" if shooting_mode == 1 else "set_exposure"
+            args = [firmware_exposure_name(value), model_id, camera]
         elif name == "focus":
             try:
                 operation, args = "set_focus", [int(round(float(value)))]
@@ -3066,7 +3091,8 @@ class AppBackend(QObject):
                 self._toast("Focus must be a number", "error")
                 return
         elif name == "gain":
-            operation, args = "set_gain", [int(value), camera]
+            operation = "set_photo_gain" if shooting_mode == 1 else "set_gain"
+            args = [int(value), model_id, camera] if shooting_mode == 1 else [int(value), camera]
         elif name == "ir":
             if camera == Camera.WIDE.value:
                 return

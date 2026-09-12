@@ -271,6 +271,8 @@ FUNCTIONS = {
     "stop_motors": "perform_motor_joystick_stop_v3",
     "set_exposure": "perform_set_astro_exposure_by_name_v3",
     "set_gain": "perform_set_astro_gain_v3",
+    "set_photo_exposure": "perform_set_exposure_by_name_v3",
+    "set_photo_gain": "perform_set_gain_by_camera_v3",
     "set_ir": "perform_set_ir_filter_v3",
     "set_count": "perform_set_astro_stack_count_v3",
     "set_mosaic_count": "perform_set_astro_mosaic_count_v3",

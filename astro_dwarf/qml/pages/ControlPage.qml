@@ -470,6 +470,38 @@ Item {
                 SplitView.fillHeight: true
                 SplitView.minimumHeight: 120
                 readonly property bool teleSelected: backend.selectedDevice.camera !== "wide"
+                readonly property string shootingMode: String(root.scopeTelemetry.shooting_mode_text || "—")
+                readonly property bool photoMode: shootingMode === "PHOTO"
+                readonly property bool dsoMode: shootingMode === "DSO"
+                FieldLabel { text: "SHOOTING MODE · " + (cameraPanel.shootingMode === "—" ? "UNKNOWN" : cameraPanel.shootingMode) }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    HudButton {
+                        text: "PHOTO"
+                        Layout.fillWidth: true
+                        buttonColor: cameraPanel.photoMode ? Theme.fillChecked : Theme.surfaceHigh
+                        foregroundColor: cameraPanel.photoMode ? Theme.accent : Theme.textPrimary
+                        busy: root.scopePending === "photo_mode"
+                        busyText: "SWITCHING…"
+                        busyMs: 0
+                        enabled: root.commandEnabled("photo_mode")
+                        Accessible.description: cameraPanel.photoMode ? "Current shooting mode" : "Switch to photo shooting mode"
+                        onClicked: if (!cameraPanel.photoMode) backend.deviceAction(backend.selectedDeviceId, "photo_mode")
+                    }
+                    HudButton {
+                        text: "DSO"
+                        Layout.fillWidth: true
+                        buttonColor: cameraPanel.dsoMode ? Theme.fillChecked : Theme.surfaceHigh
+                        foregroundColor: cameraPanel.dsoMode ? Theme.accent : Theme.textPrimary
+                        busy: root.scopePending === "astro_mode"
+                        busyText: "SWITCHING…"
+                        busyMs: 0
+                        enabled: root.commandEnabled("astro_mode")
+                        Accessible.description: cameraPanel.dsoMode ? "Current shooting mode" : "Switch to deep-sky shooting mode"
+                        onClicked: if (!cameraPanel.dsoMode) backend.deviceAction(backend.selectedDeviceId, "astro_mode")
+                    }
+                }
                 FieldLabel { text: "FOCUS"; visible: cameraPanel.teleSelected }
                 HudField {
                     id: liveFocus
@@ -1626,20 +1658,20 @@ Item {
                     rowSpacing: 8
                     Repeater {
                     model: [
-                        {label: "CALIBRATE", glyph: "◎", start: "calibrate", stop: "stop_calibrate", state: "calibrate", detail: "ALIGN"},
-                        {label: "AUTO FOCUS", glyph: "◉", start: "autofocus", stop: "stop_autofocus", state: "autofocus", detail: "OPTICS"},
-                        {label: "INFINITY", glyph: "∞", start: "infinity", stop: "stop_autofocus", state: "infinity", detail: "FOCUS"},
-                        {label: "POLAR / EQ", glyph: "⌖", start: "polar", stop: "stop_polar", state: "polar", detail: "ALIGN"},
+                        {label: "CALIBRATE", glyph: "◎", start: "calibrate", stop: "stop_calibrate", state: "calibrate", detail: "ALIGN", mode: "dso"},
+                        {label: "AUTO FOCUS", glyph: "◉", start: "autofocus", stop: "stop_autofocus", state: "autofocus", detail: "OPTICS", mode: "both"},
+                        {label: "INFINITY", glyph: "∞", start: "infinity", stop: "stop_autofocus", state: "infinity", detail: "FOCUS", mode: "both"},
+                        {label: "POLAR / EQ", glyph: "⌖", start: "polar", stop: "stop_polar", state: "polar", detail: "ALIGN", mode: "dso"},
                         {label: "POLAR POS", glyph: "⊕", start: "polar_position", stop: "", state: "", detail: "MOUNT"},
                         {label: "LIGHTS", glyph: "✦", start: "lights_on", stop: "lights_off", state: "lights", detail: "CHASSIS"},
                         {label: "INDICATOR", glyph: "◉", start: "indicator_on", stop: "indicator_off", state: "indicator", detail: "CHASSIS"},
-                        {label: "PHOTO", glyph: "▣", start: "photo", stop: "", state: "", detail: "CAPTURE"},
-                        {label: "STACK", glyph: "⧉", start: "stack", stop: "stop_astro", state: "imaging", detail: "CAPTURE"},
-                        {label: "GO LIVE", glyph: "▶", start: "go_live", stop: "", state: "", detail: "CAMERA"},
-                        {label: "TRACK", glyph: "⊛", start: "track", stop: "stop_goto", state: "goto", detail: "MOUNT"},
-                        {label: "BURST", glyph: "◫", start: "burst_start", stop: "burst_stop", state: "burst", detail: "CAPTURE"},
-                        {label: "RECORD", glyph: "●", start: "record_start", stop: "record_stop", state: "record", detail: "VIDEO"},
-                        {label: "TIMELAPSE", glyph: "◷", start: "timelapse_start", stop: "timelapse_stop", state: "timelapse", detail: "CAPTURE"},
+                        {label: "PHOTO", glyph: "▣", start: "photo", stop: "", state: "", detail: "CAPTURE", mode: "photo"},
+                        {label: "STACK", glyph: "⧉", start: "stack", stop: "stop_astro", state: "imaging", detail: "CAPTURE", mode: "dso"},
+                        {label: "GO LIVE", glyph: "▶", start: "go_live", stop: "", state: "", detail: "CAMERA", mode: "photo"},
+                        {label: "TRACK", glyph: "⊛", start: "track", stop: "stop_goto", state: "goto", detail: "MOUNT", mode: "dso"},
+                        {label: "BURST", glyph: "◫", start: "burst_start", stop: "burst_stop", state: "burst", detail: "CAPTURE", mode: "photo"},
+                        {label: "RECORD", glyph: "●", start: "record_start", stop: "record_stop", state: "record", detail: "VIDEO", mode: "photo"},
+                        {label: "TIMELAPSE", glyph: "◷", start: "timelapse_start", stop: "timelapse_stop", state: "timelapse", detail: "CAPTURE", mode: "photo"},
                         {label: "REBOOT", glyph: "↻", start: "reboot", stop: "", state: "", detail: "SYSTEM", destructive: true},
                         {label: "POWER", glyph: "⏻", start: "power_down", stop: "", state: "", detail: "SYSTEM", destructive: true}
                     ]
@@ -1650,6 +1682,14 @@ Item {
                         readonly property bool trackingPad: modelData.start === "track"
                         readonly property bool trackingNow: trackingPad && !!t.tracking_active
                         readonly property bool slewingNow: trackingPad && root.scopeActivity === "goto"
+                        readonly property bool stopping: effectiveOperation !== modelData.start
+                        readonly property bool modeAllowed: {
+                            if (stopping || !modelData.mode)
+                                return true
+                            if (modelData.mode === "both")
+                                return cameraPanel.photoMode || cameraPanel.dsoMode
+                            return modelData.mode === "photo" ? cameraPanel.photoMode : cameraPanel.dsoMode
+                        }
                         readonly property bool activeForState: modelData.state === "lights"
                             ? !!backend.selectedDevice.lights_on
                             : modelData.state === "indicator"
@@ -1679,8 +1719,17 @@ Item {
                                 return "CALIBRATE · CENTRE · TRACK"
                             if (modelData.state === "imaging" && activeForState)
                                 return t.capture_text ? "STACK · " + t.capture_text : "STACKING · TAP TO STOP"
-                            if (!activeForState)
+                            if (!modeAllowed)
+                                return modelData.mode === "both" || cameraPanel.shootingMode === "—"
+                                    ? "SELECT PHOTO OR DSO"
+                                    : "SWITCH TO " + String(modelData.mode).toUpperCase()
+                            if (!activeForState) {
+                                if (modelData.state === "autofocus")
+                                    return cameraPanel.shootingMode === "—" ? "SELECT PHOTO OR DSO" : cameraPanel.shootingMode + " · OPTICS"
+                                if (modelData.state === "infinity")
+                                    return cameraPanel.shootingMode === "—" ? "SELECT PHOTO OR DSO" : cameraPanel.shootingMode + " · FOCUS"
                                 return modelData.detail
+                            }
                             switch (modelData.state) {
                             case "calibrate":
                                 return root.scopeActivityDetail ? (root.scopeActivityDetail.indexOf("SOLVE") === 0 ? "SOLVING · " + root.scopeActivityDetail.replace("SOLVE", "PHASE").trim() : root.scopeActivityDetail) : "RUNNING"
@@ -1714,8 +1763,8 @@ Item {
                         pending: isPending
                         destructive: !!modelData.destructive
                         enabled: modelData.start === "go_live"
-                            ? previewHost.previewStartEnabled
-                            : root.commandEnabled(effectiveOperation)
+                            ? modeAllowed && previewHost.previewStartEnabled
+                            : modeAllowed && root.commandEnabled(effectiveOperation)
                         onClicked: {
                             if (modelData.start === "go_live") {
                                 previewHost.startPreview()
