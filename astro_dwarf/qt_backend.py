@@ -1357,6 +1357,8 @@ class AppBackend(QObject):
         if cam.camera != Camera.WIDE and ir:
             camera_bits.append(ir)
         steps: list[str] = []
+        if workflow.calibrate or workflow.polar_align:
+            steps.append("POS")
         if workflow.calibrate:
             steps.append("CAL")
         if workflow.autofocus:

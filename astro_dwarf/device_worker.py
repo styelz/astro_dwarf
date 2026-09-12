@@ -659,6 +659,9 @@ def sdk_call(operation: str, *args: Any) -> Any:
         raise RuntimeError("Telescope worker is not configured")
     if operation == "astro_mode":
         return _ensure_astro_mode()
+    if operation == "polar_position":
+        _motors_unhomed = False
+        return polar_position()
     if operation == "timezone":
         return _set_timezone()
     if operation == "location":
@@ -1508,6 +1511,7 @@ def _wait_for_capture_slot(progress: Any = None) -> None:
 _MODULE_ASTRO = 3
 _CAPTURE_STARTS: dict[str, int] = {"astro": 11005, "wide_astro": 11016, "mosaic": 11031}
 CMD_ASTRO_CONTINUE_SHOOTING = 11050
+CODE_CAMERA_TELE_CLOSED = -10501
 CODE_ASTRO_FUNCTION_BUSY = -11501
 CODE_ASTRO_DARK_NOT_FOUND = -11503
 CODE_ASTRO_GOTO_RUNNING = -11508
@@ -1943,14 +1947,42 @@ def _engine_busy_error(exc: BaseException) -> bool:
     return any(token in text for token in ("FUNCTION_BUSY", "GOTO_RUNNING", "-11501", "-11508"))
 
 
+def _camera_closed_error(exc: BaseException) -> bool:
+    text = str(exc)
+    return "TELE_CLOSED" in text or str(CODE_CAMERA_TELE_CLOSED) in text
+
+
+def _reopen_astro_camera() -> None:
+    if _ensure_astro_mode() is False:
+        raise RuntimeError("Could not open the tele camera")
+
+
+def _run_session_op(name: str, operation: str, step: Any, *args: Any) -> None:
+    """Run a session step; if the tele camera is closed, open it and retry once."""
+    try:
+        step(name, operation, *args)
+    except RuntimeError as exc:
+        if not _camera_closed_error(exc):
+            raise
+        log(f"{name}: tele camera was closed; opening it and retrying", "warning")
+        _reopen_astro_camera()
+        step(name, operation, *args)
+
+
 def _run_v3_until_ready(name: str, operation: str, step: Any, *args: Any) -> None:
     """Start a V3 astro operation, retrying if the engine is still busy."""
     deadline = time.monotonic() + _CAPTURE_BUSY_TIMEOUT_S
+    camera_retried = False
     while True:
         try:
             step(name, operation, *args)
             return
         except RuntimeError as exc:
+            if _camera_closed_error(exc) and not camera_retried:
+                camera_retried = True
+                log(f"{name}: tele camera was closed; opening it and retrying", "warning")
+                _reopen_astro_camera()
+                continue
             if not _engine_busy_error(exc) or time.monotonic() >= deadline:
                 raise
             log(f"{name}: astro engine still busy; clearing GOTO and retrying", "warning")
@@ -1992,14 +2024,18 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     else:
         step("Entering astro mode", "astro_mode")
     _wait_seconds(workflow.get("wait_before_seconds", 0), "Waiting before workflow", step)
+    # Dwarf 3 calibration plate-solves from the polar-home pose. Skipping this
+    # after a power-on or leftover stop_motors fails with CALIBRATION_FAILED.
+    if workflow.get("calibrate") or workflow.get("polar_align"):
+        step("Polar positioning", "polar_position")
     # Match astro_dwarf_session: focus, then EQ, then calibration (after stop_goto).
     if workflow.get("autofocus"):
-        step("Auto focus", "autofocus", False)
+        _run_session_op("Auto focus", "autofocus", step, False)
     if workflow.get("infinite_focus"):
-        step("Infinity focus", "autofocus", True)
+        _run_session_op("Infinity focus", "autofocus", step, True)
     if workflow.get("polar_align"):
         if not workflow.get("infinite_focus"):
-            step("Infinity focus before polar alignment", "autofocus", True)
+            _run_session_op("Infinity focus before polar alignment", "autofocus", step, True)
             _wait_seconds(5, "Waiting after infinity focus", step)
         _clear_tracking(step)
         _run_v3_until_ready("Polar alignment", "polar", step)
@@ -2013,11 +2049,11 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         _clear_tracking(step)
         _run_v3_until_ready("Calibration", "calibrate", step)
     if workflow.get("goto") and target.get("ra_hours") is not None:
-        step("GOTO target", "goto", target["ra_hours"], target["dec_degrees"], target["name"], False)
+        _run_session_op("GOTO target", "goto", step, target["ra_hours"], target["dec_degrees"], target["name"], False)
     elif workflow.get("goto") and target.get("kind") == "solar":
         ids = {"mercury": 1, "venus": 2, "mars": 3, "jupiter": 4, "saturn": 5, "uranus": 6, "neptune": 7, "moon": 8, "sun": 9}
         name = (target.get("solar_name") or target["name"]).lower()
-        step("GOTO solar target", "goto_solar", ids[name], name.title())
+        _run_session_op("GOTO solar target", "goto_solar", step, ids[name], name.title())
     exposure_name = firmware_exposure_name(camera["exposure_seconds"])
     log(f"Astro photo: exposure {exposure_name}s, gain {camera['gain']}, count {camera['frame_count']}", "notice")
     step("Set exposure", "set_exposure", exposure_name, model_id, camera["camera"])
@@ -2077,6 +2113,7 @@ _PHASE_STOP_LABELS = {
     "calibrate": "Waiting for calibration to stop",
     "autofocus": "Waiting for autofocus to stop",
     "polar": "Waiting for polar alignment to stop",
+    "polar_position": "Waiting for polar positioning to stop",
 }
 
 
@@ -2230,16 +2267,32 @@ _REFRESH_AFTER = {
 }
 
 
+def _enter_astro_camera() -> Any:
+    """Open the V3 tele camera without switching shooting mode.
+
+    CMD_GLOBAL_TASK_MANAGER_ENTER_CAMERA is the Dwarf 3 / Mini camera init.
+    GO_LIVE and a finished stack can leave DSO mode set with the tele
+    camera closed; autofocus and GOTO then fail with TELE_CLOSED.
+    """
+    function = getattr(_api, "perform_enter_camera", None) if _api is not None else None
+    if function is None:
+        log("Installed SDK cannot initialize the camera", "debug")
+        return True
+    result = _invoke_sdk("enter_camera", function, label="Opening tele camera")
+    return True if result is not False else False
+
+
 def _ensure_astro_mode() -> Any:
     """Enter DSO mode (2) unless the telescope already reports it.
 
-    Firmware mode 8 is Sun, not generic astro. The SDK helper also runs
-    ENTER_CAMERA and SWITCH_SHOOTING_TECH. Skip the whole sequence when
-    already in mode 2 — the Dwarf 3 otherwise waits out a 150 s timeout.
+    Firmware mode 8 is Sun, not generic astro. SWITCH_SHOOTING_MODE(2)
+    when already in mode 2 can stall the Dwarf 3 for the SDK's 150 s
+    timeout, so skip that switch. Still run ENTER_CAMERA so a later
+    session is not left with DSO mode on and the tele camera off.
     """
     if _tap is not None and _tap.snapshot().get("shooting_mode") == _ASTRO_SHOOTING_MODE:
-        log("Already in DSO astro mode", "debug")
-        return True
+        log("Already in DSO astro mode; initializing camera", "debug")
+        return _enter_astro_camera()
     function = getattr(_api, "perform_enter_astro_mode", None) if _api is not None else None
     if function is None:
         return sdk_call("shooting_mode", _ASTRO_SHOOTING_MODE, _ASTRO_SHOOTING_TECH)
@@ -2563,13 +2616,20 @@ def _start_manual_stack(camera: str = "") -> bool:
 
 
 def polar_position() -> bool:
+    """Home both axes and slew to the polar-alignment pose (POLAR POS)."""
     function = getattr(_api, "motor_action", None) if _api is not None else None
     if function is None:
         raise RuntimeError("motor_action is not available in this SDK")
     model = str(_device.get("model") or "")
-    steps = (5, 6, 9, 7) if model in {"Dwarf 3", "Dwarf Mini"} else (5, 6, 2, 3)
-    for action in steps:
-        if function(action) is False:
+    steps = (
+        ((5, "Resetting rotation motor"), (6, "Resetting pitch motor"), (9, "Slewing rotation to polar pose"), (7, "Slewing pitch to polar pose"))
+        if model in {"Dwarf 3", "Dwarf Mini"}
+        else ((5, "Resetting rotation motor"), (6, "Resetting pitch motor"), (2, "Slewing rotation to polar pose"), (3, "Slewing pitch to polar pose"))
+    )
+    for action, label in steps:
+        if _session_active.is_set() and _stop.is_set():
+            raise InterruptedError("Session stopped")
+        if _invoke_sdk("polar_position", function, action, label=label) is False:
             return False
     return True
 
