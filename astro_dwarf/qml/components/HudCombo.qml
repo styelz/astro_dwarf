@@ -1,20 +1,25 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Shapes
-import QtCore
 import ".."
 
 ComboBox {
     id: combo
     // shown instead of a blank box when nothing is selected, e.g. mixed values
     property string emptyText: ""
+    property string accessibleName: ""
+    property string accessibleDescription: ""
     displayText: combo.currentIndex < 0 && combo.emptyText ? combo.emptyText : combo.currentText
     implicitWidth: 160
-    implicitHeight: 34
+    implicitHeight: Theme.controlHeight
     Layout.minimumWidth: 0
     Layout.preferredWidth: implicitWidth
-    font.pixelSize: 13
+    font.pixelSize: Theme.fontBase
+    hoverEnabled: true
+    focusPolicy: Qt.StrongFocus
+    Accessible.name: accessibleName || displayText
+    Accessible.description: accessibleDescription
     palette.window: Theme.popupBg
     palette.windowText: Theme.textPrimary
     palette.base: Theme.popupBg
@@ -24,8 +29,12 @@ ComboBox {
     palette.highlight: Theme.fillChecked
     palette.highlightedText: Theme.accent
     opacity: combo.enabled ? 1 : 0.45
+    HoverHandler {
+        enabled: combo.enabled
+        cursorShape: Qt.PointingHandCursor
+    }
     background: Item {
-        implicitHeight: 34
+        implicitHeight: Theme.controlHeight
         implicitWidth: 120
         HudFrame {
             anchors.fill: parent
@@ -41,8 +50,8 @@ ComboBox {
             topLeft: Theme.notchSmall
             bottomRight: Theme.notchSmall
             fillColor: combo.enabled ? (combo.down ? Theme.fillActive : Theme.inputBg) : Theme.disabledBg
-            strokeColor: !combo.enabled ? Theme.disabledOutline : combo.hovered || combo.down || combo.popup.visible ? Theme.accent : Theme.outline
-            strokeWidth: combo.popup.visible ? 1.5 : 1
+            strokeColor: !combo.enabled ? Theme.disabledOutline : combo.hovered || combo.down || combo.popup.visible || combo.visualFocus ? Theme.accent : Theme.outline
+            strokeWidth: combo.popup.visible || combo.visualFocus ? Theme.focusStroke : 1
             Behavior on strokeColor { ColorAnimation { duration: Theme.quick } }
             Behavior on fillColor { ColorAnimation { duration: Theme.quick } }
         }
@@ -66,6 +75,8 @@ ComboBox {
         Behavior on rotation { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
     }
     delegate: ItemDelegate {
+        id: optionItem
+        required property int index
         width: combo.width
         height: 32
         highlighted: combo.highlightedIndex === index
@@ -74,13 +85,13 @@ ComboBox {
         palette.text: Theme.textPrimary
         palette.highlightedText: Theme.accent
         contentItem: Text {
-            text: combo.textAt(index)
-            color: highlighted ? Theme.accent : Theme.textPrimary
-            font.pixelSize: 13
+            text: combo.textAt(optionItem.index)
+            color: optionItem.highlighted ? Theme.accent : Theme.textPrimary
+            font.pixelSize: Theme.fontBase
             verticalAlignment: Text.AlignVCenter
             leftPadding: 10
         }
-        background: Rectangle { color: highlighted ? Theme.fillChecked : Theme.popupBg }
+        background: Rectangle { color: optionItem.highlighted ? Theme.fillChecked : Theme.popupBg }
     }
     popup: Popup {
         y: combo.height + 3

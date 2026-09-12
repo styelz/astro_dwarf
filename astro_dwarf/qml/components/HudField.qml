@@ -1,20 +1,23 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Shapes
-import QtCore
 import ".."
 
 TextField {
     id: field
     property bool releaseFocusOnEnter: true
+    property string accessibleName: ""
+    property string accessibleDescription: ""
     color: field.enabled ? Theme.textPrimary : Theme.textSecondary
     placeholderTextColor: Theme.textSecondary
     selectedTextColor: Theme.hsl(0.046, 0.714, 0.055)
     selectionColor: Theme.accent
     opacity: field.enabled ? 1 : 0.45
     hoverEnabled: true
-    font.pixelSize: 13
+    focusPolicy: Qt.StrongFocus
+    font.pixelSize: Theme.fontBase
+    Accessible.name: accessibleName || placeholderText || text
+    Accessible.description: accessibleDescription
     Keys.priority: Keys.BeforeItem
     Keys.onPressed: function (event) {
         if (!field.releaseFocusOnEnter)
@@ -28,11 +31,11 @@ TextField {
     rightPadding: 10
     clip: true
     implicitWidth: 160
-    implicitHeight: 34
+    implicitHeight: Theme.controlHeight
     Layout.minimumWidth: 0
     Layout.preferredWidth: implicitWidth
     background: Item {
-        implicitHeight: 34
+        implicitHeight: Theme.controlHeight
         HudFrame {
             anchors.fill: parent
             anchors.margins: -2
@@ -48,7 +51,7 @@ TextField {
             bottomRight: Theme.notchSmall
             fillColor: field.enabled ? Theme.inputBg : Theme.disabledBg
             strokeColor: !field.enabled ? Theme.disabledOutline : field.activeFocus ? Theme.accent : field.hovered ? Theme.outlineStrong : Theme.outline
-            strokeWidth: field.activeFocus ? 1.5 : 1
+            strokeWidth: field.activeFocus ? Theme.focusStroke : 1
             Behavior on strokeColor { ColorAnimation { duration: Theme.quick } }
         }
         // bottom "active" rail that fills while focused

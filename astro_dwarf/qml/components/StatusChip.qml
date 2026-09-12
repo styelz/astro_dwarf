@@ -1,27 +1,26 @@
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
-import QtQuick.Shapes
-import QtCore
 import ".."
 
 Rectangle {
     id: statusChip
     property string status: ""
-    readonly property color tone: Util.statusColor(status)
-    readonly property bool running: String(status || "").toLowerCase() === "running"
+    readonly property string normalizedStatus: String(status || "").toLowerCase()
+    readonly property bool running: normalizedStatus === "running"
+    readonly property bool pending: ["pending", "stopping", "connecting", "disconnecting", "cancelling"].indexOf(normalizedStatus) >= 0
+    readonly property color tone: pending ? Theme.warning : Util.statusColor(status)
     implicitHeight: 18
     implicitWidth: statusChipText.implicitWidth + 16
     radius: 3
-    color: Util.statusFill(status)
+    color: pending ? Qt.rgba(tone.r, tone.g, tone.b, 0.12) : Util.statusFill(status)
     border.color: Qt.rgba(tone.r, tone.g, tone.b, 0.7)
+    Accessible.name: normalizedStatus || "Unknown status"
     Rectangle {
         anchors.fill: parent; anchors.margins: -2; radius: 5
         color: "transparent"; border.color: statusChip.tone
         opacity: 0.3
-        visible: statusChip.running
+        visible: statusChip.running || statusChip.pending
         SequentialAnimation on opacity {
-            running: statusChip.running
+            running: statusChip.running || statusChip.pending
             loops: Animation.Infinite
             NumberAnimation { to: 0.05; duration: 900; easing.type: Easing.InOutSine }
             NumberAnimation { to: 0.45; duration: 900; easing.type: Easing.InOutSine }

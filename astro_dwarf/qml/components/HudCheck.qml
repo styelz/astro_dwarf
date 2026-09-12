@@ -4,8 +4,13 @@ import ".."
 
 CheckBox {
     id: box
+    property string accessibleName: ""
+    property string accessibleDescription: ""
     font.pixelSize: Theme.fontBase
     hoverEnabled: true
+    focusPolicy: Qt.StrongFocus
+    Accessible.name: accessibleName || text
+    Accessible.description: accessibleDescription
     spacing: 10
     padding: 0
     opacity: enabled ? 1 : 0.5
@@ -43,7 +48,7 @@ CheckBox {
             anchors.fill: parent
             topLeft: 5
             bottomRight: 5
-            strokeWidth: box.lit ? 1.5 : 1
+            strokeWidth: box.lit || box.visualFocus ? Theme.focusStroke : 1
             strokeColor: box.lineColor
             fillColor: !box.enabled ? Theme.disabledBg : box.lit ? Theme.fillChecked : box.down ? Theme.fillActive : Theme.inputBg
             Behavior on strokeColor { ColorAnimation { duration: Theme.quick } }

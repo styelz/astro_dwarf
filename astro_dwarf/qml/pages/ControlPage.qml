@@ -67,6 +67,21 @@ Item {
                         border.color: Qt.rgba(tone.r, tone.g, tone.b, root.scopeOnline ? 0.55 : 0.25)
                         opacity: root.scopeOnline ? 1 : 0.7
                         Behavior on color { ColorAnimation { duration: 220 } }
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.margins: -2
+                            radius: 5
+                            color: "transparent"
+                            border.color: activityBadge.tone
+                            visible: root.scopePending !== ""
+                            opacity: 0
+                            SequentialAnimation on opacity {
+                                running: root.scopePending !== ""
+                                loops: Animation.Infinite
+                                NumberAnimation { from: 0.65; to: 0.08; duration: 500; easing.type: Easing.InOutSine }
+                                NumberAnimation { from: 0.08; to: 0.65; duration: 500; easing.type: Easing.InOutSine }
+                            }
+                        }
                         RowLayout {
                             id: activityBadgeRow
                             anchors.fill: parent
@@ -1425,7 +1440,7 @@ Item {
                         anchors.horizontalCenter: parent.horizontalCenter
                         anchors.bottom: parent.bottom
                         anchors.bottomMargin: 50
-                        width: hintRow.implicitWidth + 28
+                        width: Math.min(parent.width - 24, hintRow.implicitWidth + 28)
                         height: 30
                         radius: 15
                         color: Theme.popupBg
@@ -1453,17 +1468,21 @@ Item {
                             repeat: false
                             onTriggered: firstRunHint.dismiss()
                         }
-                        Row {
+                        RowLayout {
                             id: hintRow
-                            anchors.centerIn: parent
+                            anchors.fill: parent
+                            anchors.leftMargin: 14
+                            anchors.rightMargin: 14
                             spacing: 10
-                            Text { text: "\uE962"; font.family: Theme.fontIcon; font.pixelSize: 12; color: Theme.accent; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: "\uE962"; font.family: Theme.fontIcon; font.pixelSize: 12; color: Theme.accent; Layout.alignment: Qt.AlignVCenter }
                             Text {
                                 text: "MOVE THE POINTER OVER THE STREAM FOR CONTROLS  ·  DOUBLE-CLICK THE WIDE VIEW TO CENTRE"
                                 color: Theme.textPrimary
                                 font.pixelSize: Theme.fontSm
                                 font.letterSpacing: Theme.tracking1
-                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignVCenter
                             }
                         }
                     }

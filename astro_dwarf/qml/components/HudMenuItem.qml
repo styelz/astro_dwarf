@@ -8,6 +8,7 @@ T.MenuItem {
     property string glyph: ""
     property string trailingText: ""
     property bool destructive: false
+    property string accessibleDescription: ""
     implicitWidth: 220
     implicitHeight: 34
     leftPadding: 8
@@ -15,8 +16,15 @@ T.MenuItem {
     topPadding: 0
     bottomPadding: 0
     hoverEnabled: true
+    focusPolicy: Qt.StrongFocus
+    Accessible.name: text
+    Accessible.description: accessibleDescription || trailingText
     opacity: enabled ? 1 : 0.4
-    font.pixelSize: 13
+    font.pixelSize: Theme.fontBase
+    HoverHandler {
+        enabled: hudMenuItem.enabled
+        cursorShape: Qt.PointingHandCursor
+    }
     background: Rectangle {
         color: hudMenuItem.highlighted || hudMenuItem.down ? Theme.fillChecked : "transparent"
         radius: 4

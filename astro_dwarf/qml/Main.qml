@@ -319,6 +319,8 @@ ApplicationWindow {
 
             Rectangle {
             id: titleBar
+            readonly property bool compact: width < 1380
+            readonly property bool narrow: width < 1120
             Layout.fillWidth: true
             Layout.preferredHeight: 64
             Layout.maximumHeight: 64
@@ -342,14 +344,14 @@ ApplicationWindow {
                 anchors.fill: parent
                 anchors.leftMargin: 16
                 anchors.rightMargin: 10
-                spacing: 14
+                spacing: titleBar.compact ? 8 : 14
                 Item {
                     implicitWidth: brand.implicitWidth
                     implicitHeight: brand.implicitHeight
                     Column {
                         id: brand
                         Text { text: "ASTRO DWARF"; color: Theme.accent; font.pixelSize: 16; font.letterSpacing: 3; font.bold: true }
-                        Text { text: "OBSERVATORY COMMAND  ·  v" + backend.appVersion; color: Theme.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4 }
+                        Text { visible: !titleBar.compact; text: "OBSERVATORY COMMAND  ·  v" + backend.appVersion; color: Theme.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4 }
                     }
                     MouseArea {
                         anchors.fill: parent
@@ -358,7 +360,12 @@ ApplicationWindow {
                     }
                 }
                 Rectangle { width: 1; Layout.fillHeight: true; Layout.topMargin: 12; Layout.bottomMargin: 12; color: Theme.outline }
-                DeviceCombo {}
+                DeviceCombo {
+                    Layout.preferredWidth: titleBar.compact ? 150 : 200
+                    Layout.maximumWidth: Layout.preferredWidth
+                    accessibleName: "Selected telescope"
+                    accessibleDescription: "Choose which telescope this window controls"
+                }
                 HudButton {
                     text: backend.selectedDevice.connected ? "DISCONNECT" : "CONNECT"
                     busy: backend.selectedDevice.connecting || backend.selectedDevice.cancelling || backend.selectedDevice.disconnecting
@@ -382,7 +389,9 @@ ApplicationWindow {
                     }
                 }
                 HudButton {
-                    text: backend.schedulerEnabled ? "SCHEDULER ON" : "SCHEDULER OFF"
+                    text: titleBar.narrow
+                        ? (backend.schedulerEnabled ? "SCHED ON" : "SCHED OFF")
+                        : (backend.schedulerEnabled ? "SCHEDULER ON" : "SCHEDULER OFF")
                     busyText: "UPDATING…"
                     enabled: backend.schedulerEnabled || backend.anyDeviceConnected
                     buttonColor: backend.schedulerEnabled ? Theme.fillSuccess : Theme.surfaceHigh
@@ -390,7 +399,7 @@ ApplicationWindow {
                     onClicked: backend.setSchedulerEnabled(!backend.schedulerEnabled)
                 }
                 HudButton {
-                    text: "STOP SESSION"
+                    text: titleBar.narrow ? "STOP RUN" : "STOP SESSION"
                     busy: backend.selectedDevice.pending_action === "stop_session"
                     busyText: "STOPPING…"
                     busyMs: 0
@@ -420,6 +429,7 @@ ApplicationWindow {
                     }
                 }
                 RowLayout {
+                    visible: !titleBar.compact
                     spacing: 10
                     Repeater {
                         model: [
@@ -496,18 +506,19 @@ ApplicationWindow {
                     }
                 }
                 Column {
+                    visible: !titleBar.compact
                     Text { text: backend.selectedDevice.status || "OFFLINE"; color: backend.selectedDevice.connected ? Theme.success : Theme.textSecondary; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignRight; width: 160 }
                     Text { text: root.deviceLabel(); color: Theme.textSecondary; font.pixelSize: 10; horizontalAlignment: Text.AlignRight; width: 160; elide: Text.ElideRight }
                 }
                 Column {
-                    Text { text: backend.clockText; color: Theme.accent; font.pixelSize: 22; font.family: Theme.fontMono; font.letterSpacing: 1; horizontalAlignment: Text.AlignRight; width: 168 }
+                    Text { text: backend.clockText; color: Theme.accent; font.pixelSize: titleBar.compact ? 18 : 22; font.family: Theme.fontMono; font.letterSpacing: 1; horizontalAlignment: Text.AlignRight; width: titleBar.compact ? 124 : 168 }
                     Text {
                         text: backend.selectedDevice.timezone_name || "UTC"
                         color: Theme.textSecondary
                         font.pixelSize: 9
                         font.family: Theme.fontMono
                         horizontalAlignment: Text.AlignRight
-                        width: 168
+                        width: titleBar.compact ? 124 : 168
                         elide: Text.ElideRight
                     }
                 }
@@ -537,6 +548,16 @@ ApplicationWindow {
                     font.letterSpacing: 1.6
                 }
                 Rectangle { width: 1; Layout.preferredHeight: 14; color: Theme.outline }
+                HudButton {
+                    text: "‹"
+                    busyMs: 0
+                    Layout.preferredWidth: 26
+                    Layout.maximumWidth: 26
+                    implicitHeight: Theme.compactControlHeight
+                    enabled: deviceChips.contentX > deviceChips.originX + 1
+                    Accessible.name: "Scroll devices left"
+                    onClicked: deviceChips.scrollBy(-deviceChips.width * 0.7)
+                }
                 ListView {
                     id: deviceChips
                     Layout.fillWidth: true
@@ -545,6 +566,22 @@ ApplicationWindow {
                     spacing: 4
                     clip: true
                     model: backend.devices
+                    function scrollBy(distance) {
+                        const minimum = originX
+                        const maximum = Math.max(minimum, originX + contentWidth - width)
+                        contentX = Math.max(minimum, Math.min(maximum, contentX + distance))
+                    }
+                    WheelHandler {
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                        blocking: true
+                        onWheel: event => {
+                            const delta = event.angleDelta.y !== 0 ? event.angleDelta.y : event.pixelDelta.y
+                            if (!delta)
+                                return
+                            deviceChips.scrollBy(-delta)
+                            event.accepted = true
+                        }
+                    }
                     delegate: Item {
                         id: deviceCard
                         required property var modelData
@@ -671,6 +708,16 @@ ApplicationWindow {
                         }
                     }
                 }
+                HudButton {
+                    text: "›"
+                    busyMs: 0
+                    Layout.preferredWidth: 26
+                    Layout.maximumWidth: 26
+                    implicitHeight: Theme.compactControlHeight
+                    enabled: deviceChips.contentX + deviceChips.width < deviceChips.originX + deviceChips.contentWidth - 1
+                    Accessible.name: "Scroll devices right"
+                    onClicked: deviceChips.scrollBy(deviceChips.width * 0.7)
+                }
             }
         }
 
@@ -678,6 +725,8 @@ ApplicationWindow {
             visible: layoutSettings.navBarOnTop
             Layout.topMargin: 8
             currentIndex: root.currentPage
+            attentionIndex: settingsPage.dirty ? root.settingsPageIndex : -1
+            attentionDescription: "Unsaved settings"
             onPageRequested: index => root.goToPage(index)
         }
 
@@ -701,6 +750,8 @@ ApplicationWindow {
             visible: !layoutSettings.navBarOnTop
             Layout.bottomMargin: 8
             currentIndex: root.currentPage
+            attentionIndex: settingsPage.dirty ? root.settingsPageIndex : -1
+            attentionDescription: "Unsaved settings"
             onPageRequested: index => root.goToPage(index)
         }
         }

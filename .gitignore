@@ -13,3 +13,5 @@ config.py
 config.ini
 config.lock
 *.log
+.github/copilot-instructions.md
+app.log.old

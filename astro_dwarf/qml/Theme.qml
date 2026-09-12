@@ -110,9 +110,13 @@ QtObject {
     readonly property int radius: 3
     readonly property int notch: 11
     readonly property int notchSmall: 5
+    readonly property int controlHeight: 34
+    readonly property int compactControlHeight: 24
+    readonly property real focusStroke: 1.5
 
     // Motion.
     readonly property int quick: 120
     readonly property int normal: 180
     readonly property int slow: 300
+    readonly property int tooltipDelay: 400
 }

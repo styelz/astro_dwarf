@@ -255,6 +255,9 @@ Item {
                 EmptyHint {
                     anchors.centerIn: parent
                     visible: mediaPage.albumLocked || mediaPage.items.length === 0
+                    mode: backend.mediaBusy === "list" ? "loading"
+                          : mediaPage.albumLocked || (mediaPage.onDevice && !mediaPage.hasIp) ? "unavailable"
+                          : "empty"
                     glyph: mediaPage.albumLocked ? "⊘" : (backend.mediaSource === "local" ? "▤" : "◈")
                     text: mediaPage.emptyText
                 }

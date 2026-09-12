@@ -19,13 +19,21 @@ Button {
                                      : hovered ? Qt.lighter(buttonColor, 1.18) : buttonColor
     readonly property color lineColor: inactive ? Theme.disabledOutline : lit ? Theme.accent : Theme.outline
     hoverEnabled: enabled
+    focusPolicy: Qt.StrongFocus
+    Accessible.name: text
+    Accessible.description: isBusy && busyText !== "" ? busyText : ""
     opacity: inactive ? 0.45 : 1
     font.pixelSize: Theme.fontMd
     font.letterSpacing: Theme.tracking1
     leftPadding: Theme.s3
     rightPadding: Theme.s3
-    implicitHeight: 34
+    implicitHeight: Theme.controlHeight
     Behavior on opacity { NumberAnimation { duration: Theme.quick } }
+
+    HoverHandler {
+        enabled: hudBtn.enabled
+        cursorShape: Qt.PointingHandCursor
+    }
 
     Timer {
         id: clickBusyTimer
@@ -42,7 +50,7 @@ Button {
 
     background: Item {
         implicitWidth: 0
-        implicitHeight: 34
+        implicitHeight: Theme.controlHeight
         // outer glow on hover / busy
         HudFrame {
             anchors.fill: parent
@@ -66,7 +74,7 @@ Button {
             bottomRight: Theme.notchSmall
             fillColor: hudBtn.fillColor
             strokeColor: hudBtn.lineColor
-            strokeWidth: hudBtn.lit ? 1.5 : 1
+            strokeWidth: hudBtn.lit ? Theme.focusStroke : 1
             Behavior on fillColor { ColorAnimation { duration: Theme.quick } }
             Behavior on strokeColor { ColorAnimation { duration: Theme.quick } }
         }

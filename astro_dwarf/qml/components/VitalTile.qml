@@ -1,8 +1,5 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Shapes
-import QtCore
 import ".."
 
 Rectangle {
@@ -28,17 +25,21 @@ Rectangle {
     readonly property int unitPx: Math.max(7, Math.min(9, Math.round(height * (compact ? 0.28 : 0.20))))
     radius: 3
     color: Theme.hsl(0.072, 0.581, 0.084, 0.400)
-    border.color: live ? Qt.rgba(tone.r, tone.g, tone.b, 0.6) : Theme.outlineSoft
+    border.color: stale && !dimmed ? Qt.rgba(Theme.warning.r, Theme.warning.g, Theme.warning.b, 0.75)
+                                      : live ? Qt.rgba(tone.r, tone.g, tone.b, 0.6) : Theme.outlineSoft
     border.width: 1
     clip: true
-    Behavior on border.color { ColorAnimation { duration: 200 } }
+    Accessible.name: label + ": " + value + (unit ? " " + unit : "")
+    Accessible.description: stale && !dimmed ? "Last reported value; telemetry is stale" : live ? "Live telemetry" : "Telemetry"
+    Behavior on border.color { ColorAnimation { duration: Theme.normal } }
     Rectangle {
         x: 0
         y: tile.compact ? 3 : 5
         width: 2
         height: parent.height - (tile.compact ? 6 : 10)
-        color: tile.dimmed ? Theme.outline : tile.tone
+        color: tile.stale && !tile.dimmed ? Theme.warning : tile.dimmed ? Theme.outline : tile.tone
         opacity: tile.dimmed ? 0.5 : 0.9
+        Behavior on color { ColorAnimation { duration: Theme.normal } }
     }
     RowLayout {
         anchors.fill: parent
@@ -71,7 +72,7 @@ Rectangle {
                     Layout.fillWidth: true
                     Layout.preferredWidth: implicitWidth
                     Layout.minimumWidth: 18
-                    Behavior on color { ColorAnimation { duration: 200 } }
+                    Behavior on color { ColorAnimation { duration: Theme.normal } }
                 }
                 Text { visible: tile.unit !== "" && !tile.dimmed; text: tile.unit; color: Theme.textSecondary; font.pixelSize: tile.unitPx; elide: Text.ElideRight; Layout.alignment: Qt.AlignBottom; Layout.bottomMargin: 1 }
             }
