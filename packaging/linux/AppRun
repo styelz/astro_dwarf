@@ -1,9 +1,16 @@
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
 export PATH="$HERE/usr/bin:$PATH"
-if [ -r /proc/sys/kernel/osrelease ] && grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease; then
+# Host GTK modules (xapp, canberra) are not shipped and are not required.
+GTK_MODULES=
+GTK3_MODULES=
+export GTK_MODULES GTK3_MODULES
+# Bundled Qt abort()s when GLX cannot match the host GPU driver.
+# Software Qt Quick is the portable default; ASTRO_DWARF_QT_SYSTEM=1 uses host OpenGL.
+if [ "${ASTRO_DWARF_QT_SYSTEM:-}" != "1" ]; then
     [ -n "$QT_QPA_PLATFORM" ] || export QT_QPA_PLATFORM=xcb
     [ -n "$QT_XCB_GL_INTEGRATION" ] || export QT_XCB_GL_INTEGRATION=none
     [ -n "$QT_QUICK_BACKEND" ] || export QT_QUICK_BACKEND=software
+    [ -n "$QSG_RHI_BACKEND" ] || export QSG_RHI_BACKEND=software
 fi
 exec "$HERE/usr/bin/AstroDwarf" "$@"

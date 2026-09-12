@@ -110,6 +110,36 @@ analysis = Analysis(
     excludes=[],
     noarchive=False,
 )
+
+
+def _linux_host_gl_lib(dest_name: str) -> bool:
+    """Leave GPU driver libraries to the host; bundled Mesa GLX abort()s on NVIDIA."""
+    name = Path(str(dest_name)).name
+    return name.startswith(
+        (
+            "libGL.so",
+            "libEGL.so",
+            "libGLESv2.so",
+            "libGLESv1",
+            "libOpenGL.so",
+            "libGLdispatch.so",
+            "libGLX.so",
+            "libGLX_",
+            "libnvidia-",
+            "libvulkan.so",
+            "libdrm.so",
+            "libdrm_",
+            "libgbm.so",
+            "libwayland-egl.so",
+        )
+    )
+
+
+if sys.platform.startswith("linux"):
+    analysis.binaries = [
+        entry for entry in analysis.binaries if not _linux_host_gl_lib(entry[0])
+    ]
+
 pyz = PYZ(analysis.pure)
 
 if sys.platform == "win32":

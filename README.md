@@ -43,6 +43,8 @@ sudo pacman -U ./AstroDwarf-*-linux-x86_64.pkg.tar.zst
 astro-dwarf
 ```
 
+Linux installers start with software Qt Quick so the window still opens when the host GPU stack cannot initialize GLX (common on NVIDIA and XWayland). GTK module warnings such as `xapp-gtk3-module` are harmless. To use the host OpenGL driver instead: `ASTRO_DWARF_QT_SYSTEM=1 astro-dwarf`.
+
 ## Data
 
 When run from source, files live under `data/` in the repo. Installed copies use the OS app-data directory.

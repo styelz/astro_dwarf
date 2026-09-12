@@ -112,5 +112,6 @@ if [ -r /proc/sys/kernel/osrelease ] && grep -qiE 'microsoft|wsl' /proc/sys/kern
     [ -n "$QT_QPA_PLATFORM" ] || export QT_QPA_PLATFORM=xcb
     [ -n "$QT_XCB_GL_INTEGRATION" ] || export QT_XCB_GL_INTEGRATION=none
     [ -n "$QT_QUICK_BACKEND" ] || export QT_QUICK_BACKEND=software
+    [ -n "$QSG_RHI_BACKEND" ] || export QSG_RHI_BACKEND=software
 fi
 exec "$VENV_PYTHON" app.py
