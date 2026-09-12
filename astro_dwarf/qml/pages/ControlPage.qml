@@ -465,13 +465,16 @@ Item {
             }
 
             HudPanel {
+                id: cameraPanel
                 title: "CAMERA"
                 SplitView.fillHeight: true
                 SplitView.minimumHeight: 120
-                FieldLabel { text: "FOCUS" }
+                readonly property bool teleSelected: backend.selectedDevice.camera !== "wide"
+                FieldLabel { text: "FOCUS"; visible: cameraPanel.teleSelected }
                 HudField {
                     id: liveFocus
                     Layout.fillWidth: true
+                    visible: cameraPanel.teleSelected
                     placeholderText: "steps"
                     inputMethodHints: Qt.ImhDigitsOnly
                     enabled: root.commandEnabled("set_focus")
@@ -494,6 +497,7 @@ Item {
                 }
                 RowLayout {
                     Layout.fillWidth: true
+                    visible: cameraPanel.teleSelected
                     HudButton {
                         text: "NEAR"
                         Layout.fillWidth: true
@@ -515,12 +519,12 @@ Item {
                 }
                 FieldLabel {
                     text: "FILTER"
-                    visible: backend.selectedDevice.camera !== "wide"
+                    visible: cameraPanel.teleSelected
                 }
                 HudCombo {
                     id: liveFilter
                     Layout.fillWidth: true
-                    visible: backend.selectedDevice.camera !== "wide"
+                    visible: cameraPanel.teleSelected
                     enabled: root.commandEnabled("set_ir")
                     model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
                     onActivated: backend.setCameraParam(backend.selectedDeviceId, "ir", currentText)
@@ -588,10 +592,11 @@ Item {
                         }
                     }
                 }
-                FieldLabel { text: "WHITE BALANCE" }
+                FieldLabel { text: "WHITE BALANCE"; visible: cameraPanel.teleSelected }
                 HudCombo {
                     id: liveWb
                     Layout.fillWidth: true
+                    visible: cameraPanel.teleSelected
                     enabled: root.commandEnabled("set_wb_preset")
                     model: ["Incandescent", "Warm Fluorescent", "Fluorescent", "Sunlight", "Cloudy", "Shadow", "Twilight"]
                     onActivated: backend.setCameraParam(backend.selectedDeviceId, "wb_preset", currentText)
@@ -607,6 +612,7 @@ Item {
                 HudField {
                     id: liveWbKelvin
                     Layout.fillWidth: true
+                    visible: cameraPanel.teleSelected
                     enabled: root.commandEnabled("set_wb")
                     placeholderText: "Kelvin 2800–7500"
                     readonly property string liveValue: {
@@ -627,15 +633,17 @@ Item {
                             backend.setCameraParam(backend.selectedDeviceId, "wb", value)
                     }
                 }
-                FieldLabel { text: "IMAGE" }
+                FieldLabel { text: "IMAGE"; visible: cameraPanel.teleSelected }
                 RowLayout {
                     Layout.fillWidth: true
+                    visible: cameraPanel.teleSelected
                     HudField { id: liveBrightness; Layout.fillWidth: true; placeholderText: "bri"; enabled: root.commandEnabled("set_brightness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_brightness : root.scopeTelemetry.brightness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "brightness", value) } }
                     HudField { id: liveContrast; Layout.fillWidth: true; placeholderText: "con"; enabled: root.commandEnabled("set_contrast"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_contrast : root.scopeTelemetry.contrast; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "contrast", value) } }
                     HudField { id: liveSaturation; Layout.fillWidth: true; placeholderText: "sat"; enabled: root.commandEnabled("set_saturation"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_saturation : root.scopeTelemetry.saturation; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "saturation", value) } }
                 }
                 RowLayout {
                     Layout.fillWidth: true
+                    visible: cameraPanel.teleSelected
                     HudField { id: liveHue; Layout.fillWidth: true; placeholderText: "hue"; enabled: root.commandEnabled("set_hue"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_hue : root.scopeTelemetry.hue; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "hue", value) } }
                     HudField { id: liveSharpness; Layout.fillWidth: true; placeholderText: "shp"; enabled: root.commandEnabled("set_sharpness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_sharpness : root.scopeTelemetry.sharpness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "sharpness", value) } }
                     HudCombo {

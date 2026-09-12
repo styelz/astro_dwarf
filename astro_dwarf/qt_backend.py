@@ -2749,8 +2749,13 @@ class AppBackend(QObject):
 
     @Slot(str, int)
     def manualFocus(self, device_id: str, direction: int) -> None:
+        device = self._device_by_id(device_id)
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
+            return
+        camera = device.camera.value if device and hasattr(device.camera, "value") else str(device.camera if device else "")
+        if camera == Camera.WIDE.value:
+            self._toast("Focus is only available on the tele camera", "warning")
             return
         action = "focus_near" if direction else "focus_far"
         worker.send("manual_focus", {"args": [direction]}, self._with_pending(device_id, action))
@@ -3006,6 +3011,9 @@ class AppBackend(QObject):
         if not worker or not worker.connected:
             return
         camera = device.camera.value if hasattr(device.camera, "value") else str(device.camera)
+        if name == "focus" and camera == Camera.WIDE.value:
+            self._toast("Focus is only available on the tele camera", "warning")
+            return
         model_id = {DeviceModel.DWARF_II: "2", DeviceModel.DWARF_3: "3", DeviceModel.DWARF_MINI: "5"}.get(device.model, "3")
         if name == "exposure":
             operation, args = "set_exposure", [firmware_exposure_name(value), model_id, camera]
