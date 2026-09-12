@@ -4580,11 +4580,59 @@ class AppBackend(QObject):
             "next_free_time": free.strftime("%H:%M") if snapped else "",
         }
 
+    @Slot(str, str, str, float, int, result="QVariantMap")
+    def templateScheduleWindow(
+        self,
+        template_id: str,
+        device_id: str,
+        scheduled_start: str,
+        exposure_seconds: float,
+        frame_count: int,
+    ) -> dict[str, Any]:
+        template = self.store.templates.get(template_id)
+        device = self._schedule_device(device_id)
+        if not template or not device or exposure_seconds <= 0 or frame_count < 1:
+            return {"ok": False}
+        try:
+            start = parse_in_zone(str(scheduled_start).strip(), self._zone_for(device)).replace(second=0, microsecond=0)
+        except ValueError:
+            return {"ok": False}
+        group_id = template.mosaic.group_id
+        templates = (
+            [item for item in self.store.templates.all() if item.mosaic.group_id == group_id]
+            if group_id else [template]
+        )
+        sessions = []
+        for item in templates:
+            session = self.store.clone_template(item, device.id, start)
+            camera = replace(session.camera, exposure_seconds=exposure_seconds, frame_count=frame_count)
+            sessions.append(replace(session, camera=camera))
+        timed = stagger_mosaic_sessions(sessions, start, device.hardware)
+        last = max(timed, key=lambda item: item.scheduled_start)
+        end = parse_in_zone(last.scheduled_start, self._zone_for(device)) + timedelta(
+            seconds=last.planned_duration_seconds
+        )
+        return self.scheduleWindow(device.id, scheduled_start, (end - start).total_seconds())
+
     @Slot(str, str, result=bool)
     @Slot(str, str, str, result=bool)
-    def scheduleTemplate(self, template_id: str, scheduled_start: str, device_id: str = "") -> bool:
+    @Slot(str, str, str, float, int, result=bool)
+    def scheduleTemplate(
+        self,
+        template_id: str,
+        scheduled_start: str,
+        device_id: str = "",
+        exposure_seconds: float | None = None,
+        frame_count: int | None = None,
+    ) -> bool:
         template = self.store.templates.get(template_id)
         if not template:
+            return False
+        if exposure_seconds is not None and exposure_seconds <= 0:
+            self._toast("Exposure must be greater than zero", "error")
+            return False
+        if frame_count is not None and frame_count < 1:
+            self._toast("Frames must be at least one", "error")
             return False
         group_id = template.mosaic.group_id
         templates = (
@@ -4601,10 +4649,15 @@ class AppBackend(QObject):
         except ValueError:
             self._toast("Enter a start time like 2026-09-10T22:00", "error")
             return False
-        sessions = [
-            self.store.clone_template(item, device.id, start)
-            for item in templates
-        ]
+        sessions = []
+        for item in templates:
+            session = self.store.clone_template(item, device.id, start)
+            camera = replace(
+                session.camera,
+                exposure_seconds=exposure_seconds if exposure_seconds is not None else session.camera.exposure_seconds,
+                frame_count=frame_count if frame_count is not None else session.camera.frame_count,
+            )
+            sessions.append(replace(session, camera=camera))
         staggered = stagger_mosaic_sessions(sessions, start, device.hardware)
         try:
             self._commit_device_sessions(staggered, device)

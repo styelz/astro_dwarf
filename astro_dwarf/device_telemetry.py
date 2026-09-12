@@ -91,6 +91,37 @@ _BATTERY_SDK_STEP = 10
 _BATTERY_NOTIFY_JITTER = 3
 _BATTERY_SOURCE_RANK = {"sdk": 0, "notify": 1, "state": 2}
 
+_PICTURE_MATCHING_W = 1920
+_PICTURE_MATCHING_H = 1080
+
+
+def normalize_picture_matching(x: int, y: int, width: int, height: int) -> dict[str, float]:
+    """Normalize a tele-in-wide rectangle without a position-dependent span."""
+    if width <= 0 or height <= 0:
+        return {}
+    # Some firmware reports the same rectangle in the 3840x2160 still frame.
+    # Its dimensions are roughly twice the live-frame rectangle, even when a
+    # left/top rectangle does not cross the 1920x1080 boundary.
+    high_resolution = (
+        x + width > _PICTURE_MATCHING_W
+        or y + height > _PICTURE_MATCHING_H
+        or width > _PICTURE_MATCHING_W / 10
+        or height > _PICTURE_MATCHING_H / 10
+    )
+    scale = 2 if high_resolution else 1
+    span_w = _PICTURE_MATCHING_W * scale
+    span_h = _PICTURE_MATCHING_H * scale
+    nx = max(0.0, min(1.0, (x + width / 2.0) / span_w))
+    ny = max(0.0, min(1.0, (y + height / 2.0) / span_h))
+    return {
+        "tele_match_cx": nx * (_PICTURE_MATCHING_W - 1),
+        "tele_match_cy": ny * (_PICTURE_MATCHING_H - 1),
+        "tele_match_nx": nx,
+        "tele_match_ny": ny,
+        "tele_match_nw": min(1.0, width / span_w),
+        "tele_match_nh": min(1.0, height / span_h),
+    }
+
 PARAM_ID_PHOTO_TELE_EXPOSURE = 0x0101000000000001
 PARAM_ID_PHOTO_TELE_GAIN = 0x0101000000000002
 PARAM_ID_ASTRO_EXPOSURE = 0x0201000000000001
@@ -565,24 +596,9 @@ class TelemetryTap:
                 return {}
             width = int(message.width)
             height = int(message.height)
-            if width <= 0 or height <= 0:
-                return {}
             x = int(message.x)
             y = int(message.y)
-            # Firmware DualCameraLinkage is 1920×1080; scale the rect if the
-            # notify uses a larger still-photo frame.
-            span_w = max(x + width, 1920)
-            span_h = max(y + height, 1080)
-            cx = (x + width / 2.0) * 1919 / max(span_w - 1, 1)
-            cy = (y + height / 2.0) * 1079 / max(span_h - 1, 1)
-            return {
-                "tele_match_cx": cx,
-                "tele_match_cy": cy,
-                "tele_match_nx": (x + width / 2.0) / span_w,
-                "tele_match_ny": (y + height / 2.0) / span_h,
-                "tele_match_nw": width / span_w,
-                "tele_match_nh": height / span_h,
-            }
+            return normalize_picture_matching(x, y, width, height)
         if cmd == CMD_NOTIFY_ELE:
             message = self._base.ComResWithInt()
             message.ParseFromString(data)

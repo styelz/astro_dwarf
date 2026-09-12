@@ -17,9 +17,11 @@ Dialog {
     readonly property int sessionsTick: backend.sessions.length
     readonly property var windowHint: {
         sessionsTick
-        return backend.scheduleWindow(scheduleDialog.deviceId, startTime.text, Number(scheduleDialog.templateData.duration_seconds || 0))
+        return backend.templateScheduleWindow(scheduleDialog.templateId, scheduleDialog.deviceId, startTime.text,
+                                              Number(exposure.text), Number(frames.text))
     }
-    readonly property bool canSchedule: templateId.length > 0 && startTime.text.trim().length > 0 && !!windowHint.ok && !windowHint.conflict
+    readonly property bool captureValid: Number(exposure.text) > 0 && Number(frames.text) >= 1
+    readonly property bool canSchedule: templateId.length > 0 && startTime.text.trim().length > 0 && captureValid && !!windowHint.ok && !windowHint.conflict
     modal: true
     anchors.centerIn: Overlay.overlay
     width: 460
@@ -32,7 +34,8 @@ Dialog {
     function confirm() {
         if (!canSchedule)
             return
-        if (backend.scheduleTemplate(templateId, startTime.text.trim(), scheduleDialog.deviceId))
+        if (backend.scheduleTemplate(templateId, startTime.text.trim(), scheduleDialog.deviceId,
+                                     Number(exposure.text), Number(frames.text)))
             close()
     }
     function syncDevice() {
@@ -57,6 +60,9 @@ Dialog {
         deviceId = backend.selectedDeviceId
         syncDevice()
         startTime.text = scheduleDialog.defaultStart()
+        const camera = item.camera || ({})
+        exposure.text = String(camera.exposure_seconds || 15)
+        frames.text = String(camera.frame_count || 120)
         open()
         startTime.forceActiveFocus()
         startTime.selectAll()
@@ -119,6 +125,35 @@ Dialog {
                 text: "NOW"
                 implicitWidth: 72
                 onClicked: startTime.text = scheduleDialog.defaultStart()
+            }
+        }
+        FieldLabel { text: "CAPTURE" }
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            ColumnLayout {
+                spacing: 2
+                Layout.fillWidth: true
+                FieldLabel { text: "EXPOSURE (SECONDS)" }
+                HudField {
+                    id: exposure
+                    Layout.fillWidth: true
+                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                    validator: DoubleValidator { bottom: 0.001; notation: DoubleValidator.StandardNotation }
+                    accessibleName: "Exposure in seconds"
+                }
+            }
+            ColumnLayout {
+                spacing: 2
+                Layout.fillWidth: true
+                FieldLabel { text: "FRAMES" }
+                HudField {
+                    id: frames
+                    Layout.fillWidth: true
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    validator: IntValidator { bottom: 1; top: 99999 }
+                    accessibleName: "Frame count"
+                }
             }
         }
         Text {

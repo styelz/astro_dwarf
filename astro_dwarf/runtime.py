@@ -111,6 +111,8 @@ def ffmpeg_mjpeg_command(url: str, rtsp_transport: str | None = None) -> list[st
         [
             "-i",
             url,
+            "-vf",
+            "fps=15",
             "-f",
             "image2pipe",
             "-vcodec",
