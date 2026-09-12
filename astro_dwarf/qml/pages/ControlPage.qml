@@ -1671,6 +1671,12 @@ Item {
                         function deviceDetail() {
                             if (trackingPad && trackingNow && !slewingNow)
                                 return t.tracking_target ? "TRACKING · " + t.tracking_target : "TRACKING · TAP TO STOP"
+                            if (trackingPad && !backend.selectedDevice.location_configured)
+                                return "SET LOCATION FIRST"
+                            if (trackingPad && backend.previewPlaying)
+                                return previewHost.displayWide ? "DOUBLE-CLICK TARGET FIRST" : "USE WIDE VIEW FIRST"
+                            if (trackingPad)
+                                return "CALIBRATE · CENTRE · TRACK"
                             if (modelData.state === "imaging" && activeForState)
                                 return t.capture_text ? "STACK · " + t.capture_text : "STACKING · TAP TO STOP"
                             if (!activeForState)

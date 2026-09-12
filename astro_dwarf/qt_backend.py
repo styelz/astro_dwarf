@@ -705,6 +705,9 @@ class AppBackend(QObject):
         self._pending_retarget: tuple[str, str, float] | None = None
         self._joystick_inflight: set[str] = set()
         self._joystick_pending: dict[str, tuple[float, float]] = {}
+        self._center_tap_inflight: set[str] = set()
+        self._center_tap_pending: dict[str, tuple[float, float, str]] = {}
+        self._center_tap_token: dict[str, int] = {}
         self._ui_busy = ""
         self._asyncResult.connect(self._handle_async_result)
         self._sync_shared_device_fields()
@@ -1040,6 +1043,8 @@ class AppBackend(QObject):
         current.update(data)
         self._device_telemetry[device_id] = current
         self._telemetry_updated[device_id] = time.time()
+        if "tele_match_width" in data:
+            self._finish_center_tap(device_id)
         if "lights_on" in data:
             self._device_lights[device_id] = bool(data["lights_on"])
         if "indicator_on" in data:
@@ -2631,6 +2636,16 @@ class AppBackend(QObject):
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
             return
+        device = self._device_by_id(device_id)
+        if operation == "track" and (not device or not device.location_configured):
+            message = "Set an observing location in Settings before starting tracking"
+            self.add_log("warning", message, device_id)
+            self._toast("Tracking needs an observing location", "warning", message)
+            return
+        photo_focus = (
+            operation in {"autofocus", "infinity"}
+            and self._device_telemetry.get(device_id, {}).get("shooting_mode") == 1
+        )
         self._begin_activity(device_id, operation)
 
         label = _ACTION_LABELS.get(operation, operation.replace("_", " ").title())
@@ -2640,6 +2655,8 @@ class AppBackend(QObject):
 
         def done(ok: bool, result: Any) -> None:
             self._complete_activity(device_id, operation, ok)
+            if photo_focus and operation == "infinity":
+                self._set_activity(device_id, "")
             if ok and operation in {"lights_on", "lights_off"}:
                 self._device_lights[device_id] = operation == "lights_on"
                 self._notify_devices()
@@ -2662,10 +2679,12 @@ class AppBackend(QObject):
                 name = str(session.get("target_name") or "")
             payload = {"args": [name or "Live tap"]}
         elif operation == "stack":
-            device = self._device_by_id(device_id)
             camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
             payload = {"args": [camera]}
-        worker.send(operation, payload, callback=self._with_pending(device_id, operation, done))
+        worker_operation = operation
+        if photo_focus:
+            worker_operation = "normal_autofocus"
+        worker.send(worker_operation, payload, callback=self._with_pending(device_id, operation, done))
         if dropping:
             self._drop_device_link(device_id)
 
@@ -2724,6 +2743,9 @@ class AppBackend(QObject):
             return
         nx = max(0.0, min(1.0, float(nx)))
         ny = max(0.0, min(1.0, float(ny)))
+        if device_id in self._center_tap_inflight:
+            self._center_tap_pending[device_id] = (nx, ny, diag)
+            return
         telemetry = self._device_telemetry.get(device_id) or {}
         try:
             fov_h = float(telemetry.get("wide_fov_h") or 0)
@@ -2735,17 +2757,37 @@ class AppBackend(QObject):
         if diag:
             self.add_log("debug", f"Center tap map {diag}", device_id)
 
+        self._center_tap_inflight.add(device_id)
+        token = self._center_tap_token.get(device_id, 0) + 1
+        self._center_tap_token[device_id] = token
+        QTimer.singleShot(8000, lambda did=device_id, current=token: self._finish_center_tap(did, current, False))
+
         def done(ok: bool, result: Any) -> None:
             if not ok:
                 self.add_log("error", f"Center on tap failed: {result}", device_id)
+                self._finish_center_tap(device_id, token, False)
                 return
             detail = result if isinstance(result, dict) else {}
             if detail.get("ok") is False:
                 self.add_log("error", "Center on tap failed", device_id)
-                return
-            self._toast("Target centered", "success", "Press TRACK to start sidereal tracking, then STACK")
+                self._finish_center_tap(device_id, token, False)
 
         worker.send("center_tap", {"args": [nx, ny, fov_h, fov_v]}, done)
+
+    def _finish_center_tap(self, device_id: str, token: int | None = None, confirmed: bool = True) -> None:
+        if token is not None and token != self._center_tap_token.get(device_id):
+            return
+        if device_id not in self._center_tap_inflight:
+            return
+        self._center_tap_inflight.discard(device_id)
+        self._center_tap_token[device_id] = self._center_tap_token.get(device_id, 0) + 1
+        pending = self._center_tap_pending.pop(device_id, None)
+        if pending is None:
+            if confirmed:
+                self._toast("Target centered", "success", "Press TRACK to start sidereal tracking, then STACK")
+            return
+        nx, ny, diag = pending
+        QTimer.singleShot(0, lambda: self.centerOnTap(device_id, nx, ny, diag))
 
     @Slot(str, int)
     def manualFocus(self, device_id: str, direction: int) -> None:

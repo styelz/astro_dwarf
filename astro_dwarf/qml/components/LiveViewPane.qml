@@ -101,8 +101,9 @@ Item {
         id: teleFootprint
         enabled: false
         visible: pane.showFootprint && pane.wideView && paintedWidth > 0
-        width: paintedWidth * (pane.footprintNw > 0 ? pane.footprintNw : pane.fovH)
-        height: paintedHeight * (pane.footprintNh > 0 ? pane.footprintNh : pane.fovV)
+            && pane.footprintNw > 0 && pane.footprintNh > 0
+        width: paintedWidth * pane.footprintNw
+        height: paintedHeight * pane.footprintNh
         x: pane.frameX + paintedWidth * pane.footprintNx - width / 2
         y: pane.frameY + paintedHeight * pane.footprintNy - height / 2
         color: "transparent"

@@ -2528,7 +2528,8 @@ def _start_tracking(target_name: str = "") -> dict[str, Any]:
     alt = _motor_position(2) if az is not None else None
     if az is None or alt is None:
         raise RuntimeError(
-            "Mount position is unavailable. Calibrate first, then tap the live view and press TRACK"
+            "Mount position is unavailable. Run CALIBRATE and wait for it to complete, "
+            "then double-click the target on the wide live view and press TRACK"
         )
     ra_hours, dec_degrees = _altaz_to_radec(az, alt, latitude, longitude)
     name = str(target_name or "").strip() or "Live tap"

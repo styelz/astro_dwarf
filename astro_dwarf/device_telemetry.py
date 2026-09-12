@@ -114,6 +114,11 @@ def normalize_picture_matching(x: int, y: int, width: int, height: int) -> dict[
     nx = max(0.0, min(1.0, (x + width / 2.0) / span_w))
     ny = max(0.0, min(1.0, (y + height / 2.0) / span_h))
     return {
+        "tele_match_x": x,
+        "tele_match_y": y,
+        "tele_match_width": width,
+        "tele_match_height": height,
+        "tele_match_scale": scale,
         "tele_match_cx": nx * (_PICTURE_MATCHING_W - 1),
         "tele_match_cy": ny * (_PICTURE_MATCHING_H - 1),
         "tele_match_nx": nx,
