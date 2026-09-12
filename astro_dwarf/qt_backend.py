@@ -2379,6 +2379,16 @@ class AppBackend(QObject):
     def _on_camera_frame(self, camera: str, image) -> None:
         if not self._preview_active:
             return
+        first_frame = (camera == "wide" and not self._preview_wide_playing) or (
+            camera == "tele" and not self._preview_tele_playing
+        )
+        window_live = preview_window_is_live(self._preview_window)
+        now = time.monotonic()
+        if not first_frame and (
+            not window_live or now - self._last_preview_ui.get(camera, 0.0) < 0.05
+        ):
+            return
+        self._last_preview_ui[camera] = now
         raw = image.copy() if isinstance(image, QImage) and not image.isNull() else QImage()
         self._raw_preview_images[camera] = raw
         if self._should_enhance_preview():
@@ -2388,17 +2398,6 @@ class AppBackend(QObject):
             self._queue_preview_enhance(camera, raw)
         else:
             self.live_images.update(camera, raw)
-        first_frame = (camera == "wide" and not self._preview_wide_playing) or (
-            camera == "tele" and not self._preview_tele_playing
-        )
-        window_live = preview_window_is_live(self._preview_window)
-        now = time.monotonic()
-        if not first_frame:
-            if now - self._last_preview_ui.get(camera, 0.0) < 0.05:
-                return
-            if not window_live:
-                return
-        self._last_preview_ui[camera] = now
         if first_frame:
             self._preview_generation += 1
             if camera == "wide":
