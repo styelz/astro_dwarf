@@ -346,7 +346,7 @@ _MEDIA_LOCKED_STATUS = (
     "The telescope album isn't available while it's capturing. "
     "Wait until imaging finishes, or switch to Local."
 )
-_ACTIVITY_TRANSIENT = {"calibrate"}
+_ACTIVITY_TRANSIENT = {"autofocus", "calibrate"}
 _ACTION_LABELS = {
     "calibrate": "Calibration started",
     "stop_calibrate": "Calibration stopped",
@@ -2991,11 +2991,13 @@ class AppBackend(QObject):
     def setLiveCamera(self, device_id: str, camera: str) -> None:
         current = self._device_by_id(device_id)
         if current.camera == Camera(camera):
+            self.refreshCameraParams(device_id)
             return
         updated = replace(current, camera=Camera(camera))
         self.store.devices.save(updated)
         self._devices = [updated if item.id == updated.id else item for item in self._devices]
         self._notify_devices()
+        self.refreshCameraParams(device_id)
 
     @Slot(str, str, str)
     def setCameraParam(self, device_id: str, name: str, value: str) -> None:
@@ -3047,6 +3049,8 @@ class AppBackend(QObject):
                 f"{name.replace('_', ' ').title()} set" if ok else str(result),
                 "success" if ok else "error",
             )
+            if ok:
+                QTimer.singleShot(150, lambda did=device_id: self.refreshCameraParams(did))
 
         worker.send(
             operation,
@@ -3274,18 +3278,27 @@ class AppBackend(QObject):
             camera = cameras.get(0) or cameras.get("0") or {}
             wide = cameras.get(1) or cameras.get("1") or {}
             changes: dict[str, Any] = {}
-            exposure = (camera.get("exposure") or {}) if isinstance(camera, dict) else {}
-            gain = (camera.get("gain") or {}) if isinstance(camera, dict) else {}
-            if exposure.get("name"):
-                changes["exposure_text"] = str(exposure["name"])
-            if gain.get("value") is not None:
-                changes["gain"] = int(gain["value"])
-            wide_exposure = (wide.get("exposure") or {}) if isinstance(wide, dict) else {}
-            wide_gain = (wide.get("gain") or {}) if isinstance(wide, dict) else {}
-            if wide_exposure.get("name"):
-                changes["wide_exposure_text"] = str(wide_exposure["name"])
-            if wide_gain.get("value") is not None:
-                changes["wide_gain"] = int(wide_gain["value"])
+
+            def collect(values: dict[str, Any], prefix: str = "") -> None:
+                if not isinstance(values, dict):
+                    return
+                exposure = values.get("exposure") or {}
+                gain = values.get("gain") or {}
+                white_balance = values.get("wb") or {}
+                if exposure.get("name"):
+                    changes[f"{prefix}exposure_text"] = str(exposure["name"])
+                if gain.get("value") is not None:
+                    changes[f"{prefix}gain"] = int(gain["value"])
+                if white_balance.get("value") is not None:
+                    changes[f"{prefix}wb_value"] = int(white_balance["value"])
+                if white_balance.get("scene") is not None:
+                    changes[f"{prefix}wb_scene"] = int(white_balance["scene"])
+                for name in ("brightness", "contrast", "saturation", "hue", "sharpness"):
+                    if values.get(name) is not None:
+                        changes[f"{prefix}{name}"] = int(values[name])
+
+            collect(camera)
+            collect(wide, "wide_")
             if changes:
                 self._on_telemetry(device_id, changes)
 

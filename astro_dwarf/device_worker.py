@@ -565,7 +565,8 @@ def _center_wide_view(nx: float, ny: float, fov_h: float, fov_v: float) -> dict[
 
 _FOCUS_FAR = 0
 _FOCUS_NEAR = 1
-_FOCUS_STEP_CLOSE = 8
+_FOCUS_CONTINUOUS_THRESHOLD = 32
+_FOCUS_STEP_TIMEOUT = 1.5
 
 
 def _focus_position() -> int | None:
@@ -585,23 +586,26 @@ def _set_focus_position(target: int) -> bool:
     current = _focus_position()
     if current is None:
         raise RuntimeError("Focus position is unknown. Wait for telemetry, then try again.")
-    if abs(current - target) <= 1:
+    if current == target:
         return True
 
-    def direction_for(position: int) -> int:
-        return _FOCUS_NEAR if target < position else _FOCUS_FAR
+    direction = _FOCUS_NEAR if target < current else _FOCUS_FAR
 
-    def passed(position: int, direction: int) -> bool:
+    def passed(position: int) -> bool:
         return position <= target if direction == _FOCUS_NEAR else position >= target
 
+    def advanced(previous: int, position: int) -> bool:
+        return position < previous if direction == _FOCUS_NEAR else position > previous
+
     deadline = time.monotonic() + 45.0
-    while abs(current - target) > 1:
+    while current != target:
         if _stop.is_set():
             raise InterruptedError("Focus move stopped")
         if time.monotonic() >= deadline:
             raise RuntimeError("Focus move timed out")
-        direction = direction_for(current)
-        if abs(current - target) > _FOCUS_STEP_CLOSE:
+        if passed(current):
+            return True
+        if abs(current - target) > _FOCUS_CONTINUOUS_THRESHOLD:
             message = focus_pb2.ReqManualContinuFocus()
             message.direction = direction
             if send_without_response(message, 15002, 8) is False:
@@ -617,7 +621,7 @@ def _set_focus_position(target: int) -> bool:
                     if position is None:
                         continue
                     current = position
-                    if passed(current, direction) or abs(current - target) <= _FOCUS_STEP_CLOSE:
+                    if passed(current) or abs(current - target) <= _FOCUS_CONTINUOUS_THRESHOLD:
                         break
                     if current == burst_from and time.monotonic() - burst_started > 2.5:
                         raise RuntimeError("Focus motor did not move")
@@ -632,19 +636,17 @@ def _set_focus_position(target: int) -> bool:
         message.direction = direction
         if send_without_response(message, 15001, 8) is False:
             return False
-        time.sleep(0.08)
-        position = _focus_position()
-        if position is None:
-            continue
-        if position == current:
-            time.sleep(0.12)
+        step_from = current
+        step_deadline = min(deadline, time.monotonic() + _FOCUS_STEP_TIMEOUT)
+        while time.monotonic() < step_deadline:
+            time.sleep(0.05)
             position = _focus_position()
-            if position is None or position == current:
-                if abs(current - target) <= _FOCUS_STEP_CLOSE:
-                    return True
-                raise RuntimeError("Focus motor did not move")
+            if position is not None and advanced(step_from, position):
+                break
+        else:
+            raise RuntimeError("Focus motor did not move")
         current = position
-        if passed(current, direction):
+        if passed(current):
             break
     return True
 
@@ -1400,7 +1402,7 @@ def _error_name(code: int) -> str:
 
 # Fire-and-forget V3 commands: (reply command id, telemetry state key, done-on-reply, timeout s)
 _V3_OPERATION_WAITS: dict[str, tuple[int, str | None, bool, float]] = {
-    "autofocus": (15004, None, True, 180.0),
+    "autofocus": (15004, "autofocus_state", True, 180.0),
     "calibrate": (11000, "calibration_state", False, 600.0),
     "polar": (11018, "eq_state", True, 600.0),
     "goto": (11002, "goto_state", False, 300.0),

@@ -546,16 +546,46 @@ Item {
                         Layout.fillWidth: true
                         enabled: root.cameraLiveEnabled
                         placeholderText: "sec"
-                        text: "15"
-                        onEditingFinished: backend.setCameraParam(backend.selectedDeviceId, "exposure", text)
+                        readonly property string liveValue: {
+                            const value = backend.selectedDevice.camera === "wide"
+                                ? root.scopeTelemetry.wide_exposure_text
+                                : root.scopeTelemetry.exposure_text
+                            return value && value !== "—" ? String(value) : ""
+                        }
+                        onLiveValueChanged: if (!activeFocus) text = liveValue
+                        Component.onCompleted: text = liveValue
+                        onEditingFinished: {
+                            const value = text.trim()
+                            if (!value) {
+                                text = liveValue
+                                return
+                            }
+                            if (value !== liveValue)
+                                backend.setCameraParam(backend.selectedDeviceId, "exposure", value)
+                        }
                     }
                     HudField {
                         id: liveGain
                         Layout.fillWidth: true
                         enabled: root.commandEnabled("set_gain")
                         placeholderText: "gain"
-                        text: "80"
-                        onEditingFinished: backend.setCameraParam(backend.selectedDeviceId, "gain", text)
+                        readonly property string liveValue: {
+                            const value = backend.selectedDevice.camera === "wide"
+                                ? root.scopeTelemetry.wide_gain
+                                : root.scopeTelemetry.gain
+                            return value !== undefined && value !== null ? String(value) : ""
+                        }
+                        onLiveValueChanged: if (!activeFocus) text = liveValue
+                        Component.onCompleted: text = liveValue
+                        onEditingFinished: {
+                            const value = text.trim()
+                            if (!value) {
+                                text = liveValue
+                                return
+                            }
+                            if (value !== liveValue)
+                                backend.setCameraParam(backend.selectedDeviceId, "gain", value)
+                        }
                     }
                 }
                 FieldLabel { text: "WHITE BALANCE" }
@@ -565,25 +595,49 @@ Item {
                     enabled: root.commandEnabled("set_wb_preset")
                     model: ["Incandescent", "Warm Fluorescent", "Fluorescent", "Sunlight", "Cloudy", "Shadow", "Twilight"]
                     onActivated: backend.setCameraParam(backend.selectedDeviceId, "wb_preset", currentText)
+                    readonly property int liveIndex: {
+                        const value = backend.selectedDevice.camera === "wide"
+                            ? root.scopeTelemetry.wide_wb_scene
+                            : root.scopeTelemetry.wb_scene
+                        const index = Number(value)
+                        return isFinite(index) && index >= 0 && index < count ? index : -1
+                    }
+                    onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                 }
                 HudField {
                     id: liveWbKelvin
                     Layout.fillWidth: true
                     enabled: root.commandEnabled("set_wb")
                     placeholderText: "Kelvin 2800–7500"
-                    onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "wb", text)
+                    readonly property string liveValue: {
+                        const value = backend.selectedDevice.camera === "wide"
+                            ? root.scopeTelemetry.wide_wb_value
+                            : root.scopeTelemetry.wb_value
+                        return value !== undefined && value !== null ? String(value) : ""
+                    }
+                    onLiveValueChanged: if (!activeFocus) text = liveValue
+                    Component.onCompleted: text = liveValue
+                    onEditingFinished: {
+                        const value = text.trim()
+                        if (!value) {
+                            text = liveValue
+                            return
+                        }
+                        if (value !== liveValue)
+                            backend.setCameraParam(backend.selectedDeviceId, "wb", value)
+                    }
                 }
                 FieldLabel { text: "IMAGE" }
                 RowLayout {
                     Layout.fillWidth: true
-                    HudField { Layout.fillWidth: true; placeholderText: "bri"; enabled: root.commandEnabled("set_brightness"); onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "brightness", text) }
-                    HudField { Layout.fillWidth: true; placeholderText: "con"; enabled: root.commandEnabled("set_contrast"); onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "contrast", text) }
-                    HudField { Layout.fillWidth: true; placeholderText: "sat"; enabled: root.commandEnabled("set_saturation"); onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "saturation", text) }
+                    HudField { id: liveBrightness; Layout.fillWidth: true; placeholderText: "bri"; enabled: root.commandEnabled("set_brightness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_brightness : root.scopeTelemetry.brightness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "brightness", value) } }
+                    HudField { id: liveContrast; Layout.fillWidth: true; placeholderText: "con"; enabled: root.commandEnabled("set_contrast"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_contrast : root.scopeTelemetry.contrast; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "contrast", value) } }
+                    HudField { id: liveSaturation; Layout.fillWidth: true; placeholderText: "sat"; enabled: root.commandEnabled("set_saturation"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_saturation : root.scopeTelemetry.saturation; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "saturation", value) } }
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    HudField { Layout.fillWidth: true; placeholderText: "hue"; enabled: root.commandEnabled("set_hue"); onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "hue", text) }
-                    HudField { Layout.fillWidth: true; placeholderText: "shp"; enabled: root.commandEnabled("set_sharpness"); onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "sharpness", text) }
+                    HudField { id: liveHue; Layout.fillWidth: true; placeholderText: "hue"; enabled: root.commandEnabled("set_hue"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_hue : root.scopeTelemetry.hue; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "hue", value) } }
+                    HudField { id: liveSharpness; Layout.fillWidth: true; placeholderText: "shp"; enabled: root.commandEnabled("set_sharpness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_sharpness : root.scopeTelemetry.sharpness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "sharpness", value) } }
                     HudCombo {
                         Layout.fillWidth: true
                         enabled: root.commandEnabled("set_stack_format")
@@ -669,7 +723,7 @@ Item {
                             return backend.videoUrl || "Telescope connected — start the stream"
                         return "Connect a telescope to start the stream"
                     }
-                    property bool preferredWide: backend.selectedDevice.camera === "wide"
+                    readonly property bool preferredWide: backend.selectedDevice.camera === "wide"
                     property bool pipEnabled: true
                     readonly property bool pipAvailable: backend.previewTelePlaying && backend.previewWidePlaying && !backend.previewStacking
                     readonly property bool mainIsWide: backend.previewStacking ? false : preferredWide
@@ -724,7 +778,7 @@ Item {
                     function swapViews() {
                         if (!pipAvailable)
                             return
-                        preferredWide = !preferredWide
+                        backend.setLiveCamera(backend.selectedDeviceId, preferredWide ? "tele" : "wide")
                     }
                     readonly property bool previewFailed: {
                         const s = String(backend.previewStatus || "").toLowerCase()
@@ -755,7 +809,6 @@ Item {
                             backend.uiLog("warning", "Preview needs an active telescope connection")
                             return
                         }
-                        preferredWide = backend.selectedDevice.camera === "wide"
                         backend.startPreview(backend.selectedDeviceId)
                     }
 
