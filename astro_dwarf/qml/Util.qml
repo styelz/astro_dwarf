@@ -278,6 +278,25 @@ QtObject {
         const profile = Theme.deepCleanImages ? "deep" : "std"
         return backend.mediaEnhanceSource(raw, profile)
     }
+    function captureDefaults(device) {
+        const cap = (device && device.capture_defaults) || {}
+        const exposure = Number(cap.exposure_seconds)
+        const gain = Number(cap.gain)
+        const frames = Number(cap.frame_count)
+        return {
+            exposure_seconds: Number.isFinite(exposure) && exposure > 0 ? exposure : 15,
+            gain: Number.isFinite(gain) && gain >= 0 ? gain : 80,
+            frame_count: Number.isFinite(frames) && frames >= 1 ? frames : 120
+        }
+    }
+    function deviceById(devices, id) {
+        const list = devices || []
+        for (let i = 0; i < list.length; i++) {
+            if (list[i] && list[i].id === id)
+                return list[i]
+        }
+        return null
+    }
     function clusterSessions(items) {
         const list = items || []
         const groups = []

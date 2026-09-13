@@ -52,6 +52,10 @@ Dialog {
             scheduleDialog.deviceId = deviceBox.valueAt(0) || backend.selectedDeviceId
         }
     }
+    function captureFor(deviceId) {
+        const id = deviceId || scheduleDialog.deviceId || backend.selectedDeviceId
+        return Util.captureDefaults(Util.deviceById(backend.devices, id) || backend.selectedDevice)
+    }
     function openFor(data) {
         const item = data || ({})
         templateId = String(item.id || "")
@@ -60,9 +64,10 @@ Dialog {
         deviceId = backend.selectedDeviceId
         syncDevice()
         startTime.text = scheduleDialog.defaultStart()
+        const defaults = scheduleDialog.captureFor(deviceId)
         const camera = item.camera || ({})
-        exposure.text = String(camera.exposure_seconds || 15)
-        frames.text = String(camera.frame_count || 120)
+        exposure.text = String(camera.exposure_seconds || defaults.exposure_seconds)
+        frames.text = String(camera.frame_count || defaults.frame_count)
         open()
         startTime.forceActiveFocus()
         startTime.selectAll()

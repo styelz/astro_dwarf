@@ -27,7 +27,12 @@ Item {
             settle_seconds: Number(settleField.text), calibration_seconds: Number(calibrationField.text),
             autofocus_seconds: Number(autofocusField.text), infinite_focus_seconds: Number(infinityField.text),
             polar_seconds: Number(polarField.text), readout_seconds: Number(readoutField.text),
-            pane_slew_seconds: Number(paneField.text), startup_seconds: Number(startupField.text)
+            pane_slew_seconds: Number(paneField.text), startup_seconds: Number(startupField.text),
+            capture_defaults: {
+                exposure_seconds: Number(exposureDefaultField.text),
+                gain: Number(gainDefaultField.text),
+                frame_count: Number(framesDefaultField.text)
+            }
         }
     }
     readonly property bool dirty: JSON.stringify(currentPayload()) !== loadedSnapshot
@@ -103,6 +108,10 @@ Item {
         readoutField.text = hw.readout_seconds || 1.2
         paneField.text = hw.pane_slew_seconds || 12
         startupField.text = hw.startup_seconds || 8
+        const capture = Util.captureDefaults(d)
+        exposureDefaultField.text = String(capture.exposure_seconds)
+        gainDefaultField.text = String(capture.gain)
+        framesDefaultField.text = String(capture.frame_count)
         loadedSnapshot = JSON.stringify(currentPayload())
     }
     Component.onCompleted: load()
@@ -415,6 +424,43 @@ Item {
                     HudField { id: latField; Layout.fillWidth: true }
                     FieldLabel { text: "LONGITUDE" }
                     HudField { id: lonField; Layout.fillWidth: true }
+                }
+            }
+            HudPanel {
+                title: "▣  SESSION DEFAULTS"
+                width: parent.width
+                Text {
+                    text: "New sessions and imported Telescopius or Stellarium targets on this telescope start with these capture settings. Existing sessions keep their own values."
+                    color: Theme.textSecondary
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                }
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: 6
+                    columnSpacing: 8
+                    rowSpacing: 6
+                    FieldLabel { text: "EXPOSURE S" }
+                    HudField {
+                        id: exposureDefaultField
+                        Layout.fillWidth: true
+                        placeholderText: "15"
+                        accessibleName: "Default exposure seconds"
+                    }
+                    FieldLabel { text: "GAIN" }
+                    HudField {
+                        id: gainDefaultField
+                        Layout.fillWidth: true
+                        placeholderText: "80"
+                        accessibleName: "Default gain"
+                    }
+                    FieldLabel { text: "FRAMES" }
+                    HudField {
+                        id: framesDefaultField
+                        Layout.fillWidth: true
+                        placeholderText: "120"
+                        accessibleName: "Default frame count"
+                    }
                 }
             }
             HudPanel {

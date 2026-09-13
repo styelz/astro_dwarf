@@ -12,6 +12,7 @@ from .domain import (
     DEFAULT_OBSERVING_DAY_CUTOFF_HOUR,
     DEFAULT_STELLARIUM_URL,
     AppSettings,
+    CaptureDefaults,
     Device,
     HistoryRecord,
     Session,
@@ -209,8 +210,14 @@ class SessionStore:
             return current[0]
         return self.devices.save(Device(name="Dwarf 3"))
 
-    def import_old_sessions(self, paths: Iterable[Path], device_id: str) -> tuple[int, int]:
+    def import_old_sessions(
+        self,
+        paths: Iterable[Path],
+        device_id: str,
+        capture: CaptureDefaults | None = None,
+    ) -> tuple[int, int]:
         imported = failed = 0
+        defaults = capture or CaptureDefaults()
         for path in paths:
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))["command"]
@@ -230,9 +237,9 @@ class SessionStore:
                     device_id=device_id,
                     scheduled_start=start,
                     camera=CameraSettings(
-                        exposure_seconds=float(camera.get("exposure", 15)),
-                        gain=int(float(camera.get("gain", 80))),
-                        frame_count=int(camera.get("count", 1)),
+                        exposure_seconds=float(camera.get("exposure", defaults.exposure_seconds)),
+                        gain=int(float(camera.get("gain", defaults.gain))),
+                        frame_count=int(camera.get("count", defaults.frame_count)),
                     ),
                     workflow=Workflow(
                         calibrate=bool(raw.get("calibration", {}).get("do_action", False)),

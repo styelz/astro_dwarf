@@ -116,12 +116,22 @@ class HardwareProfile:
 
 DEFAULT_STELLARIUM_URL = "http://localhost:8090"
 DEFAULT_OBSERVING_DAY_CUTOFF_HOUR = 12
+DEFAULT_EXPOSURE_SECONDS = 15.0
+DEFAULT_GAIN = 80
+DEFAULT_FRAME_COUNT = 120
 
 
 @dataclass(slots=True)
 class AppSettings:
     observing_day_cutoff_hour: int = DEFAULT_OBSERVING_DAY_CUTOFF_HOUR
     stellarium_url: str = DEFAULT_STELLARIUM_URL
+
+
+@dataclass(slots=True)
+class CaptureDefaults:
+    exposure_seconds: float = DEFAULT_EXPOSURE_SECONDS
+    gain: int = DEFAULT_GAIN
+    frame_count: int = DEFAULT_FRAME_COUNT
 
 
 @dataclass(slots=True)
@@ -133,6 +143,7 @@ class Device:
     camera: Camera = Camera.TELE
     color: str = "#6C8CFF"
     hardware: HardwareProfile = field(default_factory=HardwareProfile)
+    capture_defaults: CaptureDefaults = field(default_factory=CaptureDefaults)
     ble_enabled: bool = True
     ble_password: str = "DWARF_12345678"
     wifi_mode: WifiMode = WifiMode.AUTO
@@ -158,9 +169,9 @@ class Target:
 @dataclass(slots=True)
 class CameraSettings:
     camera: Camera = Camera.TELE
-    exposure_seconds: float = 15
-    gain: int = 80
-    frame_count: int = 120
+    exposure_seconds: float = DEFAULT_EXPOSURE_SECONDS
+    gain: int = DEFAULT_GAIN
+    frame_count: int = DEFAULT_FRAME_COUNT
     binning: int = 1
     ir_filter: str = "VIS"
 
@@ -304,6 +315,45 @@ def hardware_from_dict(data: dict[str, Any]) -> HardwareProfile:
     return HardwareProfile(**cleaned)
 
 
+def _positive_float(value: Any, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
+
+
+def _int_at_least(value: Any, default: int, minimum: int) -> int:
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError):
+        return default
+    return number if number >= minimum else default
+
+
+def capture_defaults_from_dict(data: dict[str, Any]) -> CaptureDefaults:
+    raw = dict(data) if isinstance(data, dict) else {}
+    return CaptureDefaults(
+        exposure_seconds=_positive_float(raw.get("exposure_seconds"), DEFAULT_EXPOSURE_SECONDS),
+        gain=_int_at_least(raw.get("gain"), DEFAULT_GAIN, 0),
+        frame_count=_int_at_least(raw.get("frame_count"), DEFAULT_FRAME_COUNT, 1),
+    )
+
+
+def camera_settings_from_capture(
+    defaults: CaptureDefaults | None = None,
+    *,
+    camera: Camera = Camera.TELE,
+) -> CameraSettings:
+    capture = defaults or CaptureDefaults()
+    return CameraSettings(
+        camera=camera,
+        exposure_seconds=float(capture.exposure_seconds),
+        gain=int(capture.gain),
+        frame_count=int(capture.frame_count),
+    )
+
+
 def device_from_dict(data: dict[str, Any]) -> Device:
     data = dict(data)
     data.pop("demo_mode", None)
@@ -315,6 +365,7 @@ def device_from_dict(data: dict[str, Any]) -> Device:
     except ValueError:
         data["wifi_mode"] = WifiMode.AUTO
     data["hardware"] = hardware_from_dict(data.get("hardware", {}))
+    data["capture_defaults"] = capture_defaults_from_dict(data.get("capture_defaults", {}))
     data["location_configured"] = has_site_coordinates(data.get("latitude"), data.get("longitude"))
     data["observing_day_cutoff_hour"] = clamp_cutoff_hour(data.get("observing_day_cutoff_hour"))
     data["stellarium_url"] = normalized_stellarium_url(data.get("stellarium_url"))

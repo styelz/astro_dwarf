@@ -34,6 +34,7 @@ from .version import __version__
 from .domain import (
     Camera,
     CameraSettings,
+    CaptureDefaults,
     Device,
     DeviceModel,
     HardwareProfile,
@@ -47,6 +48,8 @@ from .domain import (
     Workflow,
     album_http_url,
     album_path_matches_model,
+    camera_settings_from_capture,
+    capture_defaults_from_dict,
     clamp_cutoff_hour,
     device_from_dict,
     firmware_exposure_name,
@@ -837,6 +840,8 @@ class AppBackend(QObject):
             self._pending_session_finish.pop(device_id, None)
         if selected_offline:
             self.stopPreview()
+            if self._media_source != "local" and self._album_busy == "list":
+                self._clear_media(self._media_offline_status(self._selected_device_id))
         self._disarm_scheduler_if_offline()
         self._notify_devices()
 
@@ -3321,19 +3326,16 @@ class AppBackend(QObject):
             and self._media_source == source
         )
 
-    def _media_can_auto_list(self, device_id: str) -> bool:
+    def _media_can_list(self, device_id: str) -> bool:
         worker = self._workers.get(device_id)
-        if worker and worker.connected:
-            return True
+        return bool(worker and worker.connected)
+
+    def _media_offline_status(self, device_id: str) -> str:
         device = next((item for item in self._devices if item.id == device_id), None)
         ip = str(getattr(device, "ip_address", "") or "").strip()
-        if not device or not ip:
-            return False
-        claimants = [
-            other for other in self._devices
-            if str(other.ip_address or "").strip() == ip
-        ]
-        return len(claimants) == 1
+        if not ip:
+            return "Set the telescope IP in Settings, then refresh to browse sessions on the device."
+        return "Connect this telescope to browse its album."
 
     def _camera_mode_id(self, device_id: str) -> int:
         mode = self._device_telemetry.get(device_id, {}).get("shooting_mode")
@@ -3415,16 +3417,10 @@ class AppBackend(QObject):
             if not quiet:
                 self._toast("Can't browse the album while the telescope is capturing", "warning")
             return
-        if quiet and not self._media_can_auto_list(device_id):
-            device = next((item for item in self._devices if item.id == device_id), None)
-            ip = str(getattr(device, "ip_address", "") or "").strip()
-            if not ip:
-                self._clear_media("Set the telescope IP in Settings, then refresh to browse sessions on the device.")
-            else:
-                self._clear_media(
-                    "Connect this telescope to browse its album. "
-                    "Other profiles share this IP, so media is not shown until this device is connected."
-                )
+        if not self._media_can_list(device_id):
+            self._clear_media(self._media_offline_status(device_id))
+            if not quiet:
+                self._toast("Connect the telescope before listing media", "warning")
             return
         if self._media_source == "stills":
             self.listAlbum(device_id, quiet)
@@ -3444,10 +3440,10 @@ class AppBackend(QObject):
     def listAstroSessions(self, device_id: str, quiet: bool = False) -> None:
         worker = self._workers.get(device_id)
         device = next((item for item in self._devices if item.id == device_id), None)
-        if not worker or not device or not str(device.ip_address or "").strip():
-            self._clear_media("Set the telescope IP in Settings before listing sessions.")
+        if not worker or not worker.connected or not device or not str(device.ip_address or "").strip():
+            self._clear_media(self._media_offline_status(device_id))
             if not quiet:
-                self._toast("Set the telescope IP before listing sessions", "warning")
+                self._toast("Connect the telescope before listing sessions", "warning")
             return
         if self._session_is_capturing(device_id):
             self._media_locked = True
@@ -3491,8 +3487,10 @@ class AppBackend(QObject):
     def listAlbum(self, device_id: str, quiet: bool = False) -> None:
         worker = self._workers.get(device_id)
         device = next((item for item in self._devices if item.id == device_id), None)
-        if not worker or not device or not str(device.ip_address or "").strip():
-            self._clear_media("Set the telescope IP in Settings before listing stills.")
+        if not worker or not worker.connected or not device or not str(device.ip_address or "").strip():
+            self._clear_media(self._media_offline_status(device_id))
+            if not quiet:
+                self._toast("Connect the telescope before listing stills", "warning")
             return
         if self._session_is_capturing(device_id):
             self._media_locked = True
@@ -3715,6 +3713,7 @@ class AppBackend(QObject):
                 ble_enabled=bool(values.get("ble_enabled", current.ble_enabled)),
                 observing_day_cutoff_hour=self._cutoff_hour(),
                 hardware=hardware,
+                capture_defaults=self._capture_defaults_from_payload(values, current.capture_defaults),
             )
             if not self._commit_device(current, updated):
                 return
@@ -3784,8 +3783,27 @@ class AppBackend(QObject):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _fields_from_payload(self, values: dict[str, Any], existing_mosaic: Mosaic | None = None) -> tuple[Target, CameraSettings, Workflow, Mosaic]:
+    def _capture_defaults_from_payload(self, values: dict[str, Any], current: CaptureDefaults) -> CaptureDefaults:
+        raw = values.get("capture_defaults")
+        if not isinstance(raw, dict):
+            return current
+        return capture_defaults_from_dict({**to_dict(current), **raw})
+
+    def _capture_defaults_for(self, device: Device | None = None) -> CaptureDefaults:
+        item = device or self._schedule_device()
+        return item.capture_defaults if item is not None else CaptureDefaults()
+
+    def _camera_settings_for(self, device: Device | None = None) -> CameraSettings:
+        return camera_settings_from_capture(self._capture_defaults_for(device))
+
+    def _fields_from_payload(
+        self,
+        values: dict[str, Any],
+        existing_mosaic: Mosaic | None = None,
+        device: Device | None = None,
+    ) -> tuple[Target, CameraSettings, Workflow, Mosaic]:
         target_kind = TargetKind(values.get("target_kind", "equatorial"))
+        capture = self._capture_defaults_for(device)
         return (
             Target(
                 name=values["target"],
@@ -3796,9 +3814,9 @@ class AppBackend(QObject):
             ),
             CameraSettings(
                 camera=Camera(values.get("camera", "tele")),
-                exposure_seconds=float(values.get("exposure", 15)),
-                gain=int(values.get("gain", 80)),
-                frame_count=int(values.get("frame_count", 120)),
+                exposure_seconds=float(values.get("exposure", capture.exposure_seconds)),
+                gain=int(values.get("gain", capture.gain)),
+                frame_count=int(values.get("frame_count", capture.frame_count)),
                 binning=int(values.get("binning", 1)),
                 ir_filter=values.get("ir_filter", "VIS"),
             ),
@@ -3953,11 +3971,11 @@ class AppBackend(QObject):
     def _session_from_payload(self, values: dict[str, Any], existing: Session | None) -> Session:
         if existing and existing.status == SessionStatus.RUNNING:
             raise ValueError("A running session cannot be edited")
+        device = self._device_by_id(values["device_id"])
         target, camera, workflow, mosaic = self._fields_from_payload(
-            values, existing.mosaic if existing else None
+            values, existing.mosaic if existing else None, device
         )
         resetting = existing is not None and existing.status != SessionStatus.PLANNED
-        device = self._device_by_id(values["device_id"])
         return Session(
             id=existing.id if existing else uuid4().hex,
             name=values.get("name") or values["target"],
@@ -4068,8 +4086,9 @@ class AppBackend(QObject):
 
     def _save_one_template(self, values: dict[str, Any]) -> SessionTemplate:
         existing = self.store.templates.get(values.get("id", "")) if values.get("id") else None
+        device = self._schedule_device(str(values.get("device_id") or ""))
         target, camera, workflow, mosaic = self._fields_from_payload(
-            values, existing.mosaic if existing else None
+            values, existing.mosaic if existing else None, device
         )
         name = values.get("name") or values["target"]
         notes = values.get("notes", existing.notes if existing else "")
@@ -4758,7 +4777,12 @@ class AppBackend(QObject):
     @Slot(str)
     def importLegacy(self, raw_path: str) -> None:
         path = self._local_path(raw_path)
-        count, failed = self.store.import_old_sessions(path.rglob("*.json"), self._selected_device_id)
+        device = self._schedule_device(self._selected_device_id)
+        count, failed = self.store.import_old_sessions(
+            path.rglob("*.json"),
+            self._selected_device_id,
+            device.capture_defaults if device else None,
+        )
         for session in self.store.sessions.all():
             if session.planned_duration_seconds == 0:
                 self._save_session(session)
@@ -4793,12 +4817,17 @@ class AppBackend(QObject):
             self._toast(f"{operation.title()}: {value}", "error")
             return
         if operation == "telescopius":
+            camera = self._camera_settings_for()
             for template in value:
-                self.store.templates.save(template)
+                self.store.templates.save(replace(template, camera=camera))
             self.templatesChanged.emit()
             self._toast(f"Imported {len(value)} session templates", "success")
         elif operation == "stellarium":
-            self.store.templates.save(SessionTemplate(name=value.name, target=value))
+            self.store.templates.save(SessionTemplate(
+                name=value.name,
+                target=value,
+                camera=self._camera_settings_for(),
+            ))
             self.templatesChanged.emit()
             self._toast(f"Imported {value.name}", "success")
 

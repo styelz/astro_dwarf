@@ -521,6 +521,13 @@ Dialog {
         importedPlan = false
         saveTemplate.checked = false
     }
+    function applyCaptureDefaults(deviceId) {
+        const device = Util.deviceById(backend.devices, deviceId || sessionDialog.editingDeviceId || backend.selectedDeviceId) || backend.selectedDevice
+        const capture = Util.captureDefaults(device)
+        exposure.text = String(capture.exposure_seconds)
+        gain.text = String(capture.gain)
+        frames.text = String(capture.frame_count)
+    }
     function openForDate(day) {
         sessionDialog.resetEditorState()
         editingId = ""
@@ -534,9 +541,7 @@ Dialog {
         ra.text = ""
         dec.text = ""
         startTime.text = day + "T22:00"
-        exposure.text = "15"
-        gain.text = "80"
-        frames.text = "120"
+        sessionDialog.applyCaptureDefaults(sessionDialog.editingDeviceId)
         binning.currentIndex = 0
         irFilter.currentIndex = 0
         camera.currentIndex = 0
@@ -779,7 +784,13 @@ Dialog {
                 model: backend.devices
                 textRole: "name"
                 valueRole: "id"
-                onActivated: if (currentValue) sessionDialog.editingDeviceId = currentValue
+                onActivated: {
+                    if (!currentValue)
+                        return
+                    sessionDialog.editingDeviceId = currentValue
+                    if (!sessionDialog.editingId && !sessionDialog.bulkMode && !sessionDialog.editingTemplate)
+                        sessionDialog.applyCaptureDefaults(currentValue)
+                }
             }
             FieldLabel { text: "CAMERA" }
             HudCombo {
