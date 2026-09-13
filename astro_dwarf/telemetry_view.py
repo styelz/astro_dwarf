@@ -297,6 +297,9 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     view["host_mode"] = bool(host) if host is not None else True
     mode = raw.get("shooting_mode")
     view["shooting_mode_text"] = SHOOTING_MODES.get(int(mode), str(mode)) if mode is not None else "—"
+    tech = _as_int(raw.get("shooting_tech"))
+    view["shooting_tech"] = tech if tech else 0
+    view["photo_primed"] = bool(raw.get("photo_primed")) and _as_int(mode) == 1 and tech in {None, 1}
     view["exposure_text"] = raw.get("exposure_text") or "—"
     gain = raw.get("gain")
     view["gain_text"] = str(int(gain)) if gain is not None else "—"

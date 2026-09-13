@@ -786,6 +786,9 @@ class TelemetryTap:
         if getattr(message, "code", 0):
             return changes
         changes["shooting_mode"] = int(getattr(message, "shooting_mode", 0))
+        if changes["shooting_mode"] != 1:
+            changes["shooting_tech"] = 0
+            changes["photo_primed"] = False
         info = getattr(message, "device_state_info", None)
         if info is not None:
             battery = getattr(info, "battery_info", None)

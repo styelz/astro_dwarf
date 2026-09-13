@@ -336,6 +336,16 @@ _OPERATION_LABELS = {
 # Firmware DSO stacking mode. Sun/Moon/Planet use 8/9/10 instead.
 _ASTRO_SHOOTING_MODE = 2
 _ASTRO_SHOOTING_TECH = 2
+_PHOTO_SHOOTING_MODE = 1
+_PHOTO_STILL_TECH = 1
+# PHOTO mode techniques: 1 still, 3 burst, 4 video, 5 timelapse.
+_CAPTURE_TECHNIQUES = {
+    "photo": 1,
+    "wide_photo": 1,
+    "burst_start": 3,
+    "record_start": 4,
+    "timelapse_start": 5,
+}
 
 
 def configure(device: dict[str, Any]) -> bool:
@@ -2367,11 +2377,91 @@ def _ensure_astro_mode() -> Any:
     """
     if _tap is not None and _tap.snapshot().get("shooting_mode") == _ASTRO_SHOOTING_MODE:
         log("Already in DSO astro mode; initializing camera", "debug")
-        return _enter_astro_camera()
-    function = getattr(_api, "perform_enter_astro_mode", None) if _api is not None else None
-    if function is None:
-        return sdk_call("shooting_mode", _ASTRO_SHOOTING_MODE, _ASTRO_SHOOTING_TECH)
-    return _invoke_sdk("astro_mode", function)
+        result = _enter_astro_camera()
+    else:
+        function = getattr(_api, "perform_enter_astro_mode", None) if _api is not None else None
+        if function is None:
+            result = sdk_call("shooting_mode", _ASTRO_SHOOTING_MODE, _ASTRO_SHOOTING_TECH)
+        else:
+            result = _invoke_sdk("astro_mode", function)
+    if result is not False:
+        _remember_shooting(_ASTRO_SHOOTING_MODE, _ASTRO_SHOOTING_TECH)
+    return result
+
+
+def _shooting_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def shooting_state_changes(
+    snapshot: dict[str, Any],
+    *,
+    mode: int | None = None,
+    tech: int | None = None,
+    photo_primed: bool | None = None,
+) -> dict[str, Any]:
+    """Build a telemetry delta for shooting mode, technique, and stills priming."""
+    changes: dict[str, Any] = {}
+    if mode is not None:
+        changes["shooting_mode"] = int(mode)
+    if tech is not None:
+        changes["shooting_tech"] = int(tech)
+    next_mode = int(mode) if mode is not None else _shooting_int(snapshot.get("shooting_mode"))
+    next_tech = int(tech) if tech is not None else _shooting_int(snapshot.get("shooting_tech"))
+    primed = photo_primed
+    if next_mode != _PHOTO_SHOOTING_MODE:
+        primed = False
+    elif next_tech is not None and next_tech != _PHOTO_STILL_TECH:
+        primed = False
+    if primed is not None:
+        changes["photo_primed"] = bool(primed)
+    return changes
+
+
+def capture_handshake_needed(snapshot: dict[str, Any], tech: int) -> bool:
+    """True unless PHOTO mode is already on the requested capture technique."""
+    mode = _shooting_int(snapshot.get("shooting_mode"))
+    current = _shooting_int(snapshot.get("shooting_tech"))
+    return not (mode == _PHOTO_SHOOTING_MODE and current == int(tech))
+
+
+def _remember_shooting(
+    mode: int | None = None,
+    tech: int | None = None,
+    photo_primed: bool | None = None,
+) -> None:
+    if _tap is None:
+        return
+    changes = shooting_state_changes(
+        _tap.snapshot(),
+        mode=mode,
+        tech=tech,
+        photo_primed=photo_primed,
+    )
+    if changes:
+        _tap.update(changes, force=True)
+
+
+def _ensure_capture_technique(tech: int) -> Any:
+    """Enter PHOTO mode + technique unless the worker already primed that pair.
+
+    ``perform_enter_shooting_mode`` is four sequential firmware commands and is
+    what makes PHOTO / BURST / RECORD / TIMELAPSE feel slow. Skip it when
+    telemetry already reports mode 1 with the same technique.
+    """
+    snap = _tap.snapshot() if _tap is not None else {}
+    if not capture_handshake_needed(snap, tech):
+        log(f"Already in photo technique {tech}; skipping shooting-mode handshake", "debug")
+        return True
+    result = sdk_call("shooting_mode", _PHOTO_SHOOTING_MODE, tech)
+    if result is not False:
+        _remember_shooting(_PHOTO_SHOOTING_MODE, tech)
+    return result
 
 
 def _album_camera(name: str = "") -> str:
@@ -3085,17 +3175,22 @@ def dispatch(message: dict[str, Any]) -> Any:
     elif command == "infinity":
         result = sdk_call("autofocus", True)
     else:
-        capture_techniques = {
-            "photo": 1,
-            "wide_photo": 1,
-            "burst_start": 3,
-            "record_start": 4,
-            "timelapse_start": 5,
-        }
-        if command in capture_techniques:
-            if sdk_call("shooting_mode", 1, capture_techniques[command]) is False:
+        if command in _CAPTURE_TECHNIQUES:
+            if _ensure_capture_technique(_CAPTURE_TECHNIQUES[command]) is False:
                 return False
         result = sdk_call(command, *message.get("args", []))
+        if result is not False:
+            if command == "photo_mode":
+                _remember_shooting(_PHOTO_SHOOTING_MODE, _PHOTO_STILL_TECH)
+            elif command == "shooting_mode":
+                args = list(message.get("args") or [])
+                if args:
+                    mode = _shooting_int(args[0])
+                    tech = _shooting_int(args[1]) if len(args) > 1 else None
+                    if mode is not None:
+                        _remember_shooting(mode, tech)
+            elif command in {"photo", "wide_photo"}:
+                _remember_shooting(_PHOTO_SHOOTING_MODE, _PHOTO_STILL_TECH, photo_primed=True)
     if command in _REFRESH_AFTER and result is not False:
         request_state_refresh()
     return result

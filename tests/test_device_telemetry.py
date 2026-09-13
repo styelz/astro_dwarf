@@ -61,5 +61,28 @@ class WorkerSetLogTests(unittest.TestCase):
         self.assertEqual(_format_sdk_result(False), "failed")
 
 
+class PhotoCapturePrimeTests(unittest.TestCase):
+    def test_handshake_skips_when_technique_already_matches(self) -> None:
+        from astro_dwarf.device_worker import capture_handshake_needed, shooting_state_changes
+
+        self.assertTrue(capture_handshake_needed({}, 1))
+        self.assertTrue(capture_handshake_needed({"shooting_mode": 1}, 1))
+        self.assertFalse(capture_handshake_needed({"shooting_mode": 1, "shooting_tech": 1}, 1))
+        self.assertTrue(capture_handshake_needed({"shooting_mode": 1, "shooting_tech": 3}, 1))
+        self.assertFalse(capture_handshake_needed({"shooting_mode": 1, "shooting_tech": 3}, 3))
+
+        primed = shooting_state_changes({}, mode=1, tech=1, photo_primed=True)
+        self.assertEqual(primed, {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": True})
+        self.assertEqual(
+            shooting_state_changes({"photo_primed": True}, mode=2, tech=2),
+            {"shooting_mode": 2, "shooting_tech": 2, "photo_primed": False},
+        )
+        self.assertEqual(
+            shooting_state_changes({"shooting_mode": 1, "photo_primed": True}, tech=4),
+            {"shooting_tech": 4, "photo_primed": False},
+        )
+        self.assertNotIn("photo_primed", shooting_state_changes({}, mode=1, tech=1))
+
+
 if __name__ == "__main__":
     unittest.main()

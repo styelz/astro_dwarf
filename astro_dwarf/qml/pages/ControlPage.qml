@@ -1772,6 +1772,7 @@ Item {
                                     ? (slewingNow || trackingNow)
                                     : modelData.state !== "" && root.scopeActivity === modelData.state
                         readonly property string effectiveOperation: activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
+                        readonly property bool photoPrimed: modelData.start === "photo" && !!t.photo_primed && cameraPanel.photoMode
                         readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop)
                         readonly property string padLabel: {
                             if (!trackingPad)
@@ -1793,6 +1794,8 @@ Item {
                                 return "CALIBRATE · CENTRE · TRACK"
                             if (modelData.state === "imaging" && activeForState)
                                 return t.capture_text ? "STACK · " + t.capture_text : "STACKING · TAP TO STOP"
+                            if (photoPrimed)
+                                return "PRIMED"
                             if (!modeAllowed)
                                 return modelData.mode === "both" || cameraPanel.shootingMode === "—"
                                     ? "SELECT PHOTO OR DSO"
@@ -1835,8 +1838,10 @@ Item {
                         detail: deviceDetail()
                         activeState: activeForState
                         pending: isPending
+                        primed: photoPrimed
                         destructive: !!modelData.destructive
                         enabled: modeAllowed && root.commandEnabled(effectiveOperation)
+                        Accessible.description: photoPrimed ? "Photo capture primed for a fast shot" : String(modelData.detail || modelData.label)
                         onClicked: {
                             if (effectiveOperation === "stack") {
                                 if (liveExposure.text.trim())

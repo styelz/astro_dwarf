@@ -135,3 +135,36 @@ class CameraParamsToTelemetryTests(unittest.TestCase):
         )
         self.assertEqual(changes["exposure_text"], "1/30")
         self.assertEqual(changes["gain"], 25)
+
+
+class PhotoPrimedViewTests(unittest.TestCase):
+    def test_primed_after_still_in_photo_mode(self) -> None:
+        view = format_telemetry(
+            {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": True},
+            updated_at=1.0,
+            now=1.0,
+        )
+        self.assertTrue(view["photo_primed"])
+        self.assertEqual(view["shooting_mode_text"], "PHOTO")
+
+    def test_photo_mode_without_a_still_is_not_primed(self) -> None:
+        view = format_telemetry(
+            {"shooting_mode": 1, "shooting_tech": 1},
+            updated_at=1.0,
+            now=1.0,
+        )
+        self.assertFalse(view["photo_primed"])
+
+    def test_dso_or_burst_clears_primed(self) -> None:
+        dso = format_telemetry(
+            {"shooting_mode": 2, "shooting_tech": 2, "photo_primed": True},
+            updated_at=1.0,
+            now=1.0,
+        )
+        burst = format_telemetry(
+            {"shooting_mode": 1, "shooting_tech": 3, "photo_primed": True},
+            updated_at=1.0,
+            now=1.0,
+        )
+        self.assertFalse(dso["photo_primed"])
+        self.assertFalse(burst["photo_primed"])

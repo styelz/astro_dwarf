@@ -2081,7 +2081,7 @@ class AppBackend(QObject):
             if not ok:
                 after_cameras(False, result)
                 return
-            self._on_telemetry(device_id, {"shooting_mode": 1})
+            self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1})
             if device.model in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
                 # V3 photo mode already initializes both RTSP cameras. The
                 # legacy tele open command can hang after wide was opened.
@@ -3042,13 +3042,18 @@ class AppBackend(QObject):
             if photo_focus and operation == "infinity":
                 self._set_activity(device_id, "")
             if ok and operation == "photo_mode":
-                self._on_telemetry(device_id, {"shooting_mode": 1})
+                self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1})
                 self._schedule_camera_param_refresh(device_id)
+            elif ok and operation in {"photo", "wide_photo"}:
+                self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": True})
+            elif ok and operation in {"burst_start", "record_start", "timelapse_start"}:
+                tech = {"burst_start": 3, "record_start": 4, "timelapse_start": 5}[operation]
+                self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": tech, "photo_primed": False})
             elif ok and (
                 operation in {"astro_mode", "calibrate", "polar", "track", "stack"}
                 or (operation in {"autofocus", "infinity"} and not photo_focus)
             ):
-                self._on_telemetry(device_id, {"shooting_mode": 2})
+                self._on_telemetry(device_id, {"shooting_mode": 2, "shooting_tech": 0, "photo_primed": False})
                 if operation == "astro_mode":
                     self._schedule_camera_param_refresh(device_id)
             if ok and operation in {"lights_on", "lights_off"}:
