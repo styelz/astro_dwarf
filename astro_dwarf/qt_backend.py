@@ -90,7 +90,7 @@ from .image_enhance import (
     set_model_dir,
 )
 from .stream_preview import LiveFrames, StreamPlayer, port_is_open, preview_window_is_live, set_live_frames, stream_port
-from .telemetry_view import AlertEngine, derive_activity, format_telemetry
+from .telemetry_view import AlertEngine, camera_params_to_telemetry, derive_activity, format_telemetry
 
 
 class TelescopeProcess(QObject):
@@ -1996,6 +1996,7 @@ class AppBackend(QObject):
                 self.add_log("error", f"Could not open camera: {result}", device_id)
                 self._set_preview_status("Camera failed to open")
                 return
+            self._schedule_camera_param_refresh(device_id)
             self._begin_stream_wait(token, tele_url, wide_url, host, port)
 
         def after_photo(ok: bool, result: Any) -> None:
@@ -2004,6 +2005,7 @@ class AppBackend(QObject):
             if not ok:
                 after_cameras(False, result)
                 return
+            self._on_telemetry(device_id, {"shooting_mode": 1})
             if device.model in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
                 # V3 photo mode already initializes both RTSP cameras. The
                 # legacy tele open command can hang after wide was opened.
@@ -2397,6 +2399,7 @@ class AppBackend(QObject):
         token = self._arm_preview_ui(status)
         tele_url = self._stream_url(device, Camera.TELE)
         wide_url = self._stream_url(device, Camera.WIDE)
+        self._schedule_camera_param_refresh(device_id)
         if tele_url.startswith("http://"):
             self.add_log("info", f"Opening {tele_url} in the background")
             self._set_preview_status(status)
@@ -2795,11 +2798,14 @@ class AppBackend(QObject):
                 self._set_activity(device_id, "")
             if ok and operation == "photo_mode":
                 self._on_telemetry(device_id, {"shooting_mode": 1})
+                self._schedule_camera_param_refresh(device_id)
             elif ok and (
                 operation in {"astro_mode", "calibrate", "polar", "track", "stack"}
                 or (operation in {"autofocus", "infinity"} and not photo_focus)
             ):
                 self._on_telemetry(device_id, {"shooting_mode": 2})
+                if operation == "astro_mode":
+                    self._schedule_camera_param_refresh(device_id)
             if ok and operation in {"lights_on", "lights_off"}:
                 self._device_lights[device_id] = operation == "lights_on"
                 self._notify_devices()
@@ -3460,41 +3466,28 @@ class AppBackend(QObject):
         except (TypeError, ValueError):
             return 1
 
+    def _camera_model_id(self, device_id: str) -> str:
+        device = next((item for item in self._devices if item.id == device_id), None)
+        return {DeviceModel.DWARF_II: "2", DeviceModel.DWARF_3: "3", DeviceModel.DWARF_MINI: "5"}.get(
+            getattr(device, "model", None),
+            "3",
+        )
+
+    def _schedule_camera_param_refresh(self, device_id: str, delay_ms: int = 150) -> None:
+        QTimer.singleShot(delay_ms, lambda did=device_id: self.refreshCameraParams(did))
+
     @Slot(str)
     def refreshCameraParams(self, device_id: str) -> None:
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
             return
         mode_id = self._camera_mode_id(device_id)
+        model_id = self._camera_model_id(device_id)
 
         def done(ok: bool, result: Any) -> None:
-            if not ok or not isinstance(result, dict):
+            if not ok:
                 return
-            cameras = result.get("cameras") or {}
-            camera = cameras.get(0) or cameras.get("0") or {}
-            wide = cameras.get(1) or cameras.get("1") or {}
-            changes: dict[str, Any] = {}
-
-            def collect(values: dict[str, Any], prefix: str = "") -> None:
-                if not isinstance(values, dict):
-                    return
-                exposure = values.get("exposure") or {}
-                gain = values.get("gain") or {}
-                white_balance = values.get("wb") or {}
-                if exposure.get("name"):
-                    changes[f"{prefix}exposure_text"] = str(exposure["name"])
-                if gain.get("value") is not None:
-                    changes[f"{prefix}gain"] = int(gain["value"])
-                if white_balance.get("value") is not None:
-                    changes[f"{prefix}wb_value"] = int(white_balance["value"])
-                if white_balance.get("scene") is not None:
-                    changes[f"{prefix}wb_scene"] = int(white_balance["scene"])
-                for name in ("brightness", "contrast", "saturation", "hue", "sharpness"):
-                    if values.get(name) is not None:
-                        changes[f"{prefix}{name}"] = int(values[name])
-
-            collect(camera)
-            collect(wide, "wide_")
+            changes = camera_params_to_telemetry(result, model_id)
             if changes:
                 self._on_telemetry(device_id, changes)
 

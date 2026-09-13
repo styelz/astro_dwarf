@@ -55,6 +55,89 @@ def _as_float(value: Any) -> float | None:
     return number
 
 
+def _as_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _camera_params_entry(cameras: Any, index: int) -> dict[str, Any]:
+    if isinstance(cameras, dict):
+        for key in (index, str(index)):
+            value = cameras.get(key)
+            if isinstance(value, dict):
+                return value
+        return {}
+    if isinstance(cameras, list) and 0 <= index < len(cameras):
+        value = cameras[index]
+        return value if isinstance(value, dict) else {}
+    return {}
+
+
+def _exposure_text_from_params(exposure: dict[str, Any], model_id: str) -> str | None:
+    name = exposure.get("name")
+    if name not in (None, "", "None"):
+        return str(name)
+    value = exposure.get("value")
+    if value is None:
+        return None
+    try:
+        from .device_telemetry import _exposure_name
+
+        mapped = _exposure_name(value, model_id)
+        if mapped not in (None, "", "None"):
+            return str(mapped)
+    except Exception:
+        pass
+    return str(value)
+
+
+def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, Any]:
+    """Map HTTP camera-param JSON onto the telemetry keys QML already reads."""
+    if not isinstance(result, dict):
+        return {}
+    cameras = result.get("cameras") or {}
+    changes: dict[str, Any] = {}
+
+    def collect(values: Any, prefix: str = "") -> None:
+        if not isinstance(values, dict):
+            return
+        exposure = values.get("exposure")
+        if isinstance(exposure, dict):
+            text = _exposure_text_from_params(exposure, model_id)
+            if text:
+                changes[f"{prefix}exposure_text"] = text
+        elif exposure not in (None, ""):
+            changes[f"{prefix}exposure_text"] = str(exposure)
+        gain = values.get("gain")
+        if isinstance(gain, dict):
+            gain_value = _as_int(gain.get("value"))
+            if gain_value is not None:
+                changes[f"{prefix}gain"] = gain_value
+        else:
+            gain_value = _as_int(gain)
+            if gain_value is not None:
+                changes[f"{prefix}gain"] = gain_value
+        white_balance = values.get("wb") if isinstance(values.get("wb"), dict) else {}
+        wb_value = _as_int(white_balance.get("value"))
+        if wb_value is not None:
+            changes[f"{prefix}wb_value"] = wb_value
+        wb_scene = _as_int(white_balance.get("scene"))
+        if wb_scene is not None:
+            changes[f"{prefix}wb_scene"] = wb_scene
+        for name in ("brightness", "contrast", "saturation", "hue", "sharpness"):
+            number = _as_int(values.get(name))
+            if number is not None:
+                changes[f"{prefix}{name}"] = number
+
+    collect(_camera_params_entry(cameras, 0))
+    collect(_camera_params_entry(cameras, 1), "wide_")
+    return changes
+
+
 def exposure_seconds_from_text(value: Any) -> float | None:
     """Parse firmware exposure names ('15', '1/60', '15s') into seconds."""
     if value is None:
