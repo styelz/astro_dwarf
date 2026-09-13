@@ -74,6 +74,10 @@ ApplicationWindow {
         confirmDialog.confirmLabel = ids.length === 1 ? "DELETE" : "DELETE " + ids.length
         confirmDialog.summary = kind === "deleteSessions"
             ? "Delete " + ids.length + " " + plural + "? Running sessions will be skipped. This cannot be undone."
+            : kind === "deleteMedia" && backend.mediaSource !== "local"
+            ? "Delete " + ids.length + " " + plural + " from the telescope? This wipes them from the SD card. Astro, burst, and panorama items remove the whole session. This cannot be undone."
+            : kind === "deleteMedia"
+            ? "Delete " + ids.length + " " + plural + " from the local album? This cannot be undone."
             : "Delete " + ids.length + " " + plural + "? This cannot be undone."
         confirmDialog.open()
     }

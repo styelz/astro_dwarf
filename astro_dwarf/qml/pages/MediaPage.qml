@@ -20,6 +20,9 @@ Item {
     readonly property bool albumLocked: backend.mediaLocked && mediaPage.onDevice
     property string loadedKey: ""
     property string boundDeviceId: ""
+    property var selectedIds: ({})
+    property string selectionAnchorId: ""
+    readonly property int selectedCount: Util.idSetCount(selectedIds)
     readonly property string emptyText: {
         if (mediaPage.albumLocked)
             return backend.mediaStatus || "The telescope album isn't available while it's capturing. Wait until imaging finishes, or switch to Local."
@@ -40,6 +43,7 @@ Item {
 
     onAlbumLockedChanged: {
         if (mediaPage.albumLocked) {
+            mediaPage.clearSelection()
             lightbox.close()
             return
         }
@@ -85,8 +89,27 @@ Item {
             return
         backend.downloadMedia(backend.selectedDeviceId, backend.selectedMedia.id)
     }
+    function selectClick(id, shift) {
+        const result = Util.clickSelect(selectedIds, mediaPage.items, id, shift, selectionAnchorId)
+        selectedIds = result.map
+        selectionAnchorId = result.anchor
+    }
+    function confirmDelete(ids) {
+        const chosen = Array.isArray(ids) ? ids : Util.idSetKeys(ids)
+        if (!chosen.length)
+            return
+        root.confirmBulkDelete("deleteMedia", chosen, "file")
+    }
+    function clearSelection() {
+        mediaPage.selectedIds = ({})
+        mediaPage.selectionAnchorId = ""
+    }
+    function closeViewer() {
+        lightbox.close()
+    }
 
     function showSource(source) {
+        mediaPage.clearSelection()
         backend.setMediaSource(source)
         mediaPage.loadedKey = backend.selectedDeviceId + ":" + source
     }
@@ -98,9 +121,15 @@ Item {
                 return
             mediaPage.boundDeviceId = backend.selectedDeviceId
             mediaPage.loadedKey = ""
+            mediaPage.clearSelection()
             if (root.currentPage !== root.mediaPageIndex)
                 return
             mediaPage.maybeLoad()
+        }
+        function onMediaItemsChanged() {
+            mediaPage.selectedIds = Util.pruneIdSet(mediaPage.selectedIds, mediaPage.items)
+            if (lightbox.visible && !(mediaPage.selected && mediaPage.selected.id))
+                lightbox.close()
         }
     }
     Connections {
@@ -167,6 +196,21 @@ Item {
                 ? "ON DEVICE  ·  UNAVAILABLE"
                 : (backend.mediaSource === "astro" ? "ON DEVICE  ·  ASTRO SESSIONS" : (backend.mediaSource === "stills" ? "ON DEVICE  ·  CAMERA" : "LOCAL ALBUM"))
 
+            SelectionBar {
+                selectedCount: mediaPage.selectedCount
+                totalCount: mediaPage.items.length
+                noun: "file"
+                allowEdit: false
+                active: !mediaPage.albumLocked && mediaPage.items.length > 0
+                onSelectAllRequested: mediaPage.selectedIds = Util.idSetAll(mediaPage.items, true)
+                onClearRequested: mediaPage.clearSelection()
+                onDeleteRequested: {
+                    if (mediaPage.busy || mediaPage.albumLocked)
+                        return
+                    mediaPage.confirmDelete(mediaPage.selectedIds)
+                }
+            }
+
             Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -188,11 +232,14 @@ Item {
                         width: mediaGrid.cellWidth
                         height: mediaGrid.cellHeight
                         readonly property bool selected: backend.mediaSelectedId === String(modelData.id || "")
+                        readonly property bool checked: Util.idSetHas(mediaPage.selectedIds, String(modelData.id || ""))
+                        HoverHandler { id: tileHover }
+                        readonly property bool highlighted: tile.selected || tile.checked
                         Rectangle {
                             anchors.fill: parent
                             anchors.margins: 4
-                            color: tile.selected ? Theme.fillActive : Theme.inputBg
-                            border.color: tile.selected ? Theme.accent : Theme.outlineSoft
+                            color: tile.highlighted ? Theme.fillActive : Theme.inputBg
+                            border.color: tile.highlighted ? Theme.accent : Theme.outlineSoft
                             radius: Theme.radius
                             ColumnLayout {
                                 anchors.fill: parent
@@ -256,6 +303,14 @@ Item {
                                             font.pixelSize: 10
                                             font.bold: true
                                         }
+                                    }
+                                    SelectBox {
+                                        anchors.left: parent.left
+                                        anchors.bottom: parent.bottom
+                                        anchors.margins: 6
+                                        checked: tile.checked
+                                        revealed: tileHover.hovered || mediaPage.selectedCount > 0
+                                        onToggled: (shiftHeld) => mediaPage.selectClick(String(tile.modelData.id || ""), shiftHeld)
                                     }
                                 }
                                 Text {
@@ -472,6 +527,16 @@ Item {
                             busy: backend.mediaBusy === "download"
                             busyText: "SAVING…"
                             onClicked: mediaPage.downloadSelected()
+                        }
+                        HudButton {
+                            objectName: "lightboxDeleteButton"
+                            text: backend.mediaBusy === "delete" ? "DELETING…" : "DELETE"
+                            enabled: !mediaPage.albumLocked && !mediaPage.busy && !!(mediaPage.selected.id)
+                            busy: backend.mediaBusy === "delete"
+                            busyText: "DELETING…"
+                            buttonColor: Theme.fillDanger
+                            foregroundColor: Theme.danger
+                            onClicked: mediaPage.confirmDelete([mediaPage.selected.id])
                         }
                         HudButton {
                             text: mediaPage.selected.local_path ? "REVEAL" : "FOLDER"

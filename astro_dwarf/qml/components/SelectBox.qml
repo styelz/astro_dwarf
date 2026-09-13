@@ -18,6 +18,10 @@ Item {
     opacity: shown ? 1 : 0
     scale: shown ? 1 : 0.7
     enabled: shown
+    Accessible.role: Accessible.CheckBox
+    Accessible.name: selectBox.checked ? "Selected" : "Select"
+    Accessible.checkable: true
+    Accessible.checked: selectBox.checked
     Behavior on opacity { NumberAnimation { duration: Theme.quick } }
     Behavior on scale { NumberAnimation { duration: Theme.quick; easing.type: Easing.OutCubic } }
 

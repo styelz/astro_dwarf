@@ -19,13 +19,13 @@ Dialog {
     modal: true
     anchors.centerIn: Overlay.overlay
     width: 420
-    height: 196
+    height: Math.max(196, headingLabel.implicitHeight + summaryLabel.implicitHeight + 88)
     padding: 16
     background: DialogFrame { tone: Theme.danger }
     contentItem: ColumnLayout {
         spacing: 12
-        Text { text: confirmDialog.headingText; color: Theme.danger; font.pixelSize: 16; font.letterSpacing: 1.4 }
-        Text { text: confirmDialog.summary; color: Theme.textPrimary; wrapMode: Text.Wrap; Layout.fillWidth: true }
+        Text { id: headingLabel; text: confirmDialog.headingText; color: Theme.danger; font.pixelSize: 16; font.letterSpacing: 1.4 }
+        Text { id: summaryLabel; text: confirmDialog.summary; color: Theme.textPrimary; wrapMode: Text.Wrap; Layout.fillWidth: true }
         RowLayout {
             Layout.alignment: Qt.AlignRight
             HudButton { text: "CANCEL"; onClicked: confirmDialog.close() }
@@ -45,6 +45,10 @@ Dialog {
                         backend.deleteHistoryRecords(confirmDialog.pendingIds)
                     else if (confirmDialog.kind === "deleteDevice")
                         backend.deleteDevice((confirmDialog.pendingIds && confirmDialog.pendingIds[0]) || backend.selectedDeviceId)
+                    else if (confirmDialog.kind === "deleteMedia") {
+                        mediaPage.closeViewer()
+                        backend.deleteMedia(confirmDialog.pendingIds)
+                    }
                     else
                         backend.deviceAction(backend.selectedDeviceId, confirmDialog.operation)
                     confirmDialog.close()

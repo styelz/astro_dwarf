@@ -30,6 +30,7 @@ from .domain import (
     ALBUM_IMAGE_SUFFIXES,
     ASTRO_MEDIA_TYPE,
     album_apply_listing_preview,
+    album_delete_payload,
     album_entry_key,
     album_http_path,
     album_http_url,
@@ -2693,6 +2694,32 @@ def album_camera_media_list() -> dict[str, Any]:
     return {"ip": ip, "sessions": entries}
 
 
+def album_delete(items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    ip = _device_ip()
+    _album_model_matches()
+    payload = album_delete_payload(items or [])
+    if not payload["datas"]:
+        raise RuntimeError("No album files to delete")
+    result = _http_json(f"http://{ip}:8082/album/delete", payload, timeout=60)
+    if not isinstance(result, dict) or result.get("code") != 0:
+        detail = ""
+        if isinstance(result, dict):
+            detail = str(result.get("message") or result.get("msg") or result)
+        raise RuntimeError(detail or "Album delete failed")
+    results = result.get("data") or []
+    if not isinstance(results, list) or not results:
+        raise RuntimeError("Telescope did not confirm the delete")
+    succeeded = [
+        entry for entry in results
+        if isinstance(entry, dict) and entry.get("isSuccess")
+    ]
+    if not succeeded:
+        raise RuntimeError("Telescope refused to delete those files")
+    failed = max(0, len(payload["datas"]) - len(succeeded))
+    log(f"Deleted {len(succeeded)} album file{'s' if len(succeeded) != 1 else ''} on {ip}")
+    return {"ip": ip, "deleted": succeeded, "failed": failed, "results": results}
+
+
 def astro_session_download(file_path: str = "", dest_dir: str = "") -> dict[str, Any]:
     ip = _device_ip()
     remote = str(file_path or "").strip()
@@ -2881,6 +2908,12 @@ def dispatch(message: dict[str, Any]) -> Any:
         return astro_sessions_list()
     if command == "album_camera_list":
         return album_camera_media_list()
+    if command == "album_delete":
+        args = list(message.get("args") or [])
+        items = args[0] if args else message.get("items") or []
+        if not isinstance(items, list):
+            items = []
+        return album_delete(items)
     if command == "astro_session_download":
         args = list(message.get("args") or [])
         return astro_session_download(

@@ -50,6 +50,7 @@ from .domain import (
     album_http_url,
     album_is_astro_media,
     album_is_video_name,
+    album_local_file_in_dir,
     album_media_kind,
     album_path_matches_model,
     camera_settings_from_capture,
@@ -3407,6 +3408,10 @@ class AppBackend(QObject):
         except (TypeError, ValueError):
             media_type = 0
         try:
+            sub_type = int(entry.get("astroSubType") or entry.get("subType") or 0)
+        except (TypeError, ValueError):
+            sub_type = 0
+        try:
             cam_id = int(entry.get("camId"))
         except (TypeError, ValueError):
             cam_id = -1
@@ -3433,6 +3438,7 @@ class AppBackend(QObject):
             "local_path": str(local) if local else "",
             "downloaded": bool(local),
             "media_type": media_type,
+            "sub_type": sub_type,
         }
 
     def _normalize_astro_item(self, entry: dict[str, Any], ip: str, local_files: dict[str, Path]) -> dict[str, Any] | None:
@@ -3481,6 +3487,7 @@ class AppBackend(QObject):
             "local_path": "",
             "downloaded": False,
             "media_type": 0,
+            "sub_type": 0,
         }
 
     def _normalize_local_item(self, path: Path) -> dict[str, Any]:
@@ -3510,6 +3517,7 @@ class AppBackend(QObject):
             "local_path": str(path),
             "downloaded": True,
             "media_type": 0,
+            "sub_type": 0,
         }
 
     def _select_media_id(self, item_id: str) -> None:
@@ -3860,6 +3868,116 @@ class AppBackend(QObject):
             self._toast("Album download failed", "error", str(result))
 
         worker.send("album_download", {"args": [name, dest, camera]}, done)
+
+    @Slot(str)
+    def deleteMediaItem(self, item_id: str) -> None:
+        self.deleteMedia([item_id])
+
+    @Slot(list)
+    @Slot("QVariantList")
+    def deleteMedia(self, item_ids: list) -> None:
+        ids = self._normalize_ids(item_ids)
+        if not ids:
+            return
+        if self._album_busy:
+            self._toast("Wait for the current media action to finish", "warning")
+            return
+        if self._media_source == "local":
+            self._delete_local_media(ids)
+            return
+        self._delete_device_media(ids)
+
+    def _delete_local_media(self, item_ids: list[str]) -> None:
+        album_dir = self._album_dir()
+        wanted = set(item_ids)
+        targets: list[Path] = []
+        remaining: list[dict[str, Any]] = []
+        for item in self._media_items:
+            item_id = str(item.get("id") or "")
+            if item_id not in wanted:
+                remaining.append(item)
+                continue
+            candidate = str(item.get("local_path") or item.get("file_path") or item_id)
+            target = album_local_file_in_dir(album_dir, candidate)
+            if target is None:
+                remaining.append(item)
+                continue
+            targets.append(target)
+        if not targets:
+            self._toast("Nothing to delete from the local album", "warning")
+            return
+        keep_id = self._media_selected_id if self._media_selected_id not in wanted else ""
+        self._replace_media_items(remaining, keep_id)
+        self._set_media_status("" if remaining else "No downloaded files in the local album yet.")
+        QTimer.singleShot(50, lambda files=list(targets): self._finish_local_album_delete(files))
+
+    def _finish_local_album_delete(self, paths: list[Path]) -> None:
+        deleted = 0
+        for target in paths:
+            if album_local_file_in_dir(self._album_dir(), str(target)) is None:
+                continue
+            try:
+                target.unlink()
+            except OSError as exc:
+                self._toast("Could not delete file", "error", str(exc))
+                continue
+            deleted += 1
+        if self._media_source == "local":
+            self.listLocalAlbum()
+        if deleted:
+            self._toast(f"Deleted {deleted} file{'s' if deleted != 1 else ''}", "success")
+
+    def _delete_device_media(self, item_ids: list[str]) -> None:
+        device_id = self._media_device_id or self._selected_device_id
+        if self._session_is_capturing(device_id):
+            self._media_locked = True
+            self._toast("Can't delete from the telescope while it's capturing", "warning")
+            return
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            self._toast("Connect the telescope before deleting on-device files", "warning")
+            return
+        wanted = set(item_ids)
+        entries: list[dict[str, Any]] = []
+        for item in self._media_items:
+            item_id = str(item.get("id") or "")
+            if item_id not in wanted:
+                continue
+            remote = str(item.get("file_path") or item_id)
+            if not self._is_device_media_path(remote):
+                continue
+            entries.append({
+                "filePath": remote,
+                "fileName": str(item.get("file_name") or ""),
+                "mediaType": item.get("media_type") or 0,
+                "subType": item.get("sub_type") or 0,
+            })
+        if not entries:
+            self._toast("Those files can't be deleted from the telescope", "warning")
+            return
+        request_id = self._media_request_id
+        source = self._media_source
+        self._set_media_busy("delete")
+
+        def done(ok: bool, result: Any) -> None:
+            if not self._media_request_current(request_id, device_id, source):
+                return
+            self._set_media_busy("")
+            if ok and isinstance(result, dict):
+                deleted = len(result.get("deleted") or [])
+                failed = int(result.get("failed") or 0)
+                self.refreshMedia(device_id, True)
+                if failed and deleted:
+                    self._toast(
+                        f"Deleted {deleted} file{'s' if deleted != 1 else ''}, {failed} failed",
+                        "warning",
+                    )
+                elif deleted:
+                    self._toast(f"Deleted {deleted} file{'s' if deleted != 1 else ''} from telescope", "success")
+                return
+            self._toast("Album delete failed", "error", str(result))
+
+        worker.send("album_delete", {"args": [entries]}, done)
 
     @Slot()
     def openAlbumFolder(self) -> None:

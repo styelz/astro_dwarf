@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from fractions import Fraction
 from html import unescape
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote, unquote
 from uuid import uuid4
@@ -124,6 +124,54 @@ def album_entry_key(entry: dict[str, Any] | None) -> str:
     if not isinstance(entry, dict):
         return ""
     return str(entry.get("filePath") or entry.get("thumbnailPath") or entry.get("fileName") or "").strip()
+
+
+def album_delete_payload(items: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Firmware album delete body. A bare array is ignored; wrap in `datas`."""
+    datas: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        file_path = str(item.get("filePath") or item.get("file_path") or "").strip()
+        if not file_path:
+            continue
+        file_name = str(item.get("fileName") or item.get("file_name") or "").strip()
+        if not file_name:
+            parts = [part for part in file_path.replace("\\", "/").split("/") if part]
+            file_name = parts[-2] if len(parts) >= 2 else ""
+        try:
+            media_type = int(item.get("mediaType", item.get("media_type", 0)) or 0)
+        except (TypeError, ValueError):
+            media_type = 0
+        try:
+            sub_type = int(item.get("subType", item.get("sub_type", 0)) or 0)
+        except (TypeError, ValueError):
+            sub_type = 0
+        datas.append({
+            "mediaType": media_type,
+            "filePath": file_path,
+            "fileName": file_name,
+            "subType": sub_type,
+        })
+    return {"datas": datas}
+
+
+def album_local_file_in_dir(album_dir: Path | str, candidate: str) -> Path | None:
+    folder = Path(album_dir).expanduser().resolve()
+    text = str(candidate or "").strip()
+    if not text:
+        return None
+    target = Path(text)
+    if not target.is_absolute():
+        target = folder / Path(text.replace("\\", "/")).name
+    try:
+        resolved = target.expanduser().resolve()
+        resolved.relative_to(folder)
+    except (OSError, ValueError):
+        return None
+    if not resolved.is_file() or resolved.suffix.lower() not in LOCAL_ALBUM_SUFFIXES:
+        return None
+    return resolved
 
 
 def _album_suffix(path: str = "", name: str = "") -> str:
