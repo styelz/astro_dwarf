@@ -12,25 +12,37 @@ Item {
     id: historyPage
     property string query: ""
     property int outcomeFilter: 0
-    property int expandedIndex: -1
+    property string expandedId: ""
     property var selectedIds: ({})
     property string selectionAnchorId: ""
     property bool showAllDevices: false
     property string dismissedSuggestionKey: ""
+    property string scopedDeviceId: ""
+    property int deviceCount: 0
     readonly property int selectedCount: Util.idSetCount(selectedIds)
     // Leading gutter shared by the expand chevron and the floating select box.
     readonly property int gutterWidth: 24
-    readonly property bool viewingAllDevices: historyPage.showAllDevices || (backend.devices || []).length < 2
+    readonly property bool viewingAllDevices: historyPage.showAllDevices || historyPage.deviceCount < 2
     readonly property string durationSuggestionKey: {
         const hint = backend.durationSuggestion || ({})
-        return String(hint.run_count || 0) + "\t" + String(hint.change_text || "") + "\t" + String(backend.selectedDeviceId || "")
+        return String(hint.run_count || 0) + "\t" + String(hint.change_text || "") + "\t" + String(historyPage.scopedDeviceId || "")
     }
     readonly property bool durationBannerVisible: {
         const hint = backend.durationSuggestion || ({})
         return !!(hint.available) && historyPage.durationSuggestionKey !== historyPage.dismissedSuggestionKey
     }
     function matchesDeviceScope(item) {
-        return historyPage.viewingAllDevices || !!(item && item.device_id === backend.selectedDeviceId)
+        return historyPage.viewingAllDevices || !!(item && item.device_id === historyPage.scopedDeviceId)
+    }
+    function syncScopedDevice() {
+        const id = String(backend.selectedDeviceId || "")
+        if (historyPage.scopedDeviceId !== id)
+            historyPage.scopedDeviceId = id
+    }
+    function syncDeviceCount() {
+        const n = (backend.devices || []).length
+        if (historyPage.deviceCount !== n)
+            historyPage.deviceCount = n
     }
     function selectClick(id, shift) {
         const result = Util.clickSelect(selectedIds, filteredHistory, id, shift, selectionAnchorId)
@@ -80,18 +92,24 @@ Item {
         const hours = Math.max(0, seconds) / 3600
         return hours >= 10 ? hours.toFixed(0) + "h" : hours.toFixed(1) + "h"
     }
-    function resetExpanded() { historyPage.expandedIndex = -1 }
-    onQueryChanged: resetExpanded()
-    onOutcomeFilterChanged: resetExpanded()
-    onShowAllDevicesChanged: resetExpanded()
+    function toggleExpanded(id) {
+        const key = String(id || "")
+        historyPage.expandedId = (key && historyPage.expandedId === key) ? "" : key
+    }
+    Component.onCompleted: {
+        historyPage.syncScopedDevice()
+        historyPage.syncDeviceCount()
+    }
     Connections {
         target: backend
         function onHistoryChanged() {
-            historyPage.resetExpanded()
             historyPage.selectedIds = Util.pruneIdSet(historyPage.selectedIds, backend.history)
         }
         function onSelectedDeviceChanged() {
-            historyPage.resetExpanded()
+            historyPage.syncScopedDevice()
+        }
+        function onDevicesChanged() {
+            historyPage.syncDeviceCount()
         }
     }
 
@@ -349,7 +367,7 @@ Item {
                         id: historyRow
                         required property var modelData
                         required property int index
-                        readonly property bool expanded: historyPage.expandedIndex === index
+                        readonly property bool expanded: historyPage.expandedId !== "" && historyPage.expandedId === String(modelData.id || "")
                         width: ListView.view.width
                         height: rowBody.implicitHeight
                         readonly property color outcomeTone: modelData.ok ? Theme.success : Theme.danger
@@ -369,7 +387,7 @@ Item {
                                 activeFocusOnTab: true
                                 Accessible.role: Accessible.Button
                                 Accessible.name: (historyRow.modelData.date || "") + " " + (historyRow.modelData.target_name || "") + " " + (historyRow.modelData.outcome || "")
-                                Accessible.onPressAction: historyPage.expandedIndex = historyRow.expanded ? -1 : historyRow.index
+                                Accessible.onPressAction: historyPage.toggleExpanded(historyRow.modelData.id)
                                 Keys.onPressed: function (event) {
                                     if (event.key === Qt.Key_Space && (event.modifiers & Qt.ShiftModifier)) {
                                         historyPage.selectClick(historyRow.modelData.id, true)
@@ -377,7 +395,7 @@ Item {
                                         return
                                     }
                                     if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                                        historyPage.expandedIndex = historyRow.expanded ? -1 : historyRow.index
+                                        historyPage.toggleExpanded(historyRow.modelData.id)
                                         event.accepted = true
                                     }
                                 }
@@ -411,7 +429,7 @@ Item {
                                             acceptedButtons: Qt.LeftButton
                                             preventStealing: true
                                             cursorShape: Qt.PointingHandCursor
-                                            onClicked: historyPage.expandedIndex = historyRow.expanded ? -1 : historyRow.index
+                                            onClicked: historyPage.toggleExpanded(historyRow.modelData.id)
                                         }
                                         SelectBox {
                                             id: historySelect
@@ -468,7 +486,7 @@ Item {
                                             historyPage.selectClick(historyRow.modelData.id, true)
                                             return
                                         }
-                                        historyPage.expandedIndex = historyRow.expanded ? -1 : historyRow.index
+                                        historyPage.toggleExpanded(historyRow.modelData.id)
                                     }
                                 }
                                 TapHandler {
