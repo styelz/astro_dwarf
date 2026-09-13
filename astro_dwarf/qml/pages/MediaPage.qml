@@ -14,6 +14,7 @@ Item {
     readonly property var selected: backend.selectedMedia || ({})
     readonly property bool busy: backend.mediaBusy !== ""
     readonly property bool hasIp: !!(backend.selectedDevice && backend.selectedDevice.ip_address)
+    readonly property bool scopeOnline: !!(backend.selectedDevice && backend.selectedDevice.connected)
     readonly property bool onDevice: backend.mediaSource !== "local"
     readonly property bool albumLocked: backend.mediaLocked && mediaPage.onDevice
     property string loadedKey: ""
@@ -29,6 +30,8 @@ Item {
             return "Downloaded stacked frames and stills appear here. Open a session on the telescope and save it."
         if (!mediaPage.hasIp)
             return "Set the telescope IP in Settings, then refresh to browse sessions on this device."
+        if (!mediaPage.scopeOnline)
+            return "Connect this telescope to browse its album."
         if (backend.mediaSource === "stills")
             return "No still photos found on this telescope. Capture a photo, then refresh."
         return "No astro sessions found on this telescope. Finished DSO stacks show up here."
@@ -39,6 +42,12 @@ Item {
             lightbox.close()
             return
         }
+        mediaPage.loadedKey = ""
+        mediaPage.maybeLoad()
+    }
+    onScopeOnlineChanged: {
+        if (!mediaPage.scopeOnline)
+            return
         mediaPage.loadedKey = ""
         mediaPage.maybeLoad()
     }
@@ -54,6 +63,8 @@ Item {
         if (root.currentPage !== root.mediaPageIndex)
             return
         if (mediaPage.albumLocked)
+            return
+        if (mediaPage.onDevice && !mediaPage.scopeOnline)
             return
         const key = mediaPage.sourceKey()
         if (mediaPage.loadedKey === key && backend.mediaSource === "local")
@@ -130,7 +141,7 @@ Item {
             }
             HudButton {
                 text: backend.mediaBusy === "list" ? "LISTING…" : "REFRESH"
-                enabled: !mediaPage.albumLocked && !mediaPage.busy && (backend.mediaSource === "local" || mediaPage.hasIp)
+                enabled: !mediaPage.albumLocked && !mediaPage.busy && (backend.mediaSource === "local" || mediaPage.scopeOnline)
                 busy: backend.mediaBusy === "list"
                 busyText: "LISTING…"
                 onClicked: mediaPage.refresh()
@@ -256,7 +267,7 @@ Item {
                     anchors.centerIn: parent
                     visible: mediaPage.albumLocked || mediaPage.items.length === 0
                     mode: backend.mediaBusy === "list" ? "loading"
-                          : mediaPage.albumLocked || (mediaPage.onDevice && !mediaPage.hasIp) ? "unavailable"
+                          : mediaPage.albumLocked || (mediaPage.onDevice && !mediaPage.scopeOnline) ? "unavailable"
                           : "empty"
                     glyph: mediaPage.albumLocked ? "⊘" : (backend.mediaSource === "local" ? "▤" : "◈")
                     text: mediaPage.emptyText
