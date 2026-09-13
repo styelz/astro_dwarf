@@ -92,6 +92,7 @@ from .image_enhance import (
     enhance_available,
     enhance_cache_key,
     is_enhance_cache_valid,
+    set_enhance_levels,
     set_model_dir,
 )
 from .stream_preview import LiveFrames, StreamPlayer, port_is_open, preview_window_is_live, set_live_frames, stream_port
@@ -669,6 +670,8 @@ class AppBackend(QObject):
     previewResultChanged = Signal()
     enhanceImagesChanged = Signal()
     deepCleanImagesChanged = Signal()
+    enhanceDenoiseChanged = Signal()
+    enhanceSkyCrushChanged = Signal()
     enhanceCacheChanged = Signal()
     albumChanged = Signal()
     mediaChanged = Signal()
@@ -799,6 +802,8 @@ class AppBackend(QObject):
         self._preview_result_detail = ""
         self._enhance_images = True
         self._deep_clean_images = False
+        self._enhance_denoise = 1.0
+        self._enhance_sky_crush = 1.0
         self._raw_preview_images = {"tele": QImage(), "wide": QImage()}
         self._enhance_job_token = {"tele": 0, "wide": 0}
         self._enhance_pool = QThreadPool(self)
@@ -1844,6 +1849,52 @@ class AppBackend(QObject):
         self._deep_clean_images = on
         self.deepCleanImagesChanged.emit()
         self._refresh_preview_enhance()
+
+    def _clamp_enhance_level(self, value: Any) -> float:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _apply_enhance_levels(self) -> None:
+        set_enhance_levels(self._enhance_denoise, self._enhance_sky_crush)
+        self._enhance_cache_rev += 1
+        self.enhanceCacheChanged.emit()
+        self._refresh_preview_enhance()
+
+    @Property(float, notify=enhanceDenoiseChanged)
+    def enhanceDenoise(self) -> float:
+        return float(self._enhance_denoise)
+
+    @enhanceDenoise.setter
+    def enhanceDenoise(self, value: float) -> None:
+        self.setEnhanceDenoise(value)
+
+    @Slot(float)
+    def setEnhanceDenoise(self, value: float) -> None:
+        level = self._clamp_enhance_level(value)
+        if abs(level - self._enhance_denoise) < 1e-6:
+            return
+        self._enhance_denoise = level
+        self.enhanceDenoiseChanged.emit()
+        self._apply_enhance_levels()
+
+    @Property(float, notify=enhanceSkyCrushChanged)
+    def enhanceSkyCrush(self) -> float:
+        return float(self._enhance_sky_crush)
+
+    @enhanceSkyCrush.setter
+    def enhanceSkyCrush(self, value: float) -> None:
+        self.setEnhanceSkyCrush(value)
+
+    @Slot(float)
+    def setEnhanceSkyCrush(self, value: float) -> None:
+        level = self._clamp_enhance_level(value)
+        if abs(level - self._enhance_sky_crush) < 1e-6:
+            return
+        self._enhance_sky_crush = level
+        self.enhanceSkyCrushChanged.emit()
+        self._apply_enhance_levels()
 
     @Property(int, notify=enhanceCacheChanged)
     def enhanceCacheGeneration(self) -> int:
@@ -3027,6 +3078,10 @@ class AppBackend(QObject):
         worker_operation = operation
         if photo_focus:
             worker_operation = "normal_autofocus"
+        elif operation == "photo":
+            camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
+            worker_operation = "wide_photo" if str(camera).lower() == "wide" else "photo"
+            self._sync_worker_camera(device_id, str(camera))
         worker.send(worker_operation, payload, callback=self._with_pending(device_id, operation, done))
         if dropping:
             self._drop_device_link(device_id)
@@ -3380,14 +3435,25 @@ class AppBackend(QObject):
     @Slot(str, str)
     def setLiveCamera(self, device_id: str, camera: str) -> None:
         current = self._device_by_id(device_id)
-        if current.camera == Camera(camera):
-            self.refreshCameraParams(device_id)
-            return
-        updated = replace(current, camera=Camera(camera))
-        self.store.devices.save(updated)
-        self._devices = [updated if item.id == updated.id else item for item in self._devices]
-        self._notify_devices()
+        choice = str(camera or "tele").strip().lower()
+        if choice not in {"tele", "wide"}:
+            choice = "tele"
+        if current.camera != Camera(choice):
+            updated = replace(current, camera=Camera(choice))
+            self.store.devices.save(updated)
+            self._devices = [updated if item.id == updated.id else item for item in self._devices]
+            self._notify_devices()
+        self._sync_worker_camera(device_id, choice)
         self.refreshCameraParams(device_id)
+
+    def _sync_worker_camera(self, device_id: str, camera: str) -> None:
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            return
+        choice = str(camera or "tele").strip().lower()
+        if choice not in {"tele", "wide"}:
+            return
+        worker.send("set_camera", {"args": [choice]})
 
     @Slot(str, str, str)
     def setCameraParam(self, device_id: str, name: str, value: str) -> None:

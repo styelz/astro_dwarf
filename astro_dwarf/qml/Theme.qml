@@ -18,6 +18,8 @@ QtObject {
         property bool previewChromeHintSeen: false
         property bool enhanceImages: true
         property bool deepCleanImages: false
+        property real enhanceDenoise: 1
+        property real enhanceSkyCrush: 1
     }
     property alias hue: appearanceStore.hue
     // -1 … 1; 0 is the stock look. Negative gives deep, saturated tints; positive lifts them.
@@ -25,6 +27,8 @@ QtObject {
     property alias previewChromeHintSeen: appearanceStore.previewChromeHintSeen
     property alias enhanceImages: appearanceStore.enhanceImages
     property alias deepCleanImages: appearanceStore.deepCleanImages
+    property alias enhanceDenoise: appearanceStore.enhanceDenoise
+    property alias enhanceSkyCrush: appearanceStore.enhanceSkyCrush
 
     // How far the hue is from stock (0 … 0.5). The original palette leans its surfaces
     // and outlines ~35° toward blue; the same lean turns a red accent orange, so the

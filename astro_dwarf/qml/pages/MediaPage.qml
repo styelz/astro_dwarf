@@ -107,6 +107,14 @@ Item {
     function closeViewer() {
         lightbox.close()
     }
+    function openMediaMenu(item) {
+        const data = item || ({})
+        const id = String(data.id || "")
+        if (id)
+            backend.selectMedia(id)
+        mediaMenu.itemData = data
+        mediaMenu.popup()
+    }
 
     function showSource(source) {
         mediaPage.clearSelection()
@@ -334,6 +342,10 @@ Item {
                                     mediaPage.openSelected()
                                 }
                             }
+                            TapHandler {
+                                acceptedButtons: Qt.RightButton
+                                onTapped: mediaPage.openMediaMenu(tile.modelData)
+                            }
                         }
                     }
                 }
@@ -384,6 +396,8 @@ Item {
             lightbox.selectedKey
             Theme.enhanceImages
             Theme.deepCleanImages
+            Theme.enhanceDenoise
+            Theme.enhanceSkyCrush
             backend.enhanceCacheGeneration
             if (!lightbox.enhanceOn || !lightbox.rawUrl || lightbox.isVideo)
                 return ""
@@ -484,6 +498,10 @@ Item {
                     font.pixelSize: 11
                     font.letterSpacing: 1.4
                 }
+                TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    onTapped: mediaPage.openMediaMenu(mediaPage.selected)
+                }
             }
             Rectangle {
                 Layout.fillWidth: true
@@ -574,5 +592,22 @@ Item {
                 }
             }
         }
+    }
+
+    MediaContextMenu {
+        id: mediaMenu
+        selectionItems: mediaPage.items
+        selectedMap: mediaPage.selectedIds
+        onOpenRequested: item => {
+            backend.selectMedia(String((item && item.id) || ""))
+            mediaPage.openSelected()
+        }
+        onDownloadRequested: item => {
+            backend.selectMedia(String((item && item.id) || ""))
+            mediaPage.downloadSelected()
+        }
+        onDeleteRequested: item => mediaPage.confirmDelete([String((item && item.id) || "")])
+        onSelectAllRequested: mediaPage.selectedIds = Util.idSetAll(mediaPage.items, true)
+        onUnselectAllRequested: mediaPage.clearSelection()
     }
 }

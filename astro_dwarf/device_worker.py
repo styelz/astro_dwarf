@@ -811,9 +811,63 @@ def sdk_call(operation: str, *args: Any) -> Any:
     return _invoke_sdk(operation, function, *args)
 
 
+def _scalar_log_arg(value: Any) -> str | None:
+    """Return a short log fragment for a primitive SDK argument, or None."""
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else str(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or len(text) > 48:
+            return None
+        return text
+    return None
+
+
+def _format_operation_label(operation: str, label: str, args: tuple[Any, ...]) -> str:
+    """Append set-values (and tele/wide) to a worker log label; skip protobuf blobs."""
+    if not args:
+        return label
+    scalars: list[str] = []
+    camera = ""
+    for arg in args:
+        fragment = _scalar_log_arg(arg)
+        if fragment is None:
+            continue
+        lowered = fragment.lower()
+        if lowered in {"tele", "wide"}:
+            camera = lowered
+            continue
+        # Firmware model ids ("2"/"3"/"5") are not the value the user set.
+        if fragment in {"2", "3", "5"} and (scalars or camera or operation.startswith("set_")):
+            continue
+        scalars.append(fragment)
+    if not scalars and not camera:
+        return label
+    bits = list(scalars)
+    if camera:
+        bits.append(f"({camera})")
+    return f"{label} {' '.join(bits)}"
+
+
+def _format_sdk_result(result: Any) -> str:
+    """Show success as 'ok' so firmware code 0 is not mistaken for a setting."""
+    if result is False:
+        return "failed"
+    if result is True or result == 0:
+        return "ok"
+    return str(result)
+
+
 def _invoke_sdk(operation: str, function: Any, *args: Any, label: str | None = None) -> Any:
     """Run one blocking SDK call with the shared stop/interrupt bookkeeping."""
+    explicit = label is not None
     label = label or _OPERATION_LABELS.get(operation) or operation.replace("_", " ").title()
+    if not explicit:
+        label = _format_operation_label(operation, label, args)
     # Periodic state refreshes are plumbing; keep them out of the main log.
     call_level = "debug" if operation in _QUIET_OPERATIONS else "sdk"
     global _in_flight
@@ -829,7 +883,7 @@ def _invoke_sdk(operation: str, function: Any, *args: Any, label: str | None = N
             result = function(*args)
     finally:
         _in_flight = None
-    log(f"{label}: {result}", call_level)
+    log(f"{label}: {_format_sdk_result(result)}", call_level)
     return result
 
 
@@ -3006,6 +3060,12 @@ def dispatch(message: dict[str, Any]) -> Any:
         args = list(message.get("args") or [])
         mode_id = int(args[0]) if args else 1
         return serializable_state(sdk_call("read_camera", mode_id))
+    if command == "set_camera":
+        args = list(message.get("args") or [])
+        choice = str(args[0] if args else "").strip().lower()
+        if choice in {"tele", "wide"} and isinstance(_device, dict):
+            _device["camera"] = choice
+        return True
     if command == "photo" and str(_device.get("camera") or "") == "wide":
         command = "wide_photo"
     if command in {"disconnect", "reboot", "power_down"}:

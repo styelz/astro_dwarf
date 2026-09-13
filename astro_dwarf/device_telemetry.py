@@ -1079,6 +1079,9 @@ _DEMOTE_PREFIXES = (
     ">> code_step_motor_need_reset",
     "success cmd_step_motor_get_position",
 )
+# Firmware reply code 0 means success. The SDK logs "SET EXPOSURE (V3) -> 0"
+# as if 0 were the value; the worker already logs the real arguments.
+_SET_OK_RE = re.compile(r"^set \S.+(?: \(v3\))?(?: 0x[0-9a-f]+)? -> 0$", re.IGNORECASE)
 _MAX_LOG_CHARS = 400
 
 
@@ -1102,7 +1105,10 @@ def is_noise(text: str) -> bool:
 
 def is_chatter(text: str) -> bool:
     """SDK plumbing lines that should be demoted to debug rather than shown as notices."""
-    return text.lower().startswith(_DEMOTE_PREFIXES)
+    lowered = text.lower()
+    if lowered.startswith(_DEMOTE_PREFIXES):
+        return True
+    return bool(_SET_OK_RE.match(lowered))
 
 
 def level_name(levelno: int) -> str:

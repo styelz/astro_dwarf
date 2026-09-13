@@ -27,6 +27,8 @@ _URLS: dict[str, str] = {}
 _URL_LOCK = threading.Lock()
 _DISPLAY_EDGE = 1920
 _NUMPY_WARNED = False
+_denoise_level = 1.0
+_sky_crush_level = 1.0
 
 
 def enhance_available() -> bool:
@@ -85,9 +87,25 @@ def canonical_image_url(url: str) -> str:
     return text
 
 
+def set_enhance_levels(denoise: float | None = None, sky_crush: float | None = None) -> None:
+    """0–1 multipliers around the active standard/deep profile. 1 is stock strength."""
+    global _denoise_level, _sky_crush_level
+    if denoise is not None:
+        _denoise_level = max(0.0, min(1.0, float(denoise)))
+    if sky_crush is not None:
+        _sky_crush_level = max(0.0, min(1.0, float(sky_crush)))
+
+
+def enhance_levels() -> tuple[float, float]:
+    return (_denoise_level, _sky_crush_level)
+
+
 def enhance_cache_key(url: str, profile: str) -> str:
     kind = "deep" if str(profile or "").strip().lower() == "deep" else "std"
-    return hashlib.sha1(f"v8:{kind}:{canonical_image_url(url) or url}".encode("utf-8", "replace")).hexdigest()
+    denoise, sky = enhance_levels()
+    return hashlib.sha1(
+        f"v9:{kind}:{denoise:.3f}:{sky:.3f}:{canonical_image_url(url) or url}".encode("utf-8", "replace")
+    ).hexdigest()
 
 
 def is_enhance_cache_valid(path: Path | str) -> bool:
@@ -117,9 +135,10 @@ def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standa
         return image
     work = rgb.astype(np.float32) * (1.0 / 255.0)
     deep = str(profile or "standard").strip().lower() == "deep"
-    if denoise:
-        work = _smooth_noise(work, deep=deep)
-    work = _crush_sky(work, deep=deep)
+    if denoise and _denoise_level > 0:
+        work = _smooth_noise(work, deep=deep, level=_denoise_level)
+    if _sky_crush_level > 0:
+        work = _crush_sky(work, deep=deep, level=_sky_crush_level)
     out = np.clip(work * 255.0 + 0.5, 0.0, 255.0).astype(np.uint8)
     return _rgb_to_qimage(out)
 
@@ -140,11 +159,18 @@ def _luminance(rgb):
     return rgb[..., 0] * 0.2126 + rgb[..., 1] * 0.7152 + rgb[..., 2] * 0.0722
 
 
-def _smooth_noise(rgb, *, deep: bool):
-    cleaned = _nlmeans(rgb, h=14.0 if deep else 9.0, search=21)
+def _smooth_noise(rgb, *, deep: bool, level: float = 1.0):
+    level = max(0.0, min(1.0, float(level)))
+    if level <= 0:
+        return rgb
+    cleaned = _nlmeans(rgb, h=(14.0 if deep else 9.0) * level, search=21)
     if cv2 is not None:
         u8 = np.clip(cleaned * 255.0, 0, 255).astype(np.uint8)
-        blur = cv2.bilateralFilter(u8, 9 if deep else 7, 36 if deep else 24, 36 if deep else 24)
+        diameter = max(3, int(round((9 if deep else 7) * max(level, 0.35))))
+        if diameter % 2 == 0:
+            diameter += 1
+        sigma = (36 if deep else 24) * level
+        blur = cv2.bilateralFilter(u8, diameter, sigma, sigma)
         blur = blur.astype(np.float32) * (1.0 / 255.0)
         lum = _luminance(cleaned)
         sky = np.clip(1.0 - lum * 3.2, 0.0, 1.0)[..., None]
@@ -152,8 +178,11 @@ def _smooth_noise(rgb, *, deep: bool):
     return np.clip(cleaned, 0.0, 1.0)
 
 
-def _crush_sky(rgb, *, deep: bool):
+def _crush_sky(rgb, *, deep: bool, level: float = 1.0):
     """Pull the grainy sky down a bit without burying the object."""
+    level = max(0.0, min(1.0, float(level)))
+    if level <= 0:
+        return rgb
     lum = _luminance(rgb)
     step = max(1, min(lum.shape) // 280)
     sample = lum[::step, ::step]
@@ -162,9 +191,9 @@ def _crush_sky(rgb, *, deep: bool):
     sky = float(np.median(sample))
     floor = float(np.percentile(sample, 10 if deep else 8))
     mad = float(np.median(np.abs(sample - np.median(sample)))) * 1.4826
-    extra = 0.35 if deep else 0.18
-    cap = 0.10 if deep else 0.07
-    black = min(floor + extra * max(mad, 1e-4), cap, sky * (0.55 if deep else 0.40))
+    extra = (0.35 if deep else 0.18) * level
+    cap = (0.10 if deep else 0.07) * level
+    black = min(floor + extra * max(mad, 1e-4), cap, sky * ((0.55 if deep else 0.40) * level))
     crushed = np.clip(rgb - black, 0.0, 1.0)
     return crushed
 

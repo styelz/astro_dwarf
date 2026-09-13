@@ -256,6 +256,8 @@ ApplicationWindow {
         root.syncWindowFrame()
         backend.setEnhanceImages(Theme.enhanceImages)
         backend.setDeepCleanImages(Theme.deepCleanImages)
+        backend.setEnhanceDenoise(Theme.enhanceDenoise)
+        backend.setEnhanceSkyCrush(Theme.enhanceSkyCrush)
     }
 
     // Keep the native Windows caption in step with the theme hue (debounced while the slider moves).
@@ -269,12 +271,23 @@ ApplicationWindow {
         function onBrightnessChanged() { frameSyncTimer.restart() }
         function onEnhanceImagesChanged() { backend.setEnhanceImages(Theme.enhanceImages) }
         function onDeepCleanImagesChanged() { backend.setDeepCleanImages(Theme.deepCleanImages) }
+        function onEnhanceDenoiseChanged() { enhanceLevelTimer.restart() }
+        function onEnhanceSkyCrushChanged() { enhanceLevelTimer.restart() }
     }
     Timer {
         id: frameSyncTimer
         interval: 150
         repeat: false
         onTriggered: root.syncWindowFrame()
+    }
+    Timer {
+        id: enhanceLevelTimer
+        interval: 150
+        repeat: false
+        onTriggered: {
+            backend.setEnhanceDenoise(Theme.enhanceDenoise)
+            backend.setEnhanceSkyCrush(Theme.enhanceSkyCrush)
+        }
     }
 
     Timer {
