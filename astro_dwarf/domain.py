@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from fractions import Fraction
+from html import unescape
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 from uuid import uuid4
 
 from .location import has_site_coordinates
@@ -78,9 +80,14 @@ def album_path_matches_model(path: str, model: DeviceModel | str) -> bool:
 
 
 ASTRO_MEDIA_TYPE = 6
+BURST_MEDIA_TYPE = 3
+PANORAMA_MEDIA_TYPE = 5
 ALBUM_VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".avi"}
 ALBUM_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".fits", ".fit"}
 LOCAL_ALBUM_SUFFIXES = ALBUM_IMAGE_SUFFIXES | ALBUM_VIDEO_SUFFIXES
+_ALBUM_HREF = re.compile(r"""href=["']([^"']+)["']""", re.IGNORECASE)
+_SESSION_PREVIEW_TYPES = {BURST_MEDIA_TYPE, PANORAMA_MEDIA_TYPE}
+_SESSION_THUMB_NAMES = ("burst_thumbnail.jpg", "pano_thumbnail.jpg", "panorama_thumbnail.jpg")
 _ASTRO_PATH_MARKERS = (
     "/ASTRONOMY/",
     "DWARF_RAW",
@@ -145,13 +152,87 @@ def album_media_kind(path: str = "", name: str = "", media_type: Any = None) -> 
     suffix = _album_suffix(combined, file_name)
     if album_is_astro_media(path, name, media_type):
         return "video" if suffix in ALBUM_VIDEO_SUFFIXES else "astro"
-    if "/BURST" in text:
+    try:
+        kind_type = int(media_type)
+    except (TypeError, ValueError):
+        kind_type = -1
+    if kind_type == BURST_MEDIA_TYPE or "/BURST" in text:
         return "burst"
-    if "PANORAMA" in text:
+    if kind_type == PANORAMA_MEDIA_TYPE or "PANORAMA" in text:
         return "panorama"
     if "/VIDEO" in text or suffix in ALBUM_VIDEO_SUFFIXES:
         return "video"
     return "photo"
+
+
+def album_needs_preview_check(path: str = "", name: str = "", media_type: Any = None) -> bool:
+    if album_media_kind(path, name, media_type) in {"burst", "panorama"}:
+        return True
+    try:
+        if int(media_type) in _SESSION_PREVIEW_TYPES:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return PurePosixPath(album_http_path(path)).name.lower() in _SESSION_THUMB_NAMES
+
+
+def album_session_dir(path: str) -> str:
+    value = album_http_path(path)
+    if not value:
+        return ""
+    posix = PurePosixPath(value)
+    if posix.suffix.lower() in LOCAL_ALBUM_SUFFIXES:
+        return str(posix.parent)
+    return str(posix).rstrip("/")
+
+
+def album_join_path(folder: str, name: str) -> str:
+    directory = album_http_path(folder).rstrip("/")
+    file_name = str(name or "").replace("\\", "/").split("/")[-1]
+    if not directory or not file_name:
+        return directory or album_http_path(file_name)
+    return f"{directory}/{file_name}"
+
+
+def album_listing_names(html_text: str) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for match in _ALBUM_HREF.finditer(str(html_text or "")):
+        href = unescape(unquote(match.group(1))).replace("\\", "/").split("?", 1)[0].split("#", 1)[0]
+        if not href or href.endswith("/") or href in {".", "./", "..", "../"}:
+            continue
+        name = PurePosixPath(href).name
+        key = name.lower()
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
+def album_preview_name(names: list[str] | None) -> str:
+    files = [str(name) for name in (names or []) if str(name).strip()]
+    lookup = {name.lower(): name for name in files}
+    for preferred in (*_SESSION_THUMB_NAMES, "0.jpg"):
+        if preferred in lookup:
+            return lookup[preferred]
+    for name in files:
+        if PurePosixPath(name).suffix.lower() in ALBUM_IMAGE_SUFFIXES:
+            return name
+    return ""
+
+
+def album_apply_listing_preview(entry: dict[str, Any], names: list[str]) -> dict[str, Any]:
+    out = dict(entry)
+    remote = str(out.get("filePath") or "").strip()
+    thumb = str(out.get("thumbnailPath") or "").strip()
+    folder = album_session_dir(thumb or remote)
+    preview = album_preview_name(names)
+    out["thumbnailPath"] = album_join_path(folder, preview) if preview else ""
+    remote_name = PurePosixPath(album_http_path(remote)).name.lower()
+    listed = {name.lower() for name in names}
+    out["fileAvailable"] = bool(remote_name and remote_name in listed)
+    return out
 
 
 class Camera(StrEnum):

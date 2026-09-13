@@ -3392,8 +3392,9 @@ class AppBackend(QObject):
         )
         local = self._match_local_album_file(name, remote or thumb, local_files)
         local_url = self._media_file_url(str(local)) if local else ""
+        file_available = entry.get("fileAvailable", True) is not False
         thumb_url = album_http_url(ip, thumb) if thumb and ip else ""
-        image_url = album_http_url(ip, remote) if remote and ip else ""
+        image_url = album_http_url(ip, remote) if remote and ip and file_available else ""
         if not image_url:
             image_url = thumb_url
         if local_url and not is_video:

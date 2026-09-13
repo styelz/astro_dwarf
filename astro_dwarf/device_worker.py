@@ -29,12 +29,16 @@ from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_
 from .domain import (
     ALBUM_IMAGE_SUFFIXES,
     ASTRO_MEDIA_TYPE,
+    album_apply_listing_preview,
     album_entry_key,
     album_http_path,
     album_http_url,
     album_is_astro_media,
+    album_listing_names,
+    album_needs_preview_check,
     album_path_matches_model,
     album_prefixed_path,
+    album_session_dir,
     capture_defaults_from_dict,
     device_name_model,
     firmware_binning,
@@ -2462,6 +2466,79 @@ def _media_url(ip: str, path: str) -> str:
     return album_http_url(ip, path)
 
 
+def _album_http_exists(ip: str, path: str) -> bool:
+    url = album_http_url(ip, path)
+    if not url:
+        return False
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, method="HEAD")
+    try:
+        with urllib.request.urlopen(request, timeout=4) as response:
+            return 200 <= int(response.status) < 300
+    except urllib.error.HTTPError:
+        return False
+    except Exception as exc:
+        log(f"Album preview check failed: {exc}", "debug")
+        return False
+
+
+def _album_dir_names(ip: str, folder: str) -> list[str] | None:
+    directory = album_http_path(folder).rstrip("/")
+    if not directory:
+        return None
+    url = album_http_url(ip, directory + "/")
+    if not url:
+        return None
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=4) as response:
+            content_type = str(response.headers.get("Content-Type") or "").lower()
+            body = response.read(64 * 1024)
+    except urllib.error.HTTPError:
+        return None
+    except Exception as exc:
+        log(f"Album folder listing failed: {exc}", "debug")
+        return None
+    text = body.decode("utf-8", errors="replace")
+    if "html" not in content_type and not text.lstrip().lower().startswith("<html"):
+        return None
+    return album_listing_names(text)
+
+
+def _album_resolve_session_previews(ip: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    resolved: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        thumb = str(entry.get("thumbnailPath") or "").strip()
+        remote = str(entry.get("filePath") or "").strip()
+        name = str(entry.get("fileName") or "").strip()
+        if not album_needs_preview_check(remote or thumb, name, entry.get("mediaType")):
+            resolved.append(entry)
+            continue
+        listing = _album_dir_names(ip, album_session_dir(thumb or remote))
+        if listing is not None:
+            resolved.append(album_apply_listing_preview(entry, listing))
+            continue
+        updated = dict(entry)
+        exists_remote = bool(remote) and _album_http_exists(ip, remote)
+        if thumb and _album_http_exists(ip, thumb):
+            preview = thumb
+        elif exists_remote:
+            preview = remote
+        else:
+            preview = ""
+        updated["thumbnailPath"] = preview
+        updated["fileAvailable"] = exists_remote
+        resolved.append(updated)
+    return resolved
+
+
 def _ftp_download_file(ip: str, remote_path: str, dest: Path) -> None:
     from ftplib import FTP
 
@@ -2611,6 +2688,7 @@ def album_camera_media_list() -> dict[str, Any]:
             if errors:
                 raise RuntimeError(errors[0]) from exc
             raise
+    entries = _album_resolve_session_previews(ip, entries)
     log(f"Listed {len(entries)} camera files on {ip}")
     return {"ip": ip, "sessions": entries}
 
