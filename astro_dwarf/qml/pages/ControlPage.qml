@@ -137,7 +137,7 @@ Item {
                     model: [
                         {label: "ENDPOINT", value: backend.selectedDevice.ip_address || "—", tone: root.scopeOnline ? Theme.textPrimary : Theme.textSecondary},
                         {label: "SCHEDULER", value: backend.schedulerEnabled ? root.nextSessionCountdown() : "Disarmed", tone: backend.schedulerEnabled ? Theme.success : Theme.textSecondary},
-                        {label: "PREVIEW", value: root.scopeStopping ? (root.scopePendingDetail || "Stopping") : (backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped")), tone: root.scopeStopping ? Theme.warning : (backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary))},
+                        {label: "PREVIEW", value: root.scopeStopping ? (root.scopePendingDetail || "Stopping") : (backend.previewResult ? "Last stack" : (backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped"))), tone: root.scopeStopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary)))},
                         {label: "SESSION", value: Util.sessionStepLabel(backend.currentSession, backend.localNow.epoch_ms) || backend.currentSession.current_step || Util.idleScheduleLabel(backend.upcomingSessions, backend.schedulerEnabled, backend.localNow.epoch_ms), tone: backend.currentSession.id ? Theme.accent : Theme.textSecondary},
                         {label: "REMAINING", value: backend.currentSession.id ? Util.durationLabel(Number(backend.currentSession.planned_duration_seconds || 0) * (1 - backend.sessionProgress)) : "—", tone: Theme.textPrimary},
                         {label: "TIMEZONE", value: backend.selectedDevice.timezone_name || "UTC", tone: Theme.textPrimary},
@@ -768,7 +768,7 @@ Item {
                     readonly property bool pipAvailable: backend.previewTelePlaying && backend.previewWidePlaying && !backend.previewStacking
                     readonly property bool mainIsWide: backend.previewStacking ? false : preferredWide
                     readonly property bool displayWide: backend.previewStacking ? false : (pipAvailable ? preferredWide : backend.previewWidePlaying)
-                    readonly property bool mainPlaying: displayWide ? backend.previewWidePlaying : backend.previewTelePlaying
+                    readonly property bool mainPlaying: backend.previewResult || (displayWide ? backend.previewWidePlaying : backend.previewTelePlaying)
                     readonly property int stackCount: {
                         const n = Number(root.scopeTelemetry.capture_stacked)
                         return isFinite(n) && n > 0 ? n : 0
@@ -785,7 +785,7 @@ Item {
                         return previewHost.stackCount < 1
                     }
                     readonly property bool pipPlaying: pipAvailable && pipEnabled
-                    readonly property bool idlePreviewArt: !backend.previewPlaying && !backend.previewStacking && !previewHost.awaitingFirstStack
+                    readonly property bool idlePreviewArt: !backend.previewPlaying && !backend.previewStacking && !backend.previewResult && !previewHost.awaitingFirstStack
                     readonly property real teleFovH: {
                         const tele = Number(root.scopeTelemetry.tele_fov_h)
                         const wide = Number(root.scopeTelemetry.wide_fov_h)
@@ -864,7 +864,7 @@ Item {
                     // view or stacking is up, including on hover.
                     property bool controlsVisible: false
                     property bool controlHovered: false
-                    readonly property bool chromeShown: !backend.previewPlaying || controlsVisible
+                    readonly property bool chromeShown: !backend.previewPlaying || controlsVisible || backend.previewResult
 
                     function revealControls() {
                         controlsVisible = true
@@ -951,7 +951,7 @@ Item {
                         playing: previewHost.mainPlaying
                         wideView: previewHost.displayWide
                         camera: previewHost.liveCamera(previewHost.displayWide)
-                        centerEnabled: playing && root.motionEnabled
+                        centerEnabled: playing && root.motionEnabled && !backend.previewResult
                         showFootprint: wideView
                         chromeShown: previewHost.chromeShown
                         fovH: previewHost.teleFovH
@@ -1207,12 +1207,55 @@ Item {
                             Text { text: backend.clockText; color: Theme.accent; font.pixelSize: 10; font.family: Theme.fontMono }
                         }
                     }
+                    Rectangle {
+                        z: 6
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.leftMargin: 14
+                        anchors.rightMargin: 14
+                        anchors.bottomMargin: 46
+                        visible: backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack
+                        height: resultCaptionCol.implicitHeight + 16
+                        color: Theme.hsl(0.079, 0.517, 0.057, 0.82)
+                        border.color: Theme.outline
+                        Column {
+                            id: resultCaptionCol
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            spacing: 4
+                            Text {
+                                text: backend.previewResultTitle || "STACK COMPLETE"
+                                color: {
+                                    const title = String(backend.previewResultTitle || "")
+                                    if (title.indexOf("FAIL") >= 0)
+                                        return Theme.danger
+                                    if (title.indexOf("STOP") >= 0)
+                                        return Theme.warning
+                                    return Theme.success
+                                }
+                                font.pixelSize: 12
+                                font.letterSpacing: 2
+                                font.bold: true
+                            }
+                            Text {
+                                width: parent.width
+                                wrapMode: Text.Wrap
+                                text: backend.previewResultDetail || "Last stacked frame. This is not live video."
+                                color: Theme.textPrimary
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
                     Column {
                         z: 5
                         anchors.centerIn: parent
                         spacing: 10
                         width: Math.min(parent.width - 48, 520)
-                        visible: backend.previewHeld && !backend.previewPlaying && !root.scopeStopping && !previewHost.awaitingFirstStack
+                        visible: backend.previewHeld && !backend.previewPlaying && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: "LIVE VIEW PAUSED"
@@ -1243,7 +1286,7 @@ Item {
                     Column {
                         anchors.centerIn: parent
                         spacing: 8
-                        visible: !backend.previewPlaying && !backend.previewHeld && !root.scopeStopping && !previewHost.awaitingFirstStack
+                        visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack
                         Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: Theme.textPrimary; font.pixelSize: 16; font.letterSpacing: 3; font.bold: true }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -1384,29 +1427,29 @@ Item {
                         Rectangle {
                             id: previewBadge
                             readonly property bool stopping: root.scopeStopping
-                            width: stopping ? 118 : (backend.previewHeld && !backend.previewPlaying ? 108 : 96)
+                            width: stopping ? 118 : (backend.previewResult ? 96 : (backend.previewHeld && !backend.previewPlaying ? 108 : 96))
                             height: 28
                             color: Theme.hsl(0.094, 0.333, 0.094, 0.753)
-                            border.color: stopping ? Theme.warning : (backend.previewPlaying ? Theme.success : (backend.previewHeld ? Theme.warning : Theme.outline))
+                            border.color: stopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.success : (backend.previewHeld ? Theme.warning : Theme.outline)))
                             Row {
                                 anchors.centerIn: parent
                                 spacing: 7
                                 Rectangle {
                                     width: 8; height: 8; radius: 4
-                                    color: previewBadge.stopping ? Theme.warning : (backend.previewPlaying ? Theme.danger : (backend.previewHeld ? Theme.warning : (backend.previewActive ? Theme.warning : "#64748B")))
+                                    color: previewBadge.stopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.danger : (backend.previewHeld ? Theme.warning : (backend.previewActive ? Theme.warning : "#64748B"))))
                                     anchors.verticalCenter: parent.verticalCenter
                                     SequentialAnimation on opacity {
-                                        running: backend.previewPlaying || previewBadge.stopping
+                                        running: (backend.previewPlaying && !backend.previewResult) || previewBadge.stopping
                                         loops: Animation.Infinite
                                         NumberAnimation { from: 1; to: 0.3; duration: 600 }
                                         NumberAnimation { from: 0.3; to: 1; duration: 600 }
                                     }
                                 }
-                                Text { text: previewBadge.stopping ? "STOPPING" : (backend.previewPlaying ? (backend.previewStacking ? "STACK" : "LIVE") : (backend.previewHeld ? "PAUSED" : (backend.previewActive ? "STARTING" : "STANDBY"))); color: Theme.textPrimary; font.pixelSize: 11; font.bold: true }
+                                Text { text: previewBadge.stopping ? "STOPPING" : (backend.previewResult ? "RESULT" : (backend.previewPlaying ? (backend.previewStacking ? "STACK" : "LIVE") : (backend.previewHeld ? "PAUSED" : (backend.previewActive ? "STARTING" : "STANDBY")))); color: Theme.textPrimary; font.pixelSize: 11; font.bold: true }
                             }
                         }
                         Rectangle {
-                            visible: backend.previewPlaying
+                            visible: backend.previewPlaying || backend.previewResult
                             width: mainCamLabel.implicitWidth + 16
                             height: 28
                             color: Theme.hsl(0.094, 0.333, 0.094, 0.753)
@@ -1414,7 +1457,7 @@ Item {
                             Text {
                                 id: mainCamLabel
                                 anchors.centerIn: parent
-                                text: previewHost.displayWide ? "WIDE" : (backend.previewStacking ? "STACK" : "TELE")
+                                text: previewHost.displayWide ? "WIDE" : (backend.previewResult || backend.previewStacking ? "STACK" : "TELE")
                                 color: Theme.accent
                                 font.pixelSize: 11
                                 font.bold: true
@@ -1504,7 +1547,7 @@ Item {
                         anchors.top: parent.top
                         anchors.margins: 14
                         spacing: 8
-                        opacity: backend.previewActive && previewHost.chromeShown ? 1 : 0
+                        opacity: (backend.previewActive || backend.previewResult) && previewHost.chromeShown ? 1 : 0
                         visible: opacity > 0
                         Behavior on opacity { NumberAnimation { duration: Theme.normal } }
                         HudButton {
@@ -1520,9 +1563,18 @@ Item {
                             onClicked: previewHost.swapViews()
                         }
                         HudButton {
+                            visible: backend.previewResult
+                            text: "START LIVE VIEW"
+                            enabled: previewHost.previewStartEnabled
+                            buttonColor: Theme.fillActive
+                            foregroundColor: Theme.accent
+                            onHoveredChanged: previewHost.holdControls(hovered)
+                            onClicked: previewHost.startPreview()
+                        }
+                        HudButton {
                             id: stopPreviewButton
-                            text: "STOP PREVIEW"
-                            busyText: "STOPPING…"
+                            text: backend.previewResult ? "DISMISS" : "STOP PREVIEW"
+                            busyText: backend.previewResult ? "DISMISSING…" : "STOPPING…"
                             onHoveredChanged: previewHost.holdControls(hovered)
                             onClicked: previewHost.stopPreview()
                         }
@@ -1586,17 +1638,25 @@ Item {
                     HudMenu {
                         id: previewMenu
                         HudMenuItem {
-                            text: backend.previewHeld ? "Don't resume live view" : (backend.previewActive ? "Stop preview" : "Start preview")
-                            glyph: backend.previewActive || backend.previewHeld ? "\uE71A" : "\uE768"
+                            text: backend.previewResult ? "Dismiss last stacked frame" : (backend.previewHeld ? "Don't resume live view" : (backend.previewActive ? "Stop preview" : "Start preview"))
+                            glyph: backend.previewActive || backend.previewHeld || backend.previewResult ? "\uE71A" : "\uE768"
                             enabled: backend.previewActive
                                 || backend.previewHeld
+                                || backend.previewResult
                                 || previewHost.previewStartEnabled
                             onTriggered: {
-                                if (backend.previewActive || backend.previewHeld)
+                                if (backend.previewActive || backend.previewHeld || backend.previewResult)
                                     previewHost.stopPreview()
                                 else
                                     previewHost.startPreview()
                             }
+                        }
+                        HudMenuItem {
+                            text: "Start live view"
+                            glyph: "\uE768"
+                            visible: backend.previewResult
+                            enabled: backend.previewResult && previewHost.previewStartEnabled
+                            onTriggered: previewHost.startPreview()
                         }
                         HudMenuItem {
                             text: previewHost.pipEnabled ? "Hide picture-in-picture" : "Show picture-in-picture"

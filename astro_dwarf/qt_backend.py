@@ -349,6 +349,30 @@ _MEDIA_LOCKED_STATUS = (
     "The telescope album isn't available while it's capturing. "
     "Wait until imaging finishes, or switch to Local."
 )
+
+
+def stacking_preview_result_copy(
+    ok: bool,
+    stopped: bool,
+    target: str,
+    scheduler_enabled: bool,
+) -> tuple[str, str]:
+    """Caption shown over the last stacked frame after capture ends."""
+    name = str(target or "this target").strip() or "this target"
+    if ok:
+        title = "SESSION COMPLETE"
+    elif stopped:
+        title = "SESSION STOPPED"
+    else:
+        title = "SESSION FAILED"
+    extra = f"{name} · last stacked frame. This is not live video."
+    if scheduler_enabled:
+        extra += " The next capture will show stacking preview if you leave this up."
+    else:
+        extra += " Dismiss it, or start live view."
+    return title, extra
+
+
 _ACTIVITY_TRANSIENT = {"autofocus", "calibrate"}
 _ACTION_LABELS = {
     "calibrate": "Calibration started",
@@ -629,6 +653,7 @@ class AppBackend(QObject):
     previewWideGenerationChanged = Signal()
     previewHoldChanged = Signal()
     previewStackingChanged = Signal()
+    previewResultChanged = Signal()
     enhanceImagesChanged = Signal()
     deepCleanImagesChanged = Signal()
     enhanceCacheChanged = Signal()
@@ -744,6 +769,9 @@ class AppBackend(QObject):
         self._preview_tele_url = ""
         self._preview_wide_url = ""
         self._preview_stack_mode = False
+        self._preview_result = False
+        self._preview_result_title = ""
+        self._preview_result_detail = ""
         self._enhance_images = True
         self._deep_clean_images = False
         self._raw_preview_images = {"tele": QImage(), "wide": QImage()}
@@ -1746,6 +1774,18 @@ class AppBackend(QObject):
     def previewStacking(self) -> bool:
         return bool(self._preview_stack_mode)
 
+    @Property(bool, notify=previewResultChanged)
+    def previewResult(self) -> bool:
+        return bool(self._preview_result)
+
+    @Property(str, notify=previewResultChanged)
+    def previewResultTitle(self) -> str:
+        return self._preview_result_title
+
+    @Property(str, notify=previewResultChanged)
+    def previewResultDetail(self) -> str:
+        return self._preview_result_detail
+
     @Property(bool, notify=enhanceImagesChanged)
     def enhanceImages(self) -> bool:
         return bool(self._enhance_images)
@@ -2004,6 +2044,7 @@ class AppBackend(QObject):
         worker.send("go_live", callback=after_live)
 
     def _arm_preview_ui(self, status: str) -> int:
+        self._clear_preview_result()
         if self._preview_active or self._preview_playing:
             self._closePreviewStreams.emit()
         self._preview_token += 1
@@ -2101,6 +2142,7 @@ class AppBackend(QObject):
     @Slot()
     def stopPreview(self) -> None:
         self._clear_preview_hold()
+        self._clear_preview_result()
         self._stop_preview_streams()
 
     def _stop_preview_streams(self) -> None:
@@ -2185,6 +2227,73 @@ class AppBackend(QObject):
         self._preview_stack_mode = stacking
         self.previewStackingChanged.emit()
 
+    def _preview_has_frame(self) -> bool:
+        for camera in ("tele", "wide"):
+            image = self.live_images.peek(camera)
+            if image is not None and not image.isNull():
+                return True
+        return False
+
+    def _clear_preview_result(self) -> None:
+        if not self._preview_result and not self._preview_result_title and not self._preview_result_detail:
+            return
+        self._preview_result = False
+        self._preview_result_title = ""
+        self._preview_result_detail = ""
+        self.previewResultChanged.emit()
+
+    def _close_preview_streams_keep_frames(self) -> None:
+        """Stop HTTP/RTSP without wiping the last painted stacked frame."""
+        self._pending_retarget = None
+        self._retarget_timer.stop()
+        self._preview_token += 1
+        was_open = self._preview_active or self._preview_playing
+        self._preview_active = False
+        self._preview_playing = False
+        self._preview_tele_playing = False
+        self._preview_wide_playing = False
+        self._preview_tele_url = ""
+        self._preview_wide_url = ""
+        self._set_preview_stack_mode(False)
+        if was_open:
+            self._closePreviewStreams.emit()
+        self.previewActiveChanged.emit()
+        self.previewPlayingChanged.emit()
+        self.previewTelePlayingChanged.emit()
+        self.previewWidePlayingChanged.emit()
+
+    def _freeze_stacking_preview_result(
+        self,
+        device_id: str,
+        *,
+        title: str = "STACK COMPLETE",
+        detail: str = "",
+    ) -> None:
+        """Keep the last stacked JPEG as a still after capture, not a fake live stream."""
+        if device_id != self._selected_device_id:
+            return
+        has_frame = self._preview_has_frame()
+        if not has_frame:
+            self._close_preview_streams_keep_frames()
+            self._clear_preview_result()
+            self.live_images.clear()
+            self._raw_preview_images = {"tele": QImage(), "wide": QImage()}
+            self._set_preview_status("")
+            self.previewGenerationChanged.emit()
+            return
+        self._preview_result = True
+        self._preview_result_title = title
+        self._preview_result_detail = detail or (
+            "Last stacked frame. This is not live video. Dismiss it, or start live view."
+        )
+        self._set_preview_status(self._preview_result_detail)
+        self.previewResultChanged.emit()
+        self._close_preview_streams_keep_frames()
+        self.add_log("info", "Capture ended — holding the last stacked frame", device_id)
+
+    def _stacking_result_copy(self, ok: bool, stopped: bool, target: str) -> tuple[str, str]:
+        return stacking_preview_result_copy(ok, stopped, target, self._scheduler_enabled)
+
     def _sync_preview_for_capture(
         self,
         device_id: str,
@@ -2192,11 +2301,17 @@ class AppBackend(QObject):
         current: dict[str, Any],
     ) -> None:
         """Move Dwarf 3/Mini live view onto the HTTP stacking JPEG during capture."""
-        if device_id != self._selected_device_id or not self._preview_active:
+        if device_id != self._selected_device_id:
             return
         if self._device_is_stopping(device_id):
             return
         stacking = self._preview_stacking(device_id)
+        if stacking and self._preview_result and not self._preview_active:
+            self._clear_preview_result()
+            self._attach_preview_streams(device_id, "Capture started — reconnecting stacking preview…")
+            return
+        if not self._preview_active:
+            return
         device = self._device_by_id(device_id)
         tele_url = self._stream_url(device, Camera.TELE, stacking=stacking)
         wide_url = self._stream_url(device, Camera.WIDE, stacking=stacking)
@@ -2206,6 +2321,9 @@ class AppBackend(QObject):
             return
         if mode_changed or urls_changed:
             was_stacking = self._preview_stack_mode
+            if not stacking and was_stacking:
+                self._freeze_stacking_preview_result(device_id)
+                return
             self._set_preview_stack_mode(stacking)
             if stacking and not was_stacking:
                 self.add_log(
@@ -2213,8 +2331,6 @@ class AppBackend(QObject):
                     "Capture started — switching live view to the stacking preview",
                     device_id,
                 )
-            elif not stacking and was_stacking:
-                self.add_log("info", "Capture ended — restoring RTSP live view", device_id)
             self._retarget_preview_streams(tele_url, wide_url)
 
     def _retarget_preview_streams(self, tele_url: str, wide_url: str, timeout: float = 20) -> None:
@@ -5069,8 +5185,14 @@ class AppBackend(QObject):
         )
         captured = self._captured_frames_for(session.id, final.camera.frame_count, ok)
         self._hold_session_capture.discard(final.device_id)
-        if not self._telemetry_capturing(final.device_id):
-            self._reset_device_capture_progress(final.device_id)
+        was_stack_preview = bool(
+            final.device_id == self._selected_device_id
+            and (
+                self._preview_stack_mode
+                or str(self._preview_tele_url or "").startswith("http://")
+            )
+        )
+        self._reset_device_capture_progress(final.device_id)
         device = next((item for item in self._devices if item.id == final.device_id), None)
         self.store.history.save(history_record_for_run(
             final,
@@ -5091,11 +5213,15 @@ class AppBackend(QObject):
             self._toast(f"Session failed · {final.target.name}", "error", outcome)
         self._emit_sessions_changed()
         self.historyChanged.emit()
-        telemetry = dict(self._device_telemetry.get(final.device_id) or {})
-        self._sync_preview_for_capture(final.device_id, telemetry, telemetry)
+        if was_stack_preview:
+            title, detail = self._stacking_result_copy(ok, stopped, final.target.name)
+            self._freeze_stacking_preview_result(final.device_id, title=title, detail=detail)
+        else:
+            telemetry = dict(self._device_telemetry.get(final.device_id) or {})
+            self._sync_preview_for_capture(final.device_id, telemetry, telemetry)
         self._notify_devices()
         self._sync_media_lock()
-        if restore_preview:
+        if restore_preview and not self._preview_result:
             self._restore_held_preview(final.device_id)
 
     def shutdown(self) -> None:
