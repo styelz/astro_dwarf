@@ -137,7 +137,7 @@ Item {
                     model: [
                         {label: "ENDPOINT", value: backend.selectedDevice.ip_address || "—", tone: root.scopeOnline ? Theme.textPrimary : Theme.textSecondary},
                         {label: "SCHEDULER", value: backend.schedulerEnabled ? root.nextSessionCountdown() : "Disarmed", tone: backend.schedulerEnabled ? Theme.success : Theme.textSecondary},
-                        {label: "PREVIEW", value: root.scopeStopping ? (root.scopePendingDetail || "Stopping") : (backend.previewResult ? "Last stack" : (backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped"))), tone: root.scopeStopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary)))},
+                        {label: "PREVIEW", value: root.scopeStopping ? (root.scopePendingDetail || "Stopping") : (backend.previewResult ? "Completed stack" : (backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped"))), tone: root.scopeStopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary)))},
                         {label: "SESSION", value: Util.sessionStepLabel(backend.currentSession, backend.localNow.epoch_ms) || backend.currentSession.current_step || Util.idleScheduleLabel(backend.upcomingSessions, backend.schedulerEnabled, backend.localNow.epoch_ms), tone: backend.currentSession.id ? Theme.accent : Theme.textSecondary},
                         {label: "REMAINING", value: backend.currentSession.id ? Util.durationLabel(Number(backend.currentSession.planned_duration_seconds || 0) * (1 - backend.sessionProgress)) : "—", tone: Theme.textPrimary},
                         {label: "TIMEZONE", value: backend.selectedDevice.timezone_name || "UTC", tone: Theme.textPrimary},
@@ -1259,7 +1259,7 @@ Item {
                             Text {
                                 width: parent.width
                                 wrapMode: Text.Wrap
-                                text: backend.previewResultDetail || "Last stacked frame. This is not live video."
+                                text: backend.previewResultDetail || "Completed stack from the telescope. This is not live video."
                                 color: Theme.textPrimary
                                 font.pixelSize: 11
                             }
@@ -1653,7 +1653,7 @@ Item {
                     HudMenu {
                         id: previewMenu
                         HudMenuItem {
-                            text: backend.previewResult ? "Dismiss last stacked frame" : (backend.previewHeld ? "Don't resume live view" : (backend.previewActive ? "Stop preview" : "Start preview"))
+                            text: backend.previewResult ? "Dismiss completed stack" : (backend.previewHeld ? "Don't resume live view" : (backend.previewActive ? "Stop preview" : "Start preview"))
                             glyph: backend.previewActive || backend.previewHeld || backend.previewResult ? "\uE71A" : "\uE768"
                             enabled: backend.previewActive
                                 || backend.previewHeld

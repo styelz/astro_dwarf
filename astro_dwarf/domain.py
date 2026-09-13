@@ -84,7 +84,10 @@ BURST_MEDIA_TYPE = 3
 PANORAMA_MEDIA_TYPE = 5
 ALBUM_VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".avi"}
 ALBUM_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".fits", ".fit"}
+ALBUM_STACK_DISPLAY_SUFFIXES = {".jpg", ".jpeg", ".png"}
 LOCAL_ALBUM_SUFFIXES = ALBUM_IMAGE_SUFFIXES | ALBUM_VIDEO_SUFFIXES
+_STACK_JPEG_NAMES = ("stacked.jpg", "stacked.jpeg")
+_STACK_RESULT_SKEW_S = 15
 _ALBUM_HREF = re.compile(r"""href=["']([^"']+)["']""", re.IGNORECASE)
 _SESSION_PREVIEW_TYPES = {BURST_MEDIA_TYPE, PANORAMA_MEDIA_TYPE}
 _SESSION_THUMB_NAMES = ("burst_thumbnail.jpg", "pano_thumbnail.jpg", "panorama_thumbnail.jpg")
@@ -281,6 +284,135 @@ def album_apply_listing_preview(entry: dict[str, Any], names: list[str]) -> dict
     listed = {name.lower() for name in names}
     out["fileAvailable"] = bool(remote_name and remote_name in listed)
     return out
+
+
+def album_is_stack_display_image(path: str = "", name: str = "") -> bool:
+    """JPEG/PNG that the live preview can paint. Skip FITS/TIFF."""
+    return _album_suffix(path, name) in ALBUM_STACK_DISPLAY_SUFFIXES
+
+
+def album_stack_image_name(names: list[str] | None) -> str:
+    """Prefer the firmware stacked JPEG over other files in a session folder."""
+    files = [str(name) for name in (names or []) if str(name).strip()]
+    lookup = {name.lower(): name for name in files}
+    stacked = [
+        name for name in files
+        if "stacked" in name.lower() and album_is_stack_display_image(name)
+    ]
+    for preferred in _STACK_JPEG_NAMES:
+        if preferred in lookup:
+            return lookup[preferred]
+    if stacked:
+        return stacked[0]
+    if "0.jpg" in lookup:
+        return lookup["0.jpg"]
+    for name in files:
+        if album_is_stack_display_image(name):
+            return name
+    return ""
+
+
+def album_astro_details(entry: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        return {}
+    for key in ("astroImageDetails", "astroMosaicImageDetails", "astroMultiImageDetails"):
+        details = entry.get(key)
+        if isinstance(details, dict) and details:
+            return details
+    return {}
+
+
+def album_stack_session_target(entry: dict[str, Any] | None) -> str:
+    details = album_astro_details(entry)
+    target = str(details.get("target") or "").strip()
+    if target:
+        return target
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get("fileName") or "").strip()
+
+
+def album_stack_session_camera(entry: dict[str, Any] | None) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    try:
+        cam_id = int(entry.get("camId"))
+    except (TypeError, ValueError):
+        cam_id = -1
+    if cam_id == 1:
+        return "wide"
+    if cam_id == 0:
+        return "tele"
+    text = f"{entry.get('filePath') or ''} {entry.get('thumbnailPath') or ''} {entry.get('fileName') or ''}".upper()
+    if "WIDE" in text:
+        return "wide"
+    if "TELE" in text:
+        return "tele"
+    return ""
+
+
+def album_stack_session_mtime(entry: dict[str, Any] | None) -> int:
+    if not isinstance(entry, dict):
+        return 0
+    try:
+        return int(entry.get("modificationTime") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def album_stack_result_path(entry: dict[str, Any] | None, listing_names: list[str] | None = None) -> str:
+    """Remote path of the stacked JPEG for live preview, if one is known."""
+    if not isinstance(entry, dict):
+        return ""
+    remote = str(entry.get("filePath") or "").strip()
+    thumb = str(entry.get("thumbnailPath") or "").strip()
+    if album_is_stack_display_image(remote):
+        return album_http_path(remote)
+    if album_is_stack_display_image(thumb):
+        return album_http_path(thumb)
+    folder = album_session_dir(thumb or remote)
+    name = album_stack_image_name(listing_names)
+    if folder and name:
+        return album_join_path(folder, name)
+    return ""
+
+
+def choose_latest_astro_stack(
+    sessions: list[dict[str, Any]] | None,
+    *,
+    target: str = "",
+    camera: str = "",
+    since: int = 0,
+    skew_s: int = _STACK_RESULT_SKEW_S,
+) -> dict[str, Any] | None:
+    """Newest matching astro album session, or None if nothing is ready yet."""
+    entries = [entry for entry in (sessions or []) if isinstance(entry, dict)]
+    if not entries:
+        return None
+    want_target = str(target or "").strip().lower()
+    want_camera = str(camera or "").strip().lower()
+    min_mtime = int(since or 0) - int(skew_s or 0)
+    scored: list[tuple[tuple[int, int], dict[str, Any]]] = []
+    for entry in entries:
+        mtime = album_stack_session_mtime(entry)
+        if since and mtime and mtime < min_mtime:
+            continue
+        cam = album_stack_session_camera(entry)
+        if want_camera and cam and cam != want_camera:
+            continue
+        blob = " ".join((
+            album_stack_session_target(entry),
+            str(entry.get("fileName") or ""),
+            album_http_path(str(entry.get("filePath") or "")),
+        )).lower()
+        target_hit = 1 if want_target and want_target in blob else 0
+        scored.append(((target_hit, mtime), entry))
+    if not scored:
+        return None
+    if want_target and any(item[0][0] for item in scored):
+        scored = [item for item in scored if item[0][0]]
+    scored.sort(key=lambda item: (item[0][0], item[0][1]), reverse=True)
+    return scored[0][1]
 
 
 class Camera(StrEnum):

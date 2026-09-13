@@ -35,12 +35,17 @@ from .domain import (
     album_http_path,
     album_http_url,
     album_is_astro_media,
+    album_is_stack_display_image,
     album_listing_names,
     album_needs_preview_check,
     album_path_matches_model,
     album_prefixed_path,
     album_session_dir,
+    album_stack_result_path,
+    album_stack_session_camera,
+    album_stack_session_target,
     capture_defaults_from_dict,
+    choose_latest_astro_stack,
     device_name_model,
     firmware_binning,
     firmware_exposure_name,
@@ -2745,6 +2750,64 @@ def astro_session_download(file_path: str = "", dest_dir: str = "") -> dict[str,
     return {"path": str(local), "file": name, "url": url, "file_path": remote}
 
 
+def astro_stack_result_image(
+    target: str = "",
+    camera: str = "",
+    since: int = 0,
+) -> dict[str, Any]:
+    """Download the newest completed stack JPEG for live preview. One attempt."""
+    listing = astro_sessions_list()
+    sessions = listing.get("sessions") or []
+    ip = str(listing.get("ip") or _device_ip())
+    entry = choose_latest_astro_stack(
+        sessions if isinstance(sessions, list) else [],
+        target=target,
+        camera=camera,
+        since=int(since or 0),
+    )
+    if not entry:
+        raise RuntimeError("No completed stack session found yet")
+    remote = album_stack_result_path(entry)
+    if not album_is_stack_display_image(remote):
+        folder = album_session_dir(
+            str(entry.get("thumbnailPath") or entry.get("filePath") or "")
+        )
+        remote = album_stack_result_path(entry, _album_dir_names(ip, folder) or [])
+    if not remote or not album_is_stack_display_image(remote):
+        raise RuntimeError("Completed stack has no JPEG preview yet")
+    url = _media_url(ip, remote)
+    name = album_http_path(remote).rsplit("/", 1)[-1] or "stacked.jpg"
+    folder = Path(tempfile.mkdtemp(prefix="astro-dwarf-stack-"))
+    local = folder / name
+    try:
+        try:
+            _http_download(url, local, timeout=30)
+        except RuntimeError as exc:
+            try:
+                _ftp_download_file(ip, remote, local)
+            except Exception as ftp_exc:
+                raise RuntimeError(f"{exc}; FTP fallback failed: {ftp_exc}") from ftp_exc
+        if not local.exists() or local.stat().st_size <= 0:
+            raise RuntimeError(f"Download produced an empty stacked JPEG from {url}")
+    except Exception:
+        try:
+            if local.exists():
+                local.unlink()
+            folder.rmdir()
+        except OSError:
+            pass
+        raise
+    log(f"Fetched completed stack {name} from {url}")
+    return {
+        "path": str(local),
+        "file": name,
+        "url": url,
+        "file_path": remote,
+        "target": album_stack_session_target(entry),
+        "camera": album_stack_session_camera(entry),
+    }
+
+
 def _julian_date(when: datetime) -> float:
     when = when.astimezone(timezone.utc)
     year, month, day = when.year, when.month, when.day
@@ -2919,6 +2982,17 @@ def dispatch(message: dict[str, Any]) -> Any:
         return astro_session_download(
             str(args[0] if args else ""),
             str(args[1] if len(args) > 1 else ""),
+        )
+    if command == "astro_stack_result_image":
+        args = list(message.get("args") or [])
+        try:
+            since = int(message.get("since") if message.get("since") not in (None, "") else (args[2] if len(args) > 2 else 0) or 0)
+        except (TypeError, ValueError):
+            since = 0
+        return astro_stack_result_image(
+            str(message.get("target") or (args[0] if args else "") or ""),
+            str(message.get("camera") or (args[1] if len(args) > 1 else "") or ""),
+            since,
         )
     if command == "polar_position":
         return polar_position()

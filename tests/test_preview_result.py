@@ -8,6 +8,7 @@ class StackingPreviewResultCopyTests(unittest.TestCase):
         title, detail = stacking_preview_result_copy(True, False, "M31", False)
         self.assertEqual(title, "SESSION COMPLETE")
         self.assertIn("M31", detail)
+        self.assertIn("completed stack", detail)
         self.assertIn("not live video", detail)
         self.assertIn("Dismiss", detail)
 
