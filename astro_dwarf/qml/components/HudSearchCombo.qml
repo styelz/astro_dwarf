@@ -1,8 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Shapes
-import QtCore
 import ".."
 
 Item {
@@ -13,9 +11,12 @@ Item {
     property alias editText: searchField.text
     property bool listOpen: false
     property var filtered: []
+    property string accessibleName: ""
     signal itemChosen(var item)
     implicitHeight: 34
     implicitWidth: 240
+    Accessible.role: Accessible.ComboBox
+    Accessible.name: accessibleName || searchField.placeholderText || "Search"
 
     function copyAllItems() {
         const items = searchCombo.allItems || []

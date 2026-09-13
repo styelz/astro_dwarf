@@ -1,8 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Shapes
-import QtCore
 import ".."
 
 Menu {
@@ -20,6 +18,6 @@ Menu {
         color: Theme.surfaceHigh
         border.color: Theme.outline
         border.width: 1
-        radius: 8
+        radius: Theme.notchSmall + Theme.radius
     }
 }

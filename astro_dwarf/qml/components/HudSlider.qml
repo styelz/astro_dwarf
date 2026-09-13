@@ -9,6 +9,7 @@ import ".."
 Slider {
     id: control
     property string accessibleName: ""
+    property string tooltip: ""
     property var trackGradient: null
     property real markerPosition: -1
     property string valueText: ""
@@ -22,7 +23,11 @@ Slider {
     opacity: enabled ? 1 : 0.55
     Behavior on opacity { NumberAnimation { duration: Theme.quick } }
     Accessible.name: accessibleName
-    Accessible.description: valueText
+    Accessible.description: tooltip || valueText
+    HudToolTip {
+        visible: control.tooltip !== "" && control.hovered && !control.pressed
+        text: control.tooltip
+    }
 
     background: Rectangle {
         x: control.leftPadding

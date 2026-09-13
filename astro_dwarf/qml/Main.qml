@@ -360,16 +360,16 @@ ApplicationWindow {
             }
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 16
+                anchors.leftMargin: Theme.s4
                 anchors.rightMargin: 10
-                spacing: titleBar.compact ? 8 : 14
+                spacing: titleBar.compact ? Theme.s2 : 14
                 Item {
                     implicitWidth: brand.implicitWidth
                     implicitHeight: brand.implicitHeight
                     Column {
                         id: brand
-                        Text { text: "ASTRO DWARF"; color: Theme.accent; font.pixelSize: 16; font.letterSpacing: 3; font.bold: true }
-                        Text { visible: !titleBar.compact; text: "OBSERVATORY COMMAND  ·  v" + backend.appVersion; color: Theme.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4 }
+                        Text { text: "ASTRO DWARF"; color: Theme.accent; font.pixelSize: Theme.fontLg; font.letterSpacing: 3; font.bold: true }
+                        Text { visible: !titleBar.compact; text: "OBSERVATORY COMMAND  ·  v" + backend.appVersion; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.letterSpacing: 1.4 }
                     }
                     MouseArea {
                         anchors.fill: parent
@@ -377,7 +377,7 @@ ApplicationWindow {
                         onDoubleClicked: root.toggleMaximized()
                     }
                 }
-                Rectangle { width: 1; Layout.fillHeight: true; Layout.topMargin: 12; Layout.bottomMargin: 12; color: Theme.outline }
+                Rectangle { width: 1; Layout.fillHeight: true; Layout.topMargin: Theme.s3; Layout.bottomMargin: Theme.s3; color: Theme.outline }
                 DeviceCombo {
                     Layout.preferredWidth: titleBar.compact ? 150 : 200
                     Layout.maximumWidth: Layout.preferredWidth
@@ -410,7 +410,7 @@ ApplicationWindow {
                     text: titleBar.narrow
                         ? (backend.schedulerEnabled ? "SCHED ON" : "SCHED OFF")
                         : (backend.schedulerEnabled ? "SCHEDULER ON" : "SCHEDULER OFF")
-                    busyText: "UPDATING…"
+                    busyMs: 0
                     enabled: backend.schedulerEnabled || backend.anyDeviceConnected
                     buttonColor: backend.schedulerEnabled ? Theme.fillSuccess : Theme.surfaceHigh
                     foregroundColor: backend.schedulerEnabled ? Theme.success : Theme.textPrimary
@@ -432,6 +432,7 @@ ApplicationWindow {
                     busyText: "STOPPING…"
                     busyMs: 0
                     // A running session must always be stoppable, even while the link is still coming up.
+                    // A running session must always be stoppable, even while the link is still coming up.
                     enabled: root.commandEnabled("stop_all") || (root.scopeImaging && !root.scopeStopping)
                     buttonColor: Theme.fillDanger
                     foregroundColor: Theme.danger
@@ -447,8 +448,7 @@ ApplicationWindow {
                     }
                 }
                 RowLayout {
-                    visible: !titleBar.compact
-                    spacing: 10
+                    spacing: titleBar.compact ? 6 : 10
                     Repeater {
                         model: [
                             {label: "LINK", on: root.scopeOnline, color: Theme.success},
@@ -458,13 +458,14 @@ ApplicationWindow {
                         delegate: RowLayout {
                             required property var modelData
                             spacing: 4
+                            Accessible.role: Accessible.Indicator
+                            Accessible.name: modelData.label + (modelData.on ? " active" : " off")
                             LedDot { on: modelData.on; onColor: modelData.color; pulse: true }
-                            Text { text: modelData.label; color: modelData.on ? Theme.textPrimary : Theme.textSecondary; font.pixelSize: 8; font.bold: true }
+                            Text { visible: !titleBar.compact; text: modelData.label; color: modelData.on ? Theme.textPrimary : Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true }
                         }
                     }
                     Rectangle { width: 1; Layout.preferredHeight: 18; color: Theme.outline; visible: root.scopeOnline }
                     RowLayout {
-                        // mini battery readout
                         id: titleBattery
                         readonly property var t: root.scopeTelemetry
                         readonly property int percent: root.scopeOnline && t.battery_percent !== undefined ? Number(t.battery_percent) : -1
@@ -498,28 +499,29 @@ ApplicationWindow {
                         Text {
                             text: titleBattery.percent >= 0 ? titleBattery.percent + "%" + (titleBattery.t.charging ? "⚡" : "") : "—"
                             color: titleBattery.percent >= 0 ? Theme.textPrimary : Theme.textSecondary
-                            font.pixelSize: 10; font.family: Theme.fontMono; font.bold: true
+                            font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; font.bold: true
                         }
-                        ToolTip.visible: batteryHover.hovered
-                        ToolTip.delay: 400
-                        ToolTip.text: "Battery " + (titleBattery.t.battery_text || "—") + (titleBattery.t.charging_text ? "  ·  " + titleBattery.t.charging_text : "") + (titleBattery.t.battery_health_text ? "\n" + titleBattery.t.battery_health_text : "")
+                        HudToolTip {
+                            visible: batteryHover.hovered
+                            text: "Battery " + (titleBattery.t.battery_text || "—") + (titleBattery.t.charging_text ? "  ·  " + titleBattery.t.charging_text : "") + (titleBattery.t.battery_health_text ? "\n" + titleBattery.t.battery_health_text : "")
+                        }
                         HoverHandler { id: batteryHover }
                     }
                     RowLayout {
-                        // mini storage readout
                         id: titleStorage
                         readonly property var t: root.scopeTelemetry
-                        visible: root.scopeOnline
+                        visible: root.scopeOnline && !titleBar.narrow
                         spacing: 5
                         Text { text: "▤"; color: titleStorage.t.storage_tone === "bad" ? Theme.danger : titleStorage.t.storage_tone === "warn" ? Theme.warning : Theme.accent; font.pixelSize: 11 }
                         Text {
                             text: root.scopeOnline && titleStorage.t.storage_text && titleStorage.t.storage_text !== "—" ? String(titleStorage.t.storage_free_text || titleStorage.t.storage_text) : "—"
                             color: titleStorage.t.storage_tone === "bad" ? Theme.danger : titleStorage.t.storage_tone === "warn" ? Theme.warning : (titleStorage.t.storage_text && titleStorage.t.storage_text !== "—" ? Theme.textPrimary : Theme.textSecondary)
-                            font.pixelSize: 10; font.family: Theme.fontMono; font.bold: true
+                            font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; font.bold: true
                         }
-                        ToolTip.visible: storageHover.hovered
-                        ToolTip.delay: 400
-                        ToolTip.text: "Storage " + (titleStorage.t.storage_text || "—")
+                        HudToolTip {
+                            visible: storageHover.hovered
+                            text: "Storage " + (titleStorage.t.storage_text || "—")
+                        }
                         HoverHandler { id: storageHover }
                     }
                 }
@@ -529,7 +531,7 @@ ApplicationWindow {
                     Text { text: root.deviceLabel(); color: Theme.textSecondary; font.pixelSize: 10; horizontalAlignment: Text.AlignRight; width: 160; elide: Text.ElideRight }
                 }
                 Column {
-                    Text { text: backend.clockText; color: Theme.accent; font.pixelSize: titleBar.compact ? 18 : 22; font.family: Theme.fontMono; font.letterSpacing: 1; horizontalAlignment: Text.AlignRight; width: titleBar.compact ? 124 : 168 }
+                    Text { text: backend.clockText; color: Theme.accent; font.pixelSize: titleBar.compact ? 18 : Theme.fontXl; font.family: Theme.fontMono; font.letterSpacing: 1; horizontalAlignment: Text.AlignRight; width: titleBar.compact ? 124 : 168 }
                     Text {
                         text: backend.selectedDevice.timezone_name || "UTC"
                         color: Theme.textSecondary
@@ -555,15 +557,15 @@ ApplicationWindow {
             Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: Theme.outline }
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 16
-                anchors.rightMargin: 16
-                spacing: 12
+                anchors.leftMargin: Theme.s4
+                anchors.rightMargin: Theme.s4
+                spacing: Theme.s3
                 Text {
                     text: "DEVICES"
                     color: Theme.textSecondary
                     font.pixelSize: 9
                     font.bold: true
-                    font.letterSpacing: 1.6
+                    font.letterSpacing: Theme.tracking2
                 }
                 Rectangle { width: 1; Layout.preferredHeight: 14; color: Theme.outline }
                 HudButton {
@@ -606,12 +608,18 @@ ApplicationWindow {
                         readonly property bool selected: modelData.id === backend.selectedDeviceId
                         width: chipRow.implicitWidth + 24
                         height: deviceChips.height
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.Button
+                        Accessible.name: modelData.name + ", " + (modelData.connected ? "connected" : "offline")
+                        Accessible.description: modelData.status + (modelData.ip_address ? ", " + modelData.ip_address : "")
+                        Keys.onReturnPressed: backend.selectDevice(deviceCard.modelData.id)
+                        Keys.onSpacePressed: backend.selectDevice(deviceCard.modelData.id)
                         Rectangle {
                             anchors.fill: parent
                             anchors.topMargin: 3
                             anchors.bottomMargin: 3
                             radius: 3
-                            color: deviceCard.selected ? Theme.hsl(0.036, 0.640, 0.196, 0.627) : (chipHover.hovered ? Theme.hsl(0.057, 0.548, 0.122, 0.314) : "transparent")
+                            color: deviceCard.selected ? Theme.hsl(0.036, 0.640, 0.196, 0.627) : (chipHover.hovered || deviceCard.activeFocus ? Theme.hsl(0.057, 0.548, 0.122, 0.314) : "transparent")
                             Behavior on color { ColorAnimation { duration: 120 } }
                         }
                         Rectangle {
@@ -621,6 +629,15 @@ ApplicationWindow {
                             width: deviceCard.selected ? parent.width - 16 : 0
                             color: Theme.accent
                             Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                        }
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.margins: 1
+                            radius: 3
+                            color: "transparent"
+                            border.color: Theme.accent
+                            border.width: Theme.focusStroke
+                            visible: deviceCard.activeFocus
                         }
                         RowLayout {
                             id: chipRow
@@ -656,7 +673,7 @@ ApplicationWindow {
                             }
                             Rectangle {
                                 width: 6; height: 6; radius: 3
-                                color: deviceCard.modelData.connected ? (deviceCard.modelData.busy ? Theme.danger : Theme.success) : "#526077"
+                                color: deviceCard.modelData.connected ? (deviceCard.modelData.busy ? Theme.danger : Theme.success) : Theme.muted
                                 border.color: deviceCard.modelData.connected ? Theme.hsl(-0.021, 1.000, 0.924) : "transparent"
                                 border.width: deviceCard.modelData.connected ? 1 : 0
                                 SequentialAnimation on opacity {
@@ -937,6 +954,8 @@ ApplicationWindow {
                     required property int duration
                     readonly property color tone: Util.toneForLevel(level)
                     readonly property bool hovering: toastHover.hovered
+                    Accessible.role: Accessible.AlertMessage
+                    Accessible.name: message + (detail ? ". " + detail : "")
                     width: toastColumn.width
                     height: toastBody.implicitHeight + 18
                     radius: 4
@@ -979,7 +998,7 @@ ApplicationWindow {
                                 Text {
                                     text: toastCard.message
                                     color: Theme.textPrimary
-                                    font.pixelSize: 12
+                                    font.pixelSize: Theme.fontMd
                                     font.bold: true
                                     wrapMode: Text.Wrap
                                     maximumLineCount: 2
@@ -997,7 +1016,7 @@ ApplicationWindow {
                                 visible: toastCard.detail !== ""
                                 text: toastCard.detail
                                 color: Theme.textSecondary
-                                font.pixelSize: 10
+                                font.pixelSize: Theme.fontSm
                                 wrapMode: Text.Wrap
                                 maximumLineCount: 3
                                 elide: Text.ElideRight
@@ -1010,7 +1029,7 @@ ApplicationWindow {
                                 Text {
                                     text: "VIEW LOG"
                                     color: viewLogHover.hovered ? Theme.textPrimary : toastCard.tone
-                                    font.pixelSize: 9; font.bold: true; font.letterSpacing: 1.2
+                                    font.pixelSize: 9; font.bold: true; font.letterSpacing: Theme.tracking2
                                     HoverHandler { id: viewLogHover; cursorShape: Qt.PointingHandCursor }
                                     TapHandler {
                                         onTapped: {
@@ -1023,7 +1042,7 @@ ApplicationWindow {
                                 Text {
                                     text: "DISMISS"
                                     color: dismissHover.hovered ? Theme.textPrimary : Theme.textSecondary
-                                    font.pixelSize: 9; font.bold: true; font.letterSpacing: 1.2
+                                    font.pixelSize: 9; font.bold: true; font.letterSpacing: Theme.tracking2
                                     HoverHandler { id: dismissHover; cursorShape: Qt.PointingHandCursor }
                                     TapHandler { onTapped: toastHost.dismiss(toastCard.toastId) }
                                 }

@@ -21,6 +21,7 @@ Dialog {
     width: 420
     height: Math.max(196, headingLabel.implicitHeight + summaryLabel.implicitHeight + 88)
     padding: 16
+    onOpened: cancelBtn.forceActiveFocus()
     background: DialogFrame { tone: Theme.danger }
     contentItem: ColumnLayout {
         spacing: 12
@@ -28,7 +29,7 @@ Dialog {
         Text { id: summaryLabel; text: confirmDialog.summary; color: Theme.textPrimary; wrapMode: Text.Wrap; Layout.fillWidth: true }
         RowLayout {
             Layout.alignment: Qt.AlignRight
-            HudButton { text: "CANCEL"; onClicked: confirmDialog.close() }
+            HudButton { id: cancelBtn; text: "CANCEL"; onClicked: confirmDialog.close() }
             HudButton {
                 text: confirmDialog.confirmLabel
                 busyText: "WORKING…"
