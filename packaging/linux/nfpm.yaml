@@ -23,5 +23,12 @@ contents:
     type: symlink
   - src: packaging/linux/astro-dwarf.desktop
     dst: /usr/share/applications/astro-dwarf.desktop
-  - src: packaging/icons/astro-dwarf.png
-    dst: /usr/share/icons/hicolor/1024x1024/apps/astro-dwarf.png
+  # Install standard hicolor sizes plus pixmaps so launchers can resolve Icon=astro-dwarf.
+  - src: packaging/icons/hicolor
+    dst: /usr/share/icons/hicolor
+    type: tree
+  - src: packaging/icons/hicolor/256x256/apps/astro-dwarf.png
+    dst: /usr/share/pixmaps/astro-dwarf.png
+scripts:
+  postinstall: packaging/linux/postinstall.sh
+  postremove: packaging/linux/postinstall.sh

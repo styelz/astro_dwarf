@@ -37,6 +37,12 @@ datas = [
     (str(ROOT / "VERSION"), "."),
     (str(ROOT / "astro_dwarf" / "qml"), "qml"),
 ]
+# Qt's title-bar icon comes from QIcon files, not the EXE resource PyInstaller embeds.
+for _icon_name in ("astro-dwarf.ico", "astro-dwarf.png"):
+    _icon_path = ICON_DIR / _icon_name
+    if _icon_path.is_file():
+        datas.append((str(_icon_path), "."))
+        datas.append((str(_icon_path), "qml/assets"))
 datas += collect_pyside_qml()
 datas += collect_data_files(
     "PySide6",

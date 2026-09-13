@@ -6,4 +6,5 @@ Exec=/usr/bin/astro-dwarf
 Icon=astro-dwarf
 Categories=Science;Astronomy;
 Terminal=false
-StartupWMClass=AstroDwarf
+StartupWMClass=astro-dwarf
+StartupNotify=true

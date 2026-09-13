@@ -13,7 +13,7 @@ from .qt_display import configure_qt_display
 configure_qt_display()
 
 from PySide6.QtCore import QTimer, QUrl
-from PySide6.QtGui import QGuiApplication, QIcon
+from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
 from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
 
 from .image_enhance import EnhanceImageProvider
@@ -47,25 +47,117 @@ def _colorref(hex_color: str) -> ctypes.c_int:
     return ctypes.c_int(red | (green << 8) | (blue << 16))
 
 
-def _app_icon(resources: Path) -> QIcon:
-    candidates = [
-        resources / "qml" / "assets" / "astro-dwarf.png",
-        Path(__file__).resolve().parent.parent / "packaging" / "icons" / "astro-dwarf.ico",
-        Path(__file__).resolve().parent.parent / "packaging" / "icons" / "astro-dwarf.png",
-    ]
-    if is_frozen():
-        candidates.extend(
-            [
-                Path(sys.executable),
-                Path(getattr(sys, "_MEIPASS", "")) / "astro-dwarf.png",
-            ]
+def _app_icon_candidates(
+    resources: Path,
+    *,
+    frozen: bool | None = None,
+    executable: Path | None = None,
+    meipass: Path | None = None,
+    source_root: Path | None = None,
+) -> list[Path]:
+    """Paths Qt can load as a window icon. The frozen EXE resource is not one of them."""
+    frozen = is_frozen() if frozen is None else frozen
+    source_root = source_root or Path(__file__).resolve().parent.parent
+    meipass = meipass or Path(getattr(sys, "_MEIPASS", "") or ".")
+    names = ("astro-dwarf.ico", "astro-dwarf.png")
+    ordered: list[Path] = []
+    for name in names:
+        ordered.append(resources / "qml" / "assets" / name)
+    for name in names:
+        ordered.append(source_root / "packaging" / "icons" / name)
+    if frozen:
+        for name in names:
+            ordered.append(meipass / name)
+        if executable is None:
+            executable = Path(sys.executable)
+        ordered.append(executable)
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for candidate in ordered:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _icon_from_windows_executable(path: Path) -> QIcon:
+    """Read the PE icon resource. QIcon(path_to_exe) cannot decode an .exe as an image."""
+    if sys.platform != "win32" or not path.is_file():
+        return QIcon()
+    try:
+        large = ctypes.c_void_p()
+        small = ctypes.c_void_p()
+        extracted = ctypes.windll.shell32.ExtractIconExW(
+            str(path), 0, ctypes.byref(large), ctypes.byref(small), 1
         )
-    for candidate in candidates:
-        if candidate.is_file():
+        if not extracted:
+            return QIcon()
+        icon = QIcon()
+        destroy = ctypes.windll.user32.DestroyIcon
+        try:
+            for handle in (small, large):
+                if not handle.value:
+                    continue
+                pixmap = QPixmap.fromHICON(int(handle.value))
+                if not pixmap.isNull():
+                    icon.addPixmap(pixmap)
+        finally:
+            if small.value:
+                destroy(small.value)
+            if large.value:
+                destroy(large.value)
+        return icon
+    except Exception:
+        return QIcon()
+
+
+def _app_icon(resources: Path) -> QIcon:
+    for candidate in _app_icon_candidates(resources):
+        if not candidate.is_file():
+            continue
+        if candidate.suffix.lower() in {".exe", ".dll"}:
+            icon = _icon_from_windows_executable(candidate)
+        else:
             icon = QIcon(str(candidate))
-            if not icon.isNull():
-                return icon
+        if not icon.isNull():
+            return icon
+    if is_frozen():
+        return _icon_from_windows_executable(Path(sys.executable))
     return QIcon()
+
+
+def _configure_windows_app_id() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("com.astrodwarf.app")
+    except Exception:
+        pass
+
+
+def _apply_native_window_icon(window, icon: QIcon) -> None:
+    if icon.isNull():
+        return
+    if hasattr(window, "setIcon"):
+        window.setIcon(icon)
+    if sys.platform != "win32":
+        return
+    try:
+        hwnd = int(window.winId())
+        user32 = ctypes.windll.user32
+        wm_seticon = 0x0080
+        icon_small = 0
+        icon_big = 1
+        small = icon.pixmap(user32.GetSystemMetrics(49), user32.GetSystemMetrics(50))
+        big = icon.pixmap(user32.GetSystemMetrics(11), user32.GetSystemMetrics(12))
+        if not small.isNull():
+            user32.SendMessageW(hwnd, wm_seticon, icon_small, small.toHICON())
+        if not big.isNull():
+            user32.SendMessageW(hwnd, wm_seticon, icon_big, big.toHICON())
+    except Exception:
+        pass
 
 
 def _apply_windows_frame(window, caption_hex: str = "#0B1520", border_hex: str = "#3F6E82", text_hex: str = "#4DE8FF") -> None:
@@ -93,10 +185,12 @@ def run() -> int:
     os.environ["QML_DISABLE_DISK_CACHE"] = "1"
     configure_quick_runtime()
     configure_qml_import_path()
+    _configure_windows_app_id()
     application = QGuiApplication(sys.argv)
     application.setApplicationName("Astro Dwarf")
     application.setApplicationVersion(__version__)
     application.setOrganizationName("Astro Dwarf")
+    application.setDesktopFileName("astro-dwarf")
 
     resources = package_root()
     icon = _app_icon(resources)
@@ -114,8 +208,7 @@ def run() -> int:
         backend.shutdown()
         return 1
     window = engine.rootObjects()[0]
-    if not icon.isNull() and hasattr(window, "setIcon"):
-        window.setIcon(icon)
+    _apply_native_window_icon(window, icon)
     persist_scene = getattr(window, "setPersistentSceneGraph", None)
     persist_graphics = getattr(window, "setPersistentGraphics", None)
     if callable(persist_scene):
@@ -133,8 +226,14 @@ def run() -> int:
             pass
 
     backend.bindPreviewWindow(window)
+
+    def _apply_frame(caption: str, border: str, text: str) -> None:
+        _apply_windows_frame(window, caption, border, text)
+        # DWM caption coloring can recreate the native frame; re-apply the icon after.
+        _apply_native_window_icon(window, icon)
+
     # Wire the hook after load: QML already queued the saved theme during onCompleted.
-    backend.bindWindowFrame(lambda caption, border, text: _apply_windows_frame(window, caption, border, text))
+    backend.bindWindowFrame(_apply_frame)
 
     interrupt = threading.Event()
     quitting = {"done": False}

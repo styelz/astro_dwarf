@@ -265,12 +265,14 @@ jobs:
       - name: Build AppImage
         shell: bash
         run: |
-          mkdir -p AppDir/usr/bin release
+          mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor release
           cp -a dist/AstroDwarf/. AppDir/usr/bin/
           cp packaging/linux/AppRun AppDir/AppRun
-          cp packaging/linux/astro-dwarf.desktop AppDir/AstroDwarf.desktop
-          sed -i 's/^Exec=.*/Exec=AstroDwarf/' AppDir/AstroDwarf.desktop
-          cp packaging/icons/astro-dwarf.png AppDir/astro-dwarf.png
+          cp packaging/linux/astro-dwarf.desktop AppDir/astro-dwarf.desktop
+          sed -i 's/^Exec=.*/Exec=AstroDwarf/' AppDir/astro-dwarf.desktop
+          cp -a packaging/icons/hicolor/. AppDir/usr/share/icons/hicolor/
+          cp packaging/icons/hicolor/256x256/apps/astro-dwarf.png AppDir/astro-dwarf.png
+          cp packaging/icons/hicolor/256x256/apps/astro-dwarf.png AppDir/.DirIcon
           chmod +x AppDir/AppRun AppDir/usr/bin/AstroDwarf AppDir/usr/bin/AstroDwarfWorker
           curl -fsSL -o appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
@@ -281,8 +283,8 @@ jobs:
       - name: Build Debian, RPM, and Arch packages
         shell: bash
         run: |
-          sed -i 's/\r$//' packaging/linux/astro-dwarf packaging/linux/AppRun
-          chmod +x packaging/linux/astro-dwarf
+          sed -i 's/\r$//' packaging/linux/astro-dwarf packaging/linux/AppRun packaging/linux/postinstall.sh
+          chmod +x packaging/linux/astro-dwarf packaging/linux/postinstall.sh
           curl -fsSL \
             https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz \
             | tar -xz -C "$RUNNER_TEMP" nfpm
@@ -299,6 +301,10 @@ jobs:
             --packager archlinux \
             --target "release/AstroDwarf-${VERSION}-linux-x86_64.pkg.tar.zst"
           dpkg-deb -c "release/AstroDwarf-${VERSION}-linux-amd64.deb" | grep -E '/usr/bin/(astro-dwarf|AstroDwarf)$'
+          dpkg-deb -c "release/AstroDwarf-${VERSION}-linux-amd64.deb" \
+            | grep -E 'usr/share/icons/hicolor/256x256/apps/astro-dwarf.png$'
+          dpkg-deb -c "release/AstroDwarf-${VERSION}-linux-amd64.deb" \
+            | grep -E 'usr/share/pixmaps/astro-dwarf.png$'
           tar --use-compress-program=zstd -tf \
             "release/AstroDwarf-${VERSION}-linux-x86_64.pkg.tar.zst" \
             | grep -E '(^|/)usr/bin/(astro-dwarf|AstroDwarf)$'

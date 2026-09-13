@@ -7,6 +7,7 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent
 ICON_DIR = ROOT / "icons"
+HICOLOR_SIZES = (32, 48, 64, 128, 256, 512)
 
 
 def build_icon(size: int = 1024) -> Image.Image:
@@ -25,6 +26,18 @@ def build_icon(size: int = 1024) -> Image.Image:
     return image
 
 
+def _resample() -> int:
+    return getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+
+
+def write_hicolor_pngs(icon: Image.Image) -> None:
+    resample = _resample()
+    for size in HICOLOR_SIZES:
+        dest = ICON_DIR / "hicolor" / f"{size}x{size}" / "apps"
+        dest.mkdir(parents=True, exist_ok=True)
+        icon.resize((size, size), resample).save(dest / "astro-dwarf.png", optimize=True)
+
+
 def main() -> None:
     ICON_DIR.mkdir(parents=True, exist_ok=True)
     icon = build_icon()
@@ -33,6 +46,10 @@ def main() -> None:
         ICON_DIR / "astro-dwarf.ico",
         sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
+    write_hicolor_pngs(icon)
+    assets = ROOT.parent / "astro_dwarf" / "qml" / "assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    icon.resize((256, 256), _resample()).save(assets / "astro-dwarf.png", optimize=True)
     try:
         icon.save(ICON_DIR / "astro-dwarf.icns")
     except Exception:
