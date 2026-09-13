@@ -3,7 +3,8 @@ import QtQuick.Controls
 import ".."
 
 // Clickable theme-role sample. Hue/brightness sliders edit the selected swatch;
-// double-click restores that role to the derived seed colour.
+// BASE writes the palette seed so unedited colours follow. Double-click restores
+// that role to stock. A hue strip stays readable on near-black fills.
 Item {
     id: swatch
     property string roleKey: ""
@@ -60,6 +61,21 @@ Item {
             border.color: swatch.selected || swatch.activeFocus ? Theme.accent : (hover.hovered ? Theme.outlineStrong : Theme.outline)
             border.width: swatch.selected || swatch.activeFocus ? 2 : 1
             Behavior on border.color { ColorAnimation { duration: Theme.quick } }
+            Rectangle {
+                // Near-black roles (BASE, PANEL) hide hue in the fill; this strip keeps it readable.
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 1
+                height: 3
+                radius: 1
+                color: {
+                    void Theme.paletteJson
+                    void Theme.hue
+                    void Theme.brightness
+                    return Qt.hsla(Theme.effectiveHue(swatch.roleKey), 0.9, 0.55, 1)
+                }
+            }
             Rectangle {
                 visible: swatch.customized
                 anchors.right: parent.right

@@ -40,11 +40,15 @@ Item {
     readonly property real tintHue: {
         void Theme.paletteJson
         void Theme.hue
+        if (settingsPage.tintRole === "windowBase")
+            return Theme.wrapHue(Theme.hue)
         return Theme.effectiveHue(settingsPage.tintRole)
     }
     readonly property real tintBrightness: {
         void Theme.paletteJson
         void Theme.brightness
+        if (settingsPage.tintRole === "windowBase")
+            return Theme.brightness
         return Theme.effectiveBrightness(settingsPage.tintRole)
     }
     readonly property string tintRoleName: {
@@ -437,7 +441,7 @@ Item {
                                     }
                                 }
                             }
-                            FieldHint { text: "Click a swatch to edit it. Hue and brightness apply only to that colour; related fills, outlines and glows follow their parent swatch. Double-click restores one colour. Success, warning and danger stay fixed. The Windows title bar follows panel, line and accent a moment after the sliders stop." }
+                            FieldHint { text: "Click a swatch to edit it. BASE is the console seed: unedited swatches, fills and the background art follow it. The other swatches keep the colour you set. Related fills, outlines and glows follow their parent. Double-click restores one colour. Success, warning and danger stay fixed. The Windows title bar follows panel, line and accent a moment after the sliders stop." }
                             FieldLabel { text: "HUE" }
                             HudSlider {
                                 id: hueSlider
@@ -446,7 +450,7 @@ Item {
                                 to: 1
                                 stepSize: 0.001
                                 onMoved: Theme.setRole(settingsPage.tintRole, value, settingsPage.tintBrightness)
-                                markerPosition: Theme.stockHue(settingsPage.tintRole)
+                                markerPosition: settingsPage.tintRole === "windowBase" ? Theme.defaultHue : Theme.stockHue(settingsPage.tintRole)
                                 valueText: Math.round(settingsPage.tintHue * 360) + "°"
                                 accessibleName: settingsPage.tintRoleName + " hue"
                                 trackGradient: Gradient {
@@ -466,7 +470,7 @@ Item {
                                     when: !hueSlider.pressed
                                 }
                             }
-                            FieldHint { text: "Hue of the selected swatch. The tick is that colour's stock position on the cyan HUD. Other swatches stay as they are." }
+                            FieldHint { text: "Hue of the selected swatch. The tick is that colour's stock position on the cyan HUD. BASE also shifts every swatch you have not edited; a locked swatch stays put." }
                             FieldLabel { text: "BRIGHTNESS" }
                             HudSlider {
                                 id: brightSlider
@@ -491,7 +495,7 @@ Item {
                                     when: !brightSlider.pressed
                                 }
                             }
-                            FieldHint { text: "Lightness of the selected swatch. 0 is stock for that colour; negative darkens it, positive lifts it. Other swatches stay as they are." }
+                            FieldHint { text: "Lightness of the selected swatch. 0 is stock for that colour; negative darkens it, positive lifts it. BASE also lifts or dims unedited swatches." }
                         }
                     }
 

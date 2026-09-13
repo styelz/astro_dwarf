@@ -4,8 +4,9 @@ import QtCore
 
 // Single source of truth for the HUD look. Named palette roles can be tinted
 // independently; relatives (fills, outlines, glows) follow their parent swatch.
-// Theme.hsl() still uses the seed hue/brightness for one-off tints. Saturation
-// and lightness recipes stay fixed per token so contrast remains stable.
+// BASE is the seed (Theme.hue / brightness): unedited swatches, Theme.hsl()
+// one-offs, and the background wash follow it. Other swatches store overrides.
+// Saturation and lightness recipes stay fixed per token so contrast remains stable.
 QtObject {
     id: theme
 
@@ -94,7 +95,7 @@ QtObject {
     // How far the seed hue is from stock (0 … 0.5). The original palette leans its
     // surfaces and outlines ~35° toward blue; the same lean turns a red accent orange,
     // so the offsets shrink as the hue moves away from cyan. At the default hue
-    // nothing changes. Seed-based so editing one swatch does not retint the others.
+    // nothing changes. BASE edits the seed; other swatches keep their own overrides.
     readonly property real hueDistance: {
         const d = Math.abs(theme.hue - theme.defaultHue)
         return Math.min(d, 1 - d)
@@ -119,8 +120,21 @@ QtObject {
     }
 
     function roleCustom(key) {
+        if (key === "windowBase")
+            return Math.abs(theme.hue - theme.defaultHue) > 0.002 || Math.abs(theme.brightness) > 0.002
         const ov = theme.roleOverride(key)
         return !!(ov && (ov.hue !== undefined || ov.brightness !== undefined))
+    }
+
+    function overridesJson(skipKey) {
+        const ov = {}
+        const src = theme.parsedOverrides
+        for (const k in src) {
+            if (k === skipKey || !src[k] || typeof src[k] !== "object")
+                continue
+            ov[k] = { hue: src[k].hue, brightness: src[k].brightness }
+        }
+        return Object.keys(ov).length ? JSON.stringify(ov) : ""
     }
 
     function paramsFor(key) {
@@ -155,35 +169,50 @@ QtObject {
     function setRole(key, hue, brightness) {
         if (!theme.recipes[key])
             return
-        const ov = {}
-        const src = theme.parsedOverrides
-        for (const k in src) {
-            if (!src[k] || typeof src[k] !== "object")
-                continue
-            ov[k] = { hue: src[k].hue, brightness: src[k].brightness }
+        const h = Math.round(theme.wrapHue(hue) * 1000) / 1000
+        const b = Math.round(Math.max(-1, Math.min(1, Number(brightness))) * 100) / 100
+        if (key === "windowBase") {
+            // BASE is the palette seed. The slider writes Theme.hue / brightness
+            // so Theme.hsl() one-offs, the background wash, and unedited swatches follow.
+            theme.hue = h
+            theme.brightness = b
+            if (theme.roleOverride("windowBase"))
+                theme.paletteJson = theme.overridesJson("windowBase")
+            return
         }
-        ov[key] = {
-            hue: Math.round(theme.wrapHue(hue) * 1000) / 1000,
-            brightness: Math.round(Math.max(-1, Math.min(1, Number(brightness))) * 100) / 100
-        }
+        const ov = JSON.parse(theme.overridesJson("") || "{}")
+        ov[key] = { hue: h, brightness: b }
         theme.paletteJson = JSON.stringify(ov)
     }
 
     function clearRole(key) {
-        const ov = {}
-        const src = theme.parsedOverrides
-        for (const k in src) {
-            if (k === key || !src[k] || typeof src[k] !== "object")
-                continue
-            ov[k] = { hue: src[k].hue, brightness: src[k].brightness }
+        if (key === "windowBase") {
+            theme.hue = theme.defaultHue
+            theme.brightness = 0
+            if (theme.roleOverride("windowBase"))
+                theme.paletteJson = theme.overridesJson("windowBase")
+            return
         }
-        theme.paletteJson = Object.keys(ov).length ? JSON.stringify(ov) : ""
+        theme.paletteJson = theme.overridesJson(key)
     }
 
     function resetPalette() {
         theme.paletteJson = ""
         theme.hue = theme.defaultHue
         theme.brightness = 0
+    }
+
+    // Older builds stored BASE as a leaf override, which left Theme.hsl() and
+    // unedited swatches on the old seed. Fold that override back into the seed.
+    Component.onCompleted: {
+        const ov = theme.roleOverride("windowBase")
+        if (!ov)
+            return
+        if (typeof ov.hue === "number")
+            theme.hue = Math.round(theme.wrapHue(ov.hue - theme.recipeOf("windowBase").offset * theme.spread) * 1000) / 1000
+        if (typeof ov.brightness === "number")
+            theme.brightness = ov.brightness
+        theme.paletteJson = theme.overridesJson("windowBase")
     }
 
     // weight: how strongly the brightness slider moves this token (0 = fixed).
