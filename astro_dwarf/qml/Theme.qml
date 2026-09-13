@@ -271,6 +271,7 @@ QtObject {
     readonly property color notice: "#5EE0D0"
     readonly property color fillDanger: "#3A1218"
     readonly property color fillSuccess: "#143028"
+    readonly property color fillWarning: "#3A2410"
 
     // Type.
     readonly property string fontUi: "Segoe UI"

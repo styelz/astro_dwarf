@@ -23,6 +23,12 @@ ApplicationWindow {
     font.family: Theme.fontUi
     flags: Qt.Window | Qt.WindowTitleHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint | Qt.WindowSystemMenuHint
     readonly property bool windowMaximized: visibility === Window.Maximized
+    onClosing: (close) => {
+        if (root.currentPage === root.settingsPageIndex && settingsPage.isDirty()) {
+            close.accepted = false
+            root.askLeaveSettings(-2, "")
+        }
+    }
 
     function dragWindow() {
         if (!root.windowMaximized)
@@ -92,10 +98,8 @@ ApplicationWindow {
         const id = String(deviceId || backend.selectedDeviceId || "")
         if (!id)
             return
-        if (!backend.devices || backend.devices.length <= 1) {
-            backend.deleteDevice(id)
+        if (!backend.devices || backend.devices.length <= 1)
             return
-        }
         let name = "this telescope"
         const devices = backend.devices
         for (let i = 0; i < devices.length; i++) {
@@ -245,6 +249,8 @@ ApplicationWindow {
     }
 
     function askLeaveSettings(page, deviceId) {
+        if (settingsLeaveDialog.visible)
+            return
         settingsLeaveDialog.pendingPage = page
         settingsLeaveDialog.pendingDeviceId = deviceId || ""
         settingsLeaveDialog.open()

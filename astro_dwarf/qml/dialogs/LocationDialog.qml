@@ -12,6 +12,7 @@ Dialog {
     id: locationDialog
     objectName: "locationDialog"
     property bool addingDevice: false
+    readonly property bool locationRequired: !addingDevice && !backend.selectedDevice.location_configured
     modal: true
     closePolicy: Popup.NoAutoClose
     anchors.centerIn: Overlay.overlay
@@ -33,7 +34,10 @@ Dialog {
             locationLon.text = Number(item.longitude).toFixed(5)
     }
     readonly property var modelOptions: ["Dwarf II", "Dwarf 3", "Dwarf Mini"]
-    onClosed: addingDevice = false
+    onClosed: {
+        addingDevice = false
+        Qt.callLater(root.maybeAskLocation)
+    }
     onOpened: {
         const d = backend.selectedDevice
         locationModel.currentIndex = Math.max(0, locationDialog.modelOptions.indexOf(d.model || "Dwarf 3"))
@@ -58,6 +62,7 @@ Dialog {
     contentItem: ColumnLayout {
         id: locationColumn
         spacing: 12
+        Accessible.name: locationDialog.addingDevice ? "Add device" : "Observing location"
         Text { text: locationDialog.addingDevice ? "ADD DEVICE" : "OBSERVING LOCATION"; color: Theme.accent; font.pixelSize: 16; font.letterSpacing: 1.4 }
         Text {
             text: locationDialog.addingDevice
@@ -72,11 +77,13 @@ Dialog {
             id: locationModel
             Layout.fillWidth: true
             model: locationDialog.modelOptions
+            accessibleName: "Telescope model"
         }
         FieldLabel { text: "TIMEZONE / CITY" }
         HudSearchCombo {
             id: locationTimezone
             Layout.fillWidth: true
+            accessibleName: "Timezone or city"
             allItems: backend.timezones
             onItemChosen: (item) => locationDialog.applyLocation(item)
         }
@@ -84,13 +91,17 @@ Dialog {
             Layout.fillWidth: true
             spacing: 10
             FieldLabel { text: "LAT" }
-            HudField { id: locationLat; Layout.fillWidth: true; readOnly: true }
+            HudField { id: locationLat; Layout.fillWidth: true; readOnly: true; accessibleName: "Site latitude" }
             FieldLabel { text: "LON" }
-            HudField { id: locationLon; Layout.fillWidth: true; readOnly: true }
+            HudField { id: locationLon; Layout.fillWidth: true; readOnly: true; accessibleName: "Site longitude" }
         }
         RowLayout {
             Layout.alignment: Qt.AlignRight
-            HudButton { text: "CANCEL"; onClicked: locationDialog.close() }
+            HudButton {
+                text: "CANCEL"
+                visible: !locationDialog.locationRequired
+                onClicked: locationDialog.close()
+            }
             HudButton {
                 text: locationDialog.addingDevice ? "ADD DEVICE" : "SAVE LOCATION"
                 enabled: {

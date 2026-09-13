@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
 import ".."
 import "../components"
@@ -60,13 +59,21 @@ Item {
         return "ACCENT"
     }
     readonly property bool enhanceCustom: Math.abs(Theme.enhanceDenoise - 1) > 0.002 || Math.abs(Theme.enhanceSkyCrush - 1) > 0.002
+    readonly property bool cameraWideAvailable: modelField.currentText !== "Dwarf Mini"
+    function coordNumber(text) {
+        const t = String(text).trim()
+        if (t === "")
+            return 0
+        const n = Number(t)
+        return isFinite(n) ? n : null
+    }
     function currentPayload() {
         return {
             id: settingsPage.loadedDeviceId || backend.selectedDeviceId, name: nameField.text, model: modelField.currentText,
-            ip_address: ipField.text, camera: cameraField.currentIndex === 1 ? "wide" : "tele",
+            ip_address: ipField.text, camera: settingsPage.cameraWideAvailable && cameraField.currentIndex === 1 ? "wide" : "tele",
             ble_enabled: bleField.checked,
             auto_start_preview: autoPreviewField.checked,
-            latitude: Number(latField.text), longitude: Number(lonField.text),
+            latitude: settingsPage.coordNumber(latField.text), longitude: settingsPage.coordNumber(lonField.text),
             timezone_name: timezoneField.selectedName || timezoneField.editText,
             wifi_mode: ["auto", "ap", "sta"][wifiModeField.currentIndex],
             wifi_ssid: ssidField.text, wifi_password: wifiField.text,
@@ -156,11 +163,12 @@ Item {
         readoutField.text = hw.readout_seconds || 1.2
         paneField.text = hw.pane_slew_seconds || 12
         startupField.text = hw.startup_seconds || 8
-        loadedSnapshot = JSON.stringify(currentPayload())
     }
     function saveCurrent() {
-        backend.saveDevice(JSON.stringify(currentPayload()))
+        if (!backend.saveDevice(JSON.stringify(currentPayload())))
+            return false
         loadedSnapshot = JSON.stringify(currentPayload())
+        return true
     }
     function load() {
         const d = backend.selectedDevice
@@ -169,7 +177,7 @@ Item {
         nameField.text = d.name || ""
         modelField.currentIndex = Math.max(0, ["Dwarf II", "Dwarf 3", "Dwarf Mini"].indexOf(d.model))
         ipField.text = d.ip_address || ""
-        cameraField.currentIndex = d.camera === "wide" ? 1 : 0
+        cameraField.currentIndex = settingsPage.cameraWideAvailable && d.camera === "wide" ? 1 : 0
         bleField.checked = d.ble_enabled !== false
         autoPreviewField.checked = !!d.auto_start_preview
         latField.text = d.latitude
@@ -203,9 +211,7 @@ Item {
             if (settingsPage.applyingDeviceSelect)
                 return
             if (settingsPage.loadedDeviceId === backend.selectedDeviceId) {
-                if (!settingsPage.dirty)
-                    settingsPage.load()
-                else if (!ipField.text && backend.selectedDevice.ip_address)
+                if (settingsPage.dirty && !ipField.text && backend.selectedDevice.ip_address)
                     ipField.text = backend.selectedDevice.ip_address
                 return
             }
@@ -220,10 +226,10 @@ Item {
             root.askLeaveSettings(-1, wanted)
         }
         function onAppSettingsChanged() {
-            if (!settingsPage.dirty) {
+            if (!stellariumField.activeFocus)
                 stellariumField.text = backend.stellariumUrl || "http://localhost:8090"
+            if (!cutoffField.activeFocus)
                 cutoffField.value = backend.observingDayCutoffHour
-            }
         }
         function onDurationSuggestionChanged() {
             if (settingsPage.sectionDirty(6))
@@ -279,9 +285,16 @@ Item {
             Layout.fillWidth: true
             title: "SETTINGS"
             subtitle: "Console, image filters, telescope and timing profiles  ·  Astro Dwarf v" + backend.appVersion
-            DeviceCombo {}
-            HudButton { text: "+ ADD DEVICE"; busyText: "ADDING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: locationDialog.openForAdd() }
-            HudButton { text: "REMOVE DEVICE"; busyText: "REMOVING…"; buttonColor: Theme.fillDanger; foregroundColor: Theme.danger; onClicked: root.confirmRemoveDevice(backend.selectedDeviceId) }
+            DeviceCombo { accessibleName: "Settings telescope"; accessibleDescription: "Choose which telescope these settings apply to" }
+            HudButton { text: "+ ADD DEVICE"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: locationDialog.openForAdd() }
+            HudButton {
+                text: "REMOVE DEVICE"
+                visible: backend.devices.length > 1
+                enabled: backend.devices.length > 1
+                buttonColor: Theme.fillDanger
+                foregroundColor: Theme.danger
+                onClicked: root.confirmRemoveDevice(backend.selectedDeviceId)
+            }
         }
 
         RowLayout {
@@ -297,88 +310,97 @@ Item {
                 border.color: Theme.outline
                 border.width: 1
                 radius: Theme.radius
-                ColumnLayout {
+                Flickable {
                     anchors.fill: parent
                     anchors.margins: 6
-                    spacing: 2
-                    Repeater {
-                        model: settingsPage.categories
-                        delegate: Item {
-                            id: railRow
-                            required property int index
-                            required property var modelData
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 38
-                            readonly property bool current: settingsPage.categoryIndex === index
-                            readonly property bool dirty: settingsPage.sectionDirty(index)
-                            Accessible.role: Accessible.Button
-                            Accessible.name: modelData.title
-                            Accessible.description: (modelData.hint || "") + (dirty ? " · Unsaved changes" : "")
-                            Keys.onReturnPressed: settingsPage.categoryIndex = index
-                            Keys.onSpacePressed: settingsPage.categoryIndex = index
-                            activeFocusOnTab: true
-                            Rectangle {
-                                anchors.fill: parent
-                                radius: 2
-                                color: railRow.current ? Theme.fillActive : (railHover.hovered || railRow.activeFocus ? Theme.hsl(0.039, 0.535, 0.253, 0.13) : "transparent")
-                                border.color: railRow.activeFocus ? Theme.accent : "transparent"
-                                border.width: railRow.activeFocus ? 1 : 0
-                            }
-                            Rectangle {
-                                anchors.left: parent.left
-                                anchors.top: parent.top
-                                anchors.bottom: parent.bottom
-                                anchors.margins: 6
-                                width: 2
-                                radius: 1
-                                color: Theme.accent
-                                opacity: railRow.current ? 1 : 0
-                                Behavior on opacity { NumberAnimation { duration: Theme.quick } }
-                            }
-                            HoverHandler { id: railHover; cursorShape: Qt.PointingHandCursor }
-                            TapHandler { onTapped: settingsPage.categoryIndex = railRow.index }
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 12
-                                anchors.rightMargin: 8
-                                spacing: 8
-                                Text {
-                                    text: railRow.modelData.glyph
-                                    color: railRow.current ? Theme.accent : Theme.textSecondary
-                                    font.pixelSize: 13
-                                    Layout.preferredWidth: 16
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.VerticalFlick
+                    contentWidth: width
+                    contentHeight: railColumn.implicitHeight
+                    interactive: contentHeight > height + 1
+                    ColumnLayout {
+                        id: railColumn
+                        width: parent.width
+                        spacing: 2
+                        Repeater {
+                            model: settingsPage.categories
+                            delegate: Item {
+                                id: railRow
+                                required property int index
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: Theme.controlHeight + Theme.s1
+                                readonly property bool current: settingsPage.categoryIndex === index
+                                readonly property bool dirty: settingsPage.sectionDirty(index)
+                                Accessible.role: Accessible.Button
+                                Accessible.name: modelData.title
+                                Accessible.description: (modelData.hint || "") + (dirty ? " · Unsaved changes" : "")
+                                Keys.onReturnPressed: settingsPage.categoryIndex = index
+                                Keys.onSpacePressed: settingsPage.categoryIndex = index
+                                activeFocusOnTab: true
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: 2
+                                    color: railRow.current ? Theme.fillActive : (railHover.hovered || railRow.activeFocus ? Qt.rgba(Theme.outline.r, Theme.outline.g, Theme.outline.b, 0.13) : "transparent")
+                                    border.color: railRow.activeFocus ? Theme.accent : "transparent"
+                                    border.width: railRow.activeFocus ? 1 : 0
                                 }
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 0
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: railRow.modelData.title
-                                        color: railRow.current ? Theme.accent : Theme.textPrimary
-                                        font.pixelSize: 11
-                                        font.bold: true
-                                        font.letterSpacing: 1.1
-                                        elide: Text.ElideRight
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: railRow.modelData.hint || ""
-                                        color: railRow.current ? Theme.textPrimary : Theme.textSecondary
-                                        opacity: railRow.current ? 0.8 : 0.75
-                                        font.pixelSize: 9
-                                        elide: Text.ElideRight
-                                    }
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    anchors.margins: 6
+                                    width: 2
+                                    radius: 1
+                                    color: Theme.accent
+                                    opacity: railRow.current ? 1 : 0
+                                    Behavior on opacity { NumberAnimation { duration: Theme.quick } }
                                 }
-                                LedDot {
-                                    visible: railRow.dirty
-                                    on: true
-                                    onColor: Theme.warning
-                                    pulse: true
+                                HoverHandler { id: railHover; cursorShape: Qt.PointingHandCursor }
+                                TapHandler { onTapped: settingsPage.categoryIndex = railRow.index }
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 12
+                                    anchors.rightMargin: 8
+                                    spacing: 8
+                                    Text {
+                                        text: railRow.modelData.glyph
+                                        color: railRow.current ? Theme.accent : Theme.textSecondary
+                                        font.pixelSize: Theme.fontBase
+                                        Layout.preferredWidth: 16
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 0
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: railRow.modelData.title
+                                            color: railRow.current ? Theme.accent : Theme.textPrimary
+                                            font.pixelSize: Theme.fontSm
+                                            font.bold: true
+                                            font.letterSpacing: Theme.tracking2
+                                            elide: Text.ElideRight
+                                        }
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: railRow.modelData.hint || ""
+                                            color: railRow.current ? Theme.textPrimary : Theme.textSecondary
+                                            opacity: railRow.current ? 0.8 : 0.75
+                                            font.pixelSize: Theme.fontXs
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+                                    LedDot {
+                                        visible: railRow.dirty
+                                        on: true
+                                        onColor: Theme.warning
+                                        pulse: true
+                                    }
                                 }
                             }
                         }
                     }
-                    Item { Layout.fillHeight: true }
                 }
             }
 
@@ -403,7 +425,7 @@ Item {
 
                 StackLayout {
                     Layout.fillWidth: true
-                    Layout.fillHeight: true
+                    Layout.fillHeight: false
                     currentIndex: settingsPage.categoryIndex
 
                     // INTERFACE
@@ -664,43 +686,20 @@ Item {
                         SettingGroup {
                             title: "CALENDAR"
                             FieldLabel { text: "NIGHT CUTOFF" }
-                            SpinBox {
+                            HudSpinBox {
                                 id: cutoffField
                                 Layout.preferredWidth: settingsPage.numberWidth
                                 from: 0
                                 to: 23
                                 value: 12
-                                editable: true
-                                palette.text: Theme.textPrimary
-                                palette.base: Theme.inputBg
-                                palette.button: Theme.surfaceHigh
-                                palette.buttonText: Theme.accent
-                                palette.highlight: Theme.accent
+                                accessibleName: "Observing night cutoff hour"
                                 textFromValue: (value, locale) => String(value).padStart(2, "0") + ":00"
                                 valueFromText: (text, locale) => {
                                     const n = parseInt(String(text).trim(), 10)
                                     return isNaN(n) ? cutoffField.value : Math.max(cutoffField.from, Math.min(cutoffField.to, n))
                                 }
                                 validator: RegularExpressionValidator { regularExpression: /^\d{1,2}(:\d{0,2})?$/ }
-                                Accessible.name: "Observing night cutoff hour"
                                 onValueModified: backend.setObservingDayCutoffHour(value)
-                                WheelHandler {
-                                    enabled: cutoffField.enabled
-                                    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                                    acceptedModifiers: Qt.NoModifier
-                                    blocking: true
-                                    onWheel: event => {
-                                        const delta = event.angleDelta.y !== 0 ? event.angleDelta.y : event.pixelDelta.y
-                                        if (!delta)
-                                            return
-                                        const next = Math.max(cutoffField.from, Math.min(cutoffField.to, cutoffField.value + (delta > 0 ? 1 : -1)))
-                                        if (next !== cutoffField.value) {
-                                            cutoffField.value = next
-                                            cutoffField.valueModified()
-                                        }
-                                        event.accepted = true
-                                    }
-                                }
                             }
                             FieldHint {
                                 text: "Local hour when the calendar rolls to the next observing night. With "
@@ -734,11 +733,29 @@ Item {
                             HudField { id: nameField; Layout.preferredWidth: settingsPage.controlWidth; accessibleName: "Telescope name" }
                             FieldHint { text: "Shown in the device bar, calendar, session lists and logs." }
                             FieldLabel { text: "MODEL" }
-                            HudCombo { id: modelField; model: ["Dwarf II", "Dwarf 3", "Dwarf Mini"]; Layout.preferredWidth: settingsPage.controlWidth; accessibleName: "Telescope model" }
+                            HudCombo {
+                                id: modelField
+                                model: ["Dwarf II", "Dwarf 3", "Dwarf Mini"]
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                accessibleName: "Telescope model"
+                                onActivated: {
+                                    if (!settingsPage.cameraWideAvailable)
+                                        cameraField.currentIndex = 0
+                                }
+                            }
                             FieldHint { text: "Selects the firmware profile and lens set. Dwarf 3 exposes a fixed-focus wide camera alongside the telephoto." }
-                            FieldLabel { text: "CAMERA" }
-                            HudCombo { id: cameraField; model: ["Tele", "Wide"]; Layout.preferredWidth: settingsPage.controlWidth; accessibleName: "Default camera" }
-                            FieldHint { text: "Default lens for new sessions on this telescope. Focus controls act on Tele only; Wide has no focus motor." }
+                            FieldLabel { text: "CAMERA"; visible: settingsPage.cameraWideAvailable }
+                            HudCombo {
+                                id: cameraField
+                                visible: settingsPage.cameraWideAvailable
+                                model: ["Tele", "Wide"]
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                accessibleName: "Default camera"
+                            }
+                            FieldHint {
+                                visible: settingsPage.cameraWideAvailable
+                                text: "Default lens for new sessions on this telescope. Focus controls act on Tele only; Wide has no focus motor."
+                            }
                         }
                         SettingGroup {
                             title: "LIVE VIEW"
@@ -764,6 +781,7 @@ Item {
                             HudSearchCombo {
                                 id: timezoneField
                                 Layout.preferredWidth: settingsPage.controlWidth
+                                accessibleName: "Observing timezone"
                                 allItems: backend.timezones
                                 onItemChosen: (item) => settingsPage.applyLocation(item)
                             }
@@ -1021,10 +1039,10 @@ Item {
         anchors.bottom: parent.bottom
         height: 46
         radius: 3
-        color: settingsPage.dirty ? Theme.hsl(0.040, 0.611, 0.141, 0.753) : Theme.panelFill
+        color: settingsPage.dirty ? Theme.fillWarning : Theme.panelFill
         border.color: settingsPage.dirty ? Qt.rgba(Theme.warning.r, Theme.warning.g, Theme.warning.b, 0.6) : Theme.outline
-        Behavior on color { ColorAnimation { duration: 180 } }
-        Behavior on border.color { ColorAnimation { duration: 180 } }
+        Behavior on color { ColorAnimation { duration: Theme.normal } }
+        Behavior on border.color { ColorAnimation { duration: Theme.normal } }
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: 14
@@ -1035,11 +1053,13 @@ Item {
                 Layout.fillWidth: true
                 text: settingsPage.dirty
                     ? "UNSAVED CHANGES · " + (nameField.text || "device").toUpperCase()
-                    : "ALL CHANGES SAVED · " + (nameField.text || "device").toUpperCase()
+                    : settingsPage.currentCategory.device
+                        ? "ALL CHANGES SAVED · " + (nameField.text || "device").toUpperCase()
+                        : "APP SETTINGS APPLY IMMEDIATELY"
                 color: settingsPage.dirty ? Theme.warning : Theme.textSecondary
-                font.pixelSize: 10
+                font.pixelSize: Theme.fontSm
                 font.bold: true
-                font.letterSpacing: 1.2
+                font.letterSpacing: Theme.tracking2
                 elide: Text.ElideRight
             }
             HudButton {

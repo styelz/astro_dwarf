@@ -655,6 +655,7 @@ class AppBackend(QObject):
     logFilterChanged = Signal()
     logCountsChanged = Signal()
     locationLookupReady = Signal("QVariantMap")
+    locationLookupBusyChanged = Signal()
     _asyncResult = Signal(str, object)
     uiBusyChanged = Signal()
     previewActiveChanged = Signal()
@@ -691,7 +692,12 @@ class AppBackend(QObject):
         if not self._devices:
             self._devices = [self.store.seed_device()]
         self._settings = self.store.load_app_settings(self._devices)
-        self._selected_device_id = self._devices[0].id
+        wanted = str(self._settings.last_device_id or "")
+        ids = {item.id for item in self._devices}
+        self._selected_device_id = wanted if wanted in ids else self._devices[0].id
+        if self._selected_device_id != wanted:
+            self._settings = replace(self._settings, last_device_id=self._selected_device_id)
+            self.store.save_app_settings(self._settings)
         self._log_model = LogListModel(self)
         self._log_model.countsChanged.connect(self.logCountsChanged)
         self._show_debug_logs = False
@@ -769,6 +775,7 @@ class AppBackend(QObject):
         self._center_tap_pending: dict[str, tuple[float, float, str]] = {}
         self._center_tap_token: dict[str, int] = {}
         self._ui_busy = ""
+        self._location_lookup_busy = False
         self._asyncResult.connect(self._handle_async_result)
         self._sync_shared_device_fields()
         for device in self._devices:
@@ -2876,10 +2883,23 @@ class AppBackend(QObject):
             self.clockChanged.emit()
             self.previewHoldChanged.emit()
             self._sync_media_lock()
+            if previous != device_id:
+                self._persist_last_device_id(device_id)
 
     @Property(str, notify=uiBusyChanged)
     def uiBusy(self) -> str:
         return self._ui_busy
+
+    @Property(bool, notify=locationLookupBusyChanged)
+    def locationLookupBusy(self) -> bool:
+        return self._location_lookup_busy
+
+    def _set_location_lookup_busy(self, busy: bool) -> None:
+        on = bool(busy)
+        if on == self._location_lookup_busy:
+            return
+        self._location_lookup_busy = on
+        self.locationLookupBusyChanged.emit()
 
     def _set_ui_busy(self, operation: str) -> None:
         if self._ui_busy == operation:
@@ -3367,6 +3387,7 @@ class AppBackend(QObject):
             self._devices.append(device)
             self._create_worker(device)
             self._selected_device_id = device.id
+            self._persist_last_device_id(device.id)
             self._notify_devices()
             self.durationSuggestionChanged.emit()
             self.clockChanged.emit()
@@ -3393,6 +3414,7 @@ class AppBackend(QObject):
         for record_id in history_ids:
             self.store.history.delete(record_id)
         self.store.devices.delete(device_id)
+        old_ids = [item.id for item in self._devices]
         self._devices = [item for item in self._devices if item.id != device_id]
         self._active_sessions.pop(device_id, None)
         self._pending_actions.pop(device_id, None)
@@ -3405,7 +3427,11 @@ class AppBackend(QObject):
         self._device_lights.pop(device_id, None)
         self._device_indicators.pop(device_id, None)
         if self._selected_device_id == device_id:
-            self._selected_device_id = self._devices[0].id
+            idx = old_ids.index(device_id)
+            neighbor = old_ids[idx - 1] if idx > 0 else (old_ids[idx + 1] if idx + 1 < len(old_ids) else "")
+            remaining = {item.id for item in self._devices}
+            self._selected_device_id = neighbor if neighbor in remaining else self._devices[0].id
+            self._persist_last_device_id(self._selected_device_id)
         self._notify_devices()
         self.durationSuggestionChanged.emit()
         self._emit_sessions_changed()
@@ -4411,11 +4437,15 @@ class AppBackend(QObject):
                 lon = float(matched["longitude"])
         return name, lat, lon
 
-    @Slot(str)
-    def saveDevice(self, payload: str) -> None:
+    @Slot(str, result=bool)
+    def saveDevice(self, payload: str) -> bool:
         try:
             values = json.loads(payload)
             current = self._device_by_id(values["id"])
+            if "latitude" in values and values["latitude"] is None:
+                raise ValueError("Latitude must be a number")
+            if "longitude" in values and values["longitude"] is None:
+                raise ValueError("Longitude must be a number")
             hardware = replace(current.hardware, **{
                 key: float(values.get(key, getattr(current.hardware, key)))
                 for key in current.hardware.__dataclass_fields__
@@ -4436,12 +4466,16 @@ class AppBackend(QObject):
                     ),
                 )
                 self.store.save_app_settings(self._settings)
+            model = DeviceModel(values["model"])
+            camera = Camera(values.get("camera", current.camera))
+            if model == DeviceModel.DWARF_MINI:
+                camera = Camera.TELE
             updated = replace(
                 current,
                 name=values["name"].strip(),
-                model=DeviceModel(values["model"]),
+                model=model,
                 ip_address=values["ip_address"].strip(),
-                camera=Camera(values.get("camera", current.camera)),
+                camera=camera,
                 color=values.get("color", current.color),
                 latitude=latitude,
                 longitude=longitude,
@@ -4459,7 +4493,7 @@ class AppBackend(QObject):
                 capture_defaults=self._capture_defaults_from_payload(values, current.capture_defaults),
             )
             if not self._commit_device(current, updated):
-                return
+                return False
             for session in self.store.upcoming(updated.id):
                 self._save_session(replace(session, planned_duration_seconds=DurationEngine.calculate(session, updated.hardware)))
             self._sequence_colliding_mosaics()
@@ -4468,8 +4502,10 @@ class AppBackend(QObject):
             self.clockChanged.emit()
             self.appSettingsChanged.emit()
             self._toast("Device saved", "success")
+            return True
         except Exception as exc:
             self._toast(f"Could not save device: {exc}", "error")
+            return False
 
     @Slot(str, result=bool)
     def saveObservingLocation(self, payload: str) -> bool:
@@ -4512,6 +4548,10 @@ class AppBackend(QObject):
         if not text:
             self._toast("Enter a city or timezone to search", "warning")
             return
+        if self._location_lookup_busy:
+            self._toast("Location search is still running", "warning")
+            return
+        self._set_location_lookup_busy(True)
 
         def work() -> None:
             try:
@@ -5604,6 +5644,7 @@ class AppBackend(QObject):
     def _handle_async_result(self, operation: str, result: tuple[bool, Any]) -> None:
         ok, value = result
         if operation == "locationLookup":
+            self._set_location_lookup_busy(False)
             if not ok:
                 self._toast(str(value), "warning")
                 return
@@ -6010,6 +6051,13 @@ class AppBackend(QObject):
         self.clockChanged.emit()
         self._emit_sessions_changed()
         self._notify_devices()
+
+    def _persist_last_device_id(self, device_id: str) -> None:
+        wanted = str(device_id or "")
+        if wanted == self._settings.last_device_id:
+            return
+        self._settings = replace(self._settings, last_device_id=wanted)
+        self.store.save_app_settings(self._settings)
 
     def _sync_shared_device_fields(self) -> None:
         cutoff = self._cutoff_hour()

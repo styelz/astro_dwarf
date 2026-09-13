@@ -13,10 +13,11 @@ Item {
     property var filtered: []
     property string accessibleName: ""
     signal itemChosen(var item)
-    implicitHeight: 34
+    implicitHeight: Theme.controlHeight
     implicitWidth: 240
     Accessible.role: Accessible.ComboBox
     Accessible.name: accessibleName || searchField.placeholderText || "Search"
+    Accessible.description: backend.locationLookupBusy ? "Looking up location" : ""
 
     function copyAllItems() {
         const items = searchCombo.allItems || []
@@ -112,6 +113,8 @@ Item {
     }
 
     function acceptTyped() {
+        if (backend.locationLookupBusy)
+            return
         if (listOpen && suggestionView.currentIndex >= 0 && suggestionView.currentIndex < filtered.length) {
             chooseItem(filtered[suggestionView.currentIndex])
             return
@@ -133,6 +136,7 @@ Item {
         width: parent.width
         height: parent.height
         placeholderText: "Search city or timezone"
+        accessibleName: searchCombo.accessibleName
         rightPadding: 26
         releaseFocusOnEnter: false
         Keys.priority: Keys.BeforeItem
@@ -180,7 +184,7 @@ Item {
         }
     }
     Text {
-        text: "▾"
+        text: backend.locationLookupBusy ? "…" : "▾"
         color: Theme.accent
         z: 2
         anchors.right: searchField.right

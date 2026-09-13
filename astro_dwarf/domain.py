@@ -464,6 +464,7 @@ DEFAULT_FRAME_COUNT = 60
 class AppSettings:
     observing_day_cutoff_hour: int = DEFAULT_OBSERVING_DAY_CUTOFF_HOUR
     stellarium_url: str = DEFAULT_STELLARIUM_URL
+    last_device_id: str = ""
 
 
 @dataclass(slots=True)
@@ -646,6 +647,7 @@ def app_settings_from_dict(data: dict[str, Any]) -> AppSettings:
     return AppSettings(
         observing_day_cutoff_hour=clamp_cutoff_hour(data.get("observing_day_cutoff_hour")),
         stellarium_url=normalized_stellarium_url(data.get("stellarium_url")),
+        last_device_id=str(data.get("last_device_id") or "").strip(),
     )
 
 
@@ -706,6 +708,8 @@ def device_from_dict(data: dict[str, Any]) -> Device:
     data.pop("location_configured", None)
     data["model"] = DeviceModel(data.get("model", DeviceModel.DWARF_3))
     data["camera"] = Camera(data.get("camera", Camera.TELE))
+    if data["model"] == DeviceModel.DWARF_MINI:
+        data["camera"] = Camera.TELE
     try:
         data["wifi_mode"] = WifiMode(str(data.get("wifi_mode") or WifiMode.AUTO).lower())
     except ValueError:

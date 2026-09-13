@@ -20,11 +20,19 @@ Dialog {
     background: DialogFrame { tone: Theme.warning }
     contentItem: ColumnLayout {
         spacing: 12
+        Accessible.name: "Unsaved settings"
+        Accessible.description: settingsLeaveDialog.pendingPage === -2
+            ? "Save your device settings before closing?"
+            : (settingsLeaveDialog.pendingDeviceId
+                ? "Save your device settings before switching telescopes?"
+                : "Save your device settings before leaving this page?")
         Text { text: "UNSAVED SETTINGS"; color: Theme.warning; font.pixelSize: 16; font.letterSpacing: 1.4 }
         Text {
-            text: settingsLeaveDialog.pendingDeviceId
-                ? "Save your device settings before switching telescopes?"
-                : "Save your device settings before leaving this page?"
+            text: settingsLeaveDialog.pendingPage === -2
+                ? "Save your device settings before closing?"
+                : (settingsLeaveDialog.pendingDeviceId
+                    ? "Save your device settings before switching telescopes?"
+                    : "Save your device settings before leaving this page?")
             color: Theme.textPrimary
             wrapMode: Text.Wrap
             Layout.fillWidth: true
@@ -45,6 +53,8 @@ Dialog {
                         backend.selectDevice(deviceId)
                     if (idx >= 0)
                         root.currentPage = idx
+                    if (idx === -2)
+                        root.close()
                 }
             }
             HudButton {
@@ -54,12 +64,15 @@ Dialog {
                 onClicked: {
                     const idx = settingsLeaveDialog.pendingPage
                     const deviceId = settingsLeaveDialog.pendingDeviceId
-                    settingsPage.saveCurrent()
+                    if (!settingsPage.saveCurrent())
+                        return
                     settingsLeaveDialog.close()
                     if (deviceId)
                         backend.selectDevice(deviceId)
                     if (idx >= 0)
                         root.currentPage = idx
+                    if (idx === -2)
+                        root.close()
                 }
             }
         }

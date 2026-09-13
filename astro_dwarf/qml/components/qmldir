@@ -28,6 +28,7 @@ FieldHint 1.0 FieldHint.qml
 SettingGroup 1.0 SettingGroup.qml
 PaletteSwatch 1.0 PaletteSwatch.qml
 HudSlider 1.0 HudSlider.qml
+HudSpinBox 1.0 HudSpinBox.qml
 EmptyHint 1.0 EmptyHint.qml
 PageHeader 1.0 PageHeader.qml
 StatusChip 1.0 StatusChip.qml
