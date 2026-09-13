@@ -1719,13 +1719,13 @@ Item {
                     id: commandGrid
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    readonly property int padCount: 16
+                    readonly property int padCount: 15
                     // pick the widest column count that still divides the pads into full rows
                     columns: {
                         const fit = Math.max(2, Math.floor((width + columnSpacing) / (150 + columnSpacing)))
-                        const options = [8, 4, 3]
+                        const options = [8, 5, 4, 3]
                         for (let i = 0; i < options.length; i++)
-                            if (options[i] <= fit)
+                            if (options[i] <= fit && padCount % options[i] === 0)
                                 return options[i]
                         return 3
                     }
@@ -1742,7 +1742,6 @@ Item {
                         {label: "INDICATOR", glyph: "◉", start: "indicator_on", stop: "indicator_off", state: "indicator", detail: "CHASSIS"},
                         {label: "PHOTO", glyph: "▣", start: "photo", stop: "", state: "", detail: "CAPTURE", mode: "photo"},
                         {label: "STACK", glyph: "⧉", start: "stack", stop: "stop_astro", state: "imaging", detail: "CAPTURE", mode: "dso"},
-                        {label: "GO LIVE", glyph: "▶", start: "go_live", stop: "", state: "", detail: "CAMERA", mode: "photo"},
                         {label: "TRACK", glyph: "⊛", start: "track", stop: "stop_goto", state: "goto", detail: "MOUNT", mode: "dso"},
                         {label: "BURST", glyph: "◫", start: "burst_start", stop: "burst_stop", state: "burst", detail: "CAPTURE", mode: "photo"},
                         {label: "RECORD", glyph: "●", start: "record_start", stop: "record_stop", state: "record", detail: "VIDEO", mode: "photo"},
@@ -1837,14 +1836,8 @@ Item {
                         activeState: activeForState
                         pending: isPending
                         destructive: !!modelData.destructive
-                        enabled: modelData.start === "go_live"
-                            ? modeAllowed && previewHost.previewStartEnabled
-                            : modeAllowed && root.commandEnabled(effectiveOperation)
+                        enabled: modeAllowed && root.commandEnabled(effectiveOperation)
                         onClicked: {
-                            if (modelData.start === "go_live") {
-                                previewHost.startPreview()
-                                return
-                            }
                             if (effectiveOperation === "stack") {
                                 if (liveExposure.text.trim())
                                     backend.setCameraParam(backend.selectedDeviceId, "exposure", liveExposure.text)

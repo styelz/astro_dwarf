@@ -319,6 +319,10 @@ FUNCTIONS = {
     "read_camera": "perform_read_camera_params_http_v3",
 }
 
+_OPERATION_LABELS = {
+    "go_live": "Closing previous capture",
+}
+
 # Firmware DSO stacking mode. Sun/Moon/Planet use 8/9/10 instead.
 _ASTRO_SHOOTING_MODE = 2
 _ASTRO_SHOOTING_TECH = 2
@@ -799,7 +803,7 @@ def sdk_call(operation: str, *args: Any) -> Any:
 
 def _invoke_sdk(operation: str, function: Any, *args: Any, label: str | None = None) -> Any:
     """Run one blocking SDK call with the shared stop/interrupt bookkeeping."""
-    label = label or operation.replace("_", " ").title()
+    label = label or _OPERATION_LABELS.get(operation) or operation.replace("_", " ").title()
     # Periodic state refreshes are plumbing; keep them out of the main log.
     call_level = "debug" if operation in _QUIET_OPERATIONS else "sdk"
     global _in_flight

@@ -387,7 +387,7 @@ _ACTION_LABELS = {
     "polar": "Polar alignment started",
     "stop_polar": "Polar alignment stopped",
     "polar_position": "Polar positioning started",
-    "go_live": "Live view",
+    "go_live": "Closed previous capture",
     "photo_mode": "Photo mode",
     "astro_mode": "Astro mode",
     "lights_on": "Ring light on",
@@ -2044,7 +2044,7 @@ class AppBackend(QObject):
             if token != self._preview_token:
                 return
             if not ok:
-                self.add_log("warning", f"GO LIVE: {result}", device_id)
+                self.add_log("warning", f"Could not close previous capture: {result}", device_id)
             worker.send("photo_mode", callback=after_photo)
 
         worker.send("go_live", callback=after_live)
