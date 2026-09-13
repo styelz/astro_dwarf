@@ -20,12 +20,14 @@ Dialog {
     anchors.centerIn: Overlay.overlay
     width: 420
     height: Math.max(196, headingLabel.implicitHeight + summaryLabel.implicitHeight + 88)
-    padding: 16
+    padding: Theme.s4
     onOpened: cancelBtn.forceActiveFocus()
     background: DialogFrame { tone: Theme.danger }
     contentItem: ColumnLayout {
-        spacing: 12
-        Text { id: headingLabel; text: confirmDialog.headingText; color: Theme.danger; font.pixelSize: 16; font.letterSpacing: 1.4 }
+        spacing: Theme.s3
+        Accessible.name: confirmDialog.headingText
+        Accessible.description: confirmDialog.summary
+        Text { id: headingLabel; text: confirmDialog.headingText; color: Theme.danger; font.pixelSize: Theme.fontLg; font.letterSpacing: Theme.tracking2 }
         Text { id: summaryLabel; text: confirmDialog.summary; color: Theme.textPrimary; wrapMode: Text.Wrap; Layout.fillWidth: true }
         RowLayout {
             Layout.alignment: Qt.AlignRight
@@ -38,6 +40,8 @@ Dialog {
                 onClicked: {
                     if (confirmDialog.kind === "clearHistory")
                         backend.clearHistory()
+                    else if (confirmDialog.kind === "clearHistoryDevice")
+                        backend.clearHistoryForDevice((confirmDialog.pendingIds && confirmDialog.pendingIds[0]) || backend.selectedDeviceId)
                     else if (confirmDialog.kind === "deleteSessions")
                         backend.deleteSessions(confirmDialog.pendingIds)
                     else if (confirmDialog.kind === "deleteTemplates")

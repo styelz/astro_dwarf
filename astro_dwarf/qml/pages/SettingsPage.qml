@@ -142,6 +142,22 @@ Item {
         }
     }
     function isDirty() { return dirty }
+    function applyTimingFromDevice() {
+        const d = backend.selectedDevice
+        if ((d.id || "") !== settingsPage.loadedDeviceId)
+            return
+        const hw = d.hardware || {}
+        slewField.text = hw.slew_seconds || 20
+        settleField.text = hw.settle_seconds || 10
+        calibrationField.text = hw.calibration_seconds || 90
+        autofocusField.text = hw.autofocus_seconds || 45
+        infinityField.text = hw.infinite_focus_seconds || 15
+        polarField.text = hw.polar_seconds || 180
+        readoutField.text = hw.readout_seconds || 1.2
+        paneField.text = hw.pane_slew_seconds || 12
+        startupField.text = hw.startup_seconds || 8
+        loadedSnapshot = JSON.stringify(currentPayload())
+    }
     function saveCurrent() {
         backend.saveDevice(JSON.stringify(currentPayload()))
         loadedSnapshot = JSON.stringify(currentPayload())
@@ -208,6 +224,11 @@ Item {
                 stellariumField.text = backend.stellariumUrl || "http://localhost:8090"
                 cutoffField.value = backend.observingDayCutoffHour
             }
+        }
+        function onDurationSuggestionChanged() {
+            if (settingsPage.sectionDirty(6))
+                return
+            settingsPage.applyTimingFromDevice()
         }
     }
 

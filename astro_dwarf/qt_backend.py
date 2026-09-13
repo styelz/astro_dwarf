@@ -1497,15 +1497,15 @@ class AppBackend(QObject):
 
     @Property("QVariantList", notify=historyChanged)
     def history(self) -> list[dict[str, Any]]:
-        device_names = {device.id: device.name for device in self._devices}
-        device_colors = {device.id: device.color for device in self._devices}
         result = []
+        device_by_id = {device.id: device for device in self._devices}
         for record in sorted(self.store.history.all(), key=lambda item: item.recorded_at, reverse=True):
             session = self.store.sessions.get(record.session_id)
             data = to_dict(record)
-            data["device_name"] = device_names.get(record.device_id, "Unknown")
-            data["device_color"] = device_colors.get(record.device_id, "#4DE8FF")
-            data["date"] = record.scheduled_start[:10]
+            device = device_by_id.get(record.device_id)
+            data["device_name"] = device.name if device else "Unknown"
+            data["device_color"] = device.color if device else "#4DE8FF"
+            data["date"] = self._history_date(record.scheduled_start, device)
             data["planned_text"] = self._duration_text(record.planned_duration_seconds)
             data["actual_text"] = self._duration_text(record.actual_duration_seconds)
             data["ok"] = str(record.outcome).strip().lower() == "completed"
@@ -1516,9 +1516,9 @@ class AppBackend(QObject):
             data["planned_frames"] = planned_frames
             data["captured_frames"] = int(captured)
             data["frame_text"] = f"{int(captured)}/{planned_frames}"
-            data["scheduled_text"] = self._stamp_text(record.scheduled_start)
-            data["started_text"] = self._stamp_text(record.actual_started_at)
-            data["ended_text"] = self._stamp_text(record.actual_ended_at)
+            data["scheduled_text"] = self._stamp_text(record.scheduled_start, device)
+            data["started_text"] = self._stamp_text(record.actual_started_at, device)
+            data["ended_text"] = self._stamp_text(record.actual_ended_at, device)
             data["has_session"] = session is not None
             if not data.get("summary") and session:
                 data["summary"] = f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s"
@@ -4815,6 +4815,22 @@ class AppBackend(QObject):
         self._toast("History cleared", "success")
 
     @Slot(str)
+    def clearHistoryForDevice(self, device_id: str) -> None:
+        target = str(device_id or "").strip() or self._selected_device_id
+        if not target:
+            return
+        deleted = 0
+        for record in list(self.store.history.all()):
+            if record.device_id == target and self.store.history.delete(record.id):
+                deleted += 1
+        if deleted:
+            self.historyChanged.emit()
+            self._toast(
+                f"Cleared {deleted} recorded run{'s' if deleted != 1 else ''}",
+                "success",
+            )
+
+    @Slot(str)
     def deleteHistoryRecord(self, record_id: str) -> None:
         self.deleteHistoryRecords([record_id])
 
@@ -4861,13 +4877,15 @@ class AppBackend(QObject):
     def runNow(self, session_id: str) -> None:
         session = self.store.sessions.get(session_id)
         if not session:
+            self._toast("This session is no longer on the calendar", "warning")
             return
         if session.status == SessionStatus.RUNNING:
             self._toast("This session is already running", "warning")
             return
-        device = self._device_by_id(session.device_id)
+        device = next((item for item in self._devices if item.id == session.device_id), None)
         worker = self._workers.get(session.device_id)
         if not device or not worker:
+            self._toast("This telescope is not available", "warning")
             return
         if not device.location_configured:
             self._toast("Choose an observing location before running a session", "warning")
@@ -4875,6 +4893,14 @@ class AppBackend(QObject):
         if not worker.connected:
             self._toast("Connect the telescope before running a session", "warning")
             return
+        if session.device_id in self._disconnecting_ids:
+            self._toast("Wait for the telescope to finish disconnecting", "warning")
+            return
+        if session.device_id in self._active_sessions or worker.busy:
+            self._toast("Another session is running on this telescope", "warning")
+            return
+        if session.device_id != self._selected_device_id:
+            self._toast(f"Starting on {device.name}", "info")
         # Keep the planned slot on the calendar. Actual start/end live on
         # actual_* so a short failed run does not shrink or relocate the block.
         self._save_session(replace(
@@ -4885,14 +4911,12 @@ class AppBackend(QObject):
             actual_ended_at=None,
             outcome="",
         ))
-        if session.device_id in self._active_sessions or worker.busy:
-            self._toast("Another session is running on this telescope", "warning", "It will start once that session ends if the scheduler is armed")
-            return
-        if session.device_id in self._disconnecting_ids:
-            self._toast("Wait for the telescope to finish disconnecting", "warning")
-            return
         # RUN is an explicit request: start now even when the scheduler is disarmed.
-        self._start_session(worker, self.store.sessions.get(session.id))
+        started = self.store.sessions.get(session.id)
+        if started is None:
+            self._toast("This session is no longer on the calendar", "warning")
+            return
+        self._start_session(worker, started)
 
     @Slot(str, str)
     def moveSessionDate(self, session_id: str, day: str) -> None:
@@ -6006,12 +6030,24 @@ class AppBackend(QObject):
         minutes, secs = divmod(remainder, 60)
         return f"{hours}:{minutes:02d}:{secs:02d}"
 
-    @staticmethod
-    def _stamp_text(value: str | None) -> str:
+    def _history_date(self, value: str | None, device: Device | None) -> str:
+        if not value:
+            return ""
+        try:
+            tz = self._zone_for(device) if device is not None else zoneinfo_from_name("UTC")
+            return parse_in_zone(value, tz).date().isoformat()
+        except (ValueError, TypeError, OSError):
+            return str(value)[:10]
+
+    def _stamp_text(self, value: str | None, device: Device | None = None) -> str:
         if not value:
             return "—"
-        text = str(value).replace("T", " ")
-        return text[:16] if len(text) >= 16 else text
+        try:
+            tz = self._zone_for(device) if device is not None else zoneinfo_from_name("UTC")
+            return parse_in_zone(value, tz).strftime("%Y-%m-%d %H:%M")
+        except (ValueError, TypeError, OSError):
+            text = str(value).replace("T", " ")
+            return text[:16] if len(text) >= 16 else text
 
     @staticmethod
     def _local_path(raw_path: str) -> Path:

@@ -15,16 +15,43 @@ Item {
     property int expandedIndex: -1
     property var selectedIds: ({})
     property string selectionAnchorId: ""
+    property bool showAllDevices: false
+    property string dismissedSuggestionKey: ""
     readonly property int selectedCount: Util.idSetCount(selectedIds)
     // Leading gutter shared by the expand chevron and the floating select box.
     readonly property int gutterWidth: 24
+    readonly property bool viewingAllDevices: historyPage.showAllDevices || (backend.devices || []).length < 2
+    readonly property string durationSuggestionKey: {
+        const hint = backend.durationSuggestion || ({})
+        return String(hint.run_count || 0) + "\t" + String(hint.change_text || "") + "\t" + String(backend.selectedDeviceId || "")
+    }
+    readonly property bool durationBannerVisible: {
+        const hint = backend.durationSuggestion || ({})
+        return !!(hint.available) && historyPage.durationSuggestionKey !== historyPage.dismissedSuggestionKey
+    }
+    function matchesDeviceScope(item) {
+        return historyPage.viewingAllDevices || !!(item && item.device_id === backend.selectedDeviceId)
+    }
     function selectClick(id, shift) {
         const result = Util.clickSelect(selectedIds, filteredHistory, id, shift, selectionAnchorId)
         selectedIds = result.map
         selectionAnchorId = result.anchor
     }
-    readonly property var filteredHistory: {
+    function clearSelection() {
+        historyPage.selectedIds = ({})
+        historyPage.selectionAnchorId = ""
+    }
+    readonly property var scopedHistory: {
         const items = backend.history || []
+        const out = []
+        for (let i = 0; i < items.length; i++) {
+            if (historyPage.matchesDeviceScope(items[i]))
+                out.push(items[i])
+        }
+        return out
+    }
+    readonly property var filteredHistory: {
+        const items = historyPage.scopedHistory
         const q = historyPage.query.trim().toLowerCase()
         const out = []
         for (let i = 0; i < items.length; i++) {
@@ -56,11 +83,15 @@ Item {
     function resetExpanded() { historyPage.expandedIndex = -1 }
     onQueryChanged: resetExpanded()
     onOutcomeFilterChanged: resetExpanded()
+    onShowAllDevicesChanged: resetExpanded()
     Connections {
         target: backend
         function onHistoryChanged() {
             historyPage.resetExpanded()
             historyPage.selectedIds = Util.pruneIdSet(historyPage.selectedIds, backend.history)
+        }
+        function onSelectedDeviceChanged() {
+            historyPage.resetExpanded()
         }
     }
 
@@ -81,21 +112,56 @@ Item {
         height: Math.max(implicitHeight, historyFlick.height)
         spacing: 10
         PageHeader {
+            id: historyHeader
+            readonly property bool tight: width < 760
             title: "HISTORY"
-            subtitle: backend.history.length === 0
-                ? "Completed runs appear here with timing, frames and outcome"
-                : backend.history.length + " recorded run" + (backend.history.length === 1 ? "" : "s") + "  ·  click a row for timing, frames and outcome details"
+            subtitle: {
+                const n = historyPage.scopedHistory.length
+                const scope = historyPage.viewingAllDevices
+                    ? ((backend.devices || []).length > 1 ? "all telescopes" : "")
+                    : (backend.selectedDevice.name || "this telescope")
+                if (n === 0)
+                    return scope
+                        ? "Completed runs for " + scope + " appear here with timing, frames and outcome"
+                        : "Completed runs appear here with timing, frames and outcome"
+                return n + " recorded run" + (n === 1 ? "" : "s")
+                    + (scope ? "  ·  " + scope : "")
+                    + "  ·  click a row for timing, frames and outcome details"
+            }
+            HudButton {
+                visible: (backend.devices || []).length > 1
+                text: historyHeader.tight ? "ALL" : "ALL DEVICES"
+                Accessible.name: "All devices"
+                buttonColor: historyPage.showAllDevices ? Theme.fillActive : Theme.surfaceHigh
+                foregroundColor: historyPage.showAllDevices ? Theme.accent : Theme.textSecondary
+                onClicked: historyPage.showAllDevices = true
+            }
+            HudButton {
+                visible: (backend.devices || []).length > 1
+                text: historyHeader.tight ? "THIS" : "THIS DEVICE"
+                Accessible.name: "This device"
+                buttonColor: !historyPage.showAllDevices ? Theme.fillActive : Theme.surfaceHigh
+                foregroundColor: !historyPage.showAllDevices ? Theme.accent : Theme.textSecondary
+                onClicked: historyPage.showAllDevices = false
+            }
             HudButton {
                 text: "CLEAR HISTORY"
-                enabled: backend.history.length > 0
+                enabled: historyPage.scopedHistory.length > 0
                 busyText: "CLEARING…"
                 buttonColor: Theme.fillDanger
                 foregroundColor: Theme.danger
                 onClicked: {
-                    confirmDialog.kind = "clearHistory"
                     confirmDialog.headingText = "CLEAR HISTORY"
                     confirmDialog.confirmLabel = "CLEAR ALL"
-                    confirmDialog.summary = "Delete every recorded run? This cannot be undone."
+                    if (historyPage.showAllDevices && (backend.devices || []).length > 1) {
+                        confirmDialog.kind = "clearHistory"
+                        confirmDialog.summary = "Delete every recorded run on all telescopes? This cannot be undone."
+                    } else {
+                        const name = (backend.selectedDevice && backend.selectedDevice.name) || "this telescope"
+                        confirmDialog.kind = "clearHistoryDevice"
+                        confirmDialog.pendingIds = [backend.selectedDeviceId]
+                        confirmDialog.summary = "Delete every recorded run for " + name + "? This cannot be undone."
+                    }
                     confirmDialog.open()
                 }
             }
@@ -127,12 +193,12 @@ Item {
                             text: statTile.modelData[2]
                             color: statTile.modelData[3]
                             opacity: 0.35
-                            font.pixelSize: 20
+                            font.pixelSize: Theme.fontXl
                         }
                     ]
-                    Text { text: modelData[0]; color: modelData[3]; font.pixelSize: 22; font.bold: true; font.family: Theme.fontMono; wrapMode: Text.NoWrap; elide: Text.ElideRight; Layout.fillWidth: true }
-                    Text { text: modelData[1]; color: Theme.textSecondary; font.pixelSize: 11; font.letterSpacing: 1.4 }
-                    Text { visible: !!(modelData[4]); text: modelData[4] || ""; color: Theme.muted; font.pixelSize: 10 }
+                    Text { text: modelData[0]; color: modelData[3]; font.pixelSize: Theme.fontXl; font.bold: true; font.family: Theme.fontMono; wrapMode: Text.NoWrap; elide: Text.ElideRight; Layout.fillWidth: true }
+                    Text { text: modelData[1]; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.letterSpacing: Theme.tracking2 }
+                    Text { visible: !!(modelData[4]); text: modelData[4] || ""; color: Theme.muted; font.pixelSize: Theme.fontSm }
                 }
             }
         }
@@ -141,30 +207,32 @@ Item {
             HudField {
                 Layout.fillWidth: true
                 placeholderText: "Search target, device, or outcome"
+                accessibleName: "Search history"
                 onTextChanged: historyPage.query = text
             }
             HudCombo {
                 Layout.preferredWidth: 160
+                accessibleName: "Filter by outcome"
                 model: ["All outcomes", "Completed", "Failed"]
                 currentIndex: historyPage.outcomeFilter
                 onActivated: historyPage.outcomeFilter = currentIndex
             }
         }
         HudPanel {
-            visible: !!(backend.durationSuggestion && backend.durationSuggestion.available)
+            visible: historyPage.durationBannerVisible
             Layout.fillWidth: true
             title: "◷  DURATION PROFILE"
             RowLayout {
                 Layout.fillWidth: true
                 ColumnLayout {
                     Layout.fillWidth: true
-                    spacing: 4
+                    spacing: Theme.s1
                     Text {
                         Layout.fillWidth: true
                         text: (backend.durationSuggestion && backend.durationSuggestion.summary) || ""
                         color: Theme.warning
                         wrapMode: Text.Wrap
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontMd
                     }
                     Text {
                         visible: !!(backend.durationSuggestion && backend.durationSuggestion.note)
@@ -172,23 +240,29 @@ Item {
                         text: (backend.durationSuggestion && backend.durationSuggestion.note) || ""
                         color: Theme.textSecondary
                         wrapMode: Text.Wrap
-                        font.pixelSize: 11
+                        font.pixelSize: Theme.fontSm
                     }
                     Text {
                         Layout.fillWidth: true
                         text: (backend.durationSuggestion && backend.durationSuggestion.change_text) || ""
                         color: Theme.textPrimary
                         wrapMode: Text.Wrap
-                        font.pixelSize: 12
+                        font.pixelSize: Theme.fontMd
                         font.family: Theme.fontMono
                     }
                 }
                 HudButton {
                     text: "APPLY TO PROFILE"
                     busyText: "APPLYING…"
+                    tooltip: "Writes the selected telescope's timing profile from completed runs"
                     buttonColor: Theme.fillActive
                     foregroundColor: Theme.accent
                     onClicked: backend.applyDurationSuggestion()
+                }
+                HudButton {
+                    text: "DISMISS"
+                    tooltip: "Hide until this suggestion changes"
+                    onClicked: historyPage.dismissedSuggestionKey = historyPage.durationSuggestionKey
                 }
             }
         }
@@ -198,7 +272,7 @@ Item {
             noun: "run"
             allowEdit: false
             onSelectAllRequested: historyPage.selectedIds = Util.idSetAll(historyPage.filteredHistory, true)
-            onClearRequested: historyPage.selectedIds = ({})
+            onClearRequested: historyPage.clearSelection()
             onDeleteRequested: {
                 const chosen = {}
                 const items = historyPage.filteredHistory
@@ -219,9 +293,11 @@ Item {
                 Layout.alignment: Qt.AlignHCenter
                 Layout.topMargin: 40
                 visible: historyPage.filteredCount === 0
-                glyph: backend.history.length === 0 ? "◷" : "⌕"
-                text: backend.history.length === 0
-                    ? "No completed runs yet. History appears after a session finishes."
+                glyph: historyPage.scopedHistory.length === 0 ? "◷" : "⌕"
+                text: historyPage.scopedHistory.length === 0
+                    ? ((backend.history || []).length === 0
+                        ? "No completed runs yet. History appears after a session finishes."
+                        : "No completed runs for this telescope.")
                     : "No runs match this search."
             }
             ColumnLayout {
@@ -248,7 +324,7 @@ Item {
                                 height: parent.height
                                 text: modelData.label
                                 color: Theme.accent
-                                font.pixelSize: 10
+                                font.pixelSize: Theme.fontSm
                                 font.bold: true
                                 verticalAlignment: Text.AlignVCenter
                                 elide: Text.ElideRight
@@ -281,7 +357,7 @@ Item {
                         readonly property color deltaTone: Math.abs(deltaSeconds) < 60 ? Theme.textSecondary : (deltaSeconds > 0 ? Theme.warning : Theme.notice)
                         color: expanded || Util.idSetHas(historyPage.selectedIds, modelData.id) ? Theme.hsl(0.036, 0.640, 0.196, 0.133) : (rowHover.hovered ? Theme.hsl(0.068, 0.517, 0.114, 0.094) : (index % 2 ? Theme.hsl(0.062, 0.524, 0.082, 0.078) : "transparent"))
                         border.color: expanded ? Theme.outline : "transparent"
-                        Behavior on color { ColorAnimation { duration: 100 } }
+                        Behavior on color { ColorAnimation { duration: Theme.quick } }
                         HoverHandler { id: rowHover }
                         Rectangle { x: 0; y: 0; width: 2; height: parent.height; color: historyRow.outcomeTone; opacity: historyRow.expanded ? 1 : 0.55 }
                         Column {
@@ -290,6 +366,29 @@ Item {
                             Item {
                                 width: parent.width
                                 height: 42
+                                activeFocusOnTab: true
+                                Accessible.role: Accessible.Button
+                                Accessible.name: (historyRow.modelData.date || "") + " " + (historyRow.modelData.target_name || "") + " " + (historyRow.modelData.outcome || "")
+                                Accessible.onPressAction: historyPage.expandedIndex = historyRow.expanded ? -1 : historyRow.index
+                                Keys.onPressed: function (event) {
+                                    if (event.key === Qt.Key_Space && (event.modifiers & Qt.ShiftModifier)) {
+                                        historyPage.selectClick(historyRow.modelData.id, true)
+                                        event.accepted = true
+                                        return
+                                    }
+                                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                                        historyPage.expandedIndex = historyRow.expanded ? -1 : historyRow.index
+                                        event.accepted = true
+                                    }
+                                }
+                                Rectangle {
+                                    anchors.fill: parent
+                                    visible: parent.activeFocus
+                                    color: "transparent"
+                                    border.color: Theme.accent
+                                    border.width: Theme.focusStroke
+                                    z: 4
+                                }
                                 Row {
                                     anchors.fill: parent
                                     Item {
@@ -301,11 +400,18 @@ Item {
                                             anchors.leftMargin: 2
                                             text: historyRow.expanded ? "▾" : "▸"
                                             color: Theme.accent
-                                            font.pixelSize: 10
+                                            font.pixelSize: Theme.fontSm
                                             horizontalAlignment: Text.AlignHCenter
                                             verticalAlignment: Text.AlignVCenter
                                             opacity: historySelect.shown ? 0 : 1
-                                            Behavior on opacity { NumberAnimation { duration: 90 } }
+                                            Behavior on opacity { NumberAnimation { duration: Theme.quick } }
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            acceptedButtons: Qt.LeftButton
+                                            preventStealing: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: historyPage.expandedIndex = historyRow.expanded ? -1 : historyRow.index
                                         }
                                         SelectBox {
                                             id: historySelect
@@ -314,13 +420,6 @@ Item {
                                             checked: Util.idSetHas(historyPage.selectedIds, historyRow.modelData.id)
                                             revealed: rowHover.hovered || historyPage.selectedCount > 0
                                             onToggled: (shiftHeld) => historyPage.selectClick(historyRow.modelData.id, shiftHeld)
-                                        }
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            acceptedButtons: Qt.LeftButton
-                                            preventStealing: true
-                                            cursorShape: Qt.PointingHandCursor
-                                            onClicked: mouse => historyPage.selectClick(historyRow.modelData.id, !!(mouse.modifiers & Qt.ShiftModifier))
                                         }
                                     }
                                     Repeater {
@@ -348,7 +447,7 @@ Item {
                                                 anchors.fill: parent
                                                 text: parent.modelData.text
                                                 color: parent.modelData.color
-                                                font.pixelSize: 12
+                                                font.pixelSize: Theme.fontMd
                                                 font.bold: !!parent.modelData.bold
                                                 font.family: parent.modelData.mono ? Theme.fontMono : Theme.fontUi
                                                 elide: Text.ElideRight
@@ -408,17 +507,14 @@ Item {
                                         text: "Unselect all"
                                         glyph: "\uE711"
                                         enabled: historyPage.selectedCount > 0
-                                        onTriggered: {
-                                            historyPage.selectedIds = ({})
-                                            historyPage.selectionAnchorId = ""
-                                        }
+                                        onTriggered: historyPage.clearSelection()
                                     }
                                     HudMenuSeparator {}
                                     HudMenuItem {
                                         text: "Remove"
                                         glyph: "\uE74D"
                                         destructive: true
-                                        onTriggered: backend.deleteHistoryRecord(historyRow.modelData.id)
+                                        onTriggered: root.confirmBulkDelete("deleteHistory", historyRow.modelData.id, "run")
                                     }
                                 }
                             }
@@ -431,46 +527,51 @@ Item {
                                     x: historyPage.gutterWidth + 6
                                     width: parent.width - x - 8
                                     y: 4
-                                    spacing: 6
+                                    spacing: Theme.s2
                                     Text {
                                         visible: !!(historyRow.modelData.summary)
+                                        Layout.fillWidth: true
                                         text: historyRow.modelData.summary
                                         color: Theme.textPrimary
-                                        font.pixelSize: 12
+                                        font.pixelSize: Theme.fontMd
+                                        elide: Text.ElideRight
                                     }
                                     GridLayout {
                                         Layout.fillWidth: true
                                         columns: 4
-                                        columnSpacing: 16
-                                        rowSpacing: 4
-                                        Text { text: "SCHEDULED"; color: Theme.textSecondary; font.pixelSize: 9; font.bold: true }
-                                        Text { text: "STARTED"; color: Theme.textSecondary; font.pixelSize: 9; font.bold: true }
-                                        Text { text: "ENDED"; color: Theme.textSecondary; font.pixelSize: 9; font.bold: true }
-                                        Text { text: "VARIANCE"; color: Theme.textSecondary; font.pixelSize: 9; font.bold: true }
-                                        Text { text: historyRow.modelData.scheduled_text; color: Theme.textPrimary; font.pixelSize: 12 }
-                                        Text { text: historyRow.modelData.started_text; color: Theme.textPrimary; font.pixelSize: 12 }
-                                        Text { text: historyRow.modelData.ended_text; color: Theme.textPrimary; font.pixelSize: 12 }
+                                        columnSpacing: Theme.s4
+                                        rowSpacing: Theme.s1
+                                        Text { text: "SCHEDULED"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "STARTED"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "ENDED"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "VARIANCE"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: historyRow.modelData.scheduled_text; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: historyRow.modelData.started_text; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: historyRow.modelData.ended_text; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
                                         Text {
                                             text: (historyRow.deltaSeconds > 60 ? "▲ " : historyRow.deltaSeconds < -60 ? "▼ " : "● ") + historyRow.modelData.delta_text
                                             color: Math.abs(historyRow.deltaSeconds) < 60 ? Theme.success : historyRow.deltaTone
-                                            font.pixelSize: 12
+                                            font.pixelSize: Theme.fontMd
                                             font.family: Theme.fontMono
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
                                         }
-                                        Text { text: "FRAMES"; color: Theme.textSecondary; font.pixelSize: 9; font.bold: true }
-                                        Text { text: "CAPTURED"; color: Theme.textSecondary; font.pixelSize: 9; font.bold: true }
-                                        Text { text: "PLANNED TIME"; color: Theme.textSecondary; font.pixelSize: 9; font.bold: true }
-                                        Text { text: "ACTUAL TIME"; color: Theme.textSecondary; font.pixelSize: 9; font.bold: true }
-                                        Text { text: String(historyRow.modelData.planned_frames || historyRow.modelData.frame_count || 0) + " planned"; color: Theme.textPrimary; font.pixelSize: 12 }
-                                        Text { text: String(historyRow.modelData.captured_frames || 0) + " captured"; color: historyRow.modelData.ok ? Theme.success : Theme.textPrimary; font.pixelSize: 12 }
-                                        Text { text: historyRow.modelData.planned_text; color: Theme.textPrimary; font.pixelSize: 12; font.family: Theme.fontMono }
-                                        Text { text: historyRow.modelData.actual_text; color: historyRow.deltaTone; font.pixelSize: 12; font.family: Theme.fontMono }
+                                        Text { text: "FRAMES"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "CAPTURED"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "PLANNED TIME"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "ACTUAL TIME"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: String(historyRow.modelData.planned_frames || historyRow.modelData.frame_count || 0) + " planned"; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: String(historyRow.modelData.captured_frames || 0) + " captured"; color: historyRow.modelData.ok ? Theme.success : Theme.textPrimary; font.pixelSize: Theme.fontMd; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: historyRow.modelData.planned_text; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: historyRow.modelData.actual_text; color: historyRow.deltaTone; font.pixelSize: Theme.fontMd; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
                                     }
                                     Text {
                                         Layout.fillWidth: true
                                         text: historyRow.modelData.outcome
                                         color: historyRow.modelData.ok ? Theme.success : Theme.danger
                                         wrapMode: Text.Wrap
-                                        font.pixelSize: 12
+                                        font.pixelSize: Theme.fontMd
                                     }
                                     Text {
                                         visible: !!(historyRow.modelData.step_text)
@@ -478,7 +579,7 @@ Item {
                                         text: historyRow.modelData.step_text
                                         color: Theme.textSecondary
                                         wrapMode: Text.Wrap
-                                        font.pixelSize: 11
+                                        font.pixelSize: Theme.fontSm
                                         font.family: Theme.fontMono
                                     }
                                     Text {
@@ -487,7 +588,7 @@ Item {
                                         text: historyRow.modelData.notes
                                         color: Theme.textSecondary
                                         wrapMode: Text.Wrap
-                                        font.pixelSize: 11
+                                        font.pixelSize: Theme.fontSm
                                     }
                                     RowLayout {
                                         HudButton {
@@ -501,7 +602,9 @@ Item {
                                         HudButton {
                                             text: "REMOVE"
                                             busyText: "REMOVING…"
-                                            onClicked: backend.deleteHistoryRecord(historyRow.modelData.id)
+                                            buttonColor: Theme.fillDanger
+                                            foregroundColor: Theme.danger
+                                            onClicked: root.confirmBulkDelete("deleteHistory", historyRow.modelData.id, "run")
                                         }
                                         Item { Layout.fillWidth: true }
                                     }
