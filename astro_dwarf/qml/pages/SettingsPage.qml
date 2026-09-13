@@ -444,21 +444,21 @@ Item {
                     HudField {
                         id: exposureDefaultField
                         Layout.fillWidth: true
-                        placeholderText: "15"
+                        placeholderText: String(Util.stockExposureSeconds)
                         accessibleName: "Default exposure seconds"
                     }
                     FieldLabel { text: "GAIN" }
                     HudField {
                         id: gainDefaultField
                         Layout.fillWidth: true
-                        placeholderText: "40"
+                        placeholderText: String(Util.stockGain)
                         accessibleName: "Default gain"
                     }
                     FieldLabel { text: "FRAMES" }
                     HudField {
                         id: framesDefaultField
                         Layout.fillWidth: true
-                        placeholderText: "60"
+                        placeholderText: String(Util.stockFrameCount)
                         accessibleName: "Default frame count"
                     }
                 }

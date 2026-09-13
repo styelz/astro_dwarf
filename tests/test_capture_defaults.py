@@ -60,6 +60,15 @@ class CaptureDefaultsTests(unittest.TestCase):
         self.assertEqual(camera.gain, 100)
         self.assertEqual(camera.frame_count, 48)
 
+    def test_resolved_frame_count_prefers_explicit_then_defaults(self) -> None:
+        from astro_dwarf.domain import resolved_frame_count
+
+        defaults = CaptureDefaults(frame_count=200)
+        self.assertEqual(resolved_frame_count(90, defaults), 90)
+        self.assertEqual(resolved_frame_count(None, defaults), 200)
+        self.assertEqual(resolved_frame_count(0, defaults), 200)
+        self.assertEqual(resolved_frame_count("nope"), DEFAULT_FRAME_COUNT)
+
     def test_legacy_import_uses_device_defaults_when_camera_missing(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

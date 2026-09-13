@@ -56,6 +56,14 @@ Dialog {
         const id = deviceId || scheduleDialog.deviceId || backend.selectedDeviceId
         return Util.captureDefaults(Util.deviceById(backend.devices, id) || backend.selectedDevice)
     }
+    function fillCapture(deviceId) {
+        const defaults = scheduleDialog.captureFor(deviceId)
+        const camera = (scheduleDialog.templateData && scheduleDialog.templateData.camera) || ({})
+        const exposureValue = Number(camera.exposure_seconds)
+        const frameValue = Number(camera.frame_count)
+        exposure.text = String(Number.isFinite(exposureValue) && exposureValue > 0 ? exposureValue : defaults.exposure_seconds)
+        frames.text = String(Number.isFinite(frameValue) && frameValue >= 1 ? frameValue : defaults.frame_count)
+    }
     function openFor(data) {
         const item = data || ({})
         templateId = String(item.id || "")
@@ -64,10 +72,7 @@ Dialog {
         deviceId = backend.selectedDeviceId
         syncDevice()
         startTime.text = scheduleDialog.defaultStart()
-        const defaults = scheduleDialog.captureFor(deviceId)
-        const camera = item.camera || ({})
-        exposure.text = String(camera.exposure_seconds || defaults.exposure_seconds)
-        frames.text = String(camera.frame_count || defaults.frame_count)
+        scheduleDialog.fillCapture(deviceId)
         open()
         startTime.forceActiveFocus()
         startTime.selectAll()
@@ -115,7 +120,12 @@ Dialog {
             model: backend.devices
             textRole: "name"
             valueRole: "id"
-            onActivated: if (currentValue) scheduleDialog.deviceId = currentValue
+            onActivated: {
+                if (!currentValue)
+                    return
+                scheduleDialog.deviceId = currentValue
+                scheduleDialog.fillCapture(currentValue)
+            }
         }
         FieldLabel { text: "START" }
         RowLayout {

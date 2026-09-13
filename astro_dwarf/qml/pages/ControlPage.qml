@@ -473,6 +473,7 @@ Item {
                 readonly property string shootingMode: String(root.scopeTelemetry.shooting_mode_text || "—")
                 readonly property bool photoMode: shootingMode === "PHOTO"
                 readonly property bool dsoMode: shootingMode === "DSO"
+                readonly property var captureDefaults: Util.captureDefaults(backend.selectedDevice)
                 FieldLabel { text: "SHOOTING MODE · " + (cameraPanel.shootingMode === "—" ? "UNKNOWN" : cameraPanel.shootingMode) }
                 RowLayout {
                     Layout.fillWidth: true
@@ -586,7 +587,9 @@ Item {
                             const value = backend.selectedDevice.camera === "wide"
                                 ? root.scopeTelemetry.wide_exposure_text
                                 : root.scopeTelemetry.exposure_text
-                            return value && value !== "—" ? String(value) : ""
+                            if (value && value !== "—")
+                                return String(value)
+                            return String(cameraPanel.captureDefaults.exposure_seconds)
                         }
                         onLiveValueChanged: if (!activeFocus) text = liveValue
                         Component.onCompleted: text = liveValue
@@ -609,7 +612,9 @@ Item {
                             const value = backend.selectedDevice.camera === "wide"
                                 ? root.scopeTelemetry.wide_gain
                                 : root.scopeTelemetry.gain
-                            return value !== undefined && value !== null ? String(value) : ""
+                            if (value !== undefined && value !== null && String(value) !== "" && value !== "—")
+                                return String(value)
+                            return String(cameraPanel.captureDefaults.gain)
                         }
                         onLiveValueChanged: if (!activeFocus) text = liveValue
                         Component.onCompleted: text = liveValue
@@ -691,9 +696,19 @@ Item {
                     Layout.fillWidth: true
                     enabled: root.commandEnabled("set_count")
                     placeholderText: "frames"
-                    text: "120"
                     inputMethodHints: Qt.ImhDigitsOnly
-                    onEditingFinished: backend.setCameraParam(backend.selectedDeviceId, "count", text)
+                    readonly property string liveValue: String(cameraPanel.captureDefaults.frame_count)
+                    onLiveValueChanged: if (!activeFocus) text = liveValue
+                    Component.onCompleted: text = liveValue
+                    onEditingFinished: {
+                        const value = text.trim()
+                        if (!value) {
+                            text = liveValue
+                            return
+                        }
+                        if (value !== liveValue)
+                            backend.setCameraParam(backend.selectedDeviceId, "count", value)
+                    }
                 }
                 FieldLabel { text: "BURST / TIMELAPSE" }
                 RowLayout {

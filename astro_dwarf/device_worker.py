@@ -30,9 +30,11 @@ from .domain import (
     album_http_path,
     album_http_url,
     album_path_matches_model,
+    capture_defaults_from_dict,
     device_name_model,
     firmware_binning,
     firmware_exposure_name,
+    resolved_frame_count,
 )
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -2608,6 +2610,17 @@ def _start_manual_stack(camera: str = "") -> bool:
         raise RuntimeError("Could not enter astro mode")
     choice = str(camera or _device.get("camera") or "tele").strip().lower()
     _device["camera"] = choice
+    defaults = capture_defaults_from_dict(_device.get("capture_defaults") or {})
+    previous = _device.get("frame_count")
+    try:
+        have = int(float(previous))
+    except (TypeError, ValueError):
+        have = 0
+    if have < 1:
+        count = resolved_frame_count(previous, defaults)
+        _device["frame_count"] = count
+        if sdk_call("set_count", count, choice) is False:
+            raise RuntimeError("Could not set stack count")
     operation = "wide_astro" if choice == "wide" else "astro"
     ir_index = _ir_index(_device.get("ir_filter"))
     args = [ir_index] if operation == "astro" else []

@@ -354,6 +354,12 @@ def camera_settings_from_capture(
     )
 
 
+def resolved_frame_count(value: Any, defaults: CaptureDefaults | None = None) -> int:
+    """Use an explicit stack count when valid, otherwise the capture default."""
+    capture = defaults or CaptureDefaults()
+    return _int_at_least(value, int(capture.frame_count), 1)
+
+
 def device_from_dict(data: dict[str, Any]) -> Device:
     data = dict(data)
     data.pop("demo_mode", None)

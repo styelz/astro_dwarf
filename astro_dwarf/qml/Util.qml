@@ -3,7 +3,12 @@ import QtQuick
 import "."
 
 // Pure helpers shared by pages and components.
+// Stock capture fallbacks match astro_dwarf.domain DEFAULT_* when a device
+// has no saved Settings defaults yet.
 QtObject {
+    readonly property real stockExposureSeconds: 15
+    readonly property int stockGain: 40
+    readonly property int stockFrameCount: 60
     function statusColor(status) {
         switch (String(status || "").toLowerCase()) {
         case "running": return Theme.accent
@@ -284,9 +289,9 @@ QtObject {
         const gain = Number(cap.gain)
         const frames = Number(cap.frame_count)
         return {
-            exposure_seconds: Number.isFinite(exposure) && exposure > 0 ? exposure : 15,
-            gain: Number.isFinite(gain) && gain >= 0 ? gain : 40,
-            frame_count: Number.isFinite(frames) && frames >= 1 ? frames : 60
+            exposure_seconds: Number.isFinite(exposure) && exposure > 0 ? exposure : stockExposureSeconds,
+            gain: Number.isFinite(gain) && gain >= 0 ? gain : stockGain,
+            frame_count: Number.isFinite(frames) && frames >= 1 ? frames : stockFrameCount
         }
     }
     function deviceById(devices, id) {
