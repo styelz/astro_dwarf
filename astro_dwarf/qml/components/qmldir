@@ -23,6 +23,9 @@ HudCheck 1.0 HudCheck.qml
 SelectBox 1.0 SelectBox.qml
 SelectionBar 1.0 SelectionBar.qml
 FieldLabel 1.0 FieldLabel.qml
+FieldHint 1.0 FieldHint.qml
+SettingGroup 1.0 SettingGroup.qml
+HudSlider 1.0 HudSlider.qml
 EmptyHint 1.0 EmptyHint.qml
 PageHeader 1.0 PageHeader.qml
 StatusChip 1.0 StatusChip.qml
