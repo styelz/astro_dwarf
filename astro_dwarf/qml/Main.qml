@@ -269,6 +269,7 @@ ApplicationWindow {
         target: Theme
         function onHueChanged() { frameSyncTimer.restart() }
         function onBrightnessChanged() { frameSyncTimer.restart() }
+        function onPaletteJsonChanged() { frameSyncTimer.restart() }
         function onEnhanceImagesChanged() { backend.setEnhanceImages(Theme.enhanceImages) }
         function onDeepCleanImagesChanged() { backend.setDeepCleanImages(Theme.deepCleanImages) }
         function onEnhanceDenoiseChanged() { enhanceLevelTimer.restart() }

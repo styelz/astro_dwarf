@@ -25,6 +25,7 @@ SelectionBar 1.0 SelectionBar.qml
 FieldLabel 1.0 FieldLabel.qml
 FieldHint 1.0 FieldHint.qml
 SettingGroup 1.0 SettingGroup.qml
+PaletteSwatch 1.0 PaletteSwatch.qml
 HudSlider 1.0 HudSlider.qml
 EmptyHint 1.0 EmptyHint.qml
 PageHeader 1.0 PageHeader.qml

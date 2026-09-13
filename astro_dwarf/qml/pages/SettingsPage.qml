@@ -35,7 +35,26 @@ Item {
         []
     ]
     readonly property var currentCategory: settingsPage.categories[settingsPage.categoryIndex] || ({})
-    readonly property bool tintCustom: Math.abs(Theme.hue - Theme.defaultHue) > 0.002 || Math.abs(Theme.brightness) > 0.002
+    property string tintRole: "accent"
+    readonly property bool tintCustom: Theme.paletteCustom
+    readonly property real tintHue: {
+        void Theme.paletteJson
+        void Theme.hue
+        return Theme.effectiveHue(settingsPage.tintRole)
+    }
+    readonly property real tintBrightness: {
+        void Theme.paletteJson
+        void Theme.brightness
+        return Theme.effectiveBrightness(settingsPage.tintRole)
+    }
+    readonly property string tintRoleName: {
+        const list = Theme.swatches
+        for (let i = 0; i < list.length; i++) {
+            if (list[i].key === settingsPage.tintRole)
+                return list[i].name
+        }
+        return "ACCENT"
+    }
     readonly property bool enhanceCustom: Math.abs(Theme.enhanceDenoise - 1) > 0.002 || Math.abs(Theme.enhanceSkyCrush - 1) > 0.002
     function currentPayload() {
         return {
@@ -382,6 +401,11 @@ Item {
                             title: "CONSOLE TINT"
                             trailing: [
                                 HudChip {
+                                    label: settingsPage.tintRoleName
+                                    tone: Theme.accent
+                                    anchors.verticalCenter: parent.verticalCenter
+                                },
+                                HudChip {
                                     label: settingsPage.tintCustom ? "CUSTOM" : "STOCK"
                                     tone: settingsPage.tintCustom ? Theme.warning : Theme.textSecondary
                                     dim: !settingsPage.tintCustom
@@ -391,25 +415,40 @@ Item {
                                     text: "RESET"
                                     implicitHeight: 28
                                     enabled: settingsPage.tintCustom
-                                    Accessible.description: "Return hue and brightness to stock"
-                                    onClicked: {
-                                        Theme.hue = Theme.defaultHue
-                                        Theme.brightness = 0
-                                    }
+                                    Accessible.description: "Return every palette colour to stock"
+                                    onClicked: Theme.resetPalette()
                                 }
                             ]
-                            FieldLabel { text: "THEME HUE" }
+                            FieldLabel { text: "PALETTE" }
+                            RowLayout {
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                spacing: 6
+                                Repeater {
+                                    model: Theme.swatches
+                                    delegate: PaletteSwatch {
+                                        required property var modelData
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 40
+                                        roleKey: modelData.key
+                                        roleName: modelData.name
+                                        selected: settingsPage.tintRole === modelData.key
+                                        onClicked: settingsPage.tintRole = modelData.key
+                                        onResetRequested: Theme.clearRole(modelData.key)
+                                    }
+                                }
+                            }
+                            FieldHint { text: "Click a swatch to edit it. Hue and brightness apply only to that colour; related fills, outlines and glows follow their parent swatch. Double-click restores one colour. Success, warning and danger stay fixed. The Windows title bar follows panel, line and accent a moment after the sliders stop." }
+                            FieldLabel { text: "HUE" }
                             HudSlider {
                                 id: hueSlider
                                 Layout.preferredWidth: settingsPage.controlWidth
                                 from: 0
                                 to: 1
                                 stepSize: 0.001
-                                value: Theme.hue
-                                onMoved: Theme.hue = value
-                                markerPosition: Theme.defaultHue
-                                valueText: Math.round(Theme.hue * 360) + "°"
-                                accessibleName: "Theme hue"
+                                onMoved: Theme.setRole(settingsPage.tintRole, value, settingsPage.tintBrightness)
+                                markerPosition: Theme.stockHue(settingsPage.tintRole)
+                                valueText: Math.round(settingsPage.tintHue * 360) + "°"
+                                accessibleName: settingsPage.tintRoleName + " hue"
                                 trackGradient: Gradient {
                                     orientation: Gradient.Horizontal
                                     GradientStop { position: 0.000; color: Qt.hsla(0.000, 0.9, 0.55, 1) }
@@ -420,8 +459,14 @@ Item {
                                     GradientStop { position: 0.833; color: Qt.hsla(0.833, 0.9, 0.55, 1) }
                                     GradientStop { position: 1.000; color: Qt.hsla(1.000, 0.9, 0.55, 1) }
                                 }
+                                Binding {
+                                    target: hueSlider
+                                    property: "value"
+                                    value: settingsPage.tintHue
+                                    when: !hueSlider.pressed
+                                }
                             }
-                            FieldHint { text: "Base colour for panels, outlines, text and accent; the whole palette is derived from it. Success, warning and danger colours stay fixed. The tick is stock cyan." }
+                            FieldHint { text: "Hue of the selected swatch. The tick is that colour's stock position on the cyan HUD. Other swatches stay as they are." }
                             FieldLabel { text: "BRIGHTNESS" }
                             HudSlider {
                                 id: brightSlider
@@ -429,56 +474,24 @@ Item {
                                 from: -1
                                 to: 1
                                 stepSize: 0.01
-                                value: Theme.brightness
-                                onMoved: Theme.brightness = value
+                                onMoved: Theme.setRole(settingsPage.tintRole, settingsPage.tintHue, value)
                                 markerPosition: 0.5
-                                valueText: (Theme.brightness > 0 ? "+" : "") + Math.round(Theme.brightness * 100)
-                                accessibleName: "Theme brightness"
+                                valueText: (settingsPage.tintBrightness > 0 ? "+" : "") + Math.round(settingsPage.tintBrightness * 100)
+                                accessibleName: settingsPage.tintRoleName + " brightness"
                                 trackGradient: Gradient {
                                     orientation: Gradient.Horizontal
-                                    GradientStop { position: 0.0; color: Qt.hsla(Theme.hue, 1, 0.16, 1) }
-                                    GradientStop { position: 0.5; color: Qt.hsla(Theme.hue, 1, 0.651, 1) }
-                                    GradientStop { position: 1.0; color: Qt.hsla(Theme.hue, 1, 0.90, 1) }
+                                    GradientStop { position: 0.0; color: Qt.hsla(settingsPage.tintHue, 1, 0.16, 1) }
+                                    GradientStop { position: 0.5; color: Qt.hsla(settingsPage.tintHue, 1, 0.651, 1) }
+                                    GradientStop { position: 1.0; color: Qt.hsla(settingsPage.tintHue, 1, 0.90, 1) }
+                                }
+                                Binding {
+                                    target: brightSlider
+                                    property: "value"
+                                    value: settingsPage.tintBrightness
+                                    when: !brightSlider.pressed
                                 }
                             }
-                            FieldHint { text: "Lifts or deepens the palette. 0 is stock; negative darkens the console for use at the telescope, positive raises contrast on bright monitors." }
-                            FieldLabel { text: "PALETTE" }
-                            Row {
-                                Layout.preferredWidth: settingsPage.controlWidth
-                                spacing: 6
-                                Repeater {
-                                    model: [
-                                        { name: "BASE", tint: Theme.windowBase },
-                                        { name: "PANEL", tint: Theme.surface },
-                                        { name: "RAISED", tint: Theme.surfaceHigh },
-                                        { name: "LINE", tint: Theme.outline },
-                                        { name: "DIM", tint: Theme.textSecondary },
-                                        { name: "TEXT", tint: Theme.textPrimary },
-                                        { name: "ACCENT", tint: Theme.accent }
-                                    ]
-                                    delegate: Column {
-                                        required property var modelData
-                                        spacing: 3
-                                        Rectangle {
-                                            width: 40
-                                            height: 16
-                                            radius: 2
-                                            color: modelData.tint
-                                            border.color: Theme.outline
-                                            border.width: 1
-                                        }
-                                        Text {
-                                            width: 40
-                                            text: modelData.name
-                                            color: Theme.textSecondary
-                                            font.pixelSize: Theme.fontXs
-                                            font.letterSpacing: 0.6
-                                            horizontalAlignment: Text.AlignHCenter
-                                        }
-                                    }
-                                }
-                            }
-                            FieldHint { text: "Live sample of the derived palette. The Windows title bar follows the panel and accent colours a moment after the sliders stop." }
+                            FieldHint { text: "Lightness of the selected swatch. 0 is stock for that colour; negative darkens it, positive lifts it. Other swatches stay as they are." }
                         }
                     }
 
