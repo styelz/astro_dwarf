@@ -611,6 +611,36 @@ def _focus_position() -> int | None:
         return None
 
 
+def _focus_advanced(direction: int, previous: int, position: int) -> bool:
+    return position < previous if direction == _FOCUS_NEAR else position > previous
+
+
+def _nudge_focus(direction: int) -> bool:
+    """One telephoto step. Completes when telemetry advances in that direction."""
+    from dwarf_python_api.proto import focus_pb2
+
+    direction = _FOCUS_NEAR if int(direction) else _FOCUS_FAR
+    current = _focus_position()
+    if current is None:
+        raise RuntimeError("Focus position is unknown. Wait for telemetry, then try again.")
+    message = focus_pb2.ReqManualSingleStepFocus()
+    message.direction = direction
+    if send_without_response(message, 15001, 8) is False:
+        return False
+    step_from = current
+    deadline = time.monotonic() + _FOCUS_STEP_TIMEOUT
+    while time.monotonic() < deadline:
+        if _stop.is_set():
+            raise InterruptedError("Focus move stopped")
+        time.sleep(0.05)
+        position = _focus_position()
+        if position is None:
+            continue
+        if _focus_advanced(direction, step_from, position):
+            return True
+    raise RuntimeError("Focus motor did not move")
+
+
 def _set_focus_position(target: int) -> bool:
     """Move the focus motor to an absolute step count reported by telemetry."""
     from dwarf_python_api.proto import focus_pb2
@@ -628,7 +658,7 @@ def _set_focus_position(target: int) -> bool:
         return position <= target if direction == _FOCUS_NEAR else position >= target
 
     def advanced(previous: int, position: int) -> bool:
-        return position < previous if direction == _FOCUS_NEAR else position > previous
+        return _focus_advanced(direction, previous, position)
 
     deadline = time.monotonic() + 45.0
     while current != target:
@@ -725,11 +755,7 @@ def sdk_call(operation: str, *args: Any) -> Any:
             fov_h, fov_v = 45.06, 25.93
         return _center_wide_view(nx, ny, fov_h, fov_v)
     if operation == "manual_focus":
-        from dwarf_python_api.proto import focus_pb2
-
-        message = focus_pb2.ReqManualSingleStepFocus()
-        message.direction = int(args[0])
-        return send_without_response(message, 15001, 8)
+        return _nudge_focus(int(args[0]) if args else _FOCUS_FAR)
     if operation == "set_focus":
         return _set_focus_position(int(args[0]))
     if operation in {

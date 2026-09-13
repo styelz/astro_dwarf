@@ -51,10 +51,17 @@ ApplicationWindow {
     readonly property string scopePending: String((backend.selectedDevice && backend.selectedDevice.pending_action) || "")
     readonly property string scopePendingDetail: String((backend.selectedDevice && backend.selectedDevice.pending_detail) || "")
     readonly property string scopeActivity: String((backend.selectedDevice && backend.selectedDevice.activity) || "")
-    readonly property bool previewFailed: {
-        const status = String(backend.previewStatus || "").toLowerCase()
-        return status.indexOf("fail") >= 0 || status.indexOf("could not") >= 0
+    function previewStatusIsRetry(status) {
+        const s = String(status || "").toLowerCase()
+        return s.indexOf("retry") >= 0
     }
+    function previewStatusFailed(status) {
+        const s = String(status || "").toLowerCase()
+        if (!s || previewStatusIsRetry(s))
+            return false
+        return s.indexOf("fail") >= 0 || s.indexOf("could not") >= 0
+    }
+    readonly property bool previewFailed: previewStatusFailed(backend.previewStatus)
     readonly property bool previewStarting: backend.previewActive && !backend.previewPlaying && !previewFailed
     readonly property bool scopeOccupied: scopeImaging || scopePending !== "" || scopeActivity !== "" || previewStarting
     readonly property bool scopeStopping: scopePending === "stop_all" || scopePending === "stop_session"

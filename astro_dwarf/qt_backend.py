@@ -3040,23 +3040,24 @@ class AppBackend(QObject):
             self.add_log("warning", message, device_id)
             self._toast("Tracking needs an observing location", "warning", message)
             return
+        camera = device.camera.value if device and hasattr(device.camera, "value") else str(device.camera if device else "")
+        if operation in {"autofocus", "infinity"} and camera == Camera.WIDE.value:
+            self._toast("Focus is only available on the tele camera", "warning")
+            return
         shooting_mode = self._device_telemetry.get(device_id, {}).get("shooting_mode")
         required_mode = (
             1 if operation in {"photo", "burst_start", "record_start", "timelapse_start"}
-            else 2 if operation in {"calibrate", "polar", "track", "stack"}
+            else 2 if operation in {"calibrate", "polar", "track", "stack", "infinity"}
             else None
         )
         if required_mode is not None and shooting_mode != required_mode:
             mode_name = "PHOTO" if required_mode == 1 else "DSO"
             self._toast(f"Select {mode_name} mode before running this command", "warning")
             return
-        if operation in {"autofocus", "infinity"} and shooting_mode not in {1, 2}:
+        if operation == "autofocus" and shooting_mode not in {1, 2}:
             self._toast("Select PHOTO or DSO mode before focusing", "warning")
             return
-        photo_focus = (
-            operation in {"autofocus", "infinity"}
-            and shooting_mode == 1
-        )
+        photo_focus = operation == "autofocus" and shooting_mode == 1
         self._begin_activity(device_id, operation)
 
         label = _ACTION_LABELS.get(operation, operation.replace("_", " ").title())
@@ -3066,8 +3067,6 @@ class AppBackend(QObject):
 
         def done(ok: bool, result: Any) -> None:
             self._complete_activity(device_id, operation, ok)
-            if photo_focus and operation == "infinity":
-                self._set_activity(device_id, "")
             if ok and operation == "photo_mode":
                 self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1})
                 self._schedule_camera_param_refresh(device_id)
@@ -3077,12 +3076,14 @@ class AppBackend(QObject):
                 tech = {"burst_start": 3, "record_start": 4, "timelapse_start": 5}[operation]
                 self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": tech, "photo_primed": False})
             elif ok and (
-                operation in {"astro_mode", "calibrate", "polar", "track", "stack"}
-                or (operation in {"autofocus", "infinity"} and not photo_focus)
+                operation in {"astro_mode", "calibrate", "polar", "track", "stack", "infinity"}
+                or (operation == "autofocus" and not photo_focus)
             ):
                 self._on_telemetry(device_id, {"shooting_mode": 2, "shooting_tech": 0, "photo_primed": False})
                 if operation == "astro_mode":
                     self._schedule_camera_param_refresh(device_id)
+            elif ok and operation == "stop_goto":
+                self._on_telemetry(device_id, {"tracking_state": "idle", "goto_state": "idle"})
             if ok and operation in {"lights_on", "lights_off"}:
                 self._device_lights[device_id] = operation == "lights_on"
                 self._notify_devices()

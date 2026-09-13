@@ -7,6 +7,7 @@ Button {
     id: commandPad
     property string glyph: ""
     property string detail: ""
+    property string tooltip: ""
     property bool activeState: false
     property bool pending: false
     property bool primed: false
@@ -14,25 +15,30 @@ Button {
     property string flash: ""   // "", "success" or "error"
     readonly property color flashColor: flash === "error" ? Theme.danger : Theme.success
     hoverEnabled: enabled
+    focusPolicy: Qt.StrongFocus
     implicitHeight: 58
     leftPadding: 8
     rightPadding: 8
     Accessible.name: text
-    Accessible.description: pending ? "Sending" : detail
+    Accessible.description: pending ? "Sending" : (tooltip || detail)
     function showFlash(kind) {
         flash = kind
         flashTimer.restart()
     }
     Timer { id: flashTimer; interval: 900; onTriggered: commandPad.flash = "" }
+    HudToolTip {
+        visible: commandPad.tooltip !== "" && commandPad.hovered
+        text: commandPad.tooltip
+    }
     background: Rectangle {
         id: padBackground
         color: commandPad.flash !== "" ? Qt.rgba(commandPad.flashColor.r, commandPad.flashColor.g, commandPad.flashColor.b, 0.22)
-             : commandPad.destructive ? Theme.fillDanger : commandPad.activeState ? Theme.hsl(-0.049, 0.538, 0.153) : commandPad.pending ? Theme.hsl(0.046, 0.600, 0.147) : commandPad.down ? Theme.hsl(0.033, 0.627, 0.116) : commandPad.hovered ? Theme.hsl(0.046, 0.581, 0.169) : Theme.hsl(0.066, 0.532, 0.092)
+             : commandPad.destructive ? Theme.fillDanger : commandPad.activeState ? Theme.fillSuccess : commandPad.pending ? Theme.fillActive : commandPad.down ? Theme.fillChecked : commandPad.hovered ? Theme.surfaceHigh : Theme.surface
         border.color: commandPad.flash !== "" ? commandPad.flashColor : commandPad.destructive ? Theme.danger : commandPad.activeState ? Theme.success : commandPad.pending || commandPad.hovered ? Theme.accent : commandPad.primed ? Theme.success : Theme.outline
         border.width: commandPad.activeState || commandPad.hovered || commandPad.pending || commandPad.flash !== "" ? 2 : 1
-        radius: 4
-        Behavior on color { ColorAnimation { duration: 160 } }
-        Behavior on border.color { ColorAnimation { duration: 160 } }
+        radius: Theme.radius
+        Behavior on color { ColorAnimation { duration: Theme.normal } }
+        Behavior on border.color { ColorAnimation { duration: Theme.normal } }
         Rectangle { x: 4; y: 4; width: parent.width - 8; height: 1; color: commandPad.destructive ? Theme.danger : commandPad.primed && !commandPad.activeState ? Theme.success : Theme.accent; opacity: 0.35 }
         Rectangle {
             visible: commandPad.primed && !commandPad.activeState && !commandPad.pending
@@ -64,7 +70,7 @@ Button {
         Rectangle {
             anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 7
             width: 7; height: 7; radius: 4
-            color: commandPad.activeState || (commandPad.primed && !commandPad.pending) ? Theme.success : commandPad.pending ? Theme.accent : commandPad.enabled ? Theme.hsl(0.042, 0.372, 0.306) : Theme.hsl(0.050, 0.361, 0.141)
+            color: commandPad.activeState || (commandPad.primed && !commandPad.pending) ? Theme.success : commandPad.pending ? Theme.accent : commandPad.enabled ? Theme.muted : Theme.disabledOutline
             border.color: commandPad.activeState || commandPad.primed ? Theme.accentSoft : Theme.outline
             SequentialAnimation on opacity {
                 running: commandPad.pending

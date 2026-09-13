@@ -476,7 +476,7 @@ Item {
                 readonly property var captureDefaults: Util.captureDefaults(backend.selectedDevice)
                 readonly property bool stackParamsReady: liveExposure.matchesDevice && liveGain.matchesDevice
                     && liveStackCount.text.trim() !== "" && liveStackCount.text.trim() === liveStackCount.appliedValue
-                    && (!liveFilter.visible || liveFilter.currentText === liveFilter.appliedValue)
+                    && (!liveFilter.visible || liveFilter.appliedValue === "" || liveFilter.currentText === liveFilter.appliedValue)
                 function applyPendingStackParams() {
                     const id = backend.selectedDeviceId
                     const exposure = liveExposure.text.trim()
@@ -490,7 +490,7 @@ Item {
                         backend.setCameraParam(id, "count", count)
                         liveStackCount.appliedValue = count
                     }
-                    if (liveFilter.visible && liveFilter.currentText && liveFilter.currentText !== liveFilter.appliedValue) {
+                    if (liveFilter.visible && liveFilter.appliedValue !== "" && liveFilter.currentText && liveFilter.currentText !== liveFilter.appliedValue) {
                         backend.setCameraParam(id, "ir", liveFilter.currentText)
                         liveFilter.appliedValue = liveFilter.currentText
                     }
@@ -842,7 +842,7 @@ Item {
             HudPanel {
                 SplitView.fillHeight: true
                 SplitView.minimumHeight: 150
-                fill: Theme.hsl(0.090, 0.375, 0.031, 0.878)
+                fill: Theme.popupBg
                 Item {
                     id: previewHost
                     Layout.fillWidth: true
@@ -917,17 +917,16 @@ Item {
                             return
                         backend.setLiveCamera(backend.selectedDeviceId, preferredWide ? "tele" : "wide")
                     }
-                    readonly property bool previewFailed: {
-                        const s = String(backend.previewStatus || "").toLowerCase()
-                        return s.indexOf("fail") >= 0 || s.indexOf("could not") >= 0
-                    }
+                    readonly property bool previewFailed: root.previewFailed
                     readonly property bool previewStartEnabled: backend.selectedDevice.connected && !root.scopeLinking && !root.scopeStopping && (!backend.previewActive || backend.previewPlaying || previewFailed)
                     readonly property string actionLabel: {
                         if (!backend.previewActive || backend.previewPlaying)
                             return "STARTING CAMERA…"
-                        const s = String(backend.previewStatus || "").toLowerCase()
-                        if (s.indexOf("fail") >= 0 || s.indexOf("could not") >= 0)
+                        if (root.previewStatusIsRetry(backend.previewStatus))
+                            return "RETRYING UDP…"
+                        if (previewFailed)
                             return "PREVIEW FAILED"
+                        const s = String(backend.previewStatus || "").toLowerCase()
                         if (s.indexOf("udp") >= 0)
                             return "RETRYING UDP…"
                         if (s.indexOf("waiting") >= 0)
@@ -1100,7 +1099,7 @@ Item {
                         }
                         Rectangle {
                             anchors.fill: parent
-                            color: Theme.hsl(0.090, 0.375, 0.031, 0.92)
+                            color: Theme.popupBg
                             border.color: Theme.accent
                             border.width: 1
                         }
@@ -1143,7 +1142,7 @@ Item {
                             anchors.margins: 6
                             width: pipLabel.implicitWidth + 12
                             height: 18
-                            color: Theme.hsl(0.079, 0.517, 0.057, 0.82)
+                            color: Theme.panelFill
                             border.color: Theme.outline
                             Text {
                                 id: pipLabel
@@ -1161,51 +1160,33 @@ Item {
                             anchors.margins: 6
                             spacing: 4
                             z: 2
-                            Rectangle {
-                                id: pipSwap
-                                width: pipSwapLabel.implicitWidth + 14
-                                height: 18
-                                color: Theme.fillActive
-                                border.color: Theme.accent
-                                Text {
-                                    id: pipSwapLabel
-                                    anchors.centerIn: parent
-                                    text: "SWAP"
-                                    color: Theme.accent
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1
-                                }
-                                MouseArea {
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onContainsMouseChanged: previewHost.holdControls(containsMouse)
-                                    onClicked: previewHost.swapViews()
-                                }
+                            HudButton {
+                                text: "SWAP"
+                                implicitHeight: 18
+                                implicitWidth: implicitContentWidth + 14
+                                font.pixelSize: 9
+                                font.letterSpacing: 1
+                                leftPadding: 6
+                                rightPadding: 6
+                                buttonColor: Theme.fillActive
+                                foregroundColor: Theme.accent
+                                tooltip: "Swap main and picture-in-picture cameras"
+                                onHoveredChanged: previewHost.holdControls(hovered)
+                                onClicked: previewHost.swapViews()
                             }
-                            Rectangle {
-                                id: pipHide
-                                width: pipHideLabel.implicitWidth + 14
-                                height: 18
-                                color: Theme.fillActive
-                                border.color: Theme.accent
-                                Text {
-                                    id: pipHideLabel
-                                    anchors.centerIn: parent
-                                    text: "HIDE"
-                                    color: Theme.accent
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 1
-                                }
-                                MouseArea {
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onContainsMouseChanged: previewHost.holdControls(containsMouse)
-                                    onClicked: previewHost.pipEnabled = false
-                                }
+                            HudButton {
+                                text: "HIDE"
+                                implicitHeight: 18
+                                implicitWidth: implicitContentWidth + 14
+                                font.pixelSize: 9
+                                font.letterSpacing: 1
+                                leftPadding: 6
+                                rightPadding: 6
+                                buttonColor: Theme.fillActive
+                                foregroundColor: Theme.accent
+                                tooltip: "Hide picture-in-picture"
+                                onHoveredChanged: previewHost.holdControls(hovered)
+                                onClicked: previewHost.pipEnabled = false
                             }
                         }
                     }
@@ -1263,7 +1244,7 @@ Item {
                         // status stays up while streaming; it just recedes when the controls are away
                         opacity: previewHost.chromeShown ? 1 : 0.62
                         Behavior on opacity { NumberAnimation { duration: Theme.slow } }
-                        color: Theme.hsl(0.079, 0.517, 0.057, 0.690)
+                        color: Theme.panelFill
                         border.color: Theme.outline
                         RowLayout {
                             id: readoutStrip
@@ -1281,27 +1262,33 @@ Item {
                             anchors.fill: parent
                             anchors.leftMargin: 10
                             anchors.rightMargin: 10
-                            spacing: 12
-                            Text { text: readoutStrip.wide ? "WIDE" : "TELE"; color: Theme.accent; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1 }
-                            Text { text: "EXP " + readoutStrip.exposure + "s"; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono }
-                            Text { text: "GAIN " + readoutStrip.gain; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono }
-                            Text { visible: !readoutStrip.wide; text: liveFilter.currentText.toUpperCase(); color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight }
+                            spacing: 8
+                            Text { text: readoutStrip.wide ? "WIDE" : "TELE"; color: Theme.accent; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1; Layout.fillWidth: false }
+                            Text { text: "EXP " + readoutStrip.exposure + "s"; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 36; Layout.preferredWidth: implicitWidth }
+                            Text { text: "GAIN " + readoutStrip.gain; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 36; Layout.preferredWidth: implicitWidth }
+                            Text { visible: !readoutStrip.wide; text: liveFilter.currentText.toUpperCase(); color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 24; Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
                             Text {
                                 visible: root.scopeOnline && readoutStrip.t.capture_active && !!readoutStrip.t.capture_text
                                 text: "FRAMES " + (readoutStrip.t.capture_text || "")
                                 color: readoutStrip.t.capture_active ? Theme.danger : Theme.textPrimary
                                 font.pixelSize: 10; font.family: Theme.fontMono; font.bold: true
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 40
+                                Layout.preferredWidth: implicitWidth
                             }
-                            Item { Layout.fillWidth: true }
-                            Text { visible: root.scopeOnline && readoutStrip.sensor !== "—"; text: "SENSOR " + readoutStrip.sensor; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono }
+                            Item { Layout.fillWidth: true; Layout.preferredWidth: 8; Layout.minimumWidth: 0 }
+                            Text { visible: root.scopeOnline && readoutStrip.sensor !== "—"; text: "SENSOR " + readoutStrip.sensor; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
                             Text {
                                 visible: root.scopeOnline && readoutStrip.t.battery_percent !== undefined && Number(readoutStrip.t.battery_percent) >= 0
                                 text: "BATT " + (readoutStrip.t.battery_text || "—") + (readoutStrip.t.charging ? "⚡" : "")
                                 color: Util.toneColor(Util.batteryTone(readoutStrip.t.battery_percent))
                                 font.pixelSize: 10; font.family: Theme.fontMono
+                                elide: Text.ElideRight
+                                Layout.fillWidth: false
                             }
-                            Text { visible: !root.scopeOnline; text: backend.selectedDevice.ip_address || "—"; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono }
-                            Text { text: backend.clockText; color: Theme.accent; font.pixelSize: 10; font.family: Theme.fontMono }
+                            Text { visible: !root.scopeOnline; text: backend.selectedDevice.ip_address || "—"; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.maximumWidth: 120 }
+                            Text { text: backend.clockText; color: Theme.accent; font.pixelSize: 10; font.family: Theme.fontMono; Layout.fillWidth: false }
                         }
                     }
                     Rectangle {
@@ -1314,7 +1301,7 @@ Item {
                         anchors.bottomMargin: 46
                         visible: backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack
                         height: resultCaptionCol.implicitHeight + 16
-                        color: Theme.hsl(0.079, 0.517, 0.057, 0.82)
+                        color: Theme.panelFill
                         border.color: Theme.outline
                         Column {
                             id: resultCaptionCol
@@ -1526,14 +1513,14 @@ Item {
                             readonly property bool stopping: root.scopeStopping
                             width: stopping ? 118 : (backend.previewResult ? 96 : (backend.previewHeld && !backend.previewPlaying ? 108 : 96))
                             height: 28
-                            color: Theme.hsl(0.094, 0.333, 0.094, 0.753)
+                            color: Theme.panelFill
                             border.color: stopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.success : (backend.previewHeld ? Theme.warning : Theme.outline)))
                             Row {
                                 anchors.centerIn: parent
                                 spacing: 7
                                 Rectangle {
                                     width: 8; height: 8; radius: 4
-                                    color: previewBadge.stopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.danger : (backend.previewHeld ? Theme.warning : (backend.previewActive ? Theme.warning : "#64748B"))))
+                                    color: previewBadge.stopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.danger : (backend.previewHeld ? Theme.warning : (backend.previewActive ? Theme.warning : Theme.muted))))
                                     anchors.verticalCenter: parent.verticalCenter
                                     SequentialAnimation on opacity {
                                         running: (backend.previewPlaying && !backend.previewResult) || previewBadge.stopping
@@ -1549,7 +1536,7 @@ Item {
                             visible: backend.previewPlaying || backend.previewResult
                             width: mainCamLabel.implicitWidth + 16
                             height: 28
-                            color: Theme.hsl(0.094, 0.333, 0.094, 0.753)
+                            color: Theme.panelFill
                             border.color: Theme.outline
                             Text {
                                 id: mainCamLabel
@@ -1565,7 +1552,7 @@ Item {
                             visible: backend.previewStacking || previewHost.awaitingFirstStack
                             width: enhanceLabel.implicitWidth + 16
                             height: 28
-                            color: Theme.enhanceImages ? Theme.fillActive : Theme.hsl(0.094, 0.333, 0.094, 0.753)
+                            color: Theme.enhanceImages ? Theme.fillActive : Theme.panelFill
                             border.color: Theme.enhanceImages ? Theme.accent : Theme.outline
                             Text {
                                 id: enhanceLabel
@@ -1588,7 +1575,7 @@ Item {
                             visible: (backend.previewStacking || previewHost.awaitingFirstStack) && Theme.enhanceImages
                             width: deepLabel.implicitWidth + 16
                             height: 28
-                            color: Theme.deepCleanImages ? Theme.fillActive : Theme.hsl(0.094, 0.333, 0.094, 0.753)
+                            color: Theme.deepCleanImages ? Theme.fillActive : Theme.panelFill
                             border.color: Theme.deepCleanImages ? Theme.accent : Theme.outline
                             Text {
                                 id: deepLabel
@@ -1614,7 +1601,7 @@ Item {
                             visible: rec
                             width: recRow.implicitWidth + 20
                             height: 28
-                            color: "#C0301117"
+                            color: Theme.fillDanger
                             border.color: Theme.danger
                             Row {
                                 id: recRow
@@ -1816,8 +1803,8 @@ Item {
                     Repeater {
                     model: [
                         {label: "CALIBRATE", glyph: "◎", start: "calibrate", stop: "stop_calibrate", state: "calibrate", detail: "ALIGN", mode: "dso"},
-                        {label: "AUTO FOCUS", glyph: "◉", start: "autofocus", stop: "stop_autofocus", state: "autofocus", detail: "OPTICS", mode: "both"},
-                        {label: "INFINITY", glyph: "∞", start: "infinity", stop: "stop_autofocus", state: "infinity", detail: "FOCUS", mode: "both"},
+                        {label: "AUTO FOCUS", glyph: "◉", start: "autofocus", stop: "stop_autofocus", state: "autofocus", detail: "OPTICS", mode: "both", camera: "tele"},
+                        {label: "INFINITY", glyph: "∞", start: "infinity", stop: "stop_autofocus", state: "infinity", detail: "FOCUS", mode: "dso", camera: "tele"},
                         {label: "POLAR / EQ", glyph: "⌖", start: "polar", stop: "stop_polar", state: "polar", detail: "ALIGN", mode: "dso"},
                         {label: "POLAR POS", glyph: "⊕", start: "polar_position", stop: "", state: "", detail: "MOUNT"},
                         {label: "LIGHTS", glyph: "✦", start: "lights_on", stop: "lights_off", state: "lights", detail: "CHASSIS"},
@@ -1839,6 +1826,7 @@ Item {
                         readonly property bool trackingNow: trackingPad && !!t.tracking_active
                         readonly property bool slewingNow: trackingPad && root.scopeActivity === "goto"
                         readonly property bool stopping: effectiveOperation !== modelData.start
+                        readonly property bool cameraAllowed: stopping || modelData.camera !== "tele" || cameraPanel.teleSelected
                         readonly property bool modeAllowed: {
                             if (stopping || !modelData.mode)
                                 return true
@@ -1879,6 +1867,8 @@ Item {
                                 return t.capture_text ? "STACK · " + t.capture_text : "STACKING · TAP TO STOP"
                             if (photoPrimed || stackPrimed)
                                 return "PRIMED"
+                            if (!cameraAllowed)
+                                return "TELE ONLY"
                             if (!modeAllowed)
                                 return modelData.mode === "both" || cameraPanel.shootingMode === "—"
                                     ? "SELECT PHOTO OR DSO"
@@ -1887,7 +1877,7 @@ Item {
                                 if (modelData.state === "autofocus")
                                     return cameraPanel.shootingMode === "—" ? "SELECT PHOTO OR DSO" : cameraPanel.shootingMode + " · OPTICS"
                                 if (modelData.state === "infinity")
-                                    return cameraPanel.shootingMode === "—" ? "SELECT PHOTO OR DSO" : cameraPanel.shootingMode + " · FOCUS"
+                                    return cameraPanel.shootingMode === "—" ? "SWITCH TO DSO" : cameraPanel.shootingMode + " · FOCUS"
                                 return modelData.detail
                             }
                             switch (modelData.state) {
@@ -1923,7 +1913,7 @@ Item {
                         pending: isPending
                         primed: photoPrimed || stackPrimed
                         destructive: !!modelData.destructive
-                        enabled: modeAllowed && root.commandEnabled(effectiveOperation)
+                        enabled: cameraAllowed && modeAllowed && root.commandEnabled(effectiveOperation)
                         Accessible.description: photoPrimed ? "Photo capture primed for a fast shot" : stackPrimed ? "Stack settings already match the telescope" : String(modelData.detail || modelData.label)
                         onClicked: {
                             if (effectiveOperation === "stack")
@@ -1982,8 +1972,11 @@ Item {
                 SplitView.preferredHeight: 188
                 SplitView.minimumHeight: 136
                 onStackingChanged: {
-                    if (stacking && analogPad.moving)
-                        analogPad.releaseStick()
+                    if (stacking) {
+                        analogPad.clearKeys()
+                        if (analogPad.moving)
+                            analogPad.releaseStick()
+                    }
                 }
                 headerExtra: Text {
                     visible: motionPanel.stacking && stackTimer.target
@@ -2009,8 +2002,53 @@ Item {
                         property real stickDx: 0
                         property real stickDy: 0
                         property bool moving: false
+                        property bool keyLeft: false
+                        property bool keyRight: false
+                        property bool keyUp: false
+                        property bool keyDown: false
                         readonly property real maxThrow: width / 2 - 15
                         readonly property real deadzone: 0.15
+                        activeFocusOnTab: root.motionEnabled && !motionPanel.stacking
+                        Accessible.name: "Mount joystick"
+                        Accessible.role: Accessible.Dial
+                        Accessible.description: "Arrow keys slew the mount. Release to stop."
+                        Keys.onPressed: (event) => {
+                            if (!root.motionEnabled || motionPanel.stacking || event.isAutoRepeat)
+                                return
+                            if (event.key === Qt.Key_Left)
+                                analogPad.keyLeft = true
+                            else if (event.key === Qt.Key_Right)
+                                analogPad.keyRight = true
+                            else if (event.key === Qt.Key_Up)
+                                analogPad.keyUp = true
+                            else if (event.key === Qt.Key_Down)
+                                analogPad.keyDown = true
+                            else
+                                return
+                            event.accepted = true
+                            analogPad.applyKeySlew()
+                        }
+                        Keys.onReleased: (event) => {
+                            if (event.key === Qt.Key_Left)
+                                analogPad.keyLeft = false
+                            else if (event.key === Qt.Key_Right)
+                                analogPad.keyRight = false
+                            else if (event.key === Qt.Key_Up)
+                                analogPad.keyUp = false
+                            else if (event.key === Qt.Key_Down)
+                                analogPad.keyDown = false
+                            else
+                                return
+                            event.accepted = true
+                            analogPad.applyKeySlew()
+                        }
+                        onActiveFocusChanged: {
+                            if (activeFocus)
+                                return
+                            analogPad.clearKeys()
+                            if (analogPad.moving && !stickArea.pressed)
+                                analogPad.releaseStick()
+                        }
 
                         function updateStick(px, py) {
                             let dx = px - width / 2
@@ -2034,6 +2072,23 @@ Item {
                             backend.joystick(backend.selectedDeviceId, angle, amount * root.joySpeed)
                         }
 
+                        function applyKeySlew() {
+                            if (stickArea.pressed || !root.motionEnabled || motionPanel.stacking)
+                                return
+                            const dx = (analogPad.keyRight ? 1 : 0) - (analogPad.keyLeft ? 1 : 0)
+                            const dy = (analogPad.keyDown ? 1 : 0) - (analogPad.keyUp ? 1 : 0)
+                            if (dx === 0 && dy === 0) {
+                                if (moving)
+                                    analogPad.releaseStick()
+                                return
+                            }
+                            analogPad.updateStick(width / 2 + dx * maxThrow, height / 2 + dy * maxThrow)
+                        }
+
+                        function clearKeys() {
+                            analogPad.keyLeft = analogPad.keyRight = analogPad.keyUp = analogPad.keyDown = false
+                        }
+
                         function releaseStick() {
                             stickDx = 0
                             stickDy = 0
@@ -2044,8 +2099,8 @@ Item {
                         Rectangle {
                             anchors.fill: parent
                             radius: width / 2
-                            color: Theme.hsl(0.075, 0.565, 0.090, 0.702)
-                            border.color: Theme.outline
+                            color: Theme.inputBg
+                            border.color: analogPad.activeFocus ? Theme.accent : Theme.outline
                             border.width: 2
                         }
                         Canvas {
@@ -2095,7 +2150,7 @@ Item {
                             width: analogPad.maxThrow * 2 * analogPad.deadzone
                             height: width
                             radius: width / 2
-                            color: Theme.hsl(0.062, 0.488, 0.169)
+                            color: Theme.surfaceHigh
                             border.color: Theme.outlineStrong
                         }
                         Rectangle {
@@ -2105,8 +2160,8 @@ Item {
                             width: 28
                             height: 28
                             radius: width / 2
-                            color: analogPad.moving ? Theme.accent : Theme.hsl(0.053, 0.503, 0.700)
-                            border.color: Theme.hsl(0.026, 1.000, 0.924)
+                            color: analogPad.moving ? Theme.accent : Theme.accentSoft
+                            border.color: Theme.accentSoft
                             border.width: 2
                             Behavior on x { NumberAnimation { duration: stickArea.pressed ? 0 : 90 } }
                             Behavior on y { NumberAnimation { duration: stickArea.pressed ? 0 : 90 } }
@@ -2117,16 +2172,25 @@ Item {
                             enabled: root.motionEnabled && !motionPanel.stacking
                             preventStealing: true
                             cursorShape: root.motionEnabled && !motionPanel.stacking ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
-                            onPressed: mouse => analogPad.updateStick(mouse.x, mouse.y)
+                            onPressed: mouse => {
+                                analogPad.forceActiveFocus()
+                                analogPad.updateStick(mouse.x, mouse.y)
+                            }
                             onPositionChanged: mouse => {
                                 if (pressed)
                                     analogPad.updateStick(mouse.x, mouse.y)
                             }
-                            onReleased: analogPad.releaseStick()
+                            onReleased: {
+                                analogPad.releaseStick()
+                                analogPad.applyKeySlew()
+                            }
                             onCanceled: analogPad.releaseStick()
                             onEnabledChanged: {
-                                if (!enabled && analogPad.moving)
-                                    analogPad.releaseStick()
+                                if (!enabled) {
+                                    analogPad.clearKeys()
+                                    if (analogPad.moving)
+                                        analogPad.releaseStick()
+                                }
                             }
                         }
                     }
@@ -2161,6 +2225,7 @@ Item {
                         id: speedSlider
                         Layout.fillWidth: true
                         enabled: root.motionEnabled
+                        Accessible.name: "Slew speed"
                         from: 0.03
                         to: 1
                         value: 1
@@ -2401,7 +2466,7 @@ Item {
                             width: logPanel.compactChrome ? 22 : pillRow.implicitWidth + 12
                             height: 20
                             radius: 3
-                            color: active ? (modelData.key === "debug" ? Theme.fillSuccess : Theme.fillActive) : pillHover.hovered ? Theme.hsl(0.054, 0.526, 0.149) : "transparent"
+                            color: active ? (modelData.key === "debug" ? Theme.fillSuccess : Theme.fillActive) : pillHover.hovered ? Theme.surfaceHigh : "transparent"
                             border.color: active ? (modelData.key === "debug" ? Theme.success : Theme.accent) : Theme.outlineSoft
                             Behavior on color { ColorAnimation { duration: 120 } }
                             Row {
