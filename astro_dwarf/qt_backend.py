@@ -1146,6 +1146,18 @@ class AppBackend(QObject):
                 wanted = _activity_for_session_step(session.current_step)
                 if wanted:
                     self._device_activity[device_id] = wanted
+        # Photo AF often reports idle without a prior running sample. Drop the
+        # AUTO FOCUS latch from _begin_activity when firmware says it is done.
+        if (
+            data.get("autofocus_state") in ("idle", "stopped")
+            and self._device_activity.get(device_id) in ("autofocus", "infinity")
+            and not activity
+        ):
+            session_id = self._active_sessions.get(device_id)
+            session = self.store.sessions.get(session_id) if session_id else None
+            wanted = _activity_for_session_step(session.current_step) if session else ""
+            if wanted not in ("autofocus", "infinity"):
+                self._device_activity.pop(device_id, None)
         if data.get("power_off"):
             self._drop_device_link(device_id)
             return

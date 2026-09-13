@@ -280,8 +280,8 @@ def derive_activity(raw: dict[str, Any]) -> tuple[str, str]:
         return "goto", detail
     if raw.get("eq_state") == "running":
         return "polar", "EQ SOLVING"
-    if raw.get("autofocus_state") == "running":
-        return "autofocus", "RUNNING"
+    if raw.get("autofocus_state") in ("running", "stopping"):
+        return "autofocus", "STOPPING" if raw.get("autofocus_state") == "stopping" else "RUNNING"
     if raw.get("dark_state") == "running":
         progress = raw.get("dark_progress")
         return "dark", f"{int(progress)}%" if progress is not None else "RUNNING"

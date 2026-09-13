@@ -49,6 +49,8 @@ CMD_NOTIFY_PROGRESS_CAPTURE_MOSAIC = 15263
 CMD_NOTIFY_GENERAL_INT_PARAM = 15264
 CMD_NOTIFY_SWITCH_SHOOTING_MODE = 15267
 CMD_NOTIFY_RECORD_STATE = 15275
+CMD_NOTIFY_ASTRO_AUTO_FOCUS_STATE = 15278
+CMD_NOTIFY_ASTRO_AUTO_FOCUS_FAST_STATE = 15280
 CMD_NOTIFY_LONG_EXP_PROGRESS = 15288
 CMD_NOTIFY_CMOS_TEMPERATURE = 15292
 CMD_GLOBAL_TASK_GET_DEVICE_STATE_INFO = 16405
@@ -60,6 +62,7 @@ CMD_ASTRO_START_CALIBRATION = 11000
 CMD_ASTRO_START_GOTO_DSO = 11002
 CMD_ASTRO_START_GOTO_SOLAR_SYSTEM = 11003
 CMD_ASTRO_START_EQ_SOLVING = 11018
+CMD_FOCUS_AUTO_FOCUS = 15000
 CMD_FOCUS_START_ASTRO_AUTO_FOCUS = 15004
 CMD_ASTRO_START_CAPTURE_RAW_LIVE_STACKING = 11005
 CMD_ASTRO_START_WIDE_CAPTURE_LIVE_STACKING = 11016
@@ -73,6 +76,7 @@ _TRACKED_RESPONSES = {
     CMD_ASTRO_START_GOTO_DSO,
     CMD_ASTRO_START_GOTO_SOLAR_SYSTEM,
     CMD_ASTRO_START_EQ_SOLVING,
+    CMD_FOCUS_AUTO_FOCUS,
     CMD_FOCUS_START_ASTRO_AUTO_FOCUS,
     CMD_ASTRO_START_CAPTURE_RAW_LIVE_STACKING,
     CMD_ASTRO_START_WIDE_CAPTURE_LIVE_STACKING,
@@ -297,6 +301,7 @@ class TelemetryTap:
         self._accept_sdk_capture_counts = True
         self._stale_capture_peak = 0
         self._battery_source = ""
+        self._hold_photo_autofocus = False
 
     # ------------------------------------------------------------------ setup
     def install(self, websockets_utils: Any) -> bool:
@@ -569,6 +574,10 @@ class TelemetryTap:
                     pass
             if changes:
                 self.update(changes, force=True)
+        if cmd == CMD_FOCUS_START_ASTRO_AUTO_FOCUS:
+            # Astro AF replies when the run ends. Photo AF (15000) ACKs up
+            # front, so its pad is released from motor settle / timeout.
+            self.update({"autofocus_state": "idle"}, force=True)
 
     def _decode(self, cmd: int, kind: int, data: bytes) -> dict[str, Any]:
         if self._notify is None or self._base is None:
@@ -640,6 +649,16 @@ class TelemetryTap:
         if cmd == CMD_NOTIFY_FOCUS_POSITION:
             message = self._parse("FocusPosition", data)
             return {"focus_position": int(message.pos)}
+        if cmd in (CMD_NOTIFY_ASTRO_AUTO_FOCUS_STATE, CMD_NOTIFY_ASTRO_AUTO_FOCUS_FAST_STATE):
+            factory = (
+                "AstroAutoFocusFastState"
+                if cmd == CMD_NOTIFY_ASTRO_AUTO_FOCUS_FAST_STATE
+                else "AstroAutoFocusState"
+            )
+            message = self._parse(factory, data)
+            if message is None:
+                return {}
+            return {"autofocus_state": OPERATION_STATES.get(int(message.state), str(message.state))}
         if cmd == CMD_NOTIFY_STREAM_TYPE:
             message = self._parse("StreamType", data)
             value = int(message.stream_type)
@@ -871,7 +890,9 @@ class TelemetryTap:
                 if which:
                     state = int(getattr(focus.exclusive_state, which).state)
                     changes["autofocus_state"] = OPERATION_STATES.get(state, str(state))
-                else:
+                elif not self._hold_photo_autofocus:
+                    # Photo AF has no notify; an empty oneof during the hunt
+                    # would unlatch the pad while the motor is still moving.
                     changes["autofocus_state"] = "idle"
         motion = getattr(message, "motion_motor_state_info", None)
         if motion is not None and message.HasField("motion_motor_state_info") and motion.HasField("exclusive_state"):

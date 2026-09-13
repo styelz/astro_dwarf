@@ -76,6 +76,11 @@ _INTERRUPT_MARKER = "astro-dwarf-interrupt"
 _QUIET_OPERATIONS = {"device_state", "stack_status"}
 _STATE_REFRESH_SECONDS = 30.0
 _STATUS_POLL_SECONDS = 2.0
+_PHOTO_AF_SETTLE_S = 2.5
+_PHOTO_AF_TIMEOUT_S = 60.0
+_autofocus_started = 0.0
+_autofocus_last_move = 0.0
+_autofocus_last_pos: int | None = None
 _MODEL_IDS = {"Dwarf II": "2", "Dwarf 3": "3", "Dwarf Mini": "5"}
 # Set once the steppers answer CODE_STEP_MOTOR_NEED_RESET: absolute position
 # reads keep failing until the mount is homed, so stop probing this session.
@@ -232,11 +237,18 @@ def _telemetry_loop() -> None:
             status = _client_status()
             if status is not None:
                 tap.poll_client_status(status)
+        snapshot = tap.snapshot()
+        _maybe_finish_photo_autofocus(snapshot, now)
         # Command-triggered refreshes stamp state_snapshot_at too, so they push the periodic one out.
-        snapshot_at = tap.snapshot().get("state_snapshot_at")
+        snapshot_at = snapshot.get("state_snapshot_at")
         if isinstance(snapshot_at, (int, float)):
             last_refresh = max(last_refresh, now - max(0.0, time.time() - float(snapshot_at)))
-        if now - last_refresh >= _STATE_REFRESH_SECONDS:
+        refresh_s = (
+            _STATUS_POLL_SECONDS
+            if snapshot.get("autofocus_state") in ("running", "stopping")
+            else _STATE_REFRESH_SECONDS
+        )
+        if now - last_refresh >= refresh_s:
             last_refresh = now
             request_state_refresh()
 
@@ -611,6 +623,60 @@ def _focus_position() -> int | None:
         return None
 
 
+def _reset_photo_autofocus_watch() -> None:
+    global _autofocus_started, _autofocus_last_move, _autofocus_last_pos
+    _autofocus_started = 0.0
+    _autofocus_last_move = 0.0
+    _autofocus_last_pos = None
+    if _tap is not None:
+        _tap._hold_photo_autofocus = False
+
+
+def _mark_photo_autofocus_running() -> None:
+    """Latch photo AF until the motor settles, exclusive-state idle, or timeout."""
+    global _autofocus_started, _autofocus_last_move, _autofocus_last_pos
+    now = time.monotonic()
+    _autofocus_started = now
+    _autofocus_last_move = now
+    _autofocus_last_pos = _focus_position()
+    if _tap is not None:
+        _tap._hold_photo_autofocus = True
+        _tap.update({"autofocus_state": "running"}, force=True)
+
+
+def _clear_photo_autofocus(reason: str, *, warning: bool = False) -> None:
+    if not _autofocus_started:
+        return
+    _reset_photo_autofocus_watch()
+    if _tap is not None:
+        _tap.update({"autofocus_state": "idle"}, force=True)
+    log(reason, "warning" if warning else "debug")
+
+
+def _maybe_finish_photo_autofocus(snapshot: dict[str, Any], now: float) -> None:
+    """Release photo AF when the focus motor stops or firmware reports idle."""
+    global _autofocus_last_move, _autofocus_last_pos
+    if not _autofocus_started:
+        return
+    state = snapshot.get("autofocus_state")
+    if state in ("idle", "stopped"):
+        _reset_photo_autofocus_watch()
+        return
+    position = snapshot.get("focus_position")
+    try:
+        pos = int(position) if position is not None else None
+    except (TypeError, ValueError):
+        pos = None
+    if pos is not None and pos != _autofocus_last_pos:
+        _autofocus_last_pos = pos
+        _autofocus_last_move = now
+    if now - _autofocus_started >= _PHOTO_AF_TIMEOUT_S:
+        _clear_photo_autofocus("Photo autofocus timed out waiting for firmware idle", warning=True)
+        return
+    if now - _autofocus_started >= 3.0 and now - _autofocus_last_move >= _PHOTO_AF_SETTLE_S:
+        _clear_photo_autofocus("Photo autofocus settled")
+
+
 def _focus_advanced(direction: int, previous: int, position: int) -> bool:
     return position < previous if direction == _FOCUS_NEAR else position > previous
 
@@ -797,6 +863,7 @@ def sdk_call(operation: str, *args: Any) -> Any:
         # sky it racks toward infinity or fails. Keep for photo mode only.
         from dwarf_python_api.proto import focus_pb2
 
+        _mark_photo_autofocus_running()
         return send_without_response(focus_pb2.ReqNormalAutoFocus(), 15000, 8)
     capture_messages = {
         "burst_start": ("ReqBurstPhoto", 10003),
@@ -854,6 +921,7 @@ def sdk_call(operation: str, *args: Any) -> Any:
                 message = focus_pb2.ReqAstroAutoFocus()
                 message.mode = int(args[0]) if args else 0
                 return send_without_response(message, 15004, 8)
+            _clear_photo_autofocus("Photo autofocus stopped")
             return send_without_response(focus_pb2.ReqStopAstroAutoFocus(), 15005, 8)
     function_name = FUNCTIONS.get(operation)
     function = getattr(_api, function_name, None) if function_name else None

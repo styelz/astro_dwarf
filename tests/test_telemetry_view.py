@@ -205,3 +205,12 @@ class PhotoPrimedViewTests(unittest.TestCase):
         )
         self.assertFalse(dso["photo_primed"])
         self.assertFalse(burst["photo_primed"])
+
+
+class DeriveActivityTests(unittest.TestCase):
+    def test_autofocus_running_and_stopping(self) -> None:
+        from astro_dwarf.telemetry_view import derive_activity
+
+        self.assertEqual(derive_activity({"autofocus_state": "running"})[0], "autofocus")
+        self.assertEqual(derive_activity({"autofocus_state": "stopping"}), ("autofocus", "STOPPING"))
+        self.assertEqual(derive_activity({"autofocus_state": "idle"}), ("", ""))
