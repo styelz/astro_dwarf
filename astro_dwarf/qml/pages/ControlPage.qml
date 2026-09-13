@@ -526,6 +526,21 @@ Item {
                         onClicked: if (!cameraPanel.dsoMode) backend.deviceAction(backend.selectedDeviceId, "astro_mode")
                     }
                 }
+                FieldLabel { text: "CAMERA" }
+                HudCombo {
+                    id: liveCamera
+                    Layout.fillWidth: true
+                    enabled: !root.scopeOccupied && !root.scopeLinking
+                    accessibleName: "Live camera"
+                    tooltip: "Camera for live preview and capture.\nWide is fixed-focus; focus controls apply to Tele only."
+                    model: ["Tele", "Wide"]
+                    Component.onCompleted: currentIndex = backend.selectedDevice.camera === "wide" ? 1 : 0
+                    onActivated: backend.setLiveCamera(backend.selectedDeviceId, currentIndex === 1 ? "wide" : "tele")
+                    Connections {
+                        target: backend
+                        function onSelectedDeviceChanged() { liveCamera.currentIndex = backend.selectedDevice.camera === "wide" ? 1 : 0 }
+                    }
+                }
                 FieldLabel { text: "FOCUS"; visible: cameraPanel.teleSelected }
                 HudField {
                     id: liveFocus
@@ -595,21 +610,6 @@ Item {
                         appliedValue = currentText
                     }
                 }
-                FieldLabel { text: "CAMERA" }
-                HudCombo {
-                    id: liveCamera
-                    Layout.fillWidth: true
-                    enabled: !root.scopeOccupied && !root.scopeLinking
-                    accessibleName: "Live camera"
-                    tooltip: "Camera for live preview and capture.\nWide is fixed-focus; focus controls apply to Tele only."
-                    model: ["Tele", "Wide"]
-                    Component.onCompleted: currentIndex = backend.selectedDevice.camera === "wide" ? 1 : 0
-                    onActivated: backend.setLiveCamera(backend.selectedDeviceId, currentIndex === 1 ? "wide" : "tele")
-                    Connections {
-                        target: backend
-                        function onSelectedDeviceChanged() { liveCamera.currentIndex = backend.selectedDevice.camera === "wide" ? 1 : 0 }
-                    }
-                }
                 FieldLabel { text: "EXPOSURE / GAIN" }
                 RowLayout {
                     Layout.fillWidth: true
@@ -670,6 +670,99 @@ Item {
                         }
                     }
                 }
+                FieldLabel { text: "STACK COUNT" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    HudField {
+                        id: liveStackCount
+                        Layout.fillWidth: true
+                        enabled: root.commandEnabled("set_count")
+                        placeholderText: "frames"
+                        accessibleName: "Stack count"
+                        tooltip: "Number of frames to stack in DSO mode."
+                        inputMethodHints: Qt.ImhDigitsOnly
+                        property string appliedValue: ""
+                        readonly property string liveValue: String(cameraPanel.captureDefaults.frame_count)
+                        onLiveValueChanged: if (!activeFocus) {
+                            text = liveValue
+                            if (appliedValue === "")
+                                appliedValue = liveValue
+                        }
+                        Component.onCompleted: {
+                            text = liveValue
+                            appliedValue = liveValue
+                        }
+                        onEditingFinished: {
+                            const value = text.trim()
+                            if (!value) {
+                                text = liveValue
+                                return
+                            }
+                            if (value !== appliedValue) {
+                                backend.setCameraParam(backend.selectedDeviceId, "count", value)
+                                appliedValue = value
+                            }
+                        }
+                    }
+                    HudCombo {
+                        Layout.fillWidth: true
+                        enabled: root.commandEnabled("set_stack_format")
+                        accessibleName: "Stack format"
+                        tooltip: "File format for stacked DSO frames:\nFITS or TIFF."
+                        model: ["FITS", "TIFF"]
+                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "stack_format", String(currentIndex))
+                    }
+                }
+                FieldLabel { text: "BURST / TIMELAPSE" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    HudField {
+                        Layout.fillWidth: true
+                        placeholderText: "burst #"
+                        accessibleName: "Burst count"
+                        tooltip: "Number of stills in a burst sequence."
+                        enabled: root.commandEnabled("set_burst_count")
+                        onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "burst_count", text)
+                    }
+                    HudCombo {
+                        Layout.fillWidth: true
+                        enabled: root.commandEnabled("set_burst_interval")
+                        accessibleName: "Burst interval"
+                        tooltip: "Seconds between frames in a burst sequence."
+                        model: ["1", "2", "3", "5", "10", "15", "20"]
+                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "burst_interval", currentText)
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    HudCombo {
+                        Layout.fillWidth: true
+                        enabled: root.commandEnabled("set_timelapse_interval")
+                        accessibleName: "Timelapse interval"
+                        tooltip: "Seconds between frames in a timelapse."
+                        model: ["1", "2", "5", "10", "15", "30", "60"]
+                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "timelapse_interval", currentText)
+                    }
+                    HudCombo {
+                        Layout.fillWidth: true
+                        enabled: root.commandEnabled("set_timelapse_duration")
+                        accessibleName: "Timelapse duration"
+                        tooltip: "Total timelapse length in seconds."
+                        model: ["30", "60", "120", "300", "600"]
+                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "timelapse_duration", currentText)
+                    }
+                }
+                HudCheck {
+                    id: liveAutoCalibration
+                    text: "Auto calibration"
+                    enabled: root.commandEnabled("set_auto_calibration")
+                    accessibleName: "Auto calibration"
+                    tooltip: "Automatically plate-solve (calibrate) before each DSO GOTO.\nThe checkbox follows the telescope when that flag is reported."
+                    readonly property var liveRaw: root.scopeTelemetry.auto_calibration
+                    onLiveRawChanged: if (liveRaw === true || liveRaw === false) setOn(liveRaw === true)
+                    Component.onCompleted: if (liveRaw === true || liveRaw === false) setOn(liveRaw === true)
+                    onClicked: backend.setCameraParam(backend.selectedDeviceId, "auto_calibration", checked ? "true" : "false")
+                }
                 FieldLabel { text: "WHITE BALANCE"; visible: cameraPanel.teleSelected }
                 HudCombo {
                     id: liveWb
@@ -728,96 +821,6 @@ Item {
                     visible: cameraPanel.teleSelected
                     HudField { id: liveHue; Layout.fillWidth: true; placeholderText: "hue"; accessibleName: "Hue"; tooltip: "Image hue shift."; enabled: root.commandEnabled("set_hue"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_hue : root.scopeTelemetry.hue; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "hue", value) } }
                     HudField { id: liveSharpness; Layout.fillWidth: true; placeholderText: "shp"; accessibleName: "Sharpness"; tooltip: "Image sharpening."; enabled: root.commandEnabled("set_sharpness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_sharpness : root.scopeTelemetry.sharpness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "sharpness", value) } }
-                    HudCombo {
-                        Layout.fillWidth: true
-                        enabled: root.commandEnabled("set_stack_format")
-                        accessibleName: "Stack format"
-                        tooltip: "File format for stacked DSO frames:\nFITS or TIFF."
-                        model: ["FITS", "TIFF"]
-                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "stack_format", String(currentIndex))
-                    }
-                }
-                FieldLabel { text: "STACK COUNT" }
-                HudField {
-                    id: liveStackCount
-                    Layout.fillWidth: true
-                    enabled: root.commandEnabled("set_count")
-                    placeholderText: "frames"
-                    accessibleName: "Stack count"
-                    tooltip: "Number of frames to stack in DSO mode."
-                    inputMethodHints: Qt.ImhDigitsOnly
-                    property string appliedValue: ""
-                    readonly property string liveValue: String(cameraPanel.captureDefaults.frame_count)
-                    onLiveValueChanged: if (!activeFocus) {
-                        text = liveValue
-                        if (appliedValue === "")
-                            appliedValue = liveValue
-                    }
-                    Component.onCompleted: {
-                        text = liveValue
-                        appliedValue = liveValue
-                    }
-                    onEditingFinished: {
-                        const value = text.trim()
-                        if (!value) {
-                            text = liveValue
-                            return
-                        }
-                        if (value !== appliedValue) {
-                            backend.setCameraParam(backend.selectedDeviceId, "count", value)
-                            appliedValue = value
-                        }
-                    }
-                }
-                FieldLabel { text: "BURST / TIMELAPSE" }
-                RowLayout {
-                    Layout.fillWidth: true
-                    HudField {
-                        Layout.fillWidth: true
-                        placeholderText: "burst #"
-                        accessibleName: "Burst count"
-                        tooltip: "Number of stills in a burst sequence."
-                        enabled: root.commandEnabled("set_burst_count")
-                        onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "burst_count", text)
-                    }
-                    HudCombo {
-                        Layout.fillWidth: true
-                        enabled: root.commandEnabled("set_burst_interval")
-                        accessibleName: "Burst interval"
-                        tooltip: "Seconds between frames in a burst sequence."
-                        model: ["1", "2", "3", "5", "10", "15", "20"]
-                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "burst_interval", currentText)
-                    }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    HudCombo {
-                        Layout.fillWidth: true
-                        enabled: root.commandEnabled("set_timelapse_interval")
-                        accessibleName: "Timelapse interval"
-                        tooltip: "Seconds between frames in a timelapse."
-                        model: ["1", "2", "5", "10", "15", "30", "60"]
-                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "timelapse_interval", currentText)
-                    }
-                    HudCombo {
-                        Layout.fillWidth: true
-                        enabled: root.commandEnabled("set_timelapse_duration")
-                        accessibleName: "Timelapse duration"
-                        tooltip: "Total timelapse length in seconds."
-                        model: ["30", "60", "120", "300", "600"]
-                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "timelapse_duration", currentText)
-                    }
-                }
-                HudCheck {
-                    id: liveAutoCalibration
-                    text: "Auto calibration"
-                    enabled: root.commandEnabled("set_auto_calibration")
-                    accessibleName: "Auto calibration"
-                    tooltip: "Automatically plate-solve (calibrate) before each DSO GOTO.\nThe checkbox follows the telescope when that flag is reported."
-                    readonly property var liveRaw: root.scopeTelemetry.auto_calibration
-                    onLiveRawChanged: if (liveRaw === true || liveRaw === false) setOn(liveRaw === true)
-                    Component.onCompleted: if (liveRaw === true || liveRaw === false) setOn(liveRaw === true)
-                    onClicked: backend.setCameraParam(backend.selectedDeviceId, "auto_calibration", checked ? "true" : "false")
                 }
                 FieldLabel { text: "MEDIA" }
                 HudButton {
