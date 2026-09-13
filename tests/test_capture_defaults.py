@@ -44,6 +44,15 @@ class CaptureDefaultsTests(unittest.TestCase):
         self.assertEqual(device.capture_defaults.gain, DEFAULT_GAIN)
         self.assertEqual(device.capture_defaults.frame_count, DEFAULT_FRAME_COUNT)
 
+    def test_legacy_device_json_does_not_auto_start_preview(self) -> None:
+        device = device_from_dict({"name": "Dwarf 3"})
+        self.assertFalse(device.auto_start_preview)
+
+    def test_device_roundtrip_keeps_auto_start_preview(self) -> None:
+        original = Device(name="Dwarf 3", auto_start_preview=True)
+        loaded = device_from_dict(to_dict(original))
+        self.assertTrue(loaded.auto_start_preview)
+
     def test_device_roundtrip_keeps_custom_capture_defaults(self) -> None:
         original = Device(
             name="Dwarf 3",

@@ -484,6 +484,7 @@ class Device:
     hardware: HardwareProfile = field(default_factory=HardwareProfile)
     capture_defaults: CaptureDefaults = field(default_factory=CaptureDefaults)
     ble_enabled: bool = True
+    auto_start_preview: bool = False
     ble_password: str = "DWARF_12345678"
     wifi_mode: WifiMode = WifiMode.AUTO
     wifi_ssid: str = ""
@@ -711,6 +712,7 @@ def device_from_dict(data: dict[str, Any]) -> Device:
         data["wifi_mode"] = WifiMode.AUTO
     data["hardware"] = hardware_from_dict(data.get("hardware", {}))
     data["capture_defaults"] = capture_defaults_from_dict(data.get("capture_defaults", {}))
+    data["auto_start_preview"] = bool(data.get("auto_start_preview", False))
     data["location_configured"] = has_site_coordinates(data.get("latitude"), data.get("longitude"))
     data["observing_day_cutoff_hour"] = clamp_cutoff_hour(data.get("observing_day_cutoff_hour"))
     data["stellarium_url"] = normalized_stellarium_url(data.get("stellarium_url"))

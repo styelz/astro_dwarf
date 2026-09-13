@@ -18,7 +18,7 @@ Item {
         { title: "INTERFACE", hint: "Layout · console tint", glyph: "◫", device: false },
         { title: "IMAGE", hint: "Enhance filters", glyph: "▦", device: false },
         { title: "OBSERVING", hint: "Night cutoff · Stellarium", glyph: "◷", device: false },
-        { title: "DEVICE", hint: "Identity · site", glyph: "◈", device: true },
+        { title: "DEVICE", hint: "Identity · site · live view", glyph: "◈", device: true },
         { title: "CAPTURE", hint: "Session defaults", glyph: "▣", device: true },
         { title: "CONNECT", hint: "Wi-Fi · Bluetooth", glyph: "⇌", device: true },
         { title: "TIMING", hint: "Overhead estimates", glyph: "◷", device: true },
@@ -28,7 +28,7 @@ Item {
         [],
         [],
         [],
-        ["name", "model", "camera", "timezone_name", "latitude", "longitude"],
+        ["name", "model", "camera", "auto_start_preview", "timezone_name", "latitude", "longitude"],
         ["capture_defaults"],
         ["ip_address", "ble_enabled", "wifi_mode", "wifi_ssid", "wifi_password", "ble_password"],
         ["slew_seconds", "settle_seconds", "calibration_seconds", "autofocus_seconds", "infinite_focus_seconds", "polar_seconds", "readout_seconds", "pane_slew_seconds", "startup_seconds"],
@@ -65,6 +65,7 @@ Item {
             id: settingsPage.loadedDeviceId || backend.selectedDeviceId, name: nameField.text, model: modelField.currentText,
             ip_address: ipField.text, camera: cameraField.currentIndex === 1 ? "wide" : "tele",
             ble_enabled: bleField.checked,
+            auto_start_preview: autoPreviewField.checked,
             latitude: Number(latField.text), longitude: Number(lonField.text),
             timezone_name: timezoneField.selectedName || timezoneField.editText,
             wifi_mode: ["auto", "ap", "sta"][wifiModeField.currentIndex],
@@ -154,6 +155,7 @@ Item {
         ipField.text = d.ip_address || ""
         cameraField.currentIndex = d.camera === "wide" ? 1 : 0
         bleField.checked = d.ble_enabled !== false
+        autoPreviewField.checked = !!d.auto_start_preview
         latField.text = d.latitude
         lonField.text = d.longitude
         timezoneField.setFromName(d.timezone_name || "")
@@ -716,6 +718,17 @@ Item {
                             FieldLabel { text: "CAMERA" }
                             HudCombo { id: cameraField; model: ["Tele", "Wide"]; Layout.preferredWidth: settingsPage.controlWidth; accessibleName: "Default camera" }
                             FieldHint { text: "Default lens for new sessions on this telescope. Focus controls act on Tele only; Wide has no focus motor." }
+                        }
+                        SettingGroup {
+                            title: "LIVE VIEW"
+                            FieldLabel { text: "ON CONNECT" }
+                            HudCheck {
+                                id: autoPreviewField
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                text: "Start live preview when connected"
+                                accessibleName: "Start live preview when connected"
+                            }
+                            FieldHint { text: "Opens this telescope's camera stream as soon as the link is up. A running capture attaches to the stacking preview instead of being interrupted." }
                         }
                         SettingGroup {
                             title: "SITE"

@@ -2943,6 +2943,7 @@ class AppBackend(QObject):
             if isinstance(telemetry, dict) and telemetry:
                 self._on_telemetry(device_id, telemetry)
             self._maybe_resume_interrupted_session(device_id)
+            self._maybe_auto_start_preview(device_id)
             QTimer.singleShot(8000, lambda did=device_id: self._release_recovered_if_idle(did))
             delay_ms = 8000 if device and device.model == DeviceModel.DWARF_3 else 2500
             QTimer.singleShot(delay_ms, lambda did=device_id: self.refreshCameraParams(did))
@@ -2950,6 +2951,32 @@ class AppBackend(QObject):
             self._toast("Connection failed", "error", str(result))
             self._disarm_scheduler_if_offline()
         self._notify_devices()
+
+    def _maybe_auto_start_preview(self, device_id: str) -> None:
+        """Start live view after a successful connect when the device setting is on."""
+        device = next((item for item in self._devices if item.id == device_id), None)
+        if device is None or not device.auto_start_preview:
+            return
+        QTimer.singleShot(0, lambda did=device_id: self._auto_start_preview_after_connect(did))
+
+    def _auto_start_preview_after_connect(self, device_id: str) -> None:
+        if self._shut_down:
+            return
+        device = next((item for item in self._devices if item.id == device_id), None)
+        worker = self._workers.get(device_id)
+        if (
+            device is None
+            or not device.auto_start_preview
+            or device_id != self._selected_device_id
+            or not worker
+            or not worker.connected
+            or self._preview_active
+            or self._preview_playing
+            or self._device_is_stopping(device_id)
+        ):
+            return
+        self.add_log("info", "Starting live preview after connect", device_id)
+        self.startPreview(device_id)
 
     def _abort_active_session(self, device_id: str, reason: str) -> bool:
         """Flag the running session as user-stopped.
@@ -4316,6 +4343,7 @@ class AppBackend(QObject):
                 wifi_mode=WifiMode(str(values.get("wifi_mode", current.wifi_mode) or WifiMode.AUTO).lower()),
                 ble_password=str(values.get("ble_password", current.ble_password) or "DWARF_12345678"),
                 ble_enabled=bool(values.get("ble_enabled", current.ble_enabled)),
+                auto_start_preview=bool(values.get("auto_start_preview", current.auto_start_preview)),
                 observing_day_cutoff_hour=self._cutoff_hour(),
                 hardware=hardware,
                 capture_defaults=self._capture_defaults_from_payload(values, current.capture_defaults),
