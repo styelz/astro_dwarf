@@ -24,9 +24,10 @@ Button {
     focusPolicy: Qt.StrongFocus
     Accessible.name: text
     Accessible.description: isBusy && busyText !== "" ? busyText : (accessibleDescription || tooltip)
-    ToolTip.visible: tooltip !== "" && hovered
-    ToolTip.delay: Theme.tooltipDelay
-    ToolTip.text: tooltip
+    HudToolTip {
+        visible: hudBtn.tooltip !== "" && hudBtn.hovered
+        text: hudBtn.tooltip
+    }
     opacity: inactive ? 0.45 : 1
     font.pixelSize: Theme.fontMd
     font.letterSpacing: Theme.tracking1

@@ -21,9 +21,10 @@ ComboBox {
     focusPolicy: Qt.StrongFocus
     Accessible.name: accessibleName || displayText
     Accessible.description: accessibleDescription || tooltip
-    ToolTip.visible: tooltip !== "" && hovered && !popup.visible
-    ToolTip.delay: Theme.tooltipDelay
-    ToolTip.text: tooltip
+    HudToolTip {
+        visible: combo.tooltip !== "" && combo.hovered && !combo.popup.visible
+        text: combo.tooltip
+    }
     palette.window: Theme.popupBg
     palette.windowText: Theme.textPrimary
     palette.base: Theme.popupBg

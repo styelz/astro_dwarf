@@ -23,9 +23,10 @@ TextField {
     font.pixelSize: Theme.fontBase
     Accessible.name: accessibleName || placeholderText || text
     Accessible.description: accessibleDescription || tooltip
-    ToolTip.visible: tooltip !== "" && hovered
-    ToolTip.delay: Theme.tooltipDelay
-    ToolTip.text: tooltip
+    HudToolTip {
+        visible: field.tooltip !== "" && field.hovered
+        text: field.tooltip
+    }
     Keys.priority: Keys.BeforeItem
     Keys.onPressed: function (event) {
         if (!field.releaseFocusOnEnter)

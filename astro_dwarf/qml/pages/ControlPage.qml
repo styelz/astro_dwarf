@@ -508,8 +508,8 @@ Item {
                         busyText: "SWITCHING…"
                         busyMs: 0
                         enabled: root.commandEnabled("photo_mode")
-                        tooltip: cameraPanel.photoMode ? "Current shooting mode: stills, burst, video, and timelapse"
-                            : "Switch to photo shooting mode for stills, burst, video, and timelapse"
+                        tooltip: cameraPanel.photoMode ? "Current shooting mode:\nstills, burst, video, and timelapse"
+                            : "Switch to photo shooting mode\nfor stills, burst, video, and timelapse"
                         onClicked: if (!cameraPanel.photoMode) backend.deviceAction(backend.selectedDeviceId, "photo_mode")
                     }
                     HudButton {
@@ -521,8 +521,8 @@ Item {
                         busyText: "SWITCHING…"
                         busyMs: 0
                         enabled: root.commandEnabled("astro_mode")
-                        tooltip: cameraPanel.dsoMode ? "Current shooting mode: deep-sky stacking"
-                            : "Switch to deep-sky shooting mode for astronomical stacking"
+                        tooltip: cameraPanel.dsoMode ? "Current shooting mode:\ndeep-sky stacking"
+                            : "Switch to deep-sky shooting mode\nfor astronomical stacking"
                         onClicked: if (!cameraPanel.dsoMode) backend.deviceAction(backend.selectedDeviceId, "astro_mode")
                     }
                 }
@@ -533,7 +533,7 @@ Item {
                     visible: cameraPanel.teleSelected
                     placeholderText: "steps"
                     accessibleName: "Focus position"
-                    tooltip: "Telephoto focus motor position in steps. Wide is fixed-focus."
+                    tooltip: "Telephoto focus motor position in steps.\nWide is fixed-focus."
                     inputMethodHints: Qt.ImhDigitsOnly
                     enabled: root.commandEnabled("set_focus")
                     readonly property string liveValue: {
@@ -563,7 +563,7 @@ Item {
                         busyText: "FOCUSING…"
                         busyMs: 0
                         enabled: root.commandEnabled("focus_near")
-                        tooltip: "Nudge the telephoto focus motor toward near. Hold is not supported; each tap is one acknowledged move."
+                        tooltip: "Nudge the telephoto focus motor toward near.\nHold is not supported; each tap is one acknowledged move."
                         onClicked: backend.manualFocus(backend.selectedDeviceId, 1)
                     }
                     HudButton {
@@ -573,7 +573,7 @@ Item {
                         busyText: "FOCUSING…"
                         busyMs: 0
                         enabled: root.commandEnabled("focus_far")
-                        tooltip: "Nudge the telephoto focus motor toward infinity. Hold is not supported; each tap is one acknowledged move."
+                        tooltip: "Nudge the telephoto focus motor toward infinity.\nHold is not supported; each tap is one acknowledged move."
                         onClicked: backend.manualFocus(backend.selectedDeviceId, 0)
                     }
                 }
@@ -587,7 +587,7 @@ Item {
                     visible: cameraPanel.teleSelected
                     enabled: root.commandEnabled("set_ir")
                     accessibleName: "IR filter"
-                    tooltip: "Telephoto IR filter. VIS for daytime, Astro for broadband night, Duo-Band for Ha/OIII."
+                    tooltip: "Telephoto IR filter.\nVIS for daytime, Astro for broadband night, Duo-Band for Ha/OIII."
                     model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
                     property string appliedValue: ""
                     onActivated: {
@@ -601,7 +601,7 @@ Item {
                     Layout.fillWidth: true
                     enabled: !root.scopeOccupied && !root.scopeLinking
                     accessibleName: "Live camera"
-                    tooltip: "Camera for live preview and capture. Wide is fixed-focus; focus controls apply to Tele only."
+                    tooltip: "Camera for live preview and capture.\nWide is fixed-focus; focus controls apply to Tele only."
                     model: ["Tele", "Wide"]
                     Component.onCompleted: currentIndex = backend.selectedDevice.camera === "wide" ? 1 : 0
                     onActivated: backend.setLiveCamera(backend.selectedDeviceId, currentIndex === 1 ? "wide" : "tele")
@@ -619,7 +619,7 @@ Item {
                         enabled: root.cameraLiveEnabled
                         placeholderText: "sec"
                         accessibleName: "Exposure"
-                        tooltip: "Shutter time for the selected camera. Use a fraction such as 1/30, or a number of seconds."
+                        tooltip: "Shutter time for the selected camera.\nUse a fraction such as 1/30, or a number of seconds."
                         readonly property string deviceValue: {
                             const value = backend.selectedDevice.camera === "wide"
                                 ? root.scopeTelemetry.wide_exposure_text
@@ -646,7 +646,7 @@ Item {
                         enabled: root.commandEnabled("set_gain")
                         placeholderText: "gain"
                         accessibleName: "Gain"
-                        tooltip: "Sensor gain for the selected camera. Higher values brighten the image and add noise."
+                        tooltip: "Sensor gain for the selected camera.\nHigher values brighten the image and add noise."
                         readonly property string deviceValue: {
                             const value = backend.selectedDevice.camera === "wide"
                                 ? root.scopeTelemetry.wide_gain
@@ -696,7 +696,7 @@ Item {
                     enabled: root.commandEnabled("set_wb")
                     placeholderText: "Kelvin 2800–7500"
                     accessibleName: "White-balance Kelvin"
-                    tooltip: "Color temperature in Kelvin (2800–7500). Overrides the scene preset."
+                    tooltip: "Color temperature in Kelvin (2800–7500).\nOverrides the scene preset."
                     readonly property string liveValue: {
                         const value = backend.selectedDevice.camera === "wide"
                             ? root.scopeTelemetry.wide_wb_value
@@ -732,7 +732,7 @@ Item {
                         Layout.fillWidth: true
                         enabled: root.commandEnabled("set_stack_format")
                         accessibleName: "Stack format"
-                        tooltip: "File format for stacked DSO frames: FITS or TIFF."
+                        tooltip: "File format for stacked DSO frames:\nFITS or TIFF."
                         model: ["FITS", "TIFF"]
                         onActivated: backend.setCameraParam(backend.selectedDeviceId, "stack_format", String(currentIndex))
                     }
@@ -813,7 +813,7 @@ Item {
                     text: "Auto calibration"
                     enabled: root.commandEnabled("set_auto_calibration")
                     accessibleName: "Auto calibration"
-                    tooltip: "Automatically plate-solve (calibrate) before each DSO GOTO. The checkbox follows the telescope when that flag is reported."
+                    tooltip: "Automatically plate-solve (calibrate) before each DSO GOTO.\nThe checkbox follows the telescope when that flag is reported."
                     readonly property var liveRaw: root.scopeTelemetry.auto_calibration
                     onLiveRawChanged: if (liveRaw === true || liveRaw === false) setOn(liveRaw === true)
                     Component.onCompleted: if (liveRaw === true || liveRaw === false) setOn(liveRaw === true)
@@ -823,7 +823,7 @@ Item {
                 HudButton {
                     text: "OPEN MEDIA"
                     Layout.fillWidth: true
-                    tooltip: "Open the Media page for this telescope's album."
+                    tooltip: "Open the Media page\nfor this telescope's album."
                     onClicked: root.goToPage(root.mediaPageIndex)
                 }
             }

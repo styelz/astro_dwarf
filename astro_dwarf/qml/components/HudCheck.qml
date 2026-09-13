@@ -12,9 +12,10 @@ CheckBox {
     focusPolicy: Qt.StrongFocus
     Accessible.name: accessibleName || text
     Accessible.description: accessibleDescription || tooltip
-    ToolTip.visible: tooltip !== "" && hovered
-    ToolTip.delay: Theme.tooltipDelay
-    ToolTip.text: tooltip
+    HudToolTip {
+        visible: box.tooltip !== "" && box.hovered
+        text: box.tooltip
+    }
     spacing: 10
     padding: 0
     opacity: enabled ? 1 : 0.5
