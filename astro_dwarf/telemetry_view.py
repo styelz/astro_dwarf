@@ -146,6 +146,33 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
             number = _as_int(values.get(name))
             if number is not None:
                 changes[f"{prefix}{name}"] = number
+        stack_count = _as_int(values.get("count", values.get("stackCount", values.get("stack_count"))))
+        if stack_count is not None:
+            changes[f"{prefix}stack_count"] = stack_count
+        burst = values.get("burst") if isinstance(values.get("burst"), dict) else {}
+        burst_count = _as_int(burst.get("count", values.get("burst_count")))
+        if burst_count is not None:
+            changes[f"{prefix}burst_count"] = burst_count
+        burst_interval = burst.get("interval", values.get("burst_interval"))
+        if isinstance(burst_interval, dict):
+            burst_interval = burst_interval.get("name", burst_interval.get("value"))
+        if burst_interval not in (None, ""):
+            changes[f"{prefix}burst_interval"] = str(burst_interval).strip()
+        lapse = values.get("timelapse")
+        if not isinstance(lapse, dict):
+            lapse = values.get("timeLapse") if isinstance(values.get("timeLapse"), dict) else {}
+        if not lapse:
+            lapse = values.get("time_lapse") if isinstance(values.get("time_lapse"), dict) else {}
+        lapse_interval = lapse.get("interval", values.get("timelapse_interval"))
+        if isinstance(lapse_interval, dict):
+            lapse_interval = lapse_interval.get("name", lapse_interval.get("value"))
+        if lapse_interval not in (None, ""):
+            changes[f"{prefix}timelapse_interval"] = str(lapse_interval).strip()
+        lapse_duration = lapse.get("duration", values.get("timelapse_duration"))
+        if isinstance(lapse_duration, dict):
+            lapse_duration = lapse_duration.get("name", lapse_duration.get("value"))
+        if lapse_duration not in (None, ""):
+            changes[f"{prefix}timelapse_duration"] = str(lapse_duration).strip()
 
     collect(_camera_params_entry(cameras, 0))
     collect(_camera_params_entry(cameras, 1), "wide_")
@@ -155,6 +182,11 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
         parsed = _as_bool(auto_cal)
         if parsed is not None:
             changes["auto_calibration"] = parsed
+        stack_format = _as_int(
+            shooting.get("stackFormat", shooting.get("stack_format", shooting.get("format")))
+        )
+        if stack_format is not None:
+            changes["stack_format"] = stack_format
     return changes
 
 

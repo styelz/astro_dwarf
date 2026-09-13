@@ -387,7 +387,9 @@ def stacking_preview_result_copy(
     return title, extra
 
 
-_ACTIVITY_TRANSIENT = {"autofocus", "calibrate"}
+# Calibrate ACK is not completion — firmware calibration_state lights the pad.
+# Live autofocus/infinity stay on the pad until telemetry goes idle or Stop.
+_ACTIVITY_TRANSIENT = {"calibrate"}
 _ACTION_LABELS = {
     "calibrate": "Calibration started",
     "stop_calibrate": "Calibration stopped",
@@ -1031,7 +1033,7 @@ class AppBackend(QObject):
                 self._telemetry_updated.get(device.id) if connected else None,
                 now,
             )
-            activity = telemetry["activity"] or self._device_activity.get(device.id, "")
+            activity = self._hud_activity(device.id, telemetry.get("activity") or "")
             if not activity:
                 session_id = self._active_sessions.get(device.id)
                 session = self.store.sessions.get(session_id) if session_id else None
@@ -1132,8 +1134,10 @@ class AppBackend(QObject):
                 self._toast(alert["message"], alert["level"], alert["detail"])
         activity, _detail = derive_activity(current)
         if activity:
-            # The device now reports the real activity; drop the UI-side guess.
-            self._device_activity[device_id] = activity
+            # Infinity uses the same autofocus_state as AUTO FOCUS. Keep the
+            # pad that started the move so Stop stays on INFINITY.
+            if not (activity == "autofocus" and self._device_activity.get(device_id) == "infinity"):
+                self._device_activity[device_id] = activity
         elif previous and derive_activity(previous)[0]:
             self._device_activity.pop(device_id, None)
             session_id = self._active_sessions.get(device_id)
@@ -1188,6 +1192,12 @@ class AppBackend(QObject):
             return
         if current in _SESSION_STEP_ACTIVITIES:
             self._set_activity(device_id, "")
+
+    def _hud_activity(self, device_id: str, telemetry_activity: str) -> str:
+        stored = self._device_activity.get(device_id, "")
+        if telemetry_activity == "autofocus" and stored == "infinity":
+            return "infinity"
+        return telemetry_activity or stored
 
     def _begin_activity(self, device_id: str, operation: str) -> None:
         if operation in _ACTIVITY_CLEAR:
@@ -2873,6 +2883,8 @@ class AppBackend(QObject):
     def selectDevice(self, device_id: str) -> None:
         if any(device.id == device_id for device in self._devices):
             previous = self._selected_device_id
+            if previous != device_id:
+                self.stopPreview()
             self._selected_device_id = device_id
             if previous != device_id and self._media_source != "local":
                 self._clear_media()
@@ -3523,6 +3535,8 @@ class AppBackend(QObject):
         choice = str(camera or "tele").strip().lower()
         if choice not in {"tele", "wide"}:
             choice = "tele"
+        if current.model == DeviceModel.DWARF_MINI:
+            choice = "tele"
         if current.camera != Camera(choice):
             updated = replace(current, camera=Camera(choice))
             self.store.devices.save(updated)
@@ -3551,8 +3565,11 @@ class AppBackend(QObject):
             self._toast("Focus is only available on the tele camera", "warning")
             return
         shooting_mode = self._device_telemetry.get(device_id, {}).get("shooting_mode")
-        if name in {"exposure", "gain"} and shooting_mode not in {1, 2}:
+        if name in {"exposure", "gain", "count", "stack_format"} and shooting_mode not in {1, 2}:
             self._toast("Select PHOTO or DSO mode before changing camera settings", "warning")
+            return
+        if name in {"burst_count", "burst_interval", "timelapse_interval", "timelapse_duration"} and shooting_mode != 1:
+            self._toast("Select PHOTO mode before changing burst or timelapse settings", "warning")
             return
         model_id = {DeviceModel.DWARF_II: "2", DeviceModel.DWARF_3: "3", DeviceModel.DWARF_MINI: "5"}.get(device.model, "3")
         if name == "exposure":
@@ -5368,8 +5385,7 @@ class AppBackend(QObject):
             return
         try:
             tz = self._zone_for_id(session.device_id)
-            axis_tz = self._zone_for(self._device_by_id(self._selected_device_id))
-            target = parse_in_zone(iso_datetime, axis_tz).replace(second=0, microsecond=0)
+            target = parse_in_zone(iso_datetime, tz).replace(second=0, microsecond=0)
             current = parse_in_zone(session.scheduled_start, tz)
         except ValueError:
             self._toast("That schedule time is not valid", "error")

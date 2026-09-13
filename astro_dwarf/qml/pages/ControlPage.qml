@@ -469,14 +469,36 @@ Item {
                 title: "CAMERA"
                 SplitView.fillHeight: true
                 SplitView.minimumHeight: 120
+                readonly property bool miniBody: String((backend.selectedDevice && backend.selectedDevice.model) || "") === "Dwarf Mini"
                 readonly property bool teleSelected: backend.selectedDevice.camera !== "wide"
                 readonly property string shootingMode: String(root.scopeTelemetry.shooting_mode_text || "—")
                 readonly property bool photoMode: shootingMode === "PHOTO"
                 readonly property bool dsoMode: shootingMode === "DSO"
+                readonly property bool captureParamsEnabled: photoMode || dsoMode
                 readonly property var captureDefaults: Util.captureDefaults(backend.selectedDevice)
+                readonly property var burstIntervalItems: ["1", "2", "3", "5", "10", "15", "20"]
+                readonly property var timelapseIntervalItems: ["1", "2", "5", "10", "15", "30", "60"]
+                readonly property var timelapseDurationItems: ["30", "60", "120", "300", "600"]
                 readonly property bool stackParamsReady: liveExposure.matchesDevice && liveGain.matchesDevice
                     && liveStackCount.text.trim() !== "" && liveStackCount.text.trim() === liveStackCount.appliedValue
                     && (!liveFilter.visible || liveFilter.appliedValue === "" || liveFilter.currentText === liveFilter.appliedValue)
+                function comboIndex(items, value) {
+                    let wanted = String(value || "").trim()
+                    if (wanted.toLowerCase().endsWith("s") && wanted.indexOf("/") < 0)
+                        wanted = wanted.slice(0, -1).trim()
+                    if (!wanted)
+                        return -1
+                    for (let i = 0; i < items.length; i++)
+                        if (String(items[i]) === wanted)
+                            return i
+                    const n = Number(wanted)
+                    if (isFinite(n)) {
+                        for (let i = 0; i < items.length; i++)
+                            if (Number(items[i]) === n)
+                                return i
+                    }
+                    return -1
+                }
                 function applyPendingStackParams() {
                     const id = backend.selectedDeviceId
                     const exposure = liveExposure.text.trim()
@@ -532,13 +554,20 @@ Item {
                     Layout.fillWidth: true
                     enabled: !root.scopeOccupied && !root.scopeLinking
                     accessibleName: "Live camera"
-                    tooltip: "Camera for live preview and capture.\nWide is fixed-focus; focus controls apply to Tele only."
-                    model: ["Tele", "Wide"]
-                    Component.onCompleted: currentIndex = backend.selectedDevice.camera === "wide" ? 1 : 0
+                    tooltip: cameraPanel.miniBody
+                        ? "Dwarf Mini has a single telephoto camera."
+                        : "Camera for live preview and capture.\nWide is fixed-focus; focus controls apply to Tele only."
+                    model: cameraPanel.miniBody ? ["Tele"] : ["Tele", "Wide"]
+                    function syncFromDevice() {
+                        if (cameraPanel.miniBody && backend.selectedDevice.camera === "wide")
+                            backend.setLiveCamera(backend.selectedDeviceId, "tele")
+                        currentIndex = backend.selectedDevice.camera === "wide" && !cameraPanel.miniBody ? 1 : 0
+                    }
+                    Component.onCompleted: syncFromDevice()
                     onActivated: backend.setLiveCamera(backend.selectedDeviceId, currentIndex === 1 ? "wide" : "tele")
                     Connections {
                         target: backend
-                        function onSelectedDeviceChanged() { liveCamera.currentIndex = backend.selectedDevice.camera === "wide" ? 1 : 0 }
+                        function onSelectedDeviceChanged() { liveCamera.syncFromDevice() }
                     }
                 }
                 FieldLabel { text: "FOCUS"; visible: cameraPanel.teleSelected }
@@ -616,7 +645,7 @@ Item {
                     HudField {
                         id: liveExposure
                         Layout.fillWidth: true
-                        enabled: root.cameraLiveEnabled
+                        enabled: root.cameraLiveEnabled && cameraPanel.captureParamsEnabled
                         placeholderText: "sec"
                         accessibleName: "Exposure"
                         tooltip: "Shutter time for the selected camera.\nUse a fraction such as 1/30, or a number of seconds."
@@ -643,7 +672,7 @@ Item {
                     HudField {
                         id: liveGain
                         Layout.fillWidth: true
-                        enabled: root.commandEnabled("set_gain")
+                        enabled: root.commandEnabled("set_gain") && cameraPanel.captureParamsEnabled
                         placeholderText: "gain"
                         accessibleName: "Gain"
                         tooltip: "Sensor gain for the selected camera.\nHigher values brighten the image and add noise."
@@ -676,17 +705,23 @@ Item {
                     HudField {
                         id: liveStackCount
                         Layout.fillWidth: true
-                        enabled: root.commandEnabled("set_count")
+                        enabled: root.commandEnabled("set_count") && cameraPanel.captureParamsEnabled
                         placeholderText: "frames"
                         accessibleName: "Stack count"
                         tooltip: "Number of frames to stack in DSO mode."
                         inputMethodHints: Qt.ImhDigitsOnly
                         property string appliedValue: ""
-                        readonly property string liveValue: String(cameraPanel.captureDefaults.frame_count)
+                        readonly property string deviceValue: {
+                            const value = root.scopeTelemetry.stack_count
+                            if (value !== undefined && value !== null && String(value) !== "" && value !== "—")
+                                return String(value)
+                            return ""
+                        }
+                        readonly property bool matchesDevice: text.trim() !== "" && deviceValue !== "" && text.trim() === deviceValue
+                        readonly property string liveValue: deviceValue || String(cameraPanel.captureDefaults.frame_count)
                         onLiveValueChanged: if (!activeFocus) {
                             text = liveValue
-                            if (appliedValue === "")
-                                appliedValue = liveValue
+                            appliedValue = liveValue
                         }
                         Component.onCompleted: {
                             text = liveValue
@@ -705,51 +740,75 @@ Item {
                         }
                     }
                     HudCombo {
+                        id: liveStackFormat
                         Layout.fillWidth: true
-                        enabled: root.commandEnabled("set_stack_format")
+                        enabled: root.commandEnabled("set_stack_format") && cameraPanel.captureParamsEnabled
                         accessibleName: "Stack format"
                         tooltip: "File format for stacked DSO frames:\nFITS or TIFF."
                         model: ["FITS", "TIFF"]
                         onActivated: backend.setCameraParam(backend.selectedDeviceId, "stack_format", String(currentIndex))
+                        readonly property int liveIndex: {
+                            const index = Number(root.scopeTelemetry.stack_format)
+                            return isFinite(index) && index >= 0 && index < count ? index : -1
+                        }
+                        onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                     }
                 }
                 FieldLabel { text: "BURST / TIMELAPSE" }
                 RowLayout {
                     Layout.fillWidth: true
                     HudField {
+                        id: liveBurstCount
                         Layout.fillWidth: true
                         placeholderText: "burst #"
                         accessibleName: "Burst count"
                         tooltip: "Number of stills in a burst sequence."
-                        enabled: root.commandEnabled("set_burst_count")
-                        onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "burst_count", text)
+                        enabled: root.commandEnabled("set_burst_count") && cameraPanel.photoMode
+                        readonly property string liveValue: {
+                            const value = root.scopeTelemetry.burst_count
+                            if (value !== undefined && value !== null && String(value) !== "" && value !== "—")
+                                return String(value)
+                            return ""
+                        }
+                        onLiveValueChanged: if (!activeFocus && liveValue) text = liveValue
+                        Component.onCompleted: if (liveValue) text = liveValue
+                        onEditingFinished: if (text.trim() && text.trim() !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "burst_count", text)
                     }
                     HudCombo {
+                        id: liveBurstInterval
                         Layout.fillWidth: true
-                        enabled: root.commandEnabled("set_burst_interval")
+                        enabled: root.commandEnabled("set_burst_interval") && cameraPanel.photoMode
                         accessibleName: "Burst interval"
                         tooltip: "Seconds between frames in a burst sequence."
-                        model: ["1", "2", "3", "5", "10", "15", "20"]
+                        model: cameraPanel.burstIntervalItems
                         onActivated: backend.setCameraParam(backend.selectedDeviceId, "burst_interval", currentText)
+                        readonly property int liveIndex: cameraPanel.comboIndex(cameraPanel.burstIntervalItems, root.scopeTelemetry.burst_interval)
+                        onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                     }
                 }
                 RowLayout {
                     Layout.fillWidth: true
                     HudCombo {
+                        id: liveTimelapseInterval
                         Layout.fillWidth: true
-                        enabled: root.commandEnabled("set_timelapse_interval")
+                        enabled: root.commandEnabled("set_timelapse_interval") && cameraPanel.photoMode
                         accessibleName: "Timelapse interval"
                         tooltip: "Seconds between frames in a timelapse."
-                        model: ["1", "2", "5", "10", "15", "30", "60"]
+                        model: cameraPanel.timelapseIntervalItems
                         onActivated: backend.setCameraParam(backend.selectedDeviceId, "timelapse_interval", currentText)
+                        readonly property int liveIndex: cameraPanel.comboIndex(cameraPanel.timelapseIntervalItems, root.scopeTelemetry.timelapse_interval)
+                        onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                     }
                     HudCombo {
+                        id: liveTimelapseDuration
                         Layout.fillWidth: true
-                        enabled: root.commandEnabled("set_timelapse_duration")
+                        enabled: root.commandEnabled("set_timelapse_duration") && cameraPanel.photoMode
                         accessibleName: "Timelapse duration"
                         tooltip: "Total timelapse length in seconds."
-                        model: ["30", "60", "120", "300", "600"]
+                        model: cameraPanel.timelapseDurationItems
                         onActivated: backend.setCameraParam(backend.selectedDeviceId, "timelapse_duration", currentText)
+                        readonly property int liveIndex: cameraPanel.comboIndex(cameraPanel.timelapseDurationItems, root.scopeTelemetry.timelapse_duration)
+                        onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                     }
                 }
                 HudCheck {

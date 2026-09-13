@@ -146,6 +146,33 @@ class CameraParamsToTelemetryTests(unittest.TestCase):
         self.assertTrue(named["auto_calibration"])
         self.assertNotIn("auto_calibration", missing)
 
+    def test_reads_burst_timelapse_and_stack_format(self) -> None:
+        changes = camera_params_to_telemetry(
+            {
+                "cameras": {
+                    "0": {
+                        "count": 40,
+                        "burst": {"count": 8, "interval": "2s"},
+                        "timeLapse": {"interval": 10, "duration": {"name": "300"}},
+                    }
+                },
+                "shooting_mode": {"stackFormat": 1},
+            }
+        )
+        self.assertEqual(changes["stack_count"], 40)
+        self.assertEqual(changes["burst_count"], 8)
+        self.assertEqual(changes["burst_interval"], "2s")
+        self.assertEqual(changes["timelapse_interval"], "10")
+        self.assertEqual(changes["timelapse_duration"], "300")
+        self.assertEqual(changes["stack_format"], 1)
+        view = format_telemetry(changes, updated_at=1.0, now=1.0)
+        self.assertEqual(view["stack_count"], 40)
+        self.assertEqual(view["burst_count"], 8)
+        self.assertEqual(view["burst_interval"], "2s")
+        self.assertEqual(view["timelapse_interval"], "10")
+        self.assertEqual(view["timelapse_duration"], "300")
+        self.assertEqual(view["stack_format"], 1)
+
 
 class PhotoPrimedViewTests(unittest.TestCase):
     def test_primed_after_still_in_photo_mode(self) -> None:
