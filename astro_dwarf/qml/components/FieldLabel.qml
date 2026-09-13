@@ -8,5 +8,5 @@ Text {
     font.letterSpacing: 1.1
     font.bold: true
     Layout.preferredWidth: 110
-    Layout.alignment: Qt.AlignVCenter
+    Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
 }

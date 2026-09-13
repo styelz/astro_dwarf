@@ -42,6 +42,7 @@ ColumnLayout {
     GridLayout {
         id: body
         Layout.fillWidth: true
+        Layout.alignment: Qt.AlignLeft | Qt.AlignTop
         Layout.leftMargin: Theme.s1
         columns: 3
         columnSpacing: Theme.s3

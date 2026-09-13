@@ -423,13 +423,17 @@ Item {
                     }
                 ]
 
-                StackLayout {
+                ColumnLayout {
                     Layout.fillWidth: true
-                    Layout.fillHeight: false
-                    currentIndex: settingsPage.categoryIndex
+                    Layout.fillHeight: true
+                    Layout.alignment: Qt.AlignTop
+                    spacing: 0
 
                     // INTERFACE
                     ColumnLayout {
+                        visible: settingsPage.categoryIndex === 0
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
                         FieldHint {
                             text: "How the console looks on this computer. Changes apply immediately and are remembered here, not on the telescope."
@@ -546,6 +550,9 @@ Item {
 
                     // IMAGE
                     ColumnLayout {
+                        visible: settingsPage.categoryIndex === 1
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
                         FieldHint {
                             text: "Display-only clean-up for stacked frames. Nothing is written back to the telescope or to files on disk."
@@ -679,6 +686,9 @@ Item {
 
                     // OBSERVING
                     ColumnLayout {
+                        visible: settingsPage.categoryIndex === 2
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
                         FieldHint {
                             text: "Shared by every telescope in this app and saved as soon as it is changed."
@@ -723,6 +733,9 @@ Item {
 
                     // DEVICE
                     ColumnLayout {
+                        visible: settingsPage.categoryIndex === 3
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
                         FieldHint {
                             text: "Identity and observing site for the selected telescope. Site coordinates are sent to the mount and drive altitude checks in the calendar."
@@ -797,6 +810,9 @@ Item {
 
                     // CAPTURE
                     ColumnLayout {
+                        visible: settingsPage.categoryIndex === 4
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
                         FieldHint {
                             text: "Starting values for new sessions and imported targets on this telescope. Each session can still override them."
@@ -850,6 +866,9 @@ Item {
 
                     // CONNECT
                     ColumnLayout {
+                        visible: settingsPage.categoryIndex === 5
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
                         FieldHint {
                             text: "How this computer reaches the telescope. Commands and the live stream travel over Wi-Fi; Bluetooth is only used to set up that link."
@@ -917,6 +936,9 @@ Item {
 
                     // TIMING
                     ColumnLayout {
+                        visible: settingsPage.categoryIndex === 6
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
                         FieldHint {
                             text: "Fixed overheads used to size calendar blocks and remaining-time estimates. After a few completed sessions the app measures these and suggests corrections here."
@@ -1012,6 +1034,9 @@ Item {
 
                     // IMPORT
                     ColumnLayout {
+                        visible: settingsPage.categoryIndex === 7
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
                         FieldHint {
                             text: "Bring sessions from the old Astro_Sessions scheduler onto the selected telescope. The old files are only read, never changed."
@@ -1026,8 +1051,8 @@ Item {
                             }
                             FieldHint { text: "Pick the folder holding the old app's JSON session files. Imported sessions appear on " + (nameField.text || "this telescope") + "'s calendar." }
                         }
-                        Item { Layout.fillHeight: true }
                     }
+                    Item { Layout.fillHeight: true }
                 }
             }
         }

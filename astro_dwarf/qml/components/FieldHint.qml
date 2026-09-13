@@ -13,5 +13,5 @@ Text {
     Layout.fillWidth: true
     Layout.minimumWidth: 120
     Layout.maximumWidth: 620
-    Layout.alignment: Qt.AlignVCenter
+    Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
 }
