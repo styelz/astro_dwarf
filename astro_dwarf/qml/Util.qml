@@ -285,8 +285,8 @@ QtObject {
         const frames = Number(cap.frame_count)
         return {
             exposure_seconds: Number.isFinite(exposure) && exposure > 0 ? exposure : 15,
-            gain: Number.isFinite(gain) && gain >= 0 ? gain : 80,
-            frame_count: Number.isFinite(frames) && frames >= 1 ? frames : 120
+            gain: Number.isFinite(gain) && gain >= 0 ? gain : 40,
+            frame_count: Number.isFinite(frames) && frames >= 1 ? frames : 60
         }
     }
     function deviceById(devices, id) {

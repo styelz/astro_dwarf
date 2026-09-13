@@ -451,14 +451,14 @@ Item {
                     HudField {
                         id: gainDefaultField
                         Layout.fillWidth: true
-                        placeholderText: "80"
+                        placeholderText: "40"
                         accessibleName: "Default gain"
                     }
                     FieldLabel { text: "FRAMES" }
                     HudField {
                         id: framesDefaultField
                         Layout.fillWidth: true
-                        placeholderText: "120"
+                        placeholderText: "60"
                         accessibleName: "Default frame count"
                     }
                 }
