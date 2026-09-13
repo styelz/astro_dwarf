@@ -27,9 +27,14 @@ from typing import Any
 
 from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_sdk_logging
 from .domain import (
+    ALBUM_IMAGE_SUFFIXES,
+    ASTRO_MEDIA_TYPE,
+    album_entry_key,
     album_http_path,
     album_http_url,
+    album_is_astro_media,
     album_path_matches_model,
+    album_prefixed_path,
     capture_defaults_from_dict,
     device_name_model,
     firmware_binning,
@@ -2355,7 +2360,7 @@ def _album_connect():
     raise RuntimeError("Could not open the telescope photo album over FTP")
 
 
-def album_list(limit: int = 12, camera: str = "") -> dict[str, Any]:
+def album_list(limit: int = 12, camera: str = "", any_camera: bool = False) -> dict[str, Any]:
     ftp, remote, prefixes = _album_connect()
     try:
         names = ftp.nlst()
@@ -2366,10 +2371,15 @@ def album_list(limit: int = 12, camera: str = "") -> dict[str, Any]:
             pass
     camera_name = _album_camera(camera)
     starts = tuple(f"{prefix}{camera_name}" for prefix in prefixes)
-    photos = sorted(
-        (name for name in names if name.endswith(".jpg") and name.startswith(starts)),
-        reverse=True,
-    )[: max(1, int(limit))]
+    photos = []
+    for name in names:
+        suffix = Path(str(name)).suffix.lower()
+        if suffix not in ALBUM_IMAGE_SUFFIXES and not str(name).lower().endswith(".jpg"):
+            continue
+        if not any_camera and not str(name).startswith(starts):
+            continue
+        photos.append(name)
+    photos = sorted(photos, reverse=True)[: max(1, int(limit))]
     return {"camera": camera_name.lower(), "directory": remote, "files": photos}
 
 
@@ -2471,29 +2481,134 @@ def _ftp_download_file(ip: str, remote_path: str, dest: Path) -> None:
             pass
 
 
-def astro_sessions_list() -> dict[str, Any]:
-    ip = _device_ip()
-    _album_model_matches()
+def _album_media_infos(ip: str, media_type: int) -> list[dict[str, Any]]:
     result = _http_json(
         f"http://{ip}:8082/album/list/mediaInfos",
-        {"mediaType": 6, "pageIndex": 0, "pageSize": 0},
+        {"mediaType": int(media_type), "pageIndex": 0, "pageSize": 0},
     )
     if not isinstance(result, dict) or result.get("code") != 0:
         raise RuntimeError(f"Unexpected album response: {result}")
     sessions = result.get("data") or []
     if not isinstance(sessions, list):
-        sessions = []
+        return []
+    return [entry for entry in sessions if isinstance(entry, dict)]
+
+
+def _album_filter_model(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     model = str(_device.get("model") or "")
-    if model:
-        sessions = [
-            entry for entry in sessions
-            if isinstance(entry, dict) and album_path_matches_model(
-                str(entry.get("filePath") or entry.get("thumbnailPath") or ""),
-                model,
+    if not model:
+        return entries
+    matched = []
+    for entry in entries:
+        key = album_entry_key(entry)
+        if key and album_path_matches_model(key, model):
+            matched.append(entry)
+    return matched
+
+
+def _album_unique_entries(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    items: list[dict[str, Any]] = []
+    for group in groups:
+        for entry in group:
+            key = album_entry_key(entry)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            items.append(entry)
+    return items
+
+
+def _album_media_types_for_camera(ip: str) -> list[int]:
+    try:
+        result = _http_json(f"http://{ip}:8082/album/list/mediaCounts", {})
+        data = result.get("data") if isinstance(result, dict) else None
+        types: list[int] = []
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    media_type = int(item.get("mediaType"))
+                    count = int(item.get("count") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if count > 0 and media_type != ASTRO_MEDIA_TYPE:
+                    types.append(media_type)
+        if types:
+            return types
+    except Exception as exc:
+        log(f"Album media counts unavailable: {exc}", "debug")
+    return [0, 1, 2, 3, 4, 5]
+
+
+def _ftp_camera_entries() -> list[dict[str, Any]]:
+    listing = album_list(200, "", True)
+    directory = str(listing.get("directory") or "/Normal_Photos")
+    model = str(_device.get("model") or "")
+    entries: list[dict[str, Any]] = []
+    for name in listing.get("files") or []:
+        remote = album_prefixed_path(f"{directory.rstrip('/')}/{name}", model)
+        thumb = album_prefixed_path(f"{directory.rstrip('/')}/Thumbnail/{name}", model)
+        entries.append({
+            "fileName": str(name),
+            "filePath": remote,
+            "thumbnailPath": thumb,
+            "mediaType": 0,
+        })
+    return entries
+
+
+def astro_sessions_list() -> dict[str, Any]:
+    ip = _device_ip()
+    _album_model_matches()
+    sessions = _album_media_infos(ip, ASTRO_MEDIA_TYPE)
+    extra: list[dict[str, Any]] = []
+    try:
+        extra = [
+            entry for entry in _album_media_infos(ip, 0)
+            if album_is_astro_media(
+                str(entry.get("filePath") or ""),
+                str(entry.get("fileName") or ""),
+                entry.get("mediaType"),
             )
         ]
+    except Exception as exc:
+        log(f"Album type-0 astro scan skipped: {exc}", "debug")
+    sessions = _album_filter_model(_album_unique_entries([sessions, extra]))
     log(f"Listed {len(sessions)} astro sessions on {ip}")
     return {"ip": ip, "sessions": sessions}
+
+
+def album_camera_media_list() -> dict[str, Any]:
+    ip = _device_ip()
+    _album_model_matches()
+    types = _album_media_types_for_camera(ip)
+    groups: list[list[dict[str, Any]]] = []
+    errors: list[str] = []
+    for media_type in types:
+        try:
+            batch = [
+                entry for entry in _album_media_infos(ip, media_type)
+                if not album_is_astro_media(
+                    str(entry.get("filePath") or ""),
+                    str(entry.get("fileName") or ""),
+                    entry.get("mediaType"),
+                )
+            ]
+            groups.append(batch)
+        except Exception as exc:
+            errors.append(str(exc))
+    entries = _album_filter_model(_album_unique_entries(groups))
+    if not entries:
+        try:
+            entries = _album_filter_model(_ftp_camera_entries())
+        except Exception as exc:
+            if errors:
+                raise RuntimeError(errors[0]) from exc
+            raise
+    log(f"Listed {len(entries)} camera files on {ip}")
+    return {"ip": ip, "sessions": entries}
 
 
 def astro_session_download(file_path: str = "", dest_dir: str = "") -> dict[str, Any]:
@@ -2682,6 +2797,8 @@ def dispatch(message: dict[str, Any]) -> Any:
         )
     if command == "astro_sessions_list":
         return astro_sessions_list()
+    if command == "album_camera_list":
+        return album_camera_media_list()
     if command == "astro_session_download":
         args = list(message.get("args") or [])
         return astro_session_download(

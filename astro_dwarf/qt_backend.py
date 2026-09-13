@@ -46,7 +46,11 @@ from .domain import (
     TargetKind,
     WifiMode,
     Workflow,
+    LOCAL_ALBUM_SUFFIXES,
     album_http_url,
+    album_is_astro_media,
+    album_is_video_name,
+    album_media_kind,
     album_path_matches_model,
     camera_settings_from_capture,
     capture_defaults_from_dict,
@@ -3289,7 +3293,13 @@ class AppBackend(QObject):
 
     def _media_signature(self, items: list[dict[str, Any]]) -> tuple[tuple[Any, ...], ...]:
         return tuple(
-            (item.get("id"), item.get("thumbnail_url"), item.get("image_url"), item.get("downloaded"))
+            (
+                item.get("id"),
+                item.get("thumbnail_url"),
+                item.get("image_url"),
+                item.get("downloaded"),
+                item.get("kind"),
+            )
             for item in items
         )
 
@@ -3297,6 +3307,10 @@ class AppBackend(QObject):
         if not path:
             return ""
         return QUrl.fromLocalFile(str(Path(path).resolve())).toString(QUrl.ComponentFormattingOption.FullyEncoded)
+
+    def _is_device_media_path(self, path: str) -> bool:
+        text = str(path or "").replace("\\", "/").strip()
+        return text.startswith("/") or text.startswith("sdcard") or "/" in text.strip("/")
 
     def _local_name_for_remote(self, file_path: str) -> str:
         parts = [part for part in Path(str(file_path).replace("\\", "/")).parts if part not in {"/", "\\"}]
@@ -3326,63 +3340,152 @@ class AppBackend(QObject):
     def _local_album_paths(self) -> dict[str, Path]:
         found: dict[str, Path] = {}
         for path in self._album_dir().iterdir():
-            if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".fits", ".fit"}:
+            if path.is_file() and path.suffix.lower() in LOCAL_ALBUM_SUFFIXES:
                 found[path.name] = path
         return found
 
-    def _normalize_astro_item(self, entry: dict[str, Any], ip: str, local_files: dict[str, Path]) -> dict[str, Any] | None:
+    def _match_local_album_file(
+        self,
+        name: str,
+        remote: str,
+        local_files: dict[str, Path],
+    ) -> Path | None:
+        candidates = [
+            str(name or "").strip(),
+            Path(str(remote or "").replace("\\", "/")).name,
+            self._local_name_for_remote(remote or name),
+        ]
+        seen: set[str] = set()
+        for candidate in candidates:
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            local = local_files.get(candidate)
+            if local:
+                return local
+        return None
+
+    def _normalize_remote_item(
+        self,
+        entry: dict[str, Any],
+        ip: str,
+        local_files: dict[str, Path],
+        source: str,
+    ) -> dict[str, Any] | None:
         thumb = str(entry.get("thumbnailPath") or "").strip()
         remote = str(entry.get("filePath") or "").strip()
-        if not thumb and not remote:
+        name = str(entry.get("fileName") or "").strip()
+        if not thumb and not remote and not name:
             return None
-        details = self._astro_details(entry)
+        details = self._astro_details(entry) if (
+            source == "astro"
+            or album_is_astro_media(remote or thumb, name, entry.get("mediaType"))
+        ) else {}
         params = details.get("params") if isinstance(details.get("params"), dict) else {}
-        target = str(details.get("target") or entry.get("fileName") or "Untitled")
-        local_name = self._local_name_for_remote(remote or thumb)
-        local = local_files.get(local_name)
+        kind = album_media_kind(remote or thumb, name, entry.get("mediaType"))
+        is_video = kind == "video" or album_is_video_name(remote or thumb, name)
+        target = str(
+            details.get("target")
+            or name
+            or Path(str(remote or thumb).replace("\\", "/")).name
+            or "Untitled"
+        )
+        local = self._match_local_album_file(name, remote or thumb, local_files)
+        local_url = self._media_file_url(str(local)) if local else ""
         thumb_url = album_http_url(ip, thumb) if thumb and ip else ""
-        image_url = album_http_url(ip, remote) if remote and ip else thumb_url
-        item_id = remote or thumb or local_name
+        image_url = album_http_url(ip, remote) if remote and ip else ""
+        if not image_url:
+            image_url = thumb_url
+        if local_url and not is_video:
+            thumb_url = local_url
+            image_url = local_url
+        elif local_url:
+            image_url = local_url
+        try:
+            media_type = int(entry.get("mediaType"))
+        except (TypeError, ValueError):
+            media_type = 0
+        try:
+            cam_id = int(entry.get("camId"))
+        except (TypeError, ValueError):
+            cam_id = -1
+        try:
+            modified = int(entry.get("modificationTime") or 0)
+        except (TypeError, ValueError):
+            modified = 0
         return {
-            "id": item_id,
-            "source": "astro",
+            "id": remote or thumb or name,
+            "source": source,
+            "kind": kind,
             "target": target,
-            "file_name": str(entry.get("fileName") or local_name),
-            "file_path": remote,
+            "file_name": name or Path(str(remote or thumb).replace("\\", "/")).name,
+            "file_path": remote or name,
             "thumbnail_path": thumb,
-            "thumbnail_url": self._media_file_url(str(local)) if local else thumb_url,
-            "image_url": self._media_file_url(str(local)) if local else image_url,
+            "thumbnail_url": thumb_url or (image_url if not is_video else ""),
+            "image_url": image_url or thumb_url,
             "date": self._format_media_time(entry.get("modificationTime")),
-            "modification_time": int(entry.get("modificationTime") or 0),
+            "modification_time": modified,
             "exposure": str(params.get("exp") or ""),
             "gain": str(params.get("gain") or ""),
             "ir_filter": str(params.get("filter") or ""),
+            "camera": "wide" if cam_id == 1 else ("tele" if cam_id == 0 else ""),
             "local_path": str(local) if local else "",
             "downloaded": bool(local),
+            "media_type": media_type,
         }
 
-    def _normalize_still_item(self, name: str, local_files: dict[str, Path]) -> dict[str, Any]:
-        local = local_files.get(name)
-        return {
+    def _normalize_astro_item(self, entry: dict[str, Any], ip: str, local_files: dict[str, Path]) -> dict[str, Any] | None:
+        return self._normalize_remote_item(entry, ip, local_files, "astro")
+
+    def _normalize_still_item(
+        self,
+        name: str,
+        local_files: dict[str, Path],
+        ip: str = "",
+        directory: str = "",
+    ) -> dict[str, Any]:
+        remote = str(name or "")
+        thumb = ""
+        if directory and name:
+            folder = str(directory).rstrip("/").replace("\\", "/")
+            remote = f"{folder}/{name}"
+            thumb = f"{folder}/Thumbnail/{name}"
+        item = self._normalize_remote_item(
+            {
+                "fileName": name,
+                "filePath": remote,
+                "thumbnailPath": thumb,
+                "mediaType": 0,
+            },
+            ip,
+            local_files,
+            "stills",
+        )
+        return item or {
             "id": name,
             "source": "stills",
+            "kind": album_media_kind(remote, name),
             "target": name,
             "file_name": name,
             "file_path": name,
             "thumbnail_path": "",
-            "thumbnail_url": self._media_file_url(str(local)) if local else "",
-            "image_url": self._media_file_url(str(local)) if local else "",
+            "thumbnail_url": "",
+            "image_url": "",
             "date": "",
-            "modification_time": int(local.stat().st_mtime) if local else 0,
+            "modification_time": 0,
             "exposure": "",
             "gain": "",
             "ir_filter": "",
-            "local_path": str(local) if local else "",
-            "downloaded": bool(local),
+            "camera": "",
+            "local_path": "",
+            "downloaded": False,
+            "media_type": 0,
         }
 
     def _normalize_local_item(self, path: Path) -> dict[str, Any]:
         url = self._media_file_url(str(path))
+        kind = album_media_kind(str(path), path.name)
+        is_video = kind == "video" or album_is_video_name(str(path), path.name)
         try:
             mtime = int(path.stat().st_mtime)
         except OSError:
@@ -3390,19 +3493,22 @@ class AppBackend(QObject):
         return {
             "id": str(path),
             "source": "local",
+            "kind": kind,
             "target": path.stem,
             "file_name": path.name,
             "file_path": str(path),
             "thumbnail_path": "",
-            "thumbnail_url": url,
+            "thumbnail_url": "" if is_video else url,
             "image_url": url,
             "date": self._format_media_time(mtime),
             "modification_time": mtime,
             "exposure": "",
             "gain": "",
             "ir_filter": "",
+            "camera": "",
             "local_path": str(path),
             "downloaded": True,
+            "media_type": 0,
         }
 
     def _select_media_id(self, item_id: str) -> None:
@@ -3580,7 +3686,7 @@ class AppBackend(QObject):
                 ]
                 self._replace_media_items([item for item in items if item], self._media_selected_id)
                 if not self._media_items:
-                    self._set_media_status("No astro sessions found on this telescope.")
+                    self._set_media_status("No astro sessions found on this telescope. Finished DSO and manual stacks show up here.")
                 elif not quiet:
                     self._toast(f"{len(self._media_items)} astro sessions on telescope", "success")
                 return
@@ -3607,7 +3713,6 @@ class AppBackend(QObject):
             if not quiet:
                 self._toast("Can't browse the album while the telescope is capturing", "warning")
             return
-        camera = device.camera.value if hasattr(device.camera, "value") else "tele"
         request_id = self._begin_media_request(device_id, "stills")
         self._set_media_busy("list")
 
@@ -3616,24 +3721,34 @@ class AppBackend(QObject):
                 return
             self._set_media_busy("")
             if ok and isinstance(result, dict):
-                names = [str(name) for name in (result.get("files") or [])]
-                self._album_items = [{"file": name} for name in names]
+                ip = str(result.get("ip") or device.ip_address)
                 local_files = self._local_album_paths()
-                self._replace_media_items(
-                    [self._normalize_still_item(name, local_files) for name in names],
-                    self._media_selected_id,
-                )
-                if not names:
-                    self._set_media_status("No still photos found on this telescope.")
+                entries = [entry for entry in (result.get("sessions") or []) if isinstance(entry, dict)]
+                items = [
+                    item
+                    for entry in entries
+                    for item in [self._normalize_remote_item(entry, ip, local_files, "stills")]
+                    if item
+                ]
+                if not items and result.get("files"):
+                    directory = str(result.get("directory") or "")
+                    items = [
+                        self._normalize_still_item(str(name), local_files, ip, directory)
+                        for name in (result.get("files") or [])
+                    ]
+                self._album_items = [{"file": item.get("file_name")} for item in items]
+                self._replace_media_items(items, self._media_selected_id)
+                if not self._media_items:
+                    self._set_media_status("No photos, videos, or bursts found on this telescope.")
                 elif not quiet:
-                    self._toast(f"{len(names)} stills on telescope", "success")
+                    self._toast(f"{len(self._media_items)} files on telescope", "success")
                 return
             self._replace_media_items([])
             self._set_media_status(str(result) if result else "Could not reach the telescope album. Connect it, then tap Refresh.")
             if not quiet:
                 self._toast("Album list failed", "error", str(result))
 
-        worker.send("album_list", {"args": [80, camera]}, done)
+        worker.send("album_camera_list", {}, done)
 
     @Slot(str, str)
     def downloadMedia(self, device_id: str, item_id: str = "") -> None:
@@ -3649,11 +3764,11 @@ class AppBackend(QObject):
             self._media_locked = True
             self._toast("Can't download while the telescope is capturing", "warning")
             return
-        if self._media_source == "stills":
-            self.downloadAlbumPhoto(device_id, chosen)
-            return
         item = next((entry for entry in self._media_items if entry.get("id") == chosen), None)
         remote = str((item or {}).get("file_path") or chosen)
+        if self._media_source == "stills" and not self._is_device_media_path(remote):
+            self.downloadAlbumPhoto(device_id, str((item or {}).get("file_name") or chosen))
+            return
         worker = self._workers.get(device_id)
         if not worker or not remote:
             self._toast("Nothing to download", "warning")
@@ -3677,8 +3792,9 @@ class AppBackend(QObject):
                         entry = dict(entry)
                         entry["local_path"] = self._album_path
                         entry["downloaded"] = True
-                        entry["thumbnail_url"] = local_url
                         entry["image_url"] = local_url
+                        if entry.get("kind") != "video":
+                            entry["thumbnail_url"] = local_url
                     elif entry.get("file_name") in local_files:
                         local = local_files[str(entry.get("file_name"))]
                         entry = dict(entry)
@@ -3687,10 +3803,10 @@ class AppBackend(QObject):
                     updated.append(entry)
                 self._media_items = updated
                 self._select_media_id(chosen)
-                self._toast("Session downloaded", "success", Path(self._album_path).name)
+                self._toast("Downloaded", "success", Path(self._album_path).name)
                 self._emit_media(items=True)
                 return
-            self._toast("Session download failed", "error", str(result))
+            self._toast("Download failed", "error", str(result))
 
         worker.send("astro_session_download", {"args": [remote, dest]}, done)
 
@@ -3727,9 +3843,10 @@ class AppBackend(QObject):
                         entry = dict(entry)
                         entry["local_path"] = self._album_path
                         entry["downloaded"] = True
-                        if not entry.get("thumbnail_url"):
-                            entry["thumbnail_url"] = self._media_file_url(self._album_path)
-                            entry["image_url"] = self._media_file_url(self._album_path)
+                        local_url = self._media_file_url(self._album_path)
+                        entry["image_url"] = local_url
+                        if entry.get("kind") != "video":
+                            entry["thumbnail_url"] = local_url
                         found = True
                     updated.append(entry)
                 if not found:

@@ -264,6 +264,8 @@ QtObject {
     function shouldEnhanceMedia(item) {
         if (!item)
             return false
+        if (Util.isVideoMedia(item))
+            return false
         if (item.source === "stills")
             return false
         if (item.source === "local") {
@@ -271,6 +273,37 @@ QtObject {
             return /_stacked/i.test(name)
         }
         return !!(item.image_url || item.thumbnail_url)
+    }
+    function mediaKind(item) {
+        return String((item && item.kind) || "").toLowerCase()
+    }
+    function isVideoMedia(item) {
+        if (!item)
+            return false
+        if (Util.mediaKind(item) === "video")
+            return true
+        const name = String(item.file_name || item.file_path || item.local_path || item.id || "")
+        return /\.(mp4|mov|m4v|mkv|avi)$/i.test(name)
+    }
+    function mediaKindLabel(item) {
+        switch (Util.mediaKind(item)) {
+        case "video": return "VIDEO"
+        case "burst": return "BURST"
+        case "panorama": return "PANO"
+        case "astro": return "STACK"
+        case "photo": return "PHOTO"
+        default:
+            return item && item.source === "stills" ? "PHOTO" : ""
+        }
+    }
+    function mediaKindGlyph(item) {
+        switch (Util.mediaKind(item)) {
+        case "video": return "▶"
+        case "burst": return "◫"
+        case "panorama": return "▣"
+        case "astro": return "◈"
+        default: return item && item.source === "stills" ? "▣" : "◈"
+        }
     }
     function mediaDisplayUrl(item, which) {
         const raw = which === "thumb"

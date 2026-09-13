@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Shapes
 import QtQuick.Window
+import QtMultimedia
 import QtCore
 import ".."
 import "../components"
@@ -33,8 +34,8 @@ Item {
         if (!mediaPage.scopeOnline)
             return "Connect this telescope to browse its album."
         if (backend.mediaSource === "stills")
-            return "No still photos found on this telescope. Capture a photo, then refresh."
-        return "No astro sessions found on this telescope. Finished DSO stacks show up here."
+            return "No photos, videos, or bursts found on this telescope. Capture, then refresh. DSO stacks are under Astro."
+        return "No astro sessions found on this telescope. Finished DSO and manual stacks show up here."
     }
 
     onAlbumLockedChanged: {
@@ -164,7 +165,7 @@ Item {
             Layout.fillHeight: true
             title: mediaPage.albumLocked
                 ? "ON DEVICE  ·  UNAVAILABLE"
-                : (backend.mediaSource === "astro" ? "ON DEVICE  ·  ASTRO SESSIONS" : (backend.mediaSource === "stills" ? "ON DEVICE  ·  STILLS" : "LOCAL ALBUM"))
+                : (backend.mediaSource === "astro" ? "ON DEVICE  ·  ASTRO SESSIONS" : (backend.mediaSource === "stills" ? "ON DEVICE  ·  CAMERA" : "LOCAL ALBUM"))
 
             Item {
                 Layout.fillWidth: true
@@ -206,7 +207,7 @@ Item {
                                         color: Theme.surface
                                         Text {
                                             anchors.centerIn: parent
-                                            text: tile.modelData.source === "stills" ? "▣" : "◈"
+                                            text: Util.mediaKindGlyph(tile.modelData)
                                             color: Theme.muted
                                             font.pixelSize: 22
                                         }
@@ -217,8 +218,27 @@ Item {
                                         fillMode: Image.PreserveAspectCrop
                                         asynchronous: true
                                         cache: true
-                                        source: tile.modelData.thumbnail_url || tile.modelData.image_url || ""
+                                        source: tile.modelData.thumbnail_url || (Util.isVideoMedia(tile.modelData) ? "" : (tile.modelData.image_url || ""))
                                         visible: source !== "" && status === Image.Ready
+                                    }
+                                    Rectangle {
+                                        visible: !!Util.mediaKindLabel(tile.modelData)
+                                        anchors.left: parent.left
+                                        anchors.top: parent.top
+                                        anchors.margins: 4
+                                        color: Theme.surface
+                                        border.color: Theme.outlineSoft
+                                        radius: 2
+                                        width: kindLabel.implicitWidth + 8
+                                        height: kindLabel.implicitHeight + 4
+                                        Text {
+                                            id: kindLabel
+                                            anchors.centerIn: parent
+                                            text: Util.mediaKindLabel(tile.modelData)
+                                            color: Theme.textSecondary
+                                            font.pixelSize: 8
+                                            font.bold: true
+                                        }
                                     }
                                     Rectangle {
                                         visible: !!tile.modelData.downloaded
@@ -288,6 +308,7 @@ Item {
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: DialogFrame {}
         readonly property bool enhanceOn: Theme.enhanceImages && Util.shouldEnhanceMedia(mediaPage.selected)
+        readonly property bool isVideo: Util.isVideoMedia(mediaPage.selected)
         readonly property string selectedKey: String((mediaPage.selected && mediaPage.selected.id) || "")
         readonly property string rawUrl: {
             const item = mediaPage.selected
@@ -297,17 +318,28 @@ Item {
                 return backend.mediaFileUrl(String(item.local_path))
             return String(item.image_url || item.thumbnail_url || "")
         }
+        readonly property string posterUrl: {
+            const item = mediaPage.selected
+            if (!item)
+                return ""
+            return String(item.thumbnail_url || "")
+        }
         property string heldCleanUrl: ""
         readonly property string cleanUrl: {
             lightbox.selectedKey
             Theme.enhanceImages
             Theme.deepCleanImages
             backend.enhanceCacheGeneration
-            if (!lightbox.enhanceOn || !lightbox.rawUrl)
+            if (!lightbox.enhanceOn || !lightbox.rawUrl || lightbox.isVideo)
                 return ""
             return backend.mediaEnhanceSource(lightbox.rawUrl, Theme.deepCleanImages ? "deep" : "std")
         }
-        onSelectedKeyChanged: heldCleanUrl = ""
+        onSelectedKeyChanged: {
+            heldCleanUrl = ""
+            clipPlayer.stop()
+        }
+        onClosed: clipPlayer.stop()
+        onOpened: if (lightbox.isVideo && clipPlayer.source !== "") clipPlayer.play()
         onEnhanceOnChanged: if (!enhanceOn) heldCleanUrl = ""
         onCleanUrlChanged: if (cleanUrl !== "") heldCleanUrl = cleanUrl
         contentItem: ColumnLayout {
@@ -324,8 +356,8 @@ Item {
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                     cache: false
-                    visible: !lightbox.enhanceOn && source !== "" && status === Image.Ready
-                    source: lightbox.enhanceOn ? "" : lightbox.rawUrl
+                    visible: !lightbox.isVideo && !lightbox.enhanceOn && source !== "" && status === Image.Ready
+                    source: lightbox.enhanceOn || lightbox.isVideo ? "" : lightbox.rawUrl
                 }
                 Image {
                     id: cleanImage
@@ -335,14 +367,35 @@ Item {
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                     cache: false
-                    visible: lightbox.enhanceOn && source !== "" && status === Image.Ready
+                    visible: !lightbox.isVideo && lightbox.enhanceOn && source !== "" && status === Image.Ready
                     source: lightbox.cleanUrl !== "" ? lightbox.cleanUrl : lightbox.heldCleanUrl
+                }
+                Video {
+                    id: clipPlayer
+                    objectName: "mediaVideo"
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    fillMode: VideoOutput.PreserveAspectFit
+                    source: lightbox.isVideo ? lightbox.rawUrl : ""
+                    visible: lightbox.isVideo && source !== ""
+                    autoPlay: lightbox.visible && lightbox.isVideo
+                    loops: 1
+                }
+                Image {
+                    id: videoPoster
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    fillMode: Image.PreserveAspectFit
+                    asynchronous: true
+                    cache: false
+                    visible: lightbox.isVideo && !clipPlayer.visible && source !== "" && status === Image.Ready
+                    source: lightbox.isVideo ? lightbox.posterUrl : ""
                 }
                 Rectangle {
                     anchors.left: parent.left
                     anchors.top: parent.top
                     anchors.margins: 16
-                    visible: rawImage.visible || cleanImage.visible
+                    visible: rawImage.visible || cleanImage.visible || clipPlayer.visible
                     color: Theme.surface
                     border.color: Theme.outline
                     radius: 2
@@ -351,8 +404,8 @@ Item {
                     Text {
                         id: modeLabel
                         anchors.centerIn: parent
-                        text: lightbox.enhanceOn ? "SMOOTHED" : "RAW"
-                        color: lightbox.enhanceOn ? Theme.accent : Theme.textSecondary
+                        text: lightbox.isVideo ? "VIDEO" : (lightbox.enhanceOn ? "SMOOTHED" : "RAW")
+                        color: lightbox.enhanceOn && !lightbox.isVideo ? Theme.accent : Theme.textSecondary
                         font.pixelSize: 11
                         font.letterSpacing: 1.2
                         font.bold: true
@@ -360,8 +413,8 @@ Item {
                 }
                 Text {
                     anchors.centerIn: parent
-                    visible: !rawImage.visible && !cleanImage.visible
-                    text: lightbox.enhanceOn ? "SMOOTHING…" : (mediaPage.busy ? "LOADING…" : "NO PREVIEW")
+                    visible: !rawImage.visible && !cleanImage.visible && !clipPlayer.visible && !videoPoster.visible
+                    text: lightbox.isVideo ? (clipPlayer.errorString || "LOADING VIDEO…") : (lightbox.enhanceOn ? "SMOOTHING…" : (mediaPage.busy ? "LOADING…" : "NO PREVIEW"))
                     color: Theme.muted
                     font.pixelSize: 12
                     font.letterSpacing: 1.4
@@ -443,8 +496,10 @@ Item {
                                 bits.push("Gain " + mediaPage.selected.gain)
                             if (mediaPage.selected.ir_filter)
                                 bits.push("IR " + mediaPage.selected.ir_filter)
-                            if (mediaPage.selected.downloaded)
-                                bits.push("Saved locally")
+                            if (mediaPage.selected.camera)
+                                bits.push(mediaPage.selected.camera === "wide" ? "Wide" : "Tele")
+                            if (mediaPage.selected.kind && mediaPage.selected.kind !== "photo" && mediaPage.selected.kind !== "astro")
+                                bits.push(Util.mediaKindLabel(mediaPage.selected))
                             return bits.join("  ·  ") || (backend.mediaSource === "local" ? String(mediaPage.selected.file_name || "") : "On-device session")
                         }
                         color: Theme.textSecondary

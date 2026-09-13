@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from fractions import Fraction
+from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
@@ -74,6 +75,83 @@ def album_path_matches_model(path: str, model: DeviceModel | str) -> bool:
     if expected == DeviceModel.DWARF_II:
         return (has_ii or has_generic) and not has_dwarf3 and not has_mini
     return True
+
+
+ASTRO_MEDIA_TYPE = 6
+ALBUM_VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".avi"}
+ALBUM_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".fits", ".fit"}
+LOCAL_ALBUM_SUFFIXES = ALBUM_IMAGE_SUFFIXES | ALBUM_VIDEO_SUFFIXES
+_ASTRO_PATH_MARKERS = (
+    "/ASTRONOMY/",
+    "DWARF_RAW",
+    "/RESTACKED",
+    "STARTRAIL",
+    "SOLVING_FAILED",
+    "CALI_FRAME",
+)
+
+
+def album_model_prefix(model: DeviceModel | str) -> str:
+    expected = str(model)
+    if expected == DeviceModel.DWARF_3:
+        return "/DWARF3"
+    if expected == DeviceModel.DWARF_MINI:
+        return "/DWARF_MINI"
+    if expected == DeviceModel.DWARF_II:
+        return "/DWARF_II"
+    return ""
+
+
+def album_prefixed_path(path: str, model: DeviceModel | str = "") -> str:
+    value = album_http_path(path)
+    prefix = album_model_prefix(model)
+    if not value or not prefix:
+        return value
+    text = value.upper()
+    if "DWARF3" in text or "DWARF_MINI" in text or "DWARFMINI" in text or "DWARF_II" in text or "DWARF2" in text:
+        return value
+    return prefix + value
+
+
+def album_entry_key(entry: dict[str, Any] | None) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get("filePath") or entry.get("thumbnailPath") or entry.get("fileName") or "").strip()
+
+
+def _album_suffix(path: str = "", name: str = "") -> str:
+    text = str(name or path or "").replace("\\", "/")
+    return PurePosixPath(text).suffix.lower()
+
+
+def album_is_video_name(path: str = "", name: str = "") -> bool:
+    return _album_suffix(path, name) in ALBUM_VIDEO_SUFFIXES
+
+
+def album_is_astro_media(path: str = "", name: str = "", media_type: Any = None) -> bool:
+    try:
+        if int(media_type) == ASTRO_MEDIA_TYPE:
+            return True
+    except (TypeError, ValueError):
+        pass
+    text = f"{album_http_path(path)}/{name}".upper().replace("\\", "/")
+    return any(marker in text for marker in _ASTRO_PATH_MARKERS)
+
+
+def album_media_kind(path: str = "", name: str = "", media_type: Any = None) -> str:
+    combined = album_http_path(path or name)
+    text = combined.upper()
+    file_name = str(name or PurePosixPath(combined).name)
+    suffix = _album_suffix(combined, file_name)
+    if album_is_astro_media(path, name, media_type):
+        return "video" if suffix in ALBUM_VIDEO_SUFFIXES else "astro"
+    if "/BURST" in text:
+        return "burst"
+    if "PANORAMA" in text:
+        return "panorama"
+    if "/VIDEO" in text or suffix in ALBUM_VIDEO_SUFFIXES:
+        return "video"
+    return "photo"
 
 
 class Camera(StrEnum):
