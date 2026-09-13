@@ -1,7 +1,9 @@
 """Turn raw worker telemetry into HUD-ready values, activity and alerts."""
 from __future__ import annotations
 
+import math
 import time
+from fractions import Fraction
 from typing import Any
 
 SHOOTING_MODES = {1: "PHOTO", 2: "DSO", 8: "SUN", 9: "MOON", 10: "PLANET"}
@@ -39,6 +41,68 @@ def _assign_temp(view: dict[str, Any], prefix: str, value: Any) -> None:
     view[f"{prefix}_text"] = celsius if not fahrenheit else f"{celsius} / {fahrenheit}"
     view[f"{prefix}_c_text"] = celsius
     view[f"{prefix}_f_text"] = fahrenheit
+
+
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return number
+
+
+def exposure_seconds_from_text(value: Any) -> float | None:
+    """Parse firmware exposure names ('15', '1/60', '15s') into seconds."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return _as_float(value)
+    text = str(value).strip()
+    if not text or text == "—":
+        return None
+    if text.lower().endswith("s") and "/" not in text:
+        text = text[:-1].strip()
+    try:
+        seconds = float(Fraction(text)) if "/" in text else float(text)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return _as_float(seconds)
+
+
+def _configured_exposure_seconds(raw: dict[str, Any]) -> float:
+    camera = str(raw.get("capture_camera") or "")
+    texts = (
+        (raw.get("wide_exposure_text"), raw.get("exposure_text"))
+        if camera == "wide"
+        else (raw.get("exposure_text"), raw.get("wide_exposure_text"))
+    )
+    for text in texts:
+        seconds = exposure_seconds_from_text(text)
+        if seconds:
+            return seconds
+    return 0.0
+
+
+def _exposure_progress_seconds(raw: dict[str, Any]) -> tuple[float, float]:
+    """Firmware long-exp progress, falling back to the configured exposure."""
+    configured = _configured_exposure_seconds(raw)
+    elapsed = _as_float(raw.get("exposure_elapsed_s")) or 0.0
+    total = _as_float(raw.get("exposure_total_s")) or 0.0
+    # Some firmware builds report milliseconds for a multi-second exposure.
+    if configured >= 1 and total > configured * 8:
+        elapsed /= 1000.0
+        total /= 1000.0
+    if total <= 0:
+        total = configured
+    if total > 0:
+        elapsed = min(elapsed, total)
+    return elapsed, total
 
 
 def _capture_frame_count(raw: dict[str, Any]) -> int | None:
@@ -174,10 +238,18 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     except (TypeError, ValueError):
         view["capture_stacked"] = 0
     try:
+        view["capture_current"] = int(current or 0)
+    except (TypeError, ValueError):
+        view["capture_current"] = 0
+    try:
         view["capture_total"] = int(total_frames or 0)
     except (TypeError, ValueError):
         view["capture_total"] = 0
     view["capture_active"] = capturing
+    elapsed_s, exposure_s = _exposure_progress_seconds(raw) if capturing else (0.0, _configured_exposure_seconds(raw))
+    view["exposure_elapsed_s"] = round(elapsed_s, 2)
+    view["exposure_total_s"] = round(exposure_s, 3)
+    view["exposure_progress"] = min(1.0, elapsed_s / exposure_s) if capturing and exposure_s > 0 else 0.0
     view["capture_target"] = raw.get("capture_target") or ""
     view["tracking_active"] = raw.get("tracking_state") == "running"
     view["tracking_target"] = raw.get("tracking_target") or raw.get("goto_target") or ""

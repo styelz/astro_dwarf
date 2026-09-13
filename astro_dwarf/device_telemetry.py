@@ -411,6 +411,7 @@ class TelemetryTap:
             "capture_target": target or "",
             "capture_shooting_s": 0,
             "capture_stacked_s": 0,
+            "exposure_elapsed_s": 0,
         }
         if total is not None:
             try:
@@ -699,6 +700,7 @@ class TelemetryTap:
             changes["capture_camera"] = "wide" if cmd == CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING else "tele"
             if state in ("idle", "stopped"):
                 changes["capture_active"] = False
+                changes["exposure_elapsed_s"] = 0
             elif state == "running":
                 changes["capture_active"] = True
             return changes

@@ -5140,6 +5140,7 @@ class AppBackend(QObject):
             "capture_target": target or "",
             "capture_shooting_s": 0,
             "capture_stacked_s": 0,
+            "exposure_elapsed_s": 0,
         })
         self._device_telemetry[device_id] = telemetry
         self._telemetry_updated[device_id] = time.time()

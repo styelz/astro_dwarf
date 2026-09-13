@@ -1827,15 +1827,34 @@ Item {
             }
 
             HudPanel {
-                title: "MOTION"
+                id: motionPanel
+                title: motionPanel.stacking ? "STACK" : "MOTION"
+                hot: motionPanel.stacking
+                readonly property bool stacking: root.scopeOnline && !!root.scopeTelemetry.capture_active
                 SplitView.preferredHeight: 188
                 SplitView.minimumHeight: 136
+                onStackingChanged: {
+                    if (stacking && analogPad.moving)
+                        analogPad.releaseStick()
+                }
+                headerExtra: Text {
+                    visible: motionPanel.stacking && stackTimer.target
+                    text: stackTimer.target
+                    color: Theme.textSecondary
+                    font.pixelSize: 9
+                    font.letterSpacing: 0.6
+                    elide: Text.ElideRight
+                    width: Math.min(110, implicitWidth)
+                }
                 Item {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 128
-                    opacity: root.motionEnabled ? 1 : 0.38
                     Item {
-                        id: analogPad
+                        anchors.fill: parent
+                        visible: !motionPanel.stacking
+                        opacity: root.motionEnabled ? 1 : 0.38
+                        Item {
+                            id: analogPad
                         anchors.centerIn: parent
                         width: 108
                         height: 108
@@ -1947,9 +1966,9 @@ Item {
                         MouseArea {
                             id: stickArea
                             anchors.fill: parent
-                            enabled: root.motionEnabled
+                            enabled: root.motionEnabled && !motionPanel.stacking
                             preventStealing: true
-                            cursorShape: root.motionEnabled ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
+                            cursorShape: root.motionEnabled && !motionPanel.stacking ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
                             onPressed: mouse => analogPad.updateStick(mouse.x, mouse.y)
                             onPositionChanged: mouse => {
                                 if (pressed)
@@ -1963,8 +1982,30 @@ Item {
                             }
                         }
                     }
+                    }
+                    StackTimer {
+                        id: stackTimer
+                        anchors.fill: parent
+                        visible: motionPanel.stacking
+                        active: motionPanel.stacking
+                        firmwareElapsed: Number(root.scopeTelemetry.exposure_elapsed_s) || 0
+                        exposureSeconds: {
+                            const tel = Number(root.scopeTelemetry.exposure_total_s)
+                            if (Number.isFinite(tel) && tel > 0)
+                                return tel
+                            const live = Number(liveExposure.text)
+                            if (Number.isFinite(live) && live > 0)
+                                return live
+                            return 0
+                        }
+                        current: Number(root.scopeTelemetry.capture_current) || 0
+                        stacked: Number(root.scopeTelemetry.capture_stacked) || 0
+                        total: Number(root.scopeTelemetry.capture_total) || 0
+                        target: String(root.scopeTelemetry.capture_target || "")
+                    }
                 }
                 RowLayout {
+                    visible: !motionPanel.stacking
                     Layout.fillWidth: true
                     opacity: root.motionEnabled ? 1 : 0.42
                     Text { text: "SPEED"; color: Theme.textSecondary; font.pixelSize: 10 }
@@ -1978,6 +2019,37 @@ Item {
                         onMoved: root.joySpeed = value
                         background: Rectangle { x: speedSlider.leftPadding; y: speedSlider.topPadding + speedSlider.availableHeight / 2 - 2; implicitHeight: 4; width: speedSlider.availableWidth; color: Theme.inputBg; Rectangle { width: speedSlider.visualPosition * parent.width; height: parent.height; color: Theme.accent } }
                         handle: Rectangle { x: speedSlider.leftPadding + speedSlider.visualPosition * (speedSlider.availableWidth - 12); y: speedSlider.topPadding + speedSlider.availableHeight / 2 - 6; width: 12; height: 12; radius: 6; color: Theme.accent }
+                    }
+                }
+                RowLayout {
+                    visible: motionPanel.stacking
+                    Layout.fillWidth: true
+                    Text { text: "FRAME"; color: Theme.textSecondary; font.pixelSize: 10 }
+                    Item {
+                        Layout.fillWidth: true
+                        implicitHeight: 12
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: parent.width
+                            height: 4
+                            color: Theme.inputBg
+                            Rectangle {
+                                width: parent.width * (stackTimer.total > 0 ? Math.min(1, stackTimer.current / stackTimer.total) : 0)
+                                height: parent.height
+                                color: Theme.accent
+                            }
+                        }
+                    }
+                    Text {
+                        text: {
+                            let label = stackTimer.framesText
+                            if (stackTimer.stacked > 0 && stackTimer.stacked !== stackTimer.current)
+                                label += " · " + stackTimer.stacked + " OK"
+                            return label
+                        }
+                        color: Theme.textPrimary
+                        font.pixelSize: 10
+                        font.family: Theme.fontMono
                     }
                 }
             }
