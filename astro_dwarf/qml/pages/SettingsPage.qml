@@ -421,7 +421,7 @@ Item {
                                     text: "RESET"
                                     implicitHeight: 28
                                     enabled: settingsPage.tintCustom
-                                    Accessible.description: "Return every palette colour to stock"
+                                    accessibleDescription: "Return every palette colour to stock"
                                     onClicked: Theme.resetPalette()
                                 }
                             ]
@@ -552,7 +552,7 @@ Item {
                                     text: "RESET"
                                     implicitHeight: 28
                                     enabled: settingsPage.enhanceCustom
-                                    Accessible.description: "Return denoise and sky crush to full strength"
+                                    accessibleDescription: "Return denoise and sky crush to full strength"
                                     onClicked: {
                                         Theme.enhanceDenoise = 1
                                         Theme.enhanceSkyCrush = 1

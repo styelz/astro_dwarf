@@ -6,6 +6,7 @@ import ".."
 TextField {
     id: field
     property bool releaseFocusOnEnter: true
+    property string tooltip: ""
     property string accessibleName: ""
     property string accessibleDescription: ""
     property bool passwordRevealed: false
@@ -21,7 +22,10 @@ TextField {
     focusPolicy: Qt.StrongFocus
     font.pixelSize: Theme.fontBase
     Accessible.name: accessibleName || placeholderText || text
-    Accessible.description: accessibleDescription
+    Accessible.description: accessibleDescription || tooltip
+    ToolTip.visible: tooltip !== "" && hovered
+    ToolTip.delay: Theme.tooltipDelay
+    ToolTip.text: tooltip
     Keys.priority: Keys.BeforeItem
     Keys.onPressed: function (event) {
         if (!field.releaseFocusOnEnter)

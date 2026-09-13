@@ -7,6 +7,8 @@ Button {
     property color buttonColor: Theme.surfaceHigh
     property color foregroundColor: Theme.textPrimary
     property string busyText: ""
+    property string tooltip: ""
+    property string accessibleDescription: ""
     property bool busy: false
     property int busyMs: 1400
     property bool _clickBusy: false
@@ -21,7 +23,10 @@ Button {
     hoverEnabled: enabled
     focusPolicy: Qt.StrongFocus
     Accessible.name: text
-    Accessible.description: isBusy && busyText !== "" ? busyText : ""
+    Accessible.description: isBusy && busyText !== "" ? busyText : (accessibleDescription || tooltip)
+    ToolTip.visible: tooltip !== "" && hovered
+    ToolTip.delay: Theme.tooltipDelay
+    ToolTip.text: tooltip
     opacity: inactive ? 0.45 : 1
     font.pixelSize: Theme.fontMd
     font.letterSpacing: Theme.tracking1

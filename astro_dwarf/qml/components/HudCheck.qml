@@ -4,13 +4,17 @@ import ".."
 
 CheckBox {
     id: box
+    property string tooltip: ""
     property string accessibleName: ""
     property string accessibleDescription: ""
     font.pixelSize: Theme.fontBase
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
     Accessible.name: accessibleName || text
-    Accessible.description: accessibleDescription
+    Accessible.description: accessibleDescription || tooltip
+    ToolTip.visible: tooltip !== "" && hovered
+    ToolTip.delay: Theme.tooltipDelay
+    ToolTip.text: tooltip
     spacing: 10
     padding: 0
     opacity: enabled ? 1 : 0.5

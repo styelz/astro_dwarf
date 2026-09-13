@@ -8,6 +8,7 @@ ComboBox {
     id: combo
     // shown instead of a blank box when nothing is selected, e.g. mixed values
     property string emptyText: ""
+    property string tooltip: ""
     property string accessibleName: ""
     property string accessibleDescription: ""
     displayText: combo.currentIndex < 0 && combo.emptyText ? combo.emptyText : combo.currentText
@@ -19,7 +20,10 @@ ComboBox {
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
     Accessible.name: accessibleName || displayText
-    Accessible.description: accessibleDescription
+    Accessible.description: accessibleDescription || tooltip
+    ToolTip.visible: tooltip !== "" && hovered && !popup.visible
+    ToolTip.delay: Theme.tooltipDelay
+    ToolTip.text: tooltip
     palette.window: Theme.popupBg
     palette.windowText: Theme.textPrimary
     palette.base: Theme.popupBg

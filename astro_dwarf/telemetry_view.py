@@ -55,6 +55,20 @@ def _as_float(value: Any) -> float | None:
     return number
 
 
+def _as_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(int(value))
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
 def _as_int(value: Any) -> int | None:
     if value is None or isinstance(value, bool):
         return None
@@ -135,6 +149,12 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
 
     collect(_camera_params_entry(cameras, 0))
     collect(_camera_params_entry(cameras, 1), "wide_")
+    shooting = result.get("shooting_mode")
+    if isinstance(shooting, dict):
+        auto_cal = shooting.get("autoCalibration", shooting.get("auto_calibration"))
+        parsed = _as_bool(auto_cal)
+        if parsed is not None:
+            changes["auto_calibration"] = parsed
     return changes
 
 

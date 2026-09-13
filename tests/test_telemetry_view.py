@@ -136,6 +136,16 @@ class CameraParamsToTelemetryTests(unittest.TestCase):
         self.assertEqual(changes["exposure_text"], "1/30")
         self.assertEqual(changes["gain"], 25)
 
+    def test_reads_astro_auto_calibration(self) -> None:
+        on = camera_params_to_telemetry({"cameras": {}, "shooting_mode": {"autoCalibration": True}})
+        off = camera_params_to_telemetry({"cameras": {}, "shooting_mode": {"autoCalibration": False}})
+        named = camera_params_to_telemetry({"cameras": {}, "shooting_mode": {"auto_calibration": "on"}})
+        missing = camera_params_to_telemetry({"cameras": {"0": {"gain": 10}}})
+        self.assertTrue(on["auto_calibration"])
+        self.assertFalse(off["auto_calibration"])
+        self.assertTrue(named["auto_calibration"])
+        self.assertNotIn("auto_calibration", missing)
+
 
 class PhotoPrimedViewTests(unittest.TestCase):
     def test_primed_after_still_in_photo_mode(self) -> None:

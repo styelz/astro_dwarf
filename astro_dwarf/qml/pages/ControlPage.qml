@@ -508,7 +508,8 @@ Item {
                         busyText: "SWITCHING…"
                         busyMs: 0
                         enabled: root.commandEnabled("photo_mode")
-                        Accessible.description: cameraPanel.photoMode ? "Current shooting mode" : "Switch to photo shooting mode"
+                        tooltip: cameraPanel.photoMode ? "Current shooting mode: stills, burst, video, and timelapse"
+                            : "Switch to photo shooting mode for stills, burst, video, and timelapse"
                         onClicked: if (!cameraPanel.photoMode) backend.deviceAction(backend.selectedDeviceId, "photo_mode")
                     }
                     HudButton {
@@ -520,7 +521,8 @@ Item {
                         busyText: "SWITCHING…"
                         busyMs: 0
                         enabled: root.commandEnabled("astro_mode")
-                        Accessible.description: cameraPanel.dsoMode ? "Current shooting mode" : "Switch to deep-sky shooting mode"
+                        tooltip: cameraPanel.dsoMode ? "Current shooting mode: deep-sky stacking"
+                            : "Switch to deep-sky shooting mode for astronomical stacking"
                         onClicked: if (!cameraPanel.dsoMode) backend.deviceAction(backend.selectedDeviceId, "astro_mode")
                     }
                 }
@@ -530,6 +532,8 @@ Item {
                     Layout.fillWidth: true
                     visible: cameraPanel.teleSelected
                     placeholderText: "steps"
+                    accessibleName: "Focus position"
+                    tooltip: "Telephoto focus motor position in steps. Wide is fixed-focus."
                     inputMethodHints: Qt.ImhDigitsOnly
                     enabled: root.commandEnabled("set_focus")
                     readonly property string liveValue: {
@@ -559,6 +563,7 @@ Item {
                         busyText: "FOCUSING…"
                         busyMs: 0
                         enabled: root.commandEnabled("focus_near")
+                        tooltip: "Nudge the telephoto focus motor toward near. Hold is not supported; each tap is one acknowledged move."
                         onClicked: backend.manualFocus(backend.selectedDeviceId, 1)
                     }
                     HudButton {
@@ -568,6 +573,7 @@ Item {
                         busyText: "FOCUSING…"
                         busyMs: 0
                         enabled: root.commandEnabled("focus_far")
+                        tooltip: "Nudge the telephoto focus motor toward infinity. Hold is not supported; each tap is one acknowledged move."
                         onClicked: backend.manualFocus(backend.selectedDeviceId, 0)
                     }
                 }
@@ -580,6 +586,8 @@ Item {
                     Layout.fillWidth: true
                     visible: cameraPanel.teleSelected
                     enabled: root.commandEnabled("set_ir")
+                    accessibleName: "IR filter"
+                    tooltip: "Telephoto IR filter. VIS for daytime, Astro for broadband night, Duo-Band for Ha/OIII."
                     model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
                     property string appliedValue: ""
                     onActivated: {
@@ -592,6 +600,8 @@ Item {
                     id: liveCamera
                     Layout.fillWidth: true
                     enabled: !root.scopeOccupied && !root.scopeLinking
+                    accessibleName: "Live camera"
+                    tooltip: "Camera for live preview and capture. Wide is fixed-focus; focus controls apply to Tele only."
                     model: ["Tele", "Wide"]
                     Component.onCompleted: currentIndex = backend.selectedDevice.camera === "wide" ? 1 : 0
                     onActivated: backend.setLiveCamera(backend.selectedDeviceId, currentIndex === 1 ? "wide" : "tele")
@@ -608,6 +618,8 @@ Item {
                         Layout.fillWidth: true
                         enabled: root.cameraLiveEnabled
                         placeholderText: "sec"
+                        accessibleName: "Exposure"
+                        tooltip: "Shutter time for the selected camera. Use a fraction such as 1/30, or a number of seconds."
                         readonly property string deviceValue: {
                             const value = backend.selectedDevice.camera === "wide"
                                 ? root.scopeTelemetry.wide_exposure_text
@@ -633,6 +645,8 @@ Item {
                         Layout.fillWidth: true
                         enabled: root.commandEnabled("set_gain")
                         placeholderText: "gain"
+                        accessibleName: "Gain"
+                        tooltip: "Sensor gain for the selected camera. Higher values brighten the image and add noise."
                         readonly property string deviceValue: {
                             const value = backend.selectedDevice.camera === "wide"
                                 ? root.scopeTelemetry.wide_gain
@@ -662,6 +676,8 @@ Item {
                     Layout.fillWidth: true
                     visible: cameraPanel.teleSelected
                     enabled: root.commandEnabled("set_wb_preset")
+                    accessibleName: "White-balance preset"
+                    tooltip: "White-balance scene preset for the tele camera."
                     model: ["Incandescent", "Warm Fluorescent", "Fluorescent", "Sunlight", "Cloudy", "Shadow", "Twilight"]
                     onActivated: backend.setCameraParam(backend.selectedDeviceId, "wb_preset", currentText)
                     readonly property int liveIndex: {
@@ -679,6 +695,8 @@ Item {
                     visible: cameraPanel.teleSelected
                     enabled: root.commandEnabled("set_wb")
                     placeholderText: "Kelvin 2800–7500"
+                    accessibleName: "White-balance Kelvin"
+                    tooltip: "Color temperature in Kelvin (2800–7500). Overrides the scene preset."
                     readonly property string liveValue: {
                         const value = backend.selectedDevice.camera === "wide"
                             ? root.scopeTelemetry.wide_wb_value
@@ -701,18 +719,20 @@ Item {
                 RowLayout {
                     Layout.fillWidth: true
                     visible: cameraPanel.teleSelected
-                    HudField { id: liveBrightness; Layout.fillWidth: true; placeholderText: "bri"; enabled: root.commandEnabled("set_brightness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_brightness : root.scopeTelemetry.brightness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "brightness", value) } }
-                    HudField { id: liveContrast; Layout.fillWidth: true; placeholderText: "con"; enabled: root.commandEnabled("set_contrast"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_contrast : root.scopeTelemetry.contrast; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "contrast", value) } }
-                    HudField { id: liveSaturation; Layout.fillWidth: true; placeholderText: "sat"; enabled: root.commandEnabled("set_saturation"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_saturation : root.scopeTelemetry.saturation; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "saturation", value) } }
+                    HudField { id: liveBrightness; Layout.fillWidth: true; placeholderText: "bri"; accessibleName: "Brightness"; tooltip: "Image brightness."; enabled: root.commandEnabled("set_brightness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_brightness : root.scopeTelemetry.brightness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "brightness", value) } }
+                    HudField { id: liveContrast; Layout.fillWidth: true; placeholderText: "con"; accessibleName: "Contrast"; tooltip: "Image contrast."; enabled: root.commandEnabled("set_contrast"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_contrast : root.scopeTelemetry.contrast; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "contrast", value) } }
+                    HudField { id: liveSaturation; Layout.fillWidth: true; placeholderText: "sat"; accessibleName: "Saturation"; tooltip: "Image colour saturation."; enabled: root.commandEnabled("set_saturation"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_saturation : root.scopeTelemetry.saturation; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "saturation", value) } }
                 }
                 RowLayout {
                     Layout.fillWidth: true
                     visible: cameraPanel.teleSelected
-                    HudField { id: liveHue; Layout.fillWidth: true; placeholderText: "hue"; enabled: root.commandEnabled("set_hue"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_hue : root.scopeTelemetry.hue; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "hue", value) } }
-                    HudField { id: liveSharpness; Layout.fillWidth: true; placeholderText: "shp"; enabled: root.commandEnabled("set_sharpness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_sharpness : root.scopeTelemetry.sharpness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "sharpness", value) } }
+                    HudField { id: liveHue; Layout.fillWidth: true; placeholderText: "hue"; accessibleName: "Hue"; tooltip: "Image hue shift."; enabled: root.commandEnabled("set_hue"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_hue : root.scopeTelemetry.hue; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "hue", value) } }
+                    HudField { id: liveSharpness; Layout.fillWidth: true; placeholderText: "shp"; accessibleName: "Sharpness"; tooltip: "Image sharpening."; enabled: root.commandEnabled("set_sharpness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_sharpness : root.scopeTelemetry.sharpness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "sharpness", value) } }
                     HudCombo {
                         Layout.fillWidth: true
                         enabled: root.commandEnabled("set_stack_format")
+                        accessibleName: "Stack format"
+                        tooltip: "File format for stacked DSO frames: FITS or TIFF."
                         model: ["FITS", "TIFF"]
                         onActivated: backend.setCameraParam(backend.selectedDeviceId, "stack_format", String(currentIndex))
                     }
@@ -723,6 +743,8 @@ Item {
                     Layout.fillWidth: true
                     enabled: root.commandEnabled("set_count")
                     placeholderText: "frames"
+                    accessibleName: "Stack count"
+                    tooltip: "Number of frames to stack in DSO mode."
                     inputMethodHints: Qt.ImhDigitsOnly
                     property string appliedValue: ""
                     readonly property string liveValue: String(cameraPanel.captureDefaults.frame_count)
@@ -750,10 +772,19 @@ Item {
                 FieldLabel { text: "BURST / TIMELAPSE" }
                 RowLayout {
                     Layout.fillWidth: true
-                    HudField { Layout.fillWidth: true; placeholderText: "burst #"; enabled: root.commandEnabled("set_burst_count"); onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "burst_count", text) }
+                    HudField {
+                        Layout.fillWidth: true
+                        placeholderText: "burst #"
+                        accessibleName: "Burst count"
+                        tooltip: "Number of stills in a burst sequence."
+                        enabled: root.commandEnabled("set_burst_count")
+                        onEditingFinished: if (text.trim()) backend.setCameraParam(backend.selectedDeviceId, "burst_count", text)
+                    }
                     HudCombo {
                         Layout.fillWidth: true
                         enabled: root.commandEnabled("set_burst_interval")
+                        accessibleName: "Burst interval"
+                        tooltip: "Seconds between frames in a burst sequence."
                         model: ["1", "2", "3", "5", "10", "15", "20"]
                         onActivated: backend.setCameraParam(backend.selectedDeviceId, "burst_interval", currentText)
                     }
@@ -763,25 +794,36 @@ Item {
                     HudCombo {
                         Layout.fillWidth: true
                         enabled: root.commandEnabled("set_timelapse_interval")
+                        accessibleName: "Timelapse interval"
+                        tooltip: "Seconds between frames in a timelapse."
                         model: ["1", "2", "5", "10", "15", "30", "60"]
                         onActivated: backend.setCameraParam(backend.selectedDeviceId, "timelapse_interval", currentText)
                     }
                     HudCombo {
                         Layout.fillWidth: true
                         enabled: root.commandEnabled("set_timelapse_duration")
+                        accessibleName: "Timelapse duration"
+                        tooltip: "Total timelapse length in seconds."
                         model: ["30", "60", "120", "300", "600"]
                         onActivated: backend.setCameraParam(backend.selectedDeviceId, "timelapse_duration", currentText)
                     }
                 }
                 HudCheck {
-                    text: "Auto calibration (unconfirmed)"
+                    id: liveAutoCalibration
+                    text: "Auto calibration"
                     enabled: root.commandEnabled("set_auto_calibration")
+                    accessibleName: "Auto calibration"
+                    tooltip: "Automatically plate-solve (calibrate) before each DSO GOTO. The checkbox follows the telescope when that flag is reported."
+                    readonly property var liveRaw: root.scopeTelemetry.auto_calibration
+                    onLiveRawChanged: if (liveRaw === true || liveRaw === false) setOn(liveRaw === true)
+                    Component.onCompleted: if (liveRaw === true || liveRaw === false) setOn(liveRaw === true)
                     onClicked: backend.setCameraParam(backend.selectedDeviceId, "auto_calibration", checked ? "true" : "false")
                 }
                 FieldLabel { text: "MEDIA" }
                 HudButton {
                     text: "OPEN MEDIA"
                     Layout.fillWidth: true
+                    tooltip: "Open the Media page for this telescope's album."
                     onClicked: root.goToPage(root.mediaPageIndex)
                 }
             }
@@ -2415,9 +2457,7 @@ Item {
                         enabled: logList.count > 0
                         buttonColor: "transparent"
                         foregroundColor: Theme.textSecondary
-                        ToolTip.visible: hovered && logPanel.compactChrome
-                        ToolTip.delay: 400
-                        ToolTip.text: "COPY"
+                        tooltip: logPanel.compactChrome ? "COPY" : ""
                         onClicked: backend.copyText(root.allLogText())
                     }
                     HudButton {
@@ -2432,9 +2472,7 @@ Item {
                         enabled: logList.count > 0
                         buttonColor: "transparent"
                         foregroundColor: Theme.textSecondary
-                        ToolTip.visible: hovered && logPanel.compactChrome
-                        ToolTip.delay: 400
-                        ToolTip.text: "CLEAR"
+                        tooltip: logPanel.compactChrome ? "CLEAR" : ""
                         onClicked: backend.clearLog()
                     }
                 }
