@@ -908,6 +908,26 @@ Item {
                     Layout.fillHeight: true
                     Layout.preferredHeight: 0
                     property string previewDeviceId: backend.selectedDeviceId
+                    property bool previewEnhance: true
+                    property bool previewDeep: false
+                    function syncPreviewEnhanceFromTheme() {
+                        previewEnhance = Theme.enhanceImages
+                        previewDeep = Theme.deepCleanImages
+                    }
+                    function applyPreviewEnhance(on) {
+                        previewEnhance = !!on
+                        backend.setEnhanceImages(previewEnhance)
+                    }
+                    function applyPreviewDeep(on) {
+                        previewDeep = !!on
+                        backend.setDeepCleanImages(previewDeep)
+                    }
+                    Component.onCompleted: previewHost.syncPreviewEnhanceFromTheme()
+                    Connections {
+                        target: Theme
+                        function onEnhanceImagesChanged() { previewHost.syncPreviewEnhanceFromTheme() }
+                        function onDeepCleanImagesChanged() { previewHost.syncPreviewEnhanceFromTheme() }
+                    }
                     readonly property string statusText: {
                         if (root.scopeStopping)
                             return root.scopePendingDetail || "Stopping telescope activity"
@@ -1611,13 +1631,14 @@ Item {
                             visible: backend.previewStacking || previewHost.awaitingFirstStack
                             width: enhanceLabel.implicitWidth + 16
                             height: 28
-                            color: Theme.enhanceImages ? Theme.fillActive : Theme.panelFill
-                            border.color: Theme.enhanceImages ? Theme.accent : Theme.outline
+                            color: previewHost.previewEnhance ? Theme.fillActive : Theme.panelFill
+                            border.color: previewHost.previewEnhance ? Theme.accent : Theme.outline
+                            Accessible.name: previewHost.previewEnhance ? "Enhance on" : "Enhance off"
                             Text {
                                 id: enhanceLabel
                                 anchors.centerIn: parent
                                 text: "ENHANCE"
-                                color: Theme.enhanceImages ? Theme.accent : Theme.textSecondary
+                                color: previewHost.previewEnhance ? Theme.accent : Theme.textSecondary
                                 font.pixelSize: 11
                                 font.bold: true
                                 font.letterSpacing: 1
@@ -1627,20 +1648,21 @@ Item {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onContainsMouseChanged: previewHost.holdControls(containsMouse)
-                                onClicked: Theme.enhanceImages = !Theme.enhanceImages
+                                onClicked: previewHost.applyPreviewEnhance(!previewHost.previewEnhance)
                             }
                         }
                         Rectangle {
-                            visible: (backend.previewStacking || previewHost.awaitingFirstStack) && Theme.enhanceImages
+                            visible: (backend.previewStacking || previewHost.awaitingFirstStack) && previewHost.previewEnhance
                             width: deepLabel.implicitWidth + 16
                             height: 28
-                            color: Theme.deepCleanImages ? Theme.fillActive : Theme.panelFill
-                            border.color: Theme.deepCleanImages ? Theme.accent : Theme.outline
+                            color: previewHost.previewDeep ? Theme.fillActive : Theme.panelFill
+                            border.color: previewHost.previewDeep ? Theme.accent : Theme.outline
+                            Accessible.name: previewHost.previewDeep ? "Deep clean on" : "Deep clean off"
                             Text {
                                 id: deepLabel
                                 anchors.centerIn: parent
                                 text: "DEEP"
-                                color: Theme.deepCleanImages ? Theme.accent : Theme.textSecondary
+                                color: previewHost.previewDeep ? Theme.accent : Theme.textSecondary
                                 font.pixelSize: 11
                                 font.bold: true
                                 font.letterSpacing: 1
@@ -1650,7 +1672,7 @@ Item {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onContainsMouseChanged: previewHost.holdControls(containsMouse)
-                                onClicked: Theme.deepCleanImages = !Theme.deepCleanImages
+                                onClicked: previewHost.applyPreviewDeep(!previewHost.previewDeep)
                             }
                         }
                         Rectangle {

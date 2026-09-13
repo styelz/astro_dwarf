@@ -569,7 +569,7 @@ Item {
                                 onToggled: Theme.enhanceImages = checked
                                 accessibleName: "Enhance stacked frames"
                             }
-                            FieldHint { text: "Master switch for both filters below. It is the same setting as the ENHANCE badge over the live stack and the button in the Media viewer." }
+                            FieldHint { text: "Default for stacked views. The live-stack badges and Media viewer can switch Enhance or Deep for that view without changing this page." }
                             FieldLabel { text: "PROFILE" }
                             HudCombo {
                                 id: profileCombo
@@ -638,7 +638,7 @@ Item {
                         }
                         FieldHint {
                             visible: Theme.enhanceImages
-                            text: "Strength changes re-render the live stack and any open Media stack a moment after the slider stops."
+                            text: "Strength changes re-render any live stack or open Media stack that currently has Enhance on, a moment after the slider stops."
                         }
                         SettingGroup {
                             title: "WHERE IT APPLIES"
@@ -649,7 +649,7 @@ Item {
                                 dim: !Theme.enhanceImages
                                 Layout.preferredWidth: settingsPage.numberWidth
                             }
-                            FieldHint { text: "Stacked result shown on Control while the telescope is stacking. The plain live view is never filtered." }
+                            FieldHint { text: "Default for the stacked result on Control. The plain live view is never filtered. The Control badges can override this for the current view." }
                             FieldLabel { text: "MEDIA STACKS" }
                             HudChip {
                                 label: Theme.enhanceImages ? "FILTERED" : "AS CAPTURED"
@@ -657,7 +657,7 @@ Item {
                                 dim: !Theme.enhanceImages
                                 Layout.preferredWidth: settingsPage.numberWidth
                             }
-                            FieldHint { text: "Stacks from the telescope album and local *_stacked files opened in the Media viewer. Grid thumbnails stay raw." }
+                            FieldHint { text: "Default for stacks from the telescope album and local *_stacked files in the Media viewer. Grid thumbnails stay raw. The viewer buttons can override this while a stack is open." }
                             FieldLabel { text: "STILLS · VIDEO" }
                             HudChip {
                                 label: "AS CAPTURED"

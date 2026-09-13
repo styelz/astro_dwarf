@@ -447,10 +447,21 @@ Item {
         anchors.centerIn: Overlay.overlay
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: DialogFrame {}
-        readonly property bool enhanceOn: Theme.enhanceImages && Util.shouldEnhanceMedia(mediaPage.selected)
+        property bool viewEnhance: true
+        property bool viewDeep: false
+        readonly property bool enhanceOn: lightbox.viewEnhance && Util.shouldEnhanceMedia(mediaPage.selected)
         readonly property bool isVideo: Util.isVideoMedia(mediaPage.selected)
         readonly property string selectedKey: String((mediaPage.selected && mediaPage.selected.id) || "")
-        readonly property string enhanceProfile: Theme.deepCleanImages ? "deep" : "std"
+        readonly property string enhanceProfile: lightbox.viewDeep ? "deep" : "std"
+        function syncEnhanceFromTheme() {
+            viewEnhance = Theme.enhanceImages
+            viewDeep = Theme.deepCleanImages
+        }
+        Connections {
+            target: Theme
+            function onEnhanceImagesChanged() { lightbox.syncEnhanceFromTheme() }
+            function onDeepCleanImagesChanged() { lightbox.syncEnhanceFromTheme() }
+        }
         readonly property bool enhanceFailed: {
             backend.enhanceCacheGeneration
             return lightbox.enhanceOn && !lightbox.isVideo && !!lightbox.rawUrl && backend.mediaEnhanceFailed(lightbox.rawUrl, lightbox.enhanceProfile)
@@ -472,8 +483,8 @@ Item {
         property string heldCleanUrl: ""
         readonly property string cleanUrl: {
             lightbox.selectedKey
-            Theme.enhanceImages
-            Theme.deepCleanImages
+            lightbox.viewEnhance
+            lightbox.viewDeep
             Theme.enhanceDenoise
             Theme.enhanceSkyCrush
             backend.enhanceCacheGeneration
@@ -486,7 +497,11 @@ Item {
             clipPlayer.stop()
         }
         onClosed: clipPlayer.stop()
-        onOpened: if (lightbox.isVideo && clipPlayer.source !== "") clipPlayer.play()
+        onOpened: {
+            lightbox.syncEnhanceFromTheme()
+            if (lightbox.isVideo && clipPlayer.source !== "")
+                clipPlayer.play()
+        }
         onEnhanceOnChanged: if (!enhanceOn) heldCleanUrl = ""
         onCleanUrlChanged: if (cleanUrl !== "") heldCleanUrl = cleanUrl
         contentItem: ColumnLayout {
@@ -607,19 +622,19 @@ Item {
                         }
                         HudButton {
                             objectName: "lightboxEnhanceButton"
-                            text: Theme.enhanceImages ? "ENHANCE ON" : "ENHANCE OFF"
+                            text: lightbox.viewEnhance ? "ENHANCE ON" : "ENHANCE OFF"
                             visible: Util.shouldEnhanceMedia(mediaPage.selected)
-                            buttonColor: Theme.enhanceImages ? Theme.fillActive : Theme.inputBg
-                            foregroundColor: Theme.enhanceImages ? Theme.accent : Theme.textSecondary
-                            onClicked: Theme.enhanceImages = !Theme.enhanceImages
+                            buttonColor: lightbox.viewEnhance ? Theme.fillActive : Theme.inputBg
+                            foregroundColor: lightbox.viewEnhance ? Theme.accent : Theme.textSecondary
+                            onClicked: lightbox.viewEnhance = !lightbox.viewEnhance
                         }
                         HudButton {
                             objectName: "lightboxDeepButton"
-                            text: Theme.deepCleanImages ? "DEEP ON" : "DEEP CLEAN"
-                            visible: Util.shouldEnhanceMedia(mediaPage.selected) && Theme.enhanceImages
-                            buttonColor: Theme.deepCleanImages ? Theme.fillActive : Theme.inputBg
-                            foregroundColor: Theme.deepCleanImages ? Theme.accent : Theme.textSecondary
-                            onClicked: Theme.deepCleanImages = !Theme.deepCleanImages
+                            text: lightbox.viewDeep ? "DEEP ON" : "DEEP CLEAN"
+                            visible: Util.shouldEnhanceMedia(mediaPage.selected) && lightbox.viewEnhance
+                            buttonColor: lightbox.viewDeep ? Theme.fillActive : Theme.inputBg
+                            foregroundColor: lightbox.viewDeep ? Theme.accent : Theme.textSecondary
+                            onClicked: lightbox.viewDeep = !lightbox.viewDeep
                         }
                         HudButton {
                             text: "DOWNLOAD"
