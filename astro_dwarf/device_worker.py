@@ -732,6 +732,21 @@ def sdk_call(operation: str, *args: Any) -> Any:
         return send_without_response(message, 15001, 8)
     if operation == "set_focus":
         return _set_focus_position(int(args[0]))
+    if operation in {
+        "set_ir",
+        "set_count",
+        "set_exposure",
+        "set_gain",
+        "set_photo_exposure",
+        "set_photo_gain",
+    } and camera_param_unchanged(
+        operation,
+        args,
+        _tap.snapshot() if _tap is not None else {},
+        _device if isinstance(_device, dict) else {},
+    ):
+        log(f"{operation} already matches; skipping", "debug")
+        return True
     if operation == "set_ir" and args:
         _device["ir_filter"] = args[0]
     if operation == "set_count" and args:
@@ -1872,6 +1887,7 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
     """Start tele/wide/mosaic stacking, surfacing the real firmware reply.
 
     - Engine busy (GOTO/calibration still winding down): wait and retry.
+    - Tele camera closed after GO LIVE or a finished stack: open it and retry.
     - Missing or mismatched darks: warn, then CONTINUE SHOOTING like the
       official app; fall back to a forced start if that is refused.
     - Anything else: fail with the decoded error name and code.
@@ -1880,13 +1896,22 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
     label = name
     deadline = time.monotonic() + _CAPTURE_BUSY_TIMEOUT_S
     force_start = False
+    camera_retried = False
     _reset_session_capture()
     while True:
         since = time.monotonic()
         if _tap is not None:
             _tap.release_capture_progress()
         message = _capture_request(operation, args, force_start)
-        result = _send_request(operation, message, command, _MODULE_ASTRO, label)
+        try:
+            result = _send_request(operation, message, command, _MODULE_ASTRO, label)
+        except RuntimeError as exc:
+            if _camera_closed_error(exc) and not camera_retried:
+                camera_retried = True
+                log(f"{name}: tele camera was closed; opening it and retrying", "warning")
+                _reopen_astro_camera()
+                continue
+            raise
         if _stop.is_set():
             raise InterruptedError("Session stopped")
         # connect_socket returns the reply code (0 = accepted) or False; never
@@ -1903,6 +1928,11 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
                 raise RuntimeError(f"{name} failed: the telescope accepted the request but never started capturing")
         if code is None:
             raise RuntimeError(f"{name} failed: no reply from the telescope")
+        if code == CODE_CAMERA_TELE_CLOSED and not camera_retried:
+            camera_retried = True
+            log(f"{name}: tele camera was closed; opening it and retrying", "warning")
+            _reopen_astro_camera()
+            continue
         if code in _CAPTURE_BUSY_CODES:
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"{name} failed: {_error_name(code)}")
@@ -2367,15 +2397,19 @@ def _enter_astro_camera() -> Any:
     return True if result is not False else False
 
 
-def _ensure_astro_mode() -> Any:
+def _ensure_astro_mode(*, enter_camera: bool = True) -> Any:
     """Enter DSO mode (2) unless the telescope already reports it.
 
     Firmware mode 8 is Sun, not generic astro. SWITCH_SHOOTING_MODE(2)
     when already in mode 2 can stall the Dwarf 3 for the SDK's 150 s
-    timeout, so skip that switch. Still run ENTER_CAMERA so a later
-    session is not left with DSO mode on and the tele camera off.
+    timeout, so skip that switch. ENTER_CAMERA is kept on by default because
+    GO LIVE and a finished stack can leave DSO on with the tele camera off.
+    Manual STACK skips that reopen and retries on TELE_CLOSED instead.
     """
     if _tap is not None and _tap.snapshot().get("shooting_mode") == _ASTRO_SHOOTING_MODE:
+        if not enter_camera:
+            log("Already in DSO astro mode; skipping camera init", "debug")
+            return True
         log("Already in DSO astro mode; initializing camera", "debug")
         result = _enter_astro_camera()
     else:
@@ -2428,6 +2462,60 @@ def capture_handshake_needed(snapshot: dict[str, Any], tech: int) -> bool:
     mode = _shooting_int(snapshot.get("shooting_mode"))
     current = _shooting_int(snapshot.get("shooting_tech"))
     return not (mode == _PHOTO_SHOOTING_MODE and current == int(tech))
+
+
+def _param_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _param_camera(args: list[Any] | tuple[Any, ...]) -> str:
+    for value in reversed(args):
+        text = str(value or "").strip().lower()
+        if text in {"tele", "wide"}:
+            return text
+    return "tele"
+
+
+def _ir_name(value: Any) -> str:
+    return str(value or "").strip().lower().replace(" filter", "")
+
+
+def camera_param_unchanged(
+    operation: str,
+    args: list[Any] | tuple[Any, ...],
+    snapshot: dict[str, Any],
+    device: dict[str, Any],
+) -> bool:
+    """True when the firmware already has this exposure, gain, count, or IR."""
+    values = list(args or [])
+    snapshot = snapshot or {}
+    device = device or {}
+    if operation == "set_count":
+        wanted = _param_int(values[0] if values else None)
+        have = _param_int(device.get("frame_count"))
+        return wanted is not None and wanted == have
+    if operation == "set_ir":
+        wanted = _ir_name(values[0] if values else "")
+        have = _ir_name(device.get("ir_filter"))
+        return bool(wanted) and wanted == have
+    camera = _param_camera(values)
+    wide = camera == "wide"
+    if operation in {"set_exposure", "set_photo_exposure"}:
+        live = snapshot.get("wide_exposure_text" if wide else "exposure_text")
+        if live in (None, "", "—"):
+            return False
+        wanted = firmware_exposure_name(values[0] if values else "")
+        return wanted == firmware_exposure_name(live)
+    if operation in {"set_gain", "set_photo_gain"}:
+        wanted = _param_int(values[0] if values else None)
+        live = _param_int(snapshot.get("wide_gain" if wide else "gain"))
+        return wanted is not None and wanted == live
+    return False
 
 
 def _remember_shooting(
@@ -3037,7 +3125,7 @@ def _start_tracking(target_name: str = "") -> dict[str, Any]:
 
 def _start_manual_stack(camera: str = "") -> bool:
     """Start live stacking without waiting for the run to finish."""
-    if _ensure_astro_mode() is False:
+    if _ensure_astro_mode(enter_camera=False) is False:
         raise RuntimeError("Could not enter astro mode")
     choice = str(camera or _device.get("camera") or "tele").strip().lower()
     _device["camera"] = choice

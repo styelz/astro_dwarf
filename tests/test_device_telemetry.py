@@ -84,5 +84,31 @@ class PhotoCapturePrimeTests(unittest.TestCase):
         self.assertNotIn("photo_primed", shooting_state_changes({}, mode=1, tech=1))
 
 
+class CameraParamSkipTests(unittest.TestCase):
+    def test_skips_matching_exposure_gain_count_and_filter(self) -> None:
+        from astro_dwarf.device_worker import camera_param_unchanged
+
+        snap = {"exposure_text": "15", "gain": 80, "wide_exposure_text": "1", "wide_gain": 20}
+        device = {"frame_count": 60, "ir_filter": "VIS Filter"}
+        self.assertTrue(camera_param_unchanged("set_exposure", ["15", "3", "tele"], snap, device))
+        self.assertTrue(camera_param_unchanged("set_exposure", ["15.0", "3", "tele"], snap, device))
+        self.assertFalse(camera_param_unchanged("set_exposure", ["30", "3", "tele"], snap, device))
+        self.assertFalse(camera_param_unchanged("set_exposure", ["15", "3", "tele"], {"exposure_text": "—"}, device))
+        self.assertTrue(camera_param_unchanged("set_gain", [80, "tele"], snap, device))
+        self.assertTrue(camera_param_unchanged("set_gain", [20, "3", "wide"], snap, device))
+        self.assertFalse(camera_param_unchanged("set_gain", [40, "tele"], snap, device))
+        self.assertTrue(camera_param_unchanged("set_count", [60, "tele"], snap, device))
+        self.assertFalse(camera_param_unchanged("set_count", [40, "tele"], snap, device))
+        self.assertTrue(camera_param_unchanged("set_ir", ["VIS"], snap, device))
+        self.assertFalse(camera_param_unchanged("set_ir", ["Duo-Band Filter"], snap, device))
+
+    def test_wide_exposure_uses_wide_telemetry(self) -> None:
+        from astro_dwarf.device_worker import camera_param_unchanged
+
+        snap = {"exposure_text": "15", "wide_exposure_text": "1"}
+        self.assertTrue(camera_param_unchanged("set_exposure", ["1", "3", "wide"], snap, {}))
+        self.assertFalse(camera_param_unchanged("set_exposure", ["15", "3", "wide"], snap, {}))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -474,6 +474,27 @@ Item {
                 readonly property bool photoMode: shootingMode === "PHOTO"
                 readonly property bool dsoMode: shootingMode === "DSO"
                 readonly property var captureDefaults: Util.captureDefaults(backend.selectedDevice)
+                readonly property bool stackParamsReady: liveExposure.matchesDevice && liveGain.matchesDevice
+                    && liveStackCount.text.trim() !== "" && liveStackCount.text.trim() === liveStackCount.appliedValue
+                    && (!liveFilter.visible || liveFilter.currentText === liveFilter.appliedValue)
+                function applyPendingStackParams() {
+                    const id = backend.selectedDeviceId
+                    const exposure = liveExposure.text.trim()
+                    if (exposure && !liveExposure.matchesDevice)
+                        backend.setCameraParam(id, "exposure", exposure)
+                    const gain = liveGain.text.trim()
+                    if (gain && !liveGain.matchesDevice)
+                        backend.setCameraParam(id, "gain", gain)
+                    const count = liveStackCount.text.trim()
+                    if (count && count !== liveStackCount.appliedValue) {
+                        backend.setCameraParam(id, "count", count)
+                        liveStackCount.appliedValue = count
+                    }
+                    if (liveFilter.visible && liveFilter.currentText && liveFilter.currentText !== liveFilter.appliedValue) {
+                        backend.setCameraParam(id, "ir", liveFilter.currentText)
+                        liveFilter.appliedValue = liveFilter.currentText
+                    }
+                }
                 FieldLabel { text: "SHOOTING MODE · " + (cameraPanel.shootingMode === "—" ? "UNKNOWN" : cameraPanel.shootingMode) }
                 RowLayout {
                     Layout.fillWidth: true
@@ -560,7 +581,11 @@ Item {
                     visible: cameraPanel.teleSelected
                     enabled: root.commandEnabled("set_ir")
                     model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
-                    onActivated: backend.setCameraParam(backend.selectedDeviceId, "ir", currentText)
+                    property string appliedValue: ""
+                    onActivated: {
+                        backend.setCameraParam(backend.selectedDeviceId, "ir", currentText)
+                        appliedValue = currentText
+                    }
                 }
                 FieldLabel { text: "CAMERA" }
                 HudCombo {
@@ -583,14 +608,14 @@ Item {
                         Layout.fillWidth: true
                         enabled: root.cameraLiveEnabled
                         placeholderText: "sec"
-                        readonly property string liveValue: {
+                        readonly property string deviceValue: {
                             const value = backend.selectedDevice.camera === "wide"
                                 ? root.scopeTelemetry.wide_exposure_text
                                 : root.scopeTelemetry.exposure_text
-                            if (value && value !== "—")
-                                return String(value)
-                            return String(cameraPanel.captureDefaults.exposure_seconds)
+                            return value && value !== "—" ? String(value) : ""
                         }
+                        readonly property bool matchesDevice: text.trim() !== "" && deviceValue !== "" && text.trim() === deviceValue
+                        readonly property string liveValue: deviceValue || String(cameraPanel.captureDefaults.exposure_seconds)
                         onLiveValueChanged: if (!activeFocus) text = liveValue
                         Component.onCompleted: text = liveValue
                         onEditingFinished: {
@@ -608,14 +633,16 @@ Item {
                         Layout.fillWidth: true
                         enabled: root.commandEnabled("set_gain")
                         placeholderText: "gain"
-                        readonly property string liveValue: {
+                        readonly property string deviceValue: {
                             const value = backend.selectedDevice.camera === "wide"
                                 ? root.scopeTelemetry.wide_gain
                                 : root.scopeTelemetry.gain
                             if (value !== undefined && value !== null && String(value) !== "" && value !== "—")
                                 return String(value)
-                            return String(cameraPanel.captureDefaults.gain)
+                            return ""
                         }
+                        readonly property bool matchesDevice: text.trim() !== "" && deviceValue !== "" && text.trim() === deviceValue
+                        readonly property string liveValue: deviceValue || String(cameraPanel.captureDefaults.gain)
                         onLiveValueChanged: if (!activeFocus) text = liveValue
                         Component.onCompleted: text = liveValue
                         onEditingFinished: {
@@ -697,17 +724,27 @@ Item {
                     enabled: root.commandEnabled("set_count")
                     placeholderText: "frames"
                     inputMethodHints: Qt.ImhDigitsOnly
+                    property string appliedValue: ""
                     readonly property string liveValue: String(cameraPanel.captureDefaults.frame_count)
-                    onLiveValueChanged: if (!activeFocus) text = liveValue
-                    Component.onCompleted: text = liveValue
+                    onLiveValueChanged: if (!activeFocus) {
+                        text = liveValue
+                        if (appliedValue === "")
+                            appliedValue = liveValue
+                    }
+                    Component.onCompleted: {
+                        text = liveValue
+                        appliedValue = liveValue
+                    }
                     onEditingFinished: {
                         const value = text.trim()
                         if (!value) {
                             text = liveValue
                             return
                         }
-                        if (value !== liveValue)
+                        if (value !== appliedValue) {
                             backend.setCameraParam(backend.selectedDeviceId, "count", value)
+                            appliedValue = value
+                        }
                     }
                 }
                 FieldLabel { text: "BURST / TIMELAPSE" }
@@ -1773,6 +1810,7 @@ Item {
                                     : modelData.state !== "" && root.scopeActivity === modelData.state
                         readonly property string effectiveOperation: activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
                         readonly property bool photoPrimed: modelData.start === "photo" && !!t.photo_primed && cameraPanel.photoMode
+                        readonly property bool stackPrimed: modelData.start === "stack" && cameraPanel.dsoMode && cameraPanel.stackParamsReady
                         readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop)
                         readonly property string padLabel: {
                             if (!trackingPad)
@@ -1794,7 +1832,7 @@ Item {
                                 return "CALIBRATE · CENTRE · TRACK"
                             if (modelData.state === "imaging" && activeForState)
                                 return t.capture_text ? "STACK · " + t.capture_text : "STACKING · TAP TO STOP"
-                            if (photoPrimed)
+                            if (photoPrimed || stackPrimed)
                                 return "PRIMED"
                             if (!modeAllowed)
                                 return modelData.mode === "both" || cameraPanel.shootingMode === "—"
@@ -1838,21 +1876,13 @@ Item {
                         detail: deviceDetail()
                         activeState: activeForState
                         pending: isPending
-                        primed: photoPrimed
+                        primed: photoPrimed || stackPrimed
                         destructive: !!modelData.destructive
                         enabled: modeAllowed && root.commandEnabled(effectiveOperation)
-                        Accessible.description: photoPrimed ? "Photo capture primed for a fast shot" : String(modelData.detail || modelData.label)
+                        Accessible.description: photoPrimed ? "Photo capture primed for a fast shot" : stackPrimed ? "Stack settings already match the telescope" : String(modelData.detail || modelData.label)
                         onClicked: {
-                            if (effectiveOperation === "stack") {
-                                if (liveExposure.text.trim())
-                                    backend.setCameraParam(backend.selectedDeviceId, "exposure", liveExposure.text)
-                                if (liveGain.text.trim())
-                                    backend.setCameraParam(backend.selectedDeviceId, "gain", liveGain.text)
-                                if (liveStackCount.text.trim())
-                                    backend.setCameraParam(backend.selectedDeviceId, "count", liveStackCount.text)
-                                if (liveFilter.visible && liveFilter.currentText)
-                                    backend.setCameraParam(backend.selectedDeviceId, "ir", liveFilter.currentText)
-                            }
+                            if (effectiveOperation === "stack")
+                                cameraPanel.applyPendingStackParams()
                             root.requestDeviceAction(effectiveOperation, padLabel)
                         }
                         Connections {
