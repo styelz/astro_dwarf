@@ -16,6 +16,7 @@ Dialog {
     property string headingText: "CONFIRM COMMAND"
     property string confirmLabel: "CONFIRM"
     property var pendingIds: []
+    signal viewerCloseRequested()
     modal: true
     anchors.centerIn: Overlay.overlay
     width: 420
@@ -51,7 +52,7 @@ Dialog {
                     else if (confirmDialog.kind === "deleteDevice")
                         backend.deleteDevice((confirmDialog.pendingIds && confirmDialog.pendingIds[0]) || backend.selectedDeviceId)
                     else if (confirmDialog.kind === "deleteMedia") {
-                        mediaPage.closeViewer()
+                        confirmDialog.viewerCloseRequested()
                         backend.deleteMedia(confirmDialog.pendingIds)
                     }
                     else

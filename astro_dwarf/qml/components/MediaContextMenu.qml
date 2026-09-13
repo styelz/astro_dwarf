@@ -13,6 +13,7 @@ HudMenu {
     readonly property bool onDevice: backend.mediaSource !== "local"
     readonly property bool albumLocked: !!backend.mediaLocked && mediaContextMenu.onDevice
     readonly property bool mediaBusy: backend.mediaBusy !== ""
+    readonly property bool scopeOnline: !!(backend.selectedDevice && backend.selectedDevice.connected)
     signal openRequested(var item)
     signal downloadRequested(var item)
     signal deleteRequested(var item)
@@ -28,7 +29,7 @@ HudMenu {
     HudMenuItem {
         text: "Download"
         glyph: "\uE896"
-        enabled: mediaContextMenu.onDevice && !mediaContextMenu.albumLocked && !mediaContextMenu.mediaBusy && mediaContextMenu.itemId !== ""
+        enabled: mediaContextMenu.onDevice && !mediaContextMenu.albumLocked && !mediaContextMenu.mediaBusy && mediaContextMenu.scopeOnline && mediaContextMenu.itemId !== ""
         onTriggered: mediaContextMenu.downloadRequested(mediaContextMenu.itemData)
     }
     HudMenuItem {
@@ -72,7 +73,7 @@ HudMenu {
         text: "Delete"
         glyph: "\uE74D"
         destructive: true
-        enabled: !mediaContextMenu.albumLocked && !mediaContextMenu.mediaBusy && mediaContextMenu.itemId !== ""
+        enabled: !mediaContextMenu.albumLocked && !mediaContextMenu.mediaBusy && mediaContextMenu.itemId !== "" && (!mediaContextMenu.onDevice || mediaContextMenu.scopeOnline)
         onTriggered: mediaContextMenu.deleteRequested(mediaContextMenu.itemData)
     }
 }

@@ -731,6 +731,10 @@ class AppBackend(QObject):
         self._media_request_id = 0
         self._media_status = ""
         self._media_locked = False
+        self._media_download_queue: list[str] = []
+        self._media_download_batch = 0
+        self._media_download_ok = 0
+        self._media_download_failed = 0
         self._telemetry_tick = 0
         self._sessions_view: list[dict[str, Any]] | None = None
         self._upcoming_sessions_view: list[dict[str, Any]] | None = None
@@ -808,10 +812,13 @@ class AppBackend(QObject):
         self._enhance_job_token = {"tele": 0, "wide": 0}
         self._enhance_pool = QThreadPool(self)
         self._enhance_pool.setMaxThreadCount(1)
+        self._enhance_cache_pool = QThreadPool(self)
+        self._enhance_cache_pool.setMaxThreadCount(1)
         self._preview_enhance_signals = PreviewEnhanceSignals(self)
         self._preview_enhance_signals.finished.connect(self._on_preview_enhanced)
         self._enhance_cache_rev = 0
         self._enhance_inflight: set[str] = set()
+        self._enhance_failed: set[str] = set()
         self._cache_enhance_signals = CacheEnhanceSignals(self)
         self._cache_enhance_signals.finished.connect(self._on_enhance_cache_ready)
         self._shut_down = False
@@ -1830,6 +1837,10 @@ class AppBackend(QObject):
         if on == self._enhance_images:
             return
         self._enhance_images = on
+        if on:
+            self._enhance_failed.clear()
+            self._enhance_cache_rev += 1
+            self.enhanceCacheChanged.emit()
         self.enhanceImagesChanged.emit()
         self._refresh_preview_enhance()
 
@@ -1858,6 +1869,7 @@ class AppBackend(QObject):
 
     def _apply_enhance_levels(self) -> None:
         set_enhance_levels(self._enhance_denoise, self._enhance_sky_crush)
+        self._enhance_failed.clear()
         self._enhance_cache_rev += 1
         self.enhanceCacheChanged.emit()
         self._refresh_preview_enhance()
@@ -1912,13 +1924,24 @@ class AppBackend(QObject):
         key = enhance_cache_key(text, kind)
         dest = self._enhance_cache_dir() / f"{key}.jpg"
         if is_enhance_cache_valid(dest):
+            self._enhance_failed.discard(key)
             return QUrl.fromLocalFile(str(dest.resolve())).toString()
+        if key in self._enhance_failed:
+            return ""
         if key not in self._enhance_inflight:
             self._enhance_inflight.add(key)
-            self._enhance_pool.start(
+            self._enhance_cache_pool.start(
                 CacheEnhanceJob(key, text, "deep" if kind == "deep" else "standard", dest, self._cache_enhance_signals)
             )
         return ""
+
+    @Slot(str, str, result=bool)
+    def mediaEnhanceFailed(self, url: str, profile: str) -> bool:
+        text = canonical_image_url(str(url or "").strip()) or str(url or "").strip()
+        if not text:
+            return False
+        kind = "deep" if str(profile or "").strip().lower() == "deep" else "std"
+        return enhance_cache_key(text, kind) in self._enhance_failed
 
     @Slot(str, result=str)
     def mediaFileUrl(self, path: str) -> str:
@@ -1930,10 +1953,13 @@ class AppBackend(QObject):
         return folder
 
     def _on_enhance_cache_ready(self, key: str) -> None:
-        self._enhance_inflight.discard(str(key or ""))
-        dest = self._enhance_cache_dir() / f"{str(key or '')}.jpg"
-        if not is_enhance_cache_valid(dest):
-            return
+        key = str(key or "")
+        self._enhance_inflight.discard(key)
+        dest = self._enhance_cache_dir() / f"{key}.jpg"
+        if is_enhance_cache_valid(dest):
+            self._enhance_failed.discard(key)
+        else:
+            self._enhance_failed.add(key)
         self._enhance_cache_rev += 1
         self.enhanceCacheChanged.emit()
 
@@ -3835,11 +3861,19 @@ class AppBackend(QObject):
         self._media_selected_id = ""
         self._album_items = []
         self._album_busy = ""
+        self._media_download_queue = []
+        self._media_download_batch = 0
+        self._media_download_ok = 0
+        self._media_download_failed = 0
         self._media_status = str(status or "")
         self._emit_media(items=True)
 
     def _begin_media_request(self, device_id: str, source: str) -> int:
         self._media_request_id += 1
+        self._media_download_queue = []
+        self._media_download_batch = 0
+        self._media_download_ok = 0
+        self._media_download_failed = 0
         self._media_device_id = device_id
         self._media_source = source
         return self._media_request_id
@@ -3941,8 +3975,14 @@ class AppBackend(QObject):
 
     @Slot()
     def listLocalAlbum(self) -> None:
+        self._media_request_id += 1
+        self._media_download_queue = []
+        self._media_download_batch = 0
+        self._media_download_ok = 0
+        self._media_download_failed = 0
         self._media_source = "local"
         self._media_device_id = ""
+        self._set_media_busy("")
         items = [self._normalize_local_item(path) for path in self._local_album_paths().values()]
         self._replace_media_items(items, self._media_selected_id)
         self._set_media_status("" if items else "No downloaded files in the local album yet.")
@@ -4050,8 +4090,21 @@ class AppBackend(QObject):
     @Slot(str, str)
     def downloadMedia(self, device_id: str, item_id: str = "") -> None:
         chosen = str(item_id or self._media_selected_id or "").strip()
+        self._start_media_downloads(device_id, [chosen] if chosen else [])
+
+    @Slot(str, "QVariantList")
+    def downloadMediaItems(self, device_id: str, item_ids: list) -> None:
+        self._start_media_downloads(device_id, item_ids)
+
+    def _start_media_downloads(self, device_id: str, item_ids: Any) -> None:
+        ids = self._normalize_ids(item_ids)
+        if not ids:
+            return
+        if self._album_busy:
+            self._toast("Wait for the current media action to finish", "warning")
+            return
         if self._media_source == "local":
-            self._select_media_id(chosen)
+            self._select_media_id(ids[0])
             self._emit_media()
             return
         if self._media_device_id and self._media_device_id != device_id:
@@ -4061,6 +4114,53 @@ class AppBackend(QObject):
             self._media_locked = True
             self._toast("Can't download while the telescope is capturing", "warning")
             return
+        self._media_download_queue = ids[1:]
+        self._media_download_batch = len(ids)
+        self._media_download_ok = 0
+        self._media_download_failed = 0
+        self._download_media_item(device_id, ids[0])
+
+    def _continue_media_download(self, device_id: str) -> None:
+        if self._media_download_queue:
+            nxt = self._media_download_queue.pop(0)
+            self._download_media_item(device_id, nxt)
+            return
+        batch = self._media_download_batch
+        ok = self._media_download_ok
+        failed = self._media_download_failed
+        self._media_download_batch = 0
+        self._media_download_ok = 0
+        self._media_download_failed = 0
+        self._set_media_busy("")
+        if batch > 1:
+            if failed and ok:
+                self._toast(
+                    f"Downloaded {ok} file{'s' if ok != 1 else ''}, {failed} failed",
+                    "warning",
+                )
+            elif ok:
+                self._toast(f"Downloaded {ok} file{'s' if ok != 1 else ''}", "success")
+            elif failed:
+                self._toast("Download failed", "error")
+
+    def _note_media_download(self, ok: bool, success_text: str, detail: str = "") -> None:
+        if ok:
+            self._media_download_ok += 1
+            if self._media_download_batch <= 1:
+                self._toast(success_text, "success", detail)
+            return
+        self._media_download_failed += 1
+        if self._media_download_batch <= 1:
+            self._toast("Download failed", "error", detail)
+
+    def _download_media_item(self, device_id: str, item_id: str) -> None:
+        chosen = str(item_id or "").strip()
+        if self._session_is_capturing(device_id):
+            self._media_locked = True
+            self._media_download_queue = []
+            self._toast("Can't download while the telescope is capturing", "warning")
+            self._continue_media_download(device_id)
+            return
         item = next((entry for entry in self._media_items if entry.get("id") == chosen), None)
         remote = str((item or {}).get("file_path") or chosen)
         if self._media_source == "stills" and not self._is_device_media_path(remote):
@@ -4068,7 +4168,10 @@ class AppBackend(QObject):
             return
         worker = self._workers.get(device_id)
         if not worker or not remote:
-            self._toast("Nothing to download", "warning")
+            self._media_download_failed += 1
+            if self._media_download_batch <= 1:
+                self._toast("Nothing to download", "warning")
+            self._continue_media_download(device_id)
             return
         dest = str(self._album_dir())
         request_id = self._media_request_id
@@ -4078,7 +4181,6 @@ class AppBackend(QObject):
         def done(ok: bool, result: Any) -> None:
             if not self._media_request_current(request_id, device_id, source):
                 return
-            self._set_media_busy("")
             if ok and isinstance(result, dict) and result.get("path"):
                 self._album_path = str(result["path"])
                 local_url = self._media_file_url(self._album_path)
@@ -4100,10 +4202,11 @@ class AppBackend(QObject):
                     updated.append(entry)
                 self._media_items = updated
                 self._select_media_id(chosen)
-                self._toast("Downloaded", "success", Path(self._album_path).name)
+                self._note_media_download(True, "Downloaded", Path(self._album_path).name)
                 self._emit_media(items=True)
-                return
-            self._toast("Download failed", "error", str(result))
+            else:
+                self._note_media_download(False, "", str(result))
+            self._continue_media_download(device_id)
 
         worker.send("astro_session_download", {"args": [remote, dest]}, done)
 
@@ -4111,10 +4214,16 @@ class AppBackend(QObject):
     def downloadAlbumPhoto(self, device_id: str, name: str = "") -> None:
         worker = self._workers.get(device_id)
         if not worker:
+            self._media_download_failed += 1
+            if self._media_download_batch <= 1:
+                self._toast("Nothing to download", "warning")
+            self._continue_media_download(device_id)
             return
         if self._session_is_capturing(device_id):
             self._media_locked = True
+            self._media_download_queue = []
             self._toast("Can't download while the telescope is capturing", "warning")
+            self._continue_media_download(device_id)
             return
         device = self._device_by_id(device_id)
         camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
@@ -4126,7 +4235,6 @@ class AppBackend(QObject):
         def done(ok: bool, result: Any) -> None:
             if not self._media_request_current(request_id, device_id, source):
                 return
-            self._set_media_busy("")
             if ok and isinstance(result, dict) and result.get("path"):
                 self._album_path = str(result["path"])
                 chosen = str(result.get("file") or Path(self._album_path).name)
@@ -4150,10 +4258,11 @@ class AppBackend(QObject):
                     updated.insert(0, self._normalize_still_item(chosen, local_files))
                 self._media_items = updated
                 self._select_media_id(chosen)
-                self._toast("Photo downloaded", "success", chosen)
+                self._note_media_download(True, "Photo downloaded", chosen)
                 self._emit_media(items=True)
-                return
-            self._toast("Album download failed", "error", str(result))
+            else:
+                self._note_media_download(False, "", str(result))
+            self._continue_media_download(device_id)
 
         worker.send("album_download", {"args": [name, dest, camera]}, done)
 
@@ -5820,6 +5929,7 @@ class AppBackend(QObject):
         self._stack_result_timer.stop()
         self.stopPreview()
         self._enhance_pool.waitForDone(1500)
+        self._enhance_cache_pool.waitForDone(1500)
         self._tele_player.abort()
         self._wide_player.abort()
         set_live_frames(None)

@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from PySide6.QtCore import QEventLoop, QObject, QSize, Qt, QThreadPool, QTimer, QUrl, QRunnable, Signal
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QImageReader
 from PySide6.QtQuick import QQuickAsyncImageProvider, QQuickImageResponse, QQuickTextureFactory
 
 try:
@@ -116,10 +116,11 @@ def is_enhance_cache_valid(path: Path | str) -> bool:
             return False
     except OSError:
         return False
-    image = QImage(str(dest))
-    if image.isNull():
+    reader = QImageReader(str(dest))
+    size = reader.size()
+    if not size.isValid() or size.width() <= 0 or size.height() <= 0:
         return False
-    return max(image.width(), image.height()) <= _DISPLAY_EDGE + 2
+    return max(size.width(), size.height()) <= _DISPLAY_EDGE + 2
 
 
 def enhance_image(image: QImage, *, denoise: bool = True, profile: str = "standard") -> QImage:

@@ -11,6 +11,7 @@ RowLayout {
     property bool active: true
     property bool allowMove: false
     property bool allowEdit: true
+    property bool deleteEnabled: true
     property var sessionIds: []
     signal selectAllRequested()
     signal clearRequested()
@@ -55,7 +56,7 @@ RowLayout {
     }
     HudButton {
         text: selectionBar.selectedCount > 1 ? "DELETE " + selectionBar.selectedCount : "DELETE SELECTED"
-        enabled: selectionBar.selectedCount > 0
+        enabled: selectionBar.selectedCount > 0 && selectionBar.deleteEnabled
         implicitHeight: 28
         busyText: "DELETING…"
         buttonColor: Theme.fillDanger
