@@ -22,6 +22,8 @@ Item {
         : 0
     readonly property string secondsText: {
         const value = timer.displayedElapsed
+        if (timer.exposureSeconds > 0 && timer.exposureSeconds < 1)
+            return value.toFixed(2)
         if (timer.exposureSeconds > 0 && timer.exposureSeconds < 3)
             return value.toFixed(1)
         return String(Math.floor(value))

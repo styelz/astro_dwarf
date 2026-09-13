@@ -2103,7 +2103,7 @@ Item {
                     Text {
                         text: {
                             let label = stackTimer.framesText
-                            if (stackTimer.stacked > 0 && stackTimer.stacked !== stackTimer.current)
+                            if (stackTimer.current > 0 && stackTimer.stacked !== stackTimer.current)
                                 label += " · " + stackTimer.stacked + " OK"
                             return label
                         }
