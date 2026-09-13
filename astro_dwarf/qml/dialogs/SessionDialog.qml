@@ -540,7 +540,7 @@ Dialog {
         targetType.currentIndex = 0
         ra.text = ""
         dec.text = ""
-        startTime.text = day + "T22:00"
+        startTime.text = backend.nightTimelineIso(day, 10 * 60) || (day + "T22:00")
         sessionDialog.applyCaptureDefaults(sessionDialog.editingDeviceId)
         binning.currentIndex = 0
         irFilter.currentIndex = 0

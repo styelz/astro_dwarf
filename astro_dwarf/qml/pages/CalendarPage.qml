@@ -171,6 +171,13 @@ Item {
         const _keys = calendarPage.selectedDayKeys
         return calendarPage.sessionsForKeys(Object.keys(_keys || {}))
     }
+    readonly property int shownMonthSessionCount: {
+        const _sessions = backend.sessions
+        const _all = calendarPage.showAllDevices
+        const _device = backend.selectedDeviceId
+        const prefix = calendarPage.shownMonth.getFullYear() + "-" + String(calendarPage.shownMonth.getMonth() + 1).padStart(2, "0")
+        return backend.sessions.filter(item => calendarPage.matchesScope(item) && String(item.observing_date || "").indexOf(prefix) === 0).length
+    }
     readonly property var nightLayout: calendarPage.layoutNight(calendarPage.nightSessions)
     function nightDeviceIds(items) {
         const present = {}
@@ -280,6 +287,33 @@ Item {
             width: Math.max(28, laneW * span + laneGap * (span - 1))
         }
     }
+    function deviceConnected(deviceId) {
+        const devices = backend.devices || []
+        for (let i = 0; i < devices.length; i++) {
+            if (devices[i].id === deviceId)
+                return !!devices[i].connected
+        }
+        return false
+    }
+    function sessionRunEnabled(item) {
+        if (!item)
+            return false
+        if (item.status === "running")
+            return !root.sessionStopping(item)
+        return calendarPage.deviceConnected(item.device_id)
+    }
+    function sessionActualSeconds(item) {
+        backend.clockText
+        if (!item)
+            return 0
+        if (String(item.status || "") === "running" && item.actual_started_at) {
+            const started = Date.parse(item.actual_started_at)
+            const now = Number(calendarPage.observingNow().epoch_ms || 0)
+            if (started && now)
+                return Math.max(0, (now - started) / 1000)
+        }
+        return Number(item.actual_duration_seconds || 0)
+    }
     function deviceName(deviceId) {
         const devices = backend.devices || []
         for (let i = 0; i < devices.length; i++) {
@@ -320,10 +354,13 @@ Item {
     function nightKey() {
         return calendarPage.dateKey(calendarPage.selectedDate)
     }
-    function nightStartMs(key) {
-        if (!key || key === calendarPage.nightKey())
+    function nightStartMs(key, deviceId) {
+        const day = key || calendarPage.nightKey()
+        if (deviceId)
+            return Number(backend.nightStartEpochMs(day, deviceId))
+        if (!key || day === calendarPage.nightKey())
             return calendarPage.nightOriginMs
-        return Number(backend.nightStartEpochMs(key))
+        return Number(backend.nightStartEpochMs(day))
     }
     function timelineMinutes(timeText) {
         const bits = String(timeText || "00:00").split(":")
@@ -332,8 +369,8 @@ Item {
             minutes += 1440
         return minutes
     }
-    function timelineMinutesFromEpoch(epochMs, key) {
-        const start = calendarPage.nightStartMs(key)
+    function timelineMinutesFromEpoch(epochMs, key, deviceId) {
+        const start = calendarPage.nightStartMs(key, deviceId)
         if (!start)
             return 0
         return (Number(epochMs) - start) / 60000
@@ -355,8 +392,8 @@ Item {
             return -1
         return calendarPage.snapTimelineMinutes((local.y - DragCoordinator.grabOffsetY - nightTimeline.itemOffset) / nightTimeline.hourHeight * 60)
     }
-    function timelineDate(minutes) {
-        return backend.nightTimelineIso(calendarPage.nightKey(), calendarPage.snapTimelineMinutes(minutes))
+    function timelineDate(minutes, deviceId) {
+        return backend.nightTimelineIso(calendarPage.nightKey(), calendarPage.snapTimelineMinutes(minutes), deviceId || "")
     }
     function currentObservingKey() {
         return String(calendarPage.observingNow().observing_date || calendarPage.dateKey(new Date()))
@@ -433,6 +470,8 @@ Item {
             SplitView.minimumWidth: 420
             spacing: 10
             PageHeader {
+                id: calendarHeader
+                readonly property bool tight: width < 860
                 title: calendarPage.viewMode === 0
                     ? Qt.formatDate(calendarPage.shownMonth, "MMMM yyyy").toUpperCase()
                     : Qt.formatDate(calendarPage.selectedDate, "dddd d MMMM").toUpperCase()
@@ -447,20 +486,23 @@ Item {
                 HudButton { text: "NIGHT"; buttonColor: calendarPage.viewMode === 1 ? Theme.fillActive : Theme.surfaceHigh; foregroundColor: calendarPage.viewMode === 1 ? Theme.accent : Theme.textSecondary; onClicked: calendarPage.openNight(calendarPage.selectedDate) }
                 HudButton {
                     visible: (backend.devices || []).length > 1
-                    text: "ALL DEVICES"
+                    text: calendarHeader.tight ? "ALL" : "ALL DEVICES"
+                    Accessible.name: "All devices"
                     buttonColor: calendarPage.showAllDevices ? Theme.fillActive : Theme.surfaceHigh
                     foregroundColor: calendarPage.showAllDevices ? Theme.accent : Theme.textSecondary
                     onClicked: calendarPage.showAllDevices = true
                 }
                 HudButton {
                     visible: (backend.devices || []).length > 1
-                    text: "THIS DEVICE"
+                    text: calendarHeader.tight ? "THIS" : "THIS DEVICE"
+                    Accessible.name: "This device"
                     buttonColor: !calendarPage.showAllDevices ? Theme.fillActive : Theme.surfaceHigh
                     foregroundColor: !calendarPage.showAllDevices ? Theme.accent : Theme.textSecondary
                     onClicked: calendarPage.showAllDevices = false
                 }
                 HudButton {
                     text: "‹"; implicitWidth: 40
+                    Accessible.name: calendarPage.viewMode === 0 ? "Previous month" : "Previous night"
                     onClicked: {
                         if (calendarPage.viewMode === 0)
                             calendarPage.shownMonth = new Date(calendarPage.shownMonth.getFullYear(), calendarPage.shownMonth.getMonth() - 1, 1)
@@ -479,6 +521,7 @@ Item {
                 } }
                 HudButton {
                     text: "›"; implicitWidth: 40
+                    Accessible.name: calendarPage.viewMode === 0 ? "Next month" : "Next night"
                     onClicked: {
                         if (calendarPage.viewMode === 0)
                             calendarPage.shownMonth = new Date(calendarPage.shownMonth.getFullYear(), calendarPage.shownMonth.getMonth() + 1, 1)
@@ -489,7 +532,14 @@ Item {
                         }
                     }
                 }
-                HudButton { text: "+ NEW SESSION"; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: sessionDialog.openForDate(calendarPage.dateKey(calendarPage.selectedDate)) }
+                HudButton {
+                    text: calendarHeader.tight ? "+ NEW" : "+ NEW SESSION"
+                    Accessible.name: "New session"
+                    busyText: "OPENING…"
+                    buttonColor: Theme.fillActive
+                    foregroundColor: Theme.accent
+                    onClicked: sessionDialog.openForDate(calendarPage.dateKey(calendarPage.selectedDate))
+                }
             }
             SelectionBar {
                 active: calendarPage.viewMode === 1
@@ -515,191 +565,241 @@ Item {
             RowLayout {
                 visible: calendarPage.viewMode === 0
                 Layout.fillWidth: true
-                Repeater { model: ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]; Text { required property string modelData; text: modelData; color: Theme.accent; font.pixelSize: 11; font.bold: true; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter } }
+                Repeater { model: ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]; Text { required property string modelData; text: modelData; color: Theme.accent; font.pixelSize: Theme.fontSm; font.bold: true; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter } }
             }
-            GridLayout {
+            Item {
                 visible: calendarPage.viewMode === 0
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                columns: 7
-                rows: 6
-                rowSpacing: 5
-                columnSpacing: 5
-                Repeater {
-                    model: 42
-                    delegate: Rectangle {
-                        id: dayCell
-                        required property int index
-                        property date cellDate: {
-                            calendarPage.shownMonth
-                            const value = calendarPage.firstCellDate()
-                            value.setDate(value.getDate() + index)
-                            return value
-                        }
-                        property string key: calendarPage.dateKey(cellDate)
-                        property var daySessions: {
-                            const _sessions = backend.sessions
-                            const _all = calendarPage.showAllDevices
-                            const _device = backend.selectedDeviceId
-                            return calendarPage.sessionsForDay(dayCell.key)
-                        }
-                        readonly property bool isToday: key === calendarPage.currentObservingKey()
-                        readonly property bool isSelected: calendarPage.isDaySelected(key)
-                        readonly property bool inMonth: cellDate.getMonth() === calendarPage.shownMonth.getMonth()
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        radius: 3
-                        color: isSelected ? Theme.hsl(0.036, 0.640, 0.196, 0.753) : cellHover.hovered ? Theme.hsl(0.068, 0.517, 0.114, 0.690) : inMonth ? Theme.hsl(0.079, 0.517, 0.057, 0.600) : Theme.hsl(0.079, 0.517, 0.057, 0.333)
-                        border.color: dropArea.containsDrag ? Theme.accent : isSelected ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.7) : Theme.outline
-                        Behavior on color { ColorAnimation { duration: 120 } }
-                        HoverHandler { id: cellHover }
-                        Rectangle {
-                            // animated accent ring on tonight's cell
-                            anchors.fill: parent
-                            anchors.margins: 2
-                            radius: 3
-                            color: "transparent"
-                            border.color: Theme.accent
-                            border.width: 1
-                            visible: dayCell.isToday
-                            opacity: 0.6
-                            SequentialAnimation on opacity {
-                                running: dayCell.isToday && calendarPage.visible && calendarPage.viewMode === 0
-                                loops: Animation.Infinite
-                                NumberAnimation { to: 0.15; duration: 1500; easing.type: Easing.InOutSine }
-                                NumberAnimation { to: 0.8; duration: 1500; easing.type: Easing.InOutSine }
+                GridLayout {
+                    id: monthGrid
+                    anchors.fill: parent
+                    columns: 7
+                    rows: 6
+                    rowSpacing: 5
+                    columnSpacing: 5
+                    Repeater {
+                        id: monthDays
+                        model: 42
+                        delegate: Rectangle {
+                            id: dayCell
+                            required property int index
+                            property date cellDate: {
+                                calendarPage.shownMonth
+                                const value = calendarPage.firstCellDate()
+                                value.setDate(value.getDate() + index)
+                                return value
                             }
-                        }
-                        Text {
-                            anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 5
-                            visible: dayCell.isToday
-                            text: "TONIGHT"
-                            color: Theme.accent
-                            font.pixelSize: 7; font.bold: true; font.letterSpacing: 1
-                        }
-                        DropArea {
-                            id: dropArea
-                            anchors.fill: parent
-                            keys: ["session"]
-                            onDropped: drop => {
-                                const sid = DragCoordinator.dragSessionId(drop)
-                                if (!sid)
-                                    return
-                                backend.moveSessionDate(sid, dayCell.key)
-                                calendarPage.setSingleDay(dayCell.cellDate)
+                            property string key: calendarPage.dateKey(cellDate)
+                            property var daySessions: {
+                                const _sessions = backend.sessions
+                                const _all = calendarPage.showAllDevices
+                                const _device = backend.selectedDeviceId
+                                return calendarPage.sessionsForDay(dayCell.key)
                             }
-                        }
-                        Column {
-                            anchors.fill: parent
-                            anchors.margins: 6
-                            spacing: 3
-                            Text { text: dayCell.cellDate.getDate(); color: dayCell.isToday ? Theme.accent : dayCell.inMonth ? Theme.textPrimary : Theme.hsl(0.040, 0.262, 0.329); font.pixelSize: 11; font.bold: dayCell.isToday; font.family: Theme.fontMono }
-                            Repeater {
-                                id: chipRepeater
-                                model: dayCell.daySessions.slice(0, 3)
-                                delegate: Rectangle {
-                                    id: sessionChip
-                                    required property var modelData
-                                    property string sessionId: modelData.id
-                                    readonly property color deviceTone: Util.sessionTone(modelData)
-                                    width: parent.width
-                                    height: 22
-                                    radius: 2
-                                    color: Util.statusFill(modelData.status)
-                                    border.color: Qt.rgba(Util.statusColor(modelData.status).r, Util.statusColor(modelData.status).g, Util.statusColor(modelData.status).b, 0.55)
-                                    opacity: DragCoordinator.active && DragCoordinator.data.id === sessionId ? 0.35 : 1
-                                    Rectangle { x: 1; y: 1; width: 3; height: parent.height - 2; radius: 1; color: sessionChip.deviceTone }
-                                    Rectangle {
-                                        anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 3
-                                        width: 5; height: 5; radius: 2.5
-                                        color: Util.statusColor(modelData.status)
-                                        visible: String(modelData.status) !== "planned"
-                                    }
-                                    Text { anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 10; anchors.topMargin: 4; anchors.bottomMargin: 4; text: calendarPage.chipText(modelData); color: Theme.textPrimary; font.pixelSize: 9; elide: Text.ElideRight }
-                                    SessionDragArea {
-                                        dragItem: sessionChip.modelData
-                                        pressedAction: function() { calendarPage.setSingleDay(dayCell.cellDate) }
-                                        onEditRequested: session => sessionDialog.openExisting(session)
-                                    }
-                                    TapHandler { acceptedButtons: Qt.RightButton; onTapped: calendarPage.openSessionMenu(sessionChip.modelData, dayCell.daySessions) }
+                            readonly property bool isToday: key === calendarPage.currentObservingKey()
+                            readonly property bool isSelected: calendarPage.isDaySelected(key)
+                            readonly property bool inMonth: cellDate.getMonth() === calendarPage.shownMonth.getMonth()
+                            readonly property int chipLimit: {
+                                const inner = Math.max(0, height - 12)
+                                const dateH = 16
+                                const moreH = 14
+                                const chipH = 25
+                                let room = inner - dateH
+                                if (dayCell.daySessions.length <= 0)
+                                    return 0
+                                let n = Math.floor(room / chipH)
+                                if (dayCell.daySessions.length > n)
+                                    n = Math.floor((room - moreH) / chipH)
+                                return Math.max(0, n)
+                            }
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            radius: Theme.radius
+                            clip: true
+                            color: isSelected ? Theme.fillChecked : cellHover.hovered ? Theme.surfaceHigh : inMonth ? Theme.panelFill : Qt.rgba(Theme.panelFill.r, Theme.panelFill.g, Theme.panelFill.b, 0.35)
+                            border.color: dayCell.activeFocus || dropArea.containsDrag ? Theme.accent : isSelected ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.7) : Theme.outline
+                            border.width: dayCell.activeFocus ? 2 : 1
+                            Behavior on color { ColorAnimation { duration: Theme.quick } }
+                            HoverHandler { id: cellHover }
+                            activeFocusOnTab: true
+                            Accessible.role: Accessible.Button
+                            Accessible.name: {
+                                const n = dayCell.daySessions.length
+                                const label = Qt.formatDate(dayCell.cellDate, "dddd d MMMM")
+                                const extra = dayCell.isToday ? ", tonight" : ""
+                                if (!n)
+                                    return label + extra + ", no sessions"
+                                return label + extra + ", " + n + (n === 1 ? " session" : " sessions")
+                            }
+                            Keys.onReturnPressed: calendarPage.openNight(dayCell.cellDate)
+                            Keys.onSpacePressed: calendarPage.clickDay(dayCell.cellDate, Qt.NoModifier)
+                            Keys.onLeftPressed: if (index % 7 > 0) { const n = monthDays.itemAt(index - 1); if (n) n.forceActiveFocus() }
+                            Keys.onRightPressed: if (index % 7 < 6) { const n = monthDays.itemAt(index + 1); if (n) n.forceActiveFocus() }
+                            Keys.onUpPressed: if (index >= 7) { const n = monthDays.itemAt(index - 7); if (n) n.forceActiveFocus() }
+                            Keys.onDownPressed: if (index < 35) { const n = monthDays.itemAt(index + 7); if (n) n.forceActiveFocus() }
+                            Rectangle {
+                                // animated accent ring on tonight's cell
+                                anchors.fill: parent
+                                anchors.margins: 2
+                                radius: Theme.radius
+                                color: "transparent"
+                                border.color: Theme.accent
+                                border.width: 1
+                                visible: dayCell.isToday
+                                opacity: 0.6
+                                SequentialAnimation on opacity {
+                                    running: dayCell.isToday && calendarPage.visible && calendarPage.viewMode === 0
+                                    loops: Animation.Infinite
+                                    NumberAnimation { to: 0.15; duration: Theme.slow * 5; easing.type: Easing.InOutSine }
+                                    NumberAnimation { to: 0.8; duration: Theme.slow * 5; easing.type: Easing.InOutSine }
                                 }
                             }
                             Text {
-                                visible: dayCell.daySessions.length > 3
-                                text: "+" + (dayCell.daySessions.length - 3) + " more"
+                                anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 5
+                                visible: dayCell.isToday
+                                text: "TONIGHT"
                                 color: Theme.accent
-                                font.pixelSize: 9
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: (mouse) => calendarPage.clickDay(dayCell.cellDate, mouse.modifiers)
-                                    onDoubleClicked: calendarPage.openNight(dayCell.cellDate)
+                                font.pixelSize: Theme.fontXs; font.bold: true; font.letterSpacing: 1
+                            }
+                            DropArea {
+                                id: dropArea
+                                anchors.fill: parent
+                                keys: ["session"]
+                                onDropped: drop => {
+                                    const sid = DragCoordinator.dragSessionId(drop)
+                                    if (!sid)
+                                        return
+                                    backend.moveSessionDate(sid, dayCell.key)
+                                    calendarPage.setSingleDay(dayCell.cellDate)
                                 }
                             }
-                        }
-                        TapHandler {
-                            acceptedButtons: Qt.LeftButton
-                            acceptedModifiers: Qt.NoModifier
-                            onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.NoModifier)
-                            onDoubleTapped: (eventPoint) => calendarPage.openNightUnlessChip(dayCell.cellDate, chipRepeater, eventPoint)
-                        }
-                        TapHandler {
-                            acceptedButtons: Qt.LeftButton
-                            acceptedModifiers: Qt.ShiftModifier
-                            onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.ShiftModifier)
-                        }
-                        TapHandler {
-                            acceptedButtons: Qt.LeftButton
-                            acceptedModifiers: Qt.ControlModifier
-                            onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.ControlModifier)
-                        }
-                        TapHandler {
-                            acceptedButtons: Qt.LeftButton
-                            acceptedModifiers: Qt.MetaModifier
-                            onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.ControlModifier)
-                        }
-                        TapHandler {
-                            acceptedButtons: Qt.LeftButton
-                            acceptedModifiers: Qt.ShiftModifier | Qt.ControlModifier
-                            onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.ShiftModifier)
-                        }
-                        TapHandler {
-                            acceptedButtons: Qt.RightButton
-                            onTapped: dayMenu.popup()
-                        }
-                        HudMenu {
-                            id: dayMenu
-                            HudMenuItem {
-                                text: "New session on this date"
-                                glyph: "\uE710"
-                                onTriggered: {
-                                    calendarPage.selectedDate = dayCell.cellDate
-                                    if (!calendarPage.isDaySelected(dayCell.key)) {
-                                        const next = Object.assign({}, calendarPage.selectedDayKeys)
-                                        next[dayCell.key] = true
-                                        calendarPage.selectedDayKeys = next
+                            Column {
+                                anchors.fill: parent
+                                anchors.margins: 6
+                                spacing: 3
+                                Text { text: dayCell.cellDate.getDate(); color: dayCell.isToday ? Theme.accent : dayCell.inMonth ? Theme.textPrimary : Theme.muted; font.pixelSize: Theme.fontSm; font.bold: dayCell.isToday; font.family: Theme.fontMono }
+                                Repeater {
+                                    id: chipRepeater
+                                    model: dayCell.daySessions.slice(0, dayCell.chipLimit)
+                                    delegate: Rectangle {
+                                        id: sessionChip
+                                        required property var modelData
+                                        property string sessionId: modelData.id
+                                        readonly property color deviceTone: Util.sessionTone(modelData)
+                                        width: parent.width
+                                        height: 22
+                                        radius: 2
+                                        color: Util.statusFill(modelData.status)
+                                        border.color: Qt.rgba(Util.statusColor(modelData.status).r, Util.statusColor(modelData.status).g, Util.statusColor(modelData.status).b, 0.55)
+                                        opacity: DragCoordinator.active && DragCoordinator.data.id === sessionId ? 0.35 : 1
+                                        Accessible.name: calendarPage.chipText(modelData)
+                                        Rectangle { x: 1; y: 1; width: 3; height: parent.height - 2; radius: 1; color: sessionChip.deviceTone }
+                                        Rectangle {
+                                            anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 3
+                                            width: 5; height: 5; radius: 2.5
+                                            color: Util.statusColor(modelData.status)
+                                            visible: String(modelData.status) !== "planned"
+                                        }
+                                        Text { anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 10; anchors.topMargin: 4; anchors.bottomMargin: 4; text: calendarPage.chipText(modelData); color: Theme.textPrimary; font.pixelSize: Theme.fontXs; elide: Text.ElideRight }
+                                        SessionDragArea {
+                                            dragItem: sessionChip.modelData
+                                            pressedAction: function() { calendarPage.setSingleDay(dayCell.cellDate) }
+                                            onEditRequested: session => sessionDialog.openExisting(session)
+                                        }
+                                        TapHandler { acceptedButtons: Qt.RightButton; onTapped: calendarPage.openSessionMenu(sessionChip.modelData, dayCell.daySessions) }
                                     }
-                                    sessionDialog.openForDate(dayCell.key)
+                                }
+                                Text {
+                                    visible: dayCell.daySessions.length > dayCell.chipLimit
+                                    text: dayCell.chipLimit > 0
+                                          ? "+" + (dayCell.daySessions.length - dayCell.chipLimit) + " more"
+                                          : dayCell.daySessions.length + (dayCell.daySessions.length === 1 ? " session" : " sessions")
+                                    color: Theme.accent
+                                    font.pixelSize: Theme.fontXs
+                                    elide: Text.ElideRight
+                                    width: parent.width
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: (mouse) => calendarPage.clickDay(dayCell.cellDate, mouse.modifiers)
+                                        onDoubleClicked: calendarPage.openNight(dayCell.cellDate)
+                                    }
                                 }
                             }
-                            HudMenuSeparator {}
-                            HudMenuItem {
-                                text: "Select all"
-                                glyph: "\uE8A5"
-                                enabled: dayCell.daySessions.length > 0
-                                onTriggered: calendarPage.selectedIds = Util.idSetAll(dayCell.daySessions, true)
+                            TapHandler {
+                                acceptedButtons: Qt.LeftButton
+                                acceptedModifiers: Qt.NoModifier
+                                onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.NoModifier)
+                                onDoubleTapped: (eventPoint) => calendarPage.openNightUnlessChip(dayCell.cellDate, chipRepeater, eventPoint)
                             }
-                            HudMenuItem {
-                                text: "Unselect all"
-                                glyph: "\uE711"
-                                enabled: calendarPage.selectedCount > 0
-                                onTriggered: {
-                                    calendarPage.selectedIds = ({})
-                                    calendarPage.selectionAnchorId = ""
+                            TapHandler {
+                                acceptedButtons: Qt.LeftButton
+                                acceptedModifiers: Qt.ShiftModifier
+                                onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.ShiftModifier)
+                            }
+                            TapHandler {
+                                acceptedButtons: Qt.LeftButton
+                                acceptedModifiers: Qt.ControlModifier
+                                onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.ControlModifier)
+                            }
+                            TapHandler {
+                                acceptedButtons: Qt.LeftButton
+                                acceptedModifiers: Qt.MetaModifier
+                                onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.ControlModifier)
+                            }
+                            TapHandler {
+                                acceptedButtons: Qt.LeftButton
+                                acceptedModifiers: Qt.ShiftModifier | Qt.ControlModifier
+                                onTapped: calendarPage.clickDay(dayCell.cellDate, Qt.ShiftModifier)
+                            }
+                            TapHandler {
+                                acceptedButtons: Qt.RightButton
+                                onTapped: dayMenu.popup()
+                            }
+                            HudMenu {
+                                id: dayMenu
+                                HudMenuItem {
+                                    text: "New session on this date"
+                                    glyph: "\uE710"
+                                    onTriggered: {
+                                        calendarPage.selectedDate = dayCell.cellDate
+                                        if (!calendarPage.isDaySelected(dayCell.key)) {
+                                            const next = Object.assign({}, calendarPage.selectedDayKeys)
+                                            next[dayCell.key] = true
+                                            calendarPage.selectedDayKeys = next
+                                        }
+                                        sessionDialog.openForDate(dayCell.key)
+                                    }
+                                }
+                                HudMenuSeparator {}
+                                HudMenuItem {
+                                    text: "Select all"
+                                    glyph: "\uE8A5"
+                                    enabled: dayCell.daySessions.length > 0
+                                    onTriggered: calendarPage.selectedIds = Util.idSetAll(dayCell.daySessions, true)
+                                }
+                                HudMenuItem {
+                                    text: "Unselect all"
+                                    glyph: "\uE711"
+                                    enabled: calendarPage.selectedCount > 0
+                                    onTriggered: {
+                                        calendarPage.selectedIds = ({})
+                                        calendarPage.selectionAnchorId = ""
+                                    }
                                 }
                             }
                         }
                     }
+                }
+                EmptyHint {
+                    anchors.centerIn: parent
+                    glyph: "☾"
+                    enabled: false
+                    visible: calendarPage.shownMonthSessionCount === 0
+                    text: calendarPage.showAllDevices
+                          ? "Nothing scheduled this month. Drop a session onto a night, or create a new one."
+                          : "Nothing scheduled on this telescope this month."
                 }
             }
             Item {
@@ -719,7 +819,7 @@ Item {
                     const items = calendarPage.nightSessions
                     let lo = 1440
                     for (let i = 0; i < items.length; i++)
-                        lo = Math.min(lo, calendarPage.timelineMinutesFromEpoch(items[i].start_epoch_ms))
+                        lo = Math.min(lo, calendarPage.timelineMinutesFromEpoch(items[i].start_epoch_ms, calendarPage.nightKey(), items[i].device_id))
                     return Math.max(0, Math.min(1440, lo))
                 }
                 function autoFit() {
@@ -733,8 +833,8 @@ Item {
                     let lo = 1440
                     let hi = 0
                     for (let i = 0; i < items.length; i++) {
-                        lo = Math.min(lo, calendarPage.timelineMinutesFromEpoch(items[i].start_epoch_ms))
-                        hi = Math.max(hi, calendarPage.timelineMinutesFromEpoch(calendarPage.sessionEndMs(items[i])))
+                        lo = Math.min(lo, calendarPage.timelineMinutesFromEpoch(items[i].start_epoch_ms, calendarPage.nightKey(), items[i].device_id))
+                        hi = Math.max(hi, calendarPage.timelineMinutesFromEpoch(calendarPage.sessionEndMs(items[i]), calendarPage.nightKey(), items[i].device_id))
                     }
                     const hours = Math.max(1, (Math.min(1440, hi) - Math.max(0, lo)) / 60) + 1
                     nightTimeline.hourHeight = Math.max(nightTimeline.minHourHeight, Math.min(nightTimeline.maxHourHeight, timelineFlick.height / hours))
@@ -841,9 +941,12 @@ Item {
                                         font.pixelSize: Theme.fontSm
                                         font.bold: true
                                         font.letterSpacing: Theme.tracking1
+                                        elide: Text.ElideRight
+                                        width: Math.max(20, columnHead.width - 18 - countLabel.implicitWidth)
                                         anchors.verticalCenter: parent.verticalCenter
                                     }
                                     Text {
+                                        id: countLabel
                                         text: columnHead.count + (columnHead.count === 1 ? " session" : " sessions")
                                         color: Theme.textSecondary
                                         font.pixelSize: Theme.fontXs
@@ -888,7 +991,7 @@ Item {
                                 const minutes = calendarPage.timelineMinutesFromPos(DragCoordinator.pos)
                                 if (minutes < 0)
                                     return
-                                backend.moveSessionStart(sid, calendarPage.timelineDate(minutes))
+                                backend.moveSessionStart(sid, calendarPage.timelineDate(minutes, DragCoordinator.data.device_id))
                             }
                         }
                         Repeater {
@@ -923,7 +1026,7 @@ Item {
                                     x: 4; y: -7; width: nightTimeline.gutterWidth - 8
                                     text: String((calendarPage.cutoffHour + index) % 24).padStart(2, "0") + ":00"
                                     color: Theme.textSecondary
-                                    font.pixelSize: 10
+                                    font.pixelSize: Theme.fontSm
                                     font.family: Theme.fontMono
                                 }
                                 Rectangle {
@@ -948,29 +1051,30 @@ Item {
                                 }
                                 x: slot.x
                                 y: {
-                                    const minutes = Math.max(0, Math.min(1435, calendarPage.timelineMinutesFromEpoch(modelData.start_epoch_ms)))
+                                    const minutes = Math.max(0, Math.min(1435, calendarPage.timelineMinutesFromEpoch(modelData.start_epoch_ms, calendarPage.nightKey(), modelData.device_id)))
                                     return minutes / 60 * nightTimeline.hourHeight + nightTimeline.itemOffset
                                 }
                                 width: slot.width
                                 height: Math.max(26, calendarPage.sessionSpanSeconds(modelData) / 3600 * nightTimeline.hourHeight - 4)
                                 readonly property bool tight: height < 44
                                 readonly property bool narrow: width < 210
-                                radius: 3
+                                radius: Theme.radius
                                 clip: true
                                 color: Util.statusFill(modelData.status)
                                 border.color: Util.statusColor(modelData.status)
                                 border.width: 1
                                 opacity: DragCoordinator.active && DragCoordinator.data.id === sessionId ? 0.35 : 0.96
+                                Accessible.name: (modelData.start_time || "") + " " + calendarPage.sessionLabel(modelData) + (modelData.status && modelData.status !== "planned" ? " " + modelData.status : "")
                                 Rectangle {
                                     anchors.left: parent.left
                                     anchors.right: parent.right
                                     anchors.top: parent.top
                                     height: {
                                         const planned = calendarPage.sessionSpanSeconds(timelineSession.modelData)
-                                        const actual = Number(timelineSession.modelData.actual_duration_seconds || 0)
-                                        if (planned <= 0 || actual <= 0 || actual >= planned)
+                                        const actual = calendarPage.sessionActualSeconds(timelineSession.modelData)
+                                        if (planned <= 0 || actual <= 0)
                                             return 0
-                                        return Math.max(2, timelineSession.height * actual / planned)
+                                        return Math.max(2, timelineSession.height * Math.min(1, actual / planned))
                                     }
                                     color: Util.statusColor(timelineSession.modelData.status)
                                     opacity: 0.28
@@ -1008,8 +1112,8 @@ Item {
                                         RowLayout {
                                             Layout.fillWidth: true
                                             spacing: timelineSession.narrow ? 5 : 8
-                                            Text { text: modelData.start_time; color: Theme.accent; font.family: Theme.fontMono; font.pixelSize: timelineSession.narrow ? 10 : 12; font.bold: true }
-                                            Text { text: calendarPage.sessionLabel(modelData); color: Theme.textPrimary; font.pixelSize: timelineSession.narrow ? 11 : 13; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                            Text { text: modelData.start_time; color: Theme.accent; font.family: Theme.fontMono; font.pixelSize: timelineSession.narrow ? Theme.fontSm : Theme.fontMd; font.bold: true }
+                                            Text { text: calendarPage.sessionLabel(modelData); color: Theme.textPrimary; font.pixelSize: timelineSession.narrow ? Theme.fontSm : Theme.fontBase; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                             StatusChip { status: modelData.status; visible: modelData.status !== "planned" && timelineSession.width > 200 }
                                         }
                                         Text {
@@ -1018,18 +1122,19 @@ Item {
                                                 return calendarPage.sessionDetail(modelData, extra)
                                             }
                                             color: Theme.textSecondary
-                                            font.pixelSize: 10
+                                            font.pixelSize: Theme.fontSm
                                             visible: !timelineSession.tight
                                             elide: Text.ElideRight
                                             Layout.fillWidth: true
                                         }
                                     }
-                                    HudButton { text: "EDIT"; implicitHeight: 24; visible: !timelineSession.tight && timelineSession.width > 260; onClicked: sessionDialog.openExisting(timelineSession.modelData) }
+                                    HudButton { text: "EDIT"; implicitHeight: 24; visible: !timelineSession.tight && timelineSession.width > 260; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(timelineSession.modelData) }
                                     HudButton {
                                         text: modelData.status === "running" ? "STOP" : "RUN"
                                         implicitHeight: 24
                                         visible: !timelineSession.tight && timelineSession.width > 260
-                                        enabled: modelData.status !== "running" || !root.sessionStopping(modelData)
+                                        enabled: calendarPage.sessionRunEnabled(modelData)
+                                        tooltip: modelData.status === "running" || calendarPage.deviceConnected(modelData.device_id) ? "" : "Connect the telescope to run"
                                         busy: root.sessionStopping(modelData)
                                         busyText: modelData.status === "running" ? "STOPPING…" : "STARTING…"
                                         busyMs: modelData.status === "running" ? 0 : 1400
@@ -1058,7 +1163,7 @@ Item {
                                     : calendarPage.timelineMinutes(String(backend.clockText).substring(0, 5))
                                 return minutes / 60 * nightTimeline.hourHeight
                             }
-                            Text { anchors.right: parent.right; anchors.bottom: parent.top; text: "NOW"; color: Theme.warning; font.pixelSize: 9; font.bold: true }
+                            Text { anchors.right: parent.right; anchors.bottom: parent.top; text: "NOW"; color: Theme.warning; font.pixelSize: Theme.fontXs; font.bold: true }
                         }
                         Rectangle {
                             visible: DragCoordinator.active && DragCoordinator.previewMinutes >= 0
@@ -1073,7 +1178,7 @@ Item {
                                 anchors.bottom: parent.top
                                 text: DragCoordinator.previewTime
                                 color: Theme.accent
-                                font.pixelSize: 11
+                                font.pixelSize: Theme.fontSm
                                 font.bold: true
                                 font.family: Theme.fontMono
                             }
@@ -1098,7 +1203,7 @@ Item {
                                 text: DragCoordinator.previewTime
                                 color: Theme.accent
                                 font.family: Theme.fontMono
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontMd
                                 font.bold: true
                             }
                         }
@@ -1183,7 +1288,8 @@ Item {
                     id: daySessionInsert
                     anchors.fill: parent
                     targetList: daySessionList
-                    rowHeight: 64
+                    rowHeight: 76
+                    observingDate: calendarPage.selectedDayCount <= 1 ? calendarPage.dateKey(calendarPage.selectedDate) : ""
                     ListView {
                         id: daySessionList
                         anchors.fill: parent
@@ -1198,11 +1304,12 @@ Item {
                             required property var modelData
                             property string sessionId: modelData.id
                             width: ListView.view.width
-                            height: 64
-                            radius: 3
+                            height: 76
+                            radius: Theme.radius
                             color: Util.statusFill(modelData.status)
                             border.color: Qt.rgba(Util.statusColor(modelData.status).r, Util.statusColor(modelData.status).g, Util.statusColor(modelData.status).b, 0.5)
                             opacity: DragCoordinator.active && DragCoordinator.data.id === sessionId ? 0.35 : 1
+                            Accessible.name: calendarPage.sessionWhenText(modelData) + " " + calendarPage.sessionLabel(modelData)
                             SessionDragArea {
                                 dragItem: daySessionRow.modelData
                                 onEditRequested: session => sessionDialog.openExisting(session)
@@ -1231,18 +1338,19 @@ Item {
                                 RowLayout {
                                     Layout.fillWidth: true
                                     spacing: 6
-                                    Text { text: calendarPage.sessionWhenText(modelData); color: Theme.accent; font.pixelSize: 12; font.bold: true; font.family: Theme.fontMono }
-                                    Text { text: calendarPage.sessionLabel(modelData); color: Theme.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                    Text { text: calendarPage.sessionWhenText(modelData); color: Theme.accent; font.pixelSize: Theme.fontMd; font.bold: true; font.family: Theme.fontMono }
+                                    Text { text: calendarPage.sessionLabel(modelData); color: Theme.textPrimary; font.pixelSize: Theme.fontMd; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                     StatusChip { status: modelData.status; visible: modelData.status !== "planned" }
                                 }
-                                Text { text: calendarPage.sessionDetail(modelData, modelData.subtitle + " · " + modelData.duration_text); color: Theme.textSecondary; font.pixelSize: 10; elide: Text.ElideRight; Layout.fillWidth: true }
+                                Text { text: calendarPage.sessionDetail(modelData, modelData.subtitle + " · " + modelData.duration_text); color: Theme.textSecondary; font.pixelSize: Theme.fontSm; elide: Text.ElideRight; Layout.fillWidth: true }
                                 RowLayout {
                                     HudButton { text: "EDIT"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: sessionDialog.openExisting(modelData) }
                                     HudButton { text: "RESET"; implicitHeight: 24; visible: Util.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
                                     HudButton {
                                         text: modelData.status === "running" ? "STOP" : "RUN"
                                         implicitHeight: 24
-                                        enabled: modelData.status !== "running" || !root.sessionStopping(modelData)
+                                        enabled: calendarPage.sessionRunEnabled(modelData)
+                                        tooltip: modelData.status === "running" || calendarPage.deviceConnected(modelData.device_id) ? "" : "Connect the telescope to run"
                                         busy: root.sessionStopping(modelData)
                                         busyText: modelData.status === "running" ? "STOPPING…" : "STARTING…"
                                         busyMs: modelData.status === "running" ? 0 : 1400

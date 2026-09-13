@@ -11,6 +11,14 @@ Item {
     property var pressedAction: null
     signal editRequested(var session)
     readonly property bool canEdit: String((dragItem && dragItem.status) || "") !== "running"
+    Accessible.role: Accessible.Button
+    Accessible.name: {
+        const item = root.dragItem || {}
+        const when = item.start_time || ""
+        const label = item.pane_name || item.target_name || "Session"
+        return (when ? when + " " : "") + label
+    }
+    Accessible.description: root.canEdit ? "Drag to reschedule, double-click to edit" : "Running"
 
     TapHandler {
         parent: root.parent

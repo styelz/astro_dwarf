@@ -9,6 +9,7 @@ DropArea {
     id: insertDrop
     required property var targetList
     required property real rowHeight
+    property string observingDate: ""
     keys: ["session"]
     Component.onCompleted: DragCoordinator.registerDropArea(insertDrop)
     Component.onDestruction: DragCoordinator.unregisterDropArea(insertDrop)
@@ -81,7 +82,7 @@ DropArea {
 
     onDropped: drop => {
         drop.accept()
-        DragCoordinator.reorderFromInsert(insertDrop.targetList, insertDrop.insertIndex, DragCoordinator.data)
+        DragCoordinator.reorderFromInsert(insertDrop.targetList, insertDrop.insertIndex, DragCoordinator.data, insertDrop.observingDate)
     }
 
     Rectangle {

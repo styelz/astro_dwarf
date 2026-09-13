@@ -90,12 +90,14 @@ QtObject {
             return model[index]
         return null
     }
-    function reorderFromInsert(list, insertIndex, source) {
-        if (!list || !source || !source.id || insertIndex < 0)
+    function reorderFromInsert(list, insertIndex, source, observingDate) {
+        if (!source || !source.id || insertIndex < 0)
             return
-        if (String(source.status || "").toLowerCase() !== "planned")
+        if (String(source.status || "").toLowerCase() !== "planned") {
+            backend.reorderPlanned(String(source.id), "")
             return
-        const count = list.count
+        }
+        const count = list ? list.count : 0
         let from = -1
         for (let i = 0; i < count; i++) {
             const row = coord.listRowAt(list, i)
@@ -104,7 +106,7 @@ QtObject {
                 break
             }
         }
-        if (from >= 0 && (insertIndex === from || insertIndex === from + 1))
+        if (from >= 0 && (insertIndex === from || insertIndex === from + 1) && count > 0)
             return
         let beforeId = ""
         for (let i = Math.max(0, insertIndex); i < count; i++) {
@@ -118,7 +120,14 @@ QtObject {
             beforeId = String(target.id)
             break
         }
-        backend.reorderPlanned(String(source.id), beforeId)
+        let night = String(observingDate || "")
+        if (!beforeId) {
+            const prevIdx = Math.min(insertIndex, count) - 1
+            const neighbor = coord.listRowAt(list, prevIdx >= 0 ? prevIdx : 0)
+            if (neighbor && neighbor.observing_date)
+                night = String(neighbor.observing_date)
+        }
+        backend.reorderPlanned(String(source.id), beforeId, night)
     }
     function dropAreaShown(item) {
         for (let node = item; node; node = node.parent) {
@@ -136,7 +145,7 @@ QtObject {
             const local = area.mapFromItem(coord.contentItem, position.x, position.y)
             if (local.x < 0 || local.y < 0 || local.x > area.width || local.y > area.height)
                 continue
-            return { list: area.targetList, index: area.indexAtY(local.y) }
+            return { list: area.targetList, index: area.indexAtY(local.y), observingDate: area.observingDate || "" }
         }
         return null
     }
@@ -147,7 +156,7 @@ QtObject {
         if (target) {
             coord.cancelDrag()
             Qt.callLater(function() {
-                coord.reorderFromInsert(target.list, target.index, source)
+                coord.reorderFromInsert(target.list, target.index, source, target.observingDate)
             })
             return
         }

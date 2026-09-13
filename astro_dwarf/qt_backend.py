@@ -4872,6 +4872,9 @@ class AppBackend(QObject):
         if not device.location_configured:
             self._toast("Choose an observing location before running a session", "warning")
             return
+        if not worker.connected:
+            self._toast("Connect the telescope before running a session", "warning")
+            return
         # Keep the planned slot on the calendar. Actual start/end live on
         # actual_* so a short failed run does not shrink or relocate the block.
         self._save_session(replace(
@@ -5213,29 +5216,48 @@ class AppBackend(QObject):
             self._toast(str(exc), "warning")
 
     @Slot(str, str)
-    def reorderPlanned(self, session_id: str, before_session_id: str) -> None:
+    @Slot(str, str, str)
+    def reorderPlanned(self, session_id: str, before_session_id: str, night: str = "") -> None:
         session = self.store.sessions.get(session_id)
-        if not session or session.status != SessionStatus.PLANNED:
+        if not session:
+            return
+        if session.status != SessionStatus.PLANNED:
+            self._toast("Only planned sessions can be reordered", "warning")
             return
         moving = [session]
         moving_ids = {session.id}
         before = self.store.sessions.get(before_session_id) if before_session_id else None
         if before and (before.device_id != session.device_id or before.status != SessionStatus.PLANNED):
-            return
+            before = None
+            before_session_id = ""
         device = self._device_by_id(session.device_id)
+        tz = self._zone_for(device)
         cutoff = self._cutoff_hour()
-        target_night = observing_date(
-            before.scheduled_start if before else session.scheduled_start,
-            cutoff,
-            self._zone_for(device),
-        )
+        if before:
+            target_night = observing_date(before.scheduled_start, cutoff, tz)
+        else:
+            wanted = str(night or "").strip()
+            try:
+                date.fromisoformat(wanted)
+                target_night = wanted
+            except ValueError:
+                target_night = observing_date(session.scheduled_start, cutoff, tz)
+        old_night = date.fromisoformat(observing_date(session.scheduled_start, cutoff, tz))
+        try:
+            target_day = date.fromisoformat(target_night)
+        except ValueError:
+            target_day = old_night
+        if target_day != old_night:
+            start = parse_in_zone(session.scheduled_start, tz) + timedelta(days=(target_day - old_night).days)
+            session = replace(session, scheduled_start=store_local_iso(start, tz))
+            moving = [session]
         queue = sorted(
             (
                 item for item in self.store.sessions.all()
                 if item.device_id == session.device_id
                 and item.status == SessionStatus.PLANNED
                 and item.id not in moving_ids
-                and observing_date(item.scheduled_start, cutoff, self._zone_for(device)) == target_night
+                and observing_date(item.scheduled_start, cutoff, tz) == target_night
             ),
             key=lambda item: (item.scheduled_start, pane_sort_key(item.name), item.name),
         )
@@ -5248,13 +5270,21 @@ class AppBackend(QObject):
         ordered = queue[:insert_at] + moving + queue[insert_at:]
         if not ordered:
             return
-        starts = [parse_in_zone(item.scheduled_start, self._zone_for(device)) for item in queue]
+        starts = [parse_in_zone(item.scheduled_start, tz) for item in queue]
         if not starts:
-            starts = [parse_in_zone(item.scheduled_start, self._zone_for(device)) for item in moving]
+            starts = [parse_in_zone(item.scheduled_start, tz) for item in moving]
         cursor = min(starts)
+        occupied = [
+            self._session_window(item, tz)
+            for item in self.store.sessions.all()
+            if item.device_id == device.id and item.status == SessionStatus.RUNNING
+        ]
         for item in ordered:
-            self.store.sessions.save(replace(item, scheduled_start=store_local_iso(cursor, self._zone_for(device))))
-            cursor += timedelta(seconds=max(60, item.planned_duration_seconds))
+            span = timedelta(seconds=max(60, float(item.planned_duration_seconds or 0)))
+            free = next_free_start(occupied, cursor, span)
+            self.store.sessions.save(replace(item, scheduled_start=store_local_iso(free, tz)))
+            occupied.append((free, free + span))
+            cursor = free + span
         self._emit_sessions_changed()
 
     def _schedule_device(self, device_id: str = "") -> Device | None:
@@ -5910,21 +5940,32 @@ class AppBackend(QObject):
         start_date = date.fromisoformat(day)
         return datetime(start_date.year, start_date.month, start_date.day, cutoff, 0, tzinfo=tz)
 
+    def _device_or_selected(self, device_id: str = "") -> Device | None:
+        wanted = str(device_id or "").strip()
+        if wanted:
+            match = next((item for item in self._devices if item.id == wanted), None)
+            if match:
+                return match
+        return self._device_by_id(self._selected_device_id)
+
     @Slot(str, result=float)
-    def nightStartEpochMs(self, day: str) -> float:
+    @Slot(str, str, result=float)
+    def nightStartEpochMs(self, day: str, device_id: str = "") -> float:
         try:
-            return self._night_start(day).timestamp() * 1000
-        except ValueError:
+            return self._night_start(day, self._device_or_selected(device_id)).timestamp() * 1000
+        except (ValueError, StopIteration):
             return 0.0
 
     @Slot(str, int, result=str)
-    def nightTimelineIso(self, day: str, minutes: int) -> str:
+    @Slot(str, int, str, result=str)
+    def nightTimelineIso(self, day: str, minutes: int, device_id: str = "") -> str:
         try:
-            start = self._night_start(day)
-        except ValueError:
+            device = self._device_or_selected(device_id)
+            start = self._night_start(day, device)
+        except (ValueError, StopIteration):
             return ""
         value = start + timedelta(minutes=max(0, min(1435, int(minutes))))
-        return store_local_iso(value, self._zone_for())
+        return store_local_iso(value, self._zone_for(device))
 
     def _zone_for(self, device: Device | None = None):
         item = device or self._device_by_id(self._selected_device_id)
