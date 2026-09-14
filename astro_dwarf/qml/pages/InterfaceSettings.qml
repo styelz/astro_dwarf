@@ -1,9 +1,9 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
-import QtQuick.Dialogs
 import ".."
 import "../components"
+import "../dialogs"
 
 // Console appearance: layout, named themes, and per-token colour matching.
 ColumnLayout {
@@ -414,6 +414,7 @@ ColumnLayout {
                         implicitHeight: Theme.controlHeight
                         accessibleDescription: "Open a colour picker for the selected swatch"
                         onClicked: {
+                            colourPick.roleName = iface.tintRoleName
                             colourPick.selectedColor = Theme.colorFor(iface.tintRole)
                             colourPick.open()
                         }
@@ -607,9 +608,8 @@ ColumnLayout {
         }
     }
 
-    ColorDialog {
+    ColorPickDialog {
         id: colourPick
-        title: "Pick " + iface.tintRoleName
         onAccepted: Theme.applyColor(iface.tintRole, selectedColor)
     }
 }
