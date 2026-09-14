@@ -13,51 +13,29 @@ Item {
     readonly property int controlWidth: 320
     // Narrower column for plain numeric entries so the explanation gets the room instead.
     readonly property int numberWidth: 140
+    // Telescope first (header is already device-scoped), then app-wide console.
     readonly property var categories: [
-        { title: "INTERFACE", hint: "Layout · console tint", glyph: "◫", device: false },
-        { title: "IMAGE", hint: "Enhance filters", glyph: "▦", device: false },
-        { title: "OBSERVING", hint: "Night cutoff · Stellarium", glyph: "◷", device: false },
-        { title: "DEVICE", hint: "Identity · site · live view", glyph: "◈", device: true },
-        { title: "CAPTURE", hint: "Session defaults", glyph: "▣", device: true },
-        { title: "CONNECT", hint: "Wi-Fi · Bluetooth", glyph: "⇌", device: true },
-        { title: "TIMING", hint: "Overhead estimates", glyph: "◷", device: true },
-        { title: "IMPORT", hint: "Legacy sessions", glyph: "⇩", device: false }
+        { key: "device", title: "DEVICE", hint: "Identity · site", glyph: "◈", device: true, group: "TELESCOPE" },
+        { key: "connect", title: "CONNECT", hint: "Wi-Fi · Bluetooth", glyph: "⇌", device: true, group: "TELESCOPE" },
+        { key: "capture", title: "CAPTURE", hint: "Session defaults", glyph: "▣", device: true, group: "TELESCOPE" },
+        { key: "timing", title: "TIMING", hint: "Overhead estimates", glyph: "◷", device: true, group: "TELESCOPE" },
+        { key: "import", title: "IMPORT", hint: "Legacy sessions", glyph: "⇩", device: true, group: "TELESCOPE" },
+        { key: "interface", title: "INTERFACE", hint: "Layout · theme", glyph: "◫", device: false, group: "APP" },
+        { key: "image", title: "IMAGE", hint: "Enhance filters", glyph: "▦", device: false, group: "APP" },
+        { key: "calendar", title: "CALENDAR", hint: "Night cutoff · Stellarium", glyph: "◑", device: false, group: "APP" }
     ]
-    readonly property var categoryKeys: [
-        [],
-        [],
-        [],
-        ["name", "model", "camera", "auto_start_preview", "timezone_name", "latitude", "longitude"],
-        ["capture_defaults"],
-        ["ip_address", "ble_enabled", "wifi_mode", "wifi_ssid", "wifi_password", "ble_password"],
-        ["slew_seconds", "settle_seconds", "calibration_seconds", "autofocus_seconds", "infinite_focus_seconds", "polar_seconds", "readout_seconds", "pane_slew_seconds", "startup_seconds"],
-        []
-    ]
+    readonly property var categoryKeys: ({
+        device: ["name", "model", "camera", "timezone_name", "latitude", "longitude"],
+        connect: ["ip_address", "ble_enabled", "wifi_mode", "wifi_ssid", "wifi_password", "ble_password", "auto_start_preview"],
+        capture: ["capture_defaults"],
+        timing: ["slew_seconds", "settle_seconds", "calibration_seconds", "autofocus_seconds", "infinite_focus_seconds", "polar_seconds", "readout_seconds", "pane_slew_seconds", "startup_seconds"],
+        import: [],
+        interface: [],
+        image: [],
+        calendar: []
+    })
     readonly property var currentCategory: settingsPage.categories[settingsPage.categoryIndex] || ({})
-    property string tintRole: "accent"
-    readonly property bool tintCustom: Theme.paletteCustom
-    readonly property real tintHue: {
-        void Theme.paletteJson
-        void Theme.hue
-        if (settingsPage.tintRole === "windowBase")
-            return Theme.wrapHue(Theme.hue)
-        return Theme.effectiveHue(settingsPage.tintRole)
-    }
-    readonly property real tintBrightness: {
-        void Theme.paletteJson
-        void Theme.brightness
-        if (settingsPage.tintRole === "windowBase")
-            return Theme.brightness
-        return Theme.effectiveBrightness(settingsPage.tintRole)
-    }
-    readonly property string tintRoleName: {
-        const list = Theme.swatches
-        for (let i = 0; i < list.length; i++) {
-            if (list[i].key === settingsPage.tintRole)
-                return list[i].name
-        }
-        return "ACCENT"
-    }
+    readonly property string currentKey: settingsPage.currentCategory.key || ""
     readonly property bool enhanceCustom: Math.abs(Theme.enhanceDenoise - 1) > 0.002 || Math.abs(Theme.enhanceSkyCrush - 1) > 0.002
     readonly property bool cameraWideAvailable: modelField.currentText !== "Dwarf Mini"
     function coordNumber(text) {
@@ -111,7 +89,8 @@ Item {
         return false
     }
     function sectionDirty(index) {
-        const keys = settingsPage.categoryKeys[index] || []
+        const cat = settingsPage.categories[index] || ({})
+        const keys = settingsPage.categoryKeys[cat.key] || []
         if (!keys.length || !settingsPage.dirty)
             return false
         try {
@@ -124,6 +103,13 @@ Item {
             }
         } catch (exc) {
             return settingsPage.dirty
+        }
+        return false
+    }
+    function sectionDirtyByKey(key) {
+        for (let i = 0; i < settingsPage.categories.length; i++) {
+            if (settingsPage.categories[i].key === key)
+                return settingsPage.sectionDirty(i)
         }
         return false
     }
@@ -232,7 +218,7 @@ Item {
                 cutoffField.value = backend.observingDayCutoffHour
         }
         function onDurationSuggestionChanged() {
-            if (settingsPage.sectionDirty(6))
+            if (settingsPage.sectionDirtyByKey("timing"))
                 return
             settingsPage.applyTimingFromDevice()
         }
@@ -284,7 +270,7 @@ Item {
         PageHeader {
             Layout.fillWidth: true
             title: "SETTINGS"
-            subtitle: "Console, image filters, telescope and timing profiles  ·  Astro Dwarf v" + backend.appVersion
+            subtitle: "Telescope profile, console and image filters  ·  Astro Dwarf v" + backend.appVersion
             DeviceCombo { accessibleName: "Settings telescope"; accessibleDescription: "Choose which telescope these settings apply to" }
             HudButton { text: "+ ADD DEVICE"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: locationDialog.openForAdd() }
             HudButton {
@@ -325,77 +311,95 @@ Item {
                         spacing: 2
                         Repeater {
                             model: settingsPage.categories
-                            delegate: Item {
+                            delegate: ColumnLayout {
                                 id: railRow
                                 required property int index
                                 required property var modelData
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: Theme.controlHeight + Theme.s1
+                                spacing: 0
+                                readonly property bool showGroup: index === 0 || (settingsPage.categories[index - 1] || {}).group !== modelData.group
                                 readonly property bool current: settingsPage.categoryIndex === index
                                 readonly property bool dirty: settingsPage.sectionDirty(index)
-                                Accessible.role: Accessible.Button
-                                Accessible.name: modelData.title
-                                Accessible.description: (modelData.hint || "") + (dirty ? " · Unsaved changes" : "")
-                                Keys.onReturnPressed: settingsPage.categoryIndex = index
-                                Keys.onSpacePressed: settingsPage.categoryIndex = index
-                                activeFocusOnTab: true
-                                Rectangle {
-                                    anchors.fill: parent
-                                    radius: 2
-                                    color: railRow.current ? Theme.fillActive : (railHover.hovered || railRow.activeFocus ? Qt.rgba(Theme.outline.r, Theme.outline.g, Theme.outline.b, 0.13) : "transparent")
-                                    border.color: railRow.activeFocus ? Theme.accent : "transparent"
-                                    border.width: railRow.activeFocus ? 1 : 0
+                                Text {
+                                    visible: railRow.showGroup
+                                    Layout.fillWidth: true
+                                    Layout.topMargin: railRow.index === 0 ? 2 : Theme.s3
+                                    Layout.leftMargin: 12
+                                    Layout.bottomMargin: 2
+                                    text: railRow.modelData.group || ""
+                                    color: Theme.muted
+                                    font.pixelSize: Theme.fontXs
+                                    font.bold: true
+                                    font.letterSpacing: Theme.tracking2
                                 }
-                                Rectangle {
-                                    anchors.left: parent.left
-                                    anchors.top: parent.top
-                                    anchors.bottom: parent.bottom
-                                    anchors.margins: 6
-                                    width: 2
-                                    radius: 1
-                                    color: Theme.accent
-                                    opacity: railRow.current ? 1 : 0
-                                    Behavior on opacity { NumberAnimation { duration: Theme.quick } }
-                                }
-                                HoverHandler { id: railHover; cursorShape: Qt.PointingHandCursor }
-                                TapHandler { onTapped: settingsPage.categoryIndex = railRow.index }
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 12
-                                    anchors.rightMargin: 8
-                                    spacing: 8
-                                    Text {
-                                        text: railRow.modelData.glyph
-                                        color: railRow.current ? Theme.accent : Theme.textSecondary
-                                        font.pixelSize: Theme.fontBase
-                                        Layout.preferredWidth: 16
+                                Item {
+                                    id: railButton
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: Theme.controlHeight + Theme.s1
+                                    Accessible.role: Accessible.Button
+                                    Accessible.name: railRow.modelData.title
+                                    Accessible.description: (railRow.modelData.hint || "") + (railRow.dirty ? " · Unsaved changes" : "")
+                                    Keys.onReturnPressed: settingsPage.categoryIndex = railRow.index
+                                    Keys.onSpacePressed: settingsPage.categoryIndex = railRow.index
+                                    activeFocusOnTab: true
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: 2
+                                        color: railRow.current ? Theme.fillActive : (railHover.hovered || railButton.activeFocus ? Qt.rgba(Theme.outline.r, Theme.outline.g, Theme.outline.b, 0.13) : "transparent")
+                                        border.color: railButton.activeFocus ? Theme.accent : "transparent"
+                                        border.width: railButton.activeFocus ? 1 : 0
                                     }
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 0
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: railRow.modelData.title
-                                            color: railRow.current ? Theme.accent : Theme.textPrimary
-                                            font.pixelSize: Theme.fontSm
-                                            font.bold: true
-                                            font.letterSpacing: Theme.tracking2
-                                            elide: Text.ElideRight
-                                        }
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: railRow.modelData.hint || ""
-                                            color: railRow.current ? Theme.textPrimary : Theme.textSecondary
-                                            opacity: railRow.current ? 0.8 : 0.75
-                                            font.pixelSize: Theme.fontXs
-                                            elide: Text.ElideRight
-                                        }
+                                    Rectangle {
+                                        anchors.left: parent.left
+                                        anchors.top: parent.top
+                                        anchors.bottom: parent.bottom
+                                        anchors.margins: 6
+                                        width: 2
+                                        radius: 1
+                                        color: Theme.accent
+                                        opacity: railRow.current ? 1 : 0
+                                        Behavior on opacity { NumberAnimation { duration: Theme.quick } }
                                     }
-                                    LedDot {
-                                        visible: railRow.dirty
-                                        on: true
-                                        onColor: Theme.warning
-                                        pulse: true
+                                    HoverHandler { id: railHover; cursorShape: Qt.PointingHandCursor }
+                                    TapHandler { onTapped: settingsPage.categoryIndex = railRow.index }
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 12
+                                        anchors.rightMargin: 8
+                                        spacing: 8
+                                        Text {
+                                            text: railRow.modelData.glyph
+                                            color: railRow.current ? Theme.accent : Theme.textSecondary
+                                            font.pixelSize: Theme.fontBase
+                                            Layout.preferredWidth: 16
+                                        }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 0
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: railRow.modelData.title
+                                                color: railRow.current ? Theme.accent : Theme.textPrimary
+                                                font.pixelSize: Theme.fontSm
+                                                font.bold: true
+                                                font.letterSpacing: Theme.tracking2
+                                                elide: Text.ElideRight
+                                            }
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: railRow.modelData.hint || ""
+                                                color: railRow.current ? Theme.textPrimary : Theme.textSecondary
+                                                opacity: railRow.current ? 0.8 : 0.75
+                                                font.pixelSize: Theme.fontXs
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+                                        LedDot {
+                                            visible: railRow.dirty
+                                            on: true
+                                            onColor: Theme.warning
+                                            pulse: true
+                                        }
                                     }
                                 }
                             }
@@ -429,128 +433,16 @@ Item {
                     Layout.alignment: Qt.AlignTop
                     spacing: 0
 
-                    // INTERFACE
-                    ColumnLayout {
-                        visible: settingsPage.categoryIndex === 0
+                    InterfaceSettings {
+                        visible: settingsPage.currentKey === "interface"
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop | Qt.AlignLeft
-                        spacing: Theme.s3
-                        FieldHint {
-                            text: "How the console looks on this computer. Changes apply immediately and are remembered here, not on the telescope."
-                        }
-                        SettingGroup {
-                            title: "LAYOUT"
-                            FieldLabel { text: "NAV BUTTONS" }
-                            HudCombo {
-                                Layout.preferredWidth: settingsPage.controlWidth
-                                model: ["Bottom", "Top (below header)"]
-                                currentIndex: layoutSettings.navBarOnTop ? 1 : 0
-                                onActivated: layoutSettings.navBarOnTop = currentIndex === 1
-                                accessibleName: "Navigation button position"
-                            }
-                            FieldHint { text: "Where the page tabs sit. Top keeps them under the device bar; Bottom leaves the header clear and puts them along the lower edge." }
-                        }
-                        SettingGroup {
-                            title: "CONSOLE TINT"
-                            trailing: [
-                                HudChip {
-                                    label: settingsPage.tintRoleName
-                                    tone: Theme.accent
-                                    anchors.verticalCenter: parent.verticalCenter
-                                },
-                                HudChip {
-                                    label: settingsPage.tintCustom ? "CUSTOM" : "STOCK"
-                                    tone: settingsPage.tintCustom ? Theme.warning : Theme.textSecondary
-                                    dim: !settingsPage.tintCustom
-                                    anchors.verticalCenter: parent.verticalCenter
-                                },
-                                HudButton {
-                                    text: "RESET"
-                                    implicitHeight: 28
-                                    enabled: settingsPage.tintCustom
-                                    accessibleDescription: "Return every palette colour to stock"
-                                    onClicked: Theme.resetPalette()
-                                }
-                            ]
-                            FieldLabel { text: "PALETTE" }
-                            RowLayout {
-                                Layout.preferredWidth: settingsPage.controlWidth
-                                spacing: 6
-                                Repeater {
-                                    model: Theme.swatches
-                                    delegate: PaletteSwatch {
-                                        required property var modelData
-                                        Layout.fillWidth: true
-                                        Layout.preferredWidth: 40
-                                        roleKey: modelData.key
-                                        roleName: modelData.name
-                                        selected: settingsPage.tintRole === modelData.key
-                                        onClicked: settingsPage.tintRole = modelData.key
-                                        onResetRequested: Theme.clearRole(modelData.key)
-                                    }
-                                }
-                            }
-                            FieldHint { text: "Click a swatch to edit it. BASE is the console seed: unedited swatches, fills and the background art follow it. The other swatches keep the colour you set. Related fills, outlines and glows follow their parent. Double-click restores one colour. Success, warning and danger stay fixed. The Windows title bar follows panel, line and accent a moment after the sliders stop." }
-                            FieldLabel { text: "HUE" }
-                            HudSlider {
-                                id: hueSlider
-                                Layout.preferredWidth: settingsPage.controlWidth
-                                from: 0
-                                to: 1
-                                stepSize: 0.001
-                                onMoved: Theme.setRole(settingsPage.tintRole, value, settingsPage.tintBrightness)
-                                markerPosition: settingsPage.tintRole === "windowBase" ? Theme.defaultHue : Theme.stockHue(settingsPage.tintRole)
-                                valueText: Math.round(settingsPage.tintHue * 360) + "°"
-                                accessibleName: settingsPage.tintRoleName + " hue"
-                                trackGradient: Gradient {
-                                    orientation: Gradient.Horizontal
-                                    GradientStop { position: 0.000; color: Qt.hsla(0.000, 0.9, 0.55, 1) }
-                                    GradientStop { position: 0.167; color: Qt.hsla(0.167, 0.9, 0.55, 1) }
-                                    GradientStop { position: 0.333; color: Qt.hsla(0.333, 0.9, 0.55, 1) }
-                                    GradientStop { position: 0.500; color: Qt.hsla(0.500, 0.9, 0.55, 1) }
-                                    GradientStop { position: 0.667; color: Qt.hsla(0.667, 0.9, 0.55, 1) }
-                                    GradientStop { position: 0.833; color: Qt.hsla(0.833, 0.9, 0.55, 1) }
-                                    GradientStop { position: 1.000; color: Qt.hsla(1.000, 0.9, 0.55, 1) }
-                                }
-                                Binding {
-                                    target: hueSlider
-                                    property: "value"
-                                    value: settingsPage.tintHue
-                                    when: !hueSlider.pressed
-                                }
-                            }
-                            FieldHint { text: "Hue of the selected swatch. The tick is that colour's stock position on the cyan HUD. BASE also shifts every swatch you have not edited; a locked swatch stays put." }
-                            FieldLabel { text: "BRIGHTNESS" }
-                            HudSlider {
-                                id: brightSlider
-                                Layout.preferredWidth: settingsPage.controlWidth
-                                from: -1
-                                to: 1
-                                stepSize: 0.01
-                                onMoved: Theme.setRole(settingsPage.tintRole, settingsPage.tintHue, value)
-                                markerPosition: 0.5
-                                valueText: (settingsPage.tintBrightness > 0 ? "+" : "") + Math.round(settingsPage.tintBrightness * 100)
-                                accessibleName: settingsPage.tintRoleName + " brightness"
-                                trackGradient: Gradient {
-                                    orientation: Gradient.Horizontal
-                                    GradientStop { position: 0.0; color: Qt.hsla(settingsPage.tintHue, 1, 0.16, 1) }
-                                    GradientStop { position: 0.5; color: Qt.hsla(settingsPage.tintHue, 1, 0.651, 1) }
-                                    GradientStop { position: 1.0; color: Qt.hsla(settingsPage.tintHue, 1, 0.90, 1) }
-                                }
-                                Binding {
-                                    target: brightSlider
-                                    property: "value"
-                                    value: settingsPage.tintBrightness
-                                    when: !brightSlider.pressed
-                                }
-                            }
-                            FieldHint { text: "Lightness of the selected swatch. 0 is stock for that colour; negative darkens it, positive lifts it. BASE also lifts or dims unedited swatches." }
-                        }
+                        controlWidth: settingsPage.controlWidth
                     }
 
                     // IMAGE
                     ColumnLayout {
-                        visible: settingsPage.categoryIndex === 1
+                        visible: settingsPage.currentKey === "image"
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
@@ -684,18 +576,18 @@ Item {
                         }
                     }
 
-                    // OBSERVING
+                    // CALENDAR
                     ColumnLayout {
-                        visible: settingsPage.categoryIndex === 2
+                        visible: settingsPage.currentKey === "calendar"
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
                         FieldHint {
-                            text: "Shared by every telescope in this app and saved as soon as it is changed."
+                            text: "When an observing night starts, and where Stellarium is reached. Shared by every telescope and saved as soon as it is changed."
                         }
                         SettingGroup {
-                            title: "CALENDAR"
-                            FieldLabel { text: "NIGHT CUTOFF" }
+                            title: "NIGHT"
+                            FieldLabel { text: "CUTOFF" }
                             HudSpinBox {
                                 id: cutoffField
                                 Layout.preferredWidth: settingsPage.numberWidth
@@ -733,7 +625,7 @@ Item {
 
                     // DEVICE
                     ColumnLayout {
-                        visible: settingsPage.categoryIndex === 3
+                        visible: settingsPage.currentKey === "device"
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
@@ -771,17 +663,6 @@ Item {
                             }
                         }
                         SettingGroup {
-                            title: "LIVE VIEW"
-                            FieldLabel { text: "ON CONNECT" }
-                            HudCheck {
-                                id: autoPreviewField
-                                Layout.preferredWidth: settingsPage.controlWidth
-                                text: "Start live preview when connected"
-                                accessibleName: "Start live preview when connected"
-                            }
-                            FieldHint { text: "Opens this telescope's camera stream as soon as the link is up. A running capture attaches to the stacking preview instead of being interrupted." }
-                        }
-                        SettingGroup {
                             title: "SITE"
                             trailing: [
                                 HudChip {
@@ -810,7 +691,7 @@ Item {
 
                     // CAPTURE
                     ColumnLayout {
-                        visible: settingsPage.categoryIndex === 4
+                        visible: settingsPage.currentKey === "capture"
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
@@ -866,12 +747,12 @@ Item {
 
                     // CONNECT
                     ColumnLayout {
-                        visible: settingsPage.categoryIndex === 5
+                        visible: settingsPage.currentKey === "connect"
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
                         FieldHint {
-                            text: "How this computer reaches the telescope. Commands and the live stream travel over Wi-Fi; Bluetooth is only used to set up that link."
+                            text: "How this computer reaches the telescope. Commands and the live stream travel over Wi-Fi; Bluetooth is only used to set up that link. Live preview can start as soon as the connection is up."
                         }
                         SettingGroup {
                             title: "WI-FI LINK"
@@ -932,11 +813,22 @@ Item {
                             }
                             FieldHint { text: "When the IP is empty or unreachable, connect over Bluetooth to set the Wi-Fi mode and learn the address before retrying." }
                         }
+                        SettingGroup {
+                            title: "LIVE VIEW"
+                            FieldLabel { text: "ON CONNECT" }
+                            HudCheck {
+                                id: autoPreviewField
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                text: "Start live preview when connected"
+                                accessibleName: "Start live preview when connected"
+                            }
+                            FieldHint { text: "Opens this telescope's camera stream as soon as the link is up. A running capture attaches to the stacking preview instead of being interrupted." }
+                        }
                     }
 
                     // TIMING
                     ColumnLayout {
-                        visible: settingsPage.categoryIndex === 6
+                        visible: settingsPage.currentKey === "timing"
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
@@ -1034,7 +926,7 @@ Item {
 
                     // IMPORT
                     ColumnLayout {
-                        visible: settingsPage.categoryIndex === 7
+                        visible: settingsPage.currentKey === "import"
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3

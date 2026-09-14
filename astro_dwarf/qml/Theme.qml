@@ -6,11 +6,13 @@ import QtCore
 // independently; relatives (fills, outlines, glows) follow their parent swatch.
 // BASE is the seed (Theme.hue / brightness): unedited swatches, Theme.hsl()
 // one-offs, and the background wash follow it. Other swatches store overrides.
-// Saturation and lightness recipes stay fixed per token so contrast remains stable.
+// Saturation and lightness start from per-token recipes; a role can lock them.
+// Named themes (built-in + saved) snapshot the seed and every override.
 QtObject {
     id: theme
 
     readonly property real defaultHue: 0.521
+    readonly property int maxSavedThemes: 32
 
     readonly property Settings store: Settings {
         id: appearanceStore
@@ -18,6 +20,8 @@ QtObject {
         property real hue: 0.521
         property real brightness: 0
         property string paletteJson: ""
+        property string savedThemesJson: "[]"
+        property string activeThemeId: "stock"
         property bool previewChromeHintSeen: false
         property bool enhanceImages: true
         property bool deepCleanImages: false
@@ -28,20 +32,65 @@ QtObject {
     // -1 … 1; 0 is the stock look. Negative gives deep, saturated tints; positive lifts them.
     property alias brightness: appearanceStore.brightness
     property alias paletteJson: appearanceStore.paletteJson
+    property alias savedThemesJson: appearanceStore.savedThemesJson
+    property alias activeThemeId: appearanceStore.activeThemeId
     property alias previewChromeHintSeen: appearanceStore.previewChromeHintSeen
     property alias enhanceImages: appearanceStore.enhanceImages
     property alias deepCleanImages: appearanceStore.deepCleanImages
     property alias enhanceDenoise: appearanceStore.enhanceDenoise
     property alias enhanceSkyCrush: appearanceStore.enhanceSkyCrush
 
-    readonly property var swatches: [
-        { key: "windowBase", name: "BASE" },
-        { key: "surface", name: "PANEL" },
-        { key: "surfaceHigh", name: "RAISED" },
-        { key: "outline", name: "LINE" },
-        { key: "textSecondary", name: "DIM" },
-        { key: "textPrimary", name: "TEXT" },
-        { key: "accent", name: "ACCENT" }
+    readonly property var swatchGroups: [
+        { title: "SEED", keys: [
+            { key: "windowBase", name: "BASE" }
+        ]},
+        { title: "SURFACES", keys: [
+            { key: "surface", name: "PANEL" },
+            { key: "surfaceHigh", name: "RAISED" },
+            { key: "panelFill", name: "FILL" },
+            { key: "inputBg", name: "INPUT" },
+            { key: "popupBg", name: "POPUP" },
+            { key: "disabledBg", name: "OFF BG" },
+            { key: "scrim", name: "SCRIM" }
+        ]},
+        { title: "LINES", keys: [
+            { key: "outline", name: "LINE" },
+            { key: "outlineSoft", name: "SOFT" },
+            { key: "outlineStrong", name: "STRONG" },
+            { key: "disabledOutline", name: "OFF LN" }
+        ]},
+        { title: "TYPE", keys: [
+            { key: "textPrimary", name: "TEXT" },
+            { key: "textSecondary", name: "DIM" },
+            { key: "muted", name: "MUTED" }
+        ]},
+        { title: "SIGNAL", keys: [
+            { key: "accent", name: "ACCENT" },
+            { key: "accentSoft", name: "LIGHT" },
+            { key: "glowAccent", name: "GLOW" },
+            { key: "fillActive", name: "ACTIVE" },
+            { key: "fillChecked", name: "CHECK" }
+        ]}
+    ]
+
+    readonly property var swatches: {
+        const out = []
+        const groups = theme.swatchGroups
+        for (let g = 0; g < groups.length; g++) {
+            const keys = groups[g].keys
+            for (let i = 0; i < keys.length; i++)
+                out.push(keys[i])
+        }
+        return out
+    }
+
+    readonly property var builtinThemes: [
+        { id: "stock", name: "Stock cyan", hue: 0.521, brightness: 0, palette: ({}) },
+        { id: "ice", name: "Ice", hue: 0.55, brightness: 0.14, palette: ({}) },
+        { id: "violet", name: "Violet", hue: 0.76, brightness: 0.02, palette: ({}) },
+        { id: "amber", name: "Amber", hue: 0.08, brightness: -0.08, palette: ({}) },
+        { id: "forest", name: "Forest", hue: 0.36, brightness: -0.12, palette: ({}) },
+        { id: "crimson", name: "Crimson", hue: 0.985, brightness: -0.1, palette: ({}) }
     ]
 
     // offset/sat/light/weight reproduce the original cyan HUD at hue 0.521, brightness 0.
@@ -79,6 +128,50 @@ QtObject {
         return ({})
     }
 
+    readonly property var parsedSavedThemes: {
+        try {
+            const raw = JSON.parse(theme.savedThemesJson || "[]")
+            if (!Array.isArray(raw))
+                return []
+            const out = []
+            for (let i = 0; i < raw.length; i++) {
+                const item = raw[i]
+                if (!item || typeof item !== "object" || Array.isArray(item))
+                    continue
+                if (!item.id || !item.name)
+                    continue
+                out.push(item)
+            }
+            return out
+        } catch (exc) {
+        }
+        return []
+    }
+
+    readonly property var listedThemes: {
+        void theme.savedThemesJson
+        return theme.listThemes()
+    }
+
+    readonly property int savedThemeCount: theme.parsedSavedThemes.length
+
+    readonly property var activeTheme: {
+        void theme.savedThemesJson
+        return theme.themeById(theme.activeThemeId)
+    }
+
+    readonly property bool themeEdited: {
+        void theme.paletteJson
+        void theme.hue
+        void theme.brightness
+        void theme.savedThemesJson
+        void theme.activeThemeId
+        const current = theme.activeTheme
+        if (!current)
+            return theme.paletteCustom
+        return theme.fingerprint() !== theme.fingerprintOf(current)
+    }
+
     readonly property bool paletteCustom: {
         if (Math.abs(theme.hue - theme.defaultHue) > 0.002 || Math.abs(theme.brightness) > 0.002)
             return true
@@ -86,7 +179,8 @@ QtObject {
         for (const key in ov) {
             if (!ov[key] || typeof ov[key] !== "object")
                 continue
-            if (ov[key].hue !== undefined || ov[key].brightness !== undefined)
+            if (ov[key].hue !== undefined || ov[key].brightness !== undefined
+                    || ov[key].sat !== undefined || ov[key].light !== undefined)
                 return true
         }
         return false
@@ -110,6 +204,10 @@ QtObject {
         return h
     }
 
+    function clamp(value, lo, hi) {
+        return Math.max(lo, Math.min(hi, Number(value)))
+    }
+
     function recipeOf(key) {
         return theme.recipes[key] || ({ offset: 0, sat: 1, light: 0.5, alpha: 1, weight: 0, from: "" })
     }
@@ -119,70 +217,237 @@ QtObject {
         return ov && typeof ov === "object" ? ov : null
     }
 
+    function roleName(key) {
+        const list = theme.swatches
+        for (let i = 0; i < list.length; i++) {
+            if (list[i].key === key)
+                return list[i].name
+        }
+        return String(key || "").toUpperCase()
+    }
+
+    function parentOf(key) {
+        return theme.recipeOf(key).from || ""
+    }
+
+    function followersOf(key) {
+        const rec = theme.recipes
+        const out = []
+        for (const k in rec) {
+            if (rec[k] && rec[k].from === key)
+                out.push(k)
+        }
+        return out
+    }
+
     function roleCustom(key) {
-        if (key === "windowBase")
-            return Math.abs(theme.hue - theme.defaultHue) > 0.002 || Math.abs(theme.brightness) > 0.002
+        if (key === "windowBase") {
+            if (Math.abs(theme.hue - theme.defaultHue) > 0.002 || Math.abs(theme.brightness) > 0.002)
+                return true
+        }
         const ov = theme.roleOverride(key)
-        return !!(ov && (ov.hue !== undefined || ov.brightness !== undefined))
+        return !!(ov && (ov.hue !== undefined || ov.brightness !== undefined
+                         || ov.sat !== undefined || ov.light !== undefined))
+    }
+
+    function roleLinked(key) {
+        const parent = theme.parentOf(key)
+        if (!parent)
+            return false
+        return !theme.roleOverride(key)
+    }
+
+    function copyLeaf(entry) {
+        if (!entry || typeof entry !== "object")
+            return null
+        const e = {}
+        if (typeof entry.hue === "number")
+            e.hue = entry.hue
+        if (typeof entry.brightness === "number")
+            e.brightness = entry.brightness
+        if (typeof entry.sat === "number")
+            e.sat = entry.sat
+        if (typeof entry.light === "number")
+            e.light = entry.light
+        return Object.keys(e).length ? e : null
     }
 
     function overridesJson(skipKey) {
         const ov = {}
         const src = theme.parsedOverrides
         for (const k in src) {
-            if (k === skipKey || !src[k] || typeof src[k] !== "object")
+            if (k === skipKey)
                 continue
-            ov[k] = { hue: src[k].hue, brightness: src[k].brightness }
+            const e = theme.copyLeaf(src[k])
+            if (e)
+                ov[k] = e
         }
         return Object.keys(ov).length ? JSON.stringify(ov) : ""
     }
 
     function paramsFor(key) {
         const recipe = theme.recipeOf(key)
-        const source = recipe.from || key
-        const ov = theme.roleOverride(source)
+        const own = theme.roleOverride(key)
+        const parentKey = recipe.from || ""
+        const parentOv = parentKey ? theme.roleOverride(parentKey) : null
+        const hueSrc = own && (typeof own.hue === "number" || typeof own.brightness === "number")
+            ? own
+            : (parentOv && (typeof parentOv.hue === "number" || typeof parentOv.brightness === "number") ? parentOv : null)
         let h
         let b
-        if (ov && typeof ov.hue === "number")
-            h = theme.wrapHue(ov.hue)
+        if (hueSrc && typeof hueSrc.hue === "number")
+            h = theme.wrapHue(hueSrc.hue)
         else
             h = theme.wrapHue(theme.hue + recipe.offset * theme.spread)
-        if (ov && typeof ov.brightness === "number")
-            b = ov.brightness
+        if (hueSrc && typeof hueSrc.brightness === "number")
+            b = hueSrc.brightness
         else
             b = theme.brightness
-        return { h: h, sat: recipe.sat, light: recipe.light, alpha: recipe.alpha, weight: recipe.weight, brightness: b }
+        let sat = recipe.sat
+        if (own && typeof own.sat === "number")
+            sat = theme.clamp(own.sat, 0, 1)
+        let light = recipe.light
+        if (own && typeof own.light === "number")
+            light = theme.clamp(own.light, 0.02, 0.97)
+        return { h: h, sat: sat, light: light, alpha: recipe.alpha, weight: recipe.weight, brightness: b }
     }
 
     function effectiveHue(key) {
         return theme.paramsFor(key).h
     }
 
+    function effectiveSat(key) {
+        return theme.paramsFor(key).sat
+    }
+
     function effectiveBrightness(key) {
         return theme.paramsFor(key).brightness
+    }
+
+    function effectiveLight(key) {
+        const p = theme.paramsFor(key)
+        return theme.bakedLight(p.light, p.weight, p.brightness)
     }
 
     function stockHue(key) {
         return theme.wrapHue(theme.defaultHue + theme.recipeOf(key).offset)
     }
 
-    function setRole(key, hue, brightness) {
+    function stockSat(key) {
+        return theme.recipeOf(key).sat
+    }
+
+    function stockLight(key) {
+        const recipe = theme.recipeOf(key)
+        return theme.bakedLight(recipe.light, recipe.weight, 0)
+    }
+
+    function bakedLight(light, weight, brightness) {
+        const w = weight === undefined ? 0 : weight
+        const b = brightness === undefined ? 0 : brightness
+        let l = light
+        if (b >= 0)
+            l = light + b * 0.25 * w
+        else
+            l = light * (1 + b * 0.75 * w)
+        return Math.min(0.97, Math.max(0.02, l))
+    }
+
+    function brightnessForLight(light, weight, target) {
+        const w = weight || 0
+        const t = theme.clamp(target, 0.02, 0.97)
+        if (w <= 0.001)
+            return 0
+        if (t >= light)
+            return theme.clamp((t - light) / (0.25 * w), -1, 1)
+        if (light <= 0.001)
+            return -1
+        return theme.clamp((t / light - 1) / (0.75 * w), -1, 1)
+    }
+
+    function roundHue(value) {
+        return Math.round(theme.wrapHue(value) * 1000) / 1000
+    }
+
+    function roundBright(value) {
+        return Math.round(theme.clamp(value, -1, 1) * 100) / 100
+    }
+
+    function roundUnit(value) {
+        return Math.round(theme.clamp(value, 0, 1) * 1000) / 1000
+    }
+
+    function resolveSat(key, sat, prev) {
+        const recipe = theme.recipeOf(key)
+        if (sat === undefined)
+            return prev && typeof prev.sat === "number" ? prev.sat : undefined
+        if (sat === null)
+            return undefined
+        const s = theme.roundUnit(sat)
+        return Math.abs(s - recipe.sat) > 0.002 ? s : undefined
+    }
+
+    function resolveLight(key, light, prev) {
+        if (light === undefined)
+            return prev && typeof prev.light === "number" ? prev.light : undefined
+        if (light === null)
+            return undefined
+        return Math.round(theme.clamp(light, 0.02, 0.97) * 1000) / 1000
+    }
+
+    function writeWindowExtras(satOut, lightOut) {
+        const ov = JSON.parse(theme.overridesJson("windowBase") || "{}")
+        if (satOut === undefined && lightOut === undefined) {
+            theme.paletteJson = Object.keys(ov).length ? JSON.stringify(ov) : ""
+            return
+        }
+        const extra = {}
+        if (satOut !== undefined)
+            extra.sat = satOut
+        if (lightOut !== undefined)
+            extra.light = lightOut
+        ov.windowBase = extra
+        theme.paletteJson = JSON.stringify(ov)
+    }
+
+    function setRole(key, hue, brightness, sat, light) {
         if (!theme.recipes[key])
             return
-        const h = Math.round(theme.wrapHue(hue) * 1000) / 1000
-        const b = Math.round(Math.max(-1, Math.min(1, Number(brightness))) * 100) / 100
+        const h = theme.roundHue(hue)
+        const b = theme.roundBright(brightness)
+        const prev = theme.roleOverride(key)
+        const satOut = theme.resolveSat(key, sat, prev)
+        const lightOut = theme.resolveLight(key, light, prev)
         if (key === "windowBase") {
             // BASE is the palette seed. The slider writes Theme.hue / brightness
             // so Theme.hsl() one-offs, the background wash, and unedited swatches follow.
             theme.hue = h
             theme.brightness = b
-            if (theme.roleOverride("windowBase"))
-                theme.paletteJson = theme.overridesJson("windowBase")
+            theme.writeWindowExtras(satOut, lightOut)
             return
         }
         const ov = JSON.parse(theme.overridesJson("") || "{}")
-        ov[key] = { hue: h, brightness: b }
+        const entry = { hue: h, brightness: b }
+        if (satOut !== undefined)
+            entry.sat = satOut
+        if (lightOut !== undefined)
+            entry.light = lightOut
+        ov[key] = entry
         theme.paletteJson = JSON.stringify(ov)
+    }
+
+    function setRoleSat(key, sat) {
+        if (key === "windowBase") {
+            theme.setRole(key, theme.hue, theme.brightness, sat)
+            return
+        }
+        const p = theme.paramsFor(key)
+        theme.setRole(key, p.h, p.brightness, sat)
+    }
+
+    function setRoleLight(key, targetLight) {
+        const p = theme.paramsFor(key)
+        theme.applyHsl(key, p.h, p.sat, targetLight)
     }
 
     function clearRole(key) {
@@ -200,11 +465,264 @@ QtObject {
         theme.paletteJson = ""
         theme.hue = theme.defaultHue
         theme.brightness = 0
+        theme.activeThemeId = "stock"
+    }
+
+    function colorToHex(col) {
+        if (col === undefined || col === null)
+            return ""
+        function hx(n) {
+            const v = Math.round(theme.clamp(n, 0, 1) * 255)
+            return v.toString(16).padStart(2, "0")
+        }
+        return ("#" + hx(col.r) + hx(col.g) + hx(col.b)).toUpperCase()
+    }
+
+    function parseHex(text) {
+        const s = String(text || "").trim().replace(/^#/, "")
+        if (!/^([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.test(s))
+            return null
+        let hex = s
+        if (hex.length === 3)
+            hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2]
+        const n = parseInt(hex, 16)
+        return Qt.rgba(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, 1)
+    }
+
+    function applyHex(key, text) {
+        const col = theme.parseHex(text)
+        if (!col)
+            return false
+        return theme.applyColor(key, col)
+    }
+
+    function applyColor(key, col) {
+        if (col === undefined || col === null || !theme.recipes[key])
+            return false
+        let h = col.hslHue
+        let s = col.hslSaturation
+        const l = col.hslLightness
+        if (!(h >= 0)) {
+            h = theme.effectiveHue(key)
+            s = 0
+        }
+        return theme.applyHsl(key, h, s, l)
+    }
+
+    function applyHsl(key, h, s, l) {
+        if (!theme.recipes[key])
+            return false
+        const recipe = theme.recipeOf(key)
+        const targetL = theme.clamp(l, 0.02, 0.97)
+        let hueOut = h
+        if (key === "windowBase") {
+            // HEX/PICK target the painted BASE wash, which is seed + recipe offset.
+            hueOut = theme.wrapHue(h - recipe.offset)
+            theme.hue = theme.roundHue(hueOut)
+            hueOut = theme.wrapHue(h - recipe.offset * theme.spread)
+        }
+        const b = theme.brightnessForLight(recipe.light, recipe.weight, targetL)
+        const reached = theme.bakedLight(recipe.light, recipe.weight, b)
+        if (Math.abs(reached - targetL) > 0.02)
+            theme.setRole(key, hueOut, 0, s, targetL)
+        else
+            theme.setRole(key, hueOut, b, s, null)
+        return true
+    }
+
+    function matchRole(targetKey, sourceKey) {
+        if (!theme.recipes[targetKey] || !theme.recipes[sourceKey])
+            return false
+        return theme.applyColor(targetKey, theme.colorFor(sourceKey))
+    }
+
+    function matchHue(targetKey, sourceKey) {
+        if (!theme.recipes[targetKey] || !theme.recipes[sourceKey])
+            return false
+        const src = theme.paramsFor(sourceKey)
+        const dst = theme.paramsFor(targetKey)
+        theme.setRole(targetKey, src.h, dst.brightness)
+        return true
+    }
+
+    function snapshotPalette() {
+        const ov = {}
+        const src = theme.parsedOverrides
+        const keys = Object.keys(src).sort()
+        for (let i = 0; i < keys.length; i++) {
+            const e = theme.copyLeaf(src[keys[i]])
+            if (e)
+                ov[keys[i]] = e
+        }
+        return ov
+    }
+
+    function snapshot() {
+        return { hue: theme.roundHue(theme.hue), brightness: theme.roundBright(theme.brightness), palette: theme.snapshotPalette() }
+    }
+
+    function fingerprintOf(entry) {
+        if (!entry)
+            return ""
+        const hue = theme.roundHue(entry.hue === undefined ? theme.defaultHue : entry.hue)
+        const brightness = theme.roundBright(entry.brightness === undefined ? 0 : entry.brightness)
+        const pal = {}
+        const src = entry.palette && typeof entry.palette === "object" ? entry.palette : {}
+        const keys = Object.keys(src).sort()
+        for (let i = 0; i < keys.length; i++) {
+            const e = theme.copyLeaf(src[keys[i]])
+            if (!e)
+                continue
+            if (typeof e.hue === "number")
+                e.hue = theme.roundHue(e.hue)
+            if (typeof e.brightness === "number")
+                e.brightness = theme.roundBright(e.brightness)
+            if (typeof e.sat === "number")
+                e.sat = theme.roundUnit(e.sat)
+            if (typeof e.light === "number")
+                e.light = Math.round(theme.clamp(e.light, 0.02, 0.97) * 1000) / 1000
+            pal[keys[i]] = e
+        }
+        return JSON.stringify({ hue: hue, brightness: brightness, palette: pal })
+    }
+
+    function fingerprint() {
+        return theme.fingerprintOf(theme.snapshot())
+    }
+
+    function listThemes() {
+        const out = []
+        const builtins = theme.builtinThemes
+        for (let i = 0; i < builtins.length; i++)
+            out.push(builtins[i])
+        const saved = theme.parsedSavedThemes
+        for (let i = 0; i < saved.length; i++)
+            out.push(saved[i])
+        return out
+    }
+
+    function themeById(id) {
+        const list = theme.listThemes()
+        for (let i = 0; i < list.length; i++) {
+            if (list[i].id === id)
+                return list[i]
+        }
+        return null
+    }
+
+    function themeIndexOf(id) {
+        const list = theme.listThemes()
+        for (let i = 0; i < list.length; i++) {
+            if (list[i].id === id)
+                return i
+        }
+        return -1
+    }
+
+    function isBuiltinId(id) {
+        const builtins = theme.builtinThemes
+        for (let i = 0; i < builtins.length; i++) {
+            if (builtins[i].id === id)
+                return true
+        }
+        return false
+    }
+
+    function applyTheme(id) {
+        const entry = theme.themeById(id)
+        if (!entry)
+            return false
+        theme.hue = theme.roundHue(entry.hue === undefined ? theme.defaultHue : entry.hue)
+        theme.brightness = theme.roundBright(entry.brightness === undefined ? 0 : entry.brightness)
+        const pal = entry.palette && typeof entry.palette === "object" && !Array.isArray(entry.palette) ? entry.palette : {}
+        const clean = {}
+        for (const k in pal) {
+            const e = theme.copyLeaf(pal[k])
+            if (e)
+                clean[k] = e
+        }
+        theme.paletteJson = Object.keys(clean).length ? JSON.stringify(clean) : ""
+        theme.activeThemeId = entry.id
+        return true
+    }
+
+    function newThemeId() {
+        return "t" + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36)
+    }
+
+    function saveThemeAs(name) {
+        const trimmed = String(name || "").trim().slice(0, 40)
+        if (!trimmed)
+            return ""
+        const saved = theme.parsedSavedThemes.slice()
+        if (saved.length >= theme.maxSavedThemes)
+            return ""
+        const id = theme.newThemeId()
+        const snap = theme.snapshot()
+        saved.push({ id: id, name: trimmed, hue: snap.hue, brightness: snap.brightness, palette: snap.palette })
+        theme.savedThemesJson = JSON.stringify(saved)
+        theme.activeThemeId = id
+        return id
+    }
+
+    function updateTheme(id) {
+        if (!id || theme.isBuiltinId(id))
+            return false
+        const saved = theme.parsedSavedThemes.slice()
+        const snap = theme.snapshot()
+        let found = false
+        for (let i = 0; i < saved.length; i++) {
+            if (saved[i].id !== id)
+                continue
+            saved[i] = { id: id, name: saved[i].name, hue: snap.hue, brightness: snap.brightness, palette: snap.palette }
+            found = true
+            break
+        }
+        if (!found)
+            return false
+        theme.savedThemesJson = JSON.stringify(saved)
+        theme.activeThemeId = id
+        return true
+    }
+
+    function renameTheme(id, name) {
+        if (!id || theme.isBuiltinId(id))
+            return false
+        const trimmed = String(name || "").trim().slice(0, 40)
+        if (!trimmed)
+            return false
+        const saved = theme.parsedSavedThemes.slice()
+        let found = false
+        for (let i = 0; i < saved.length; i++) {
+            if (saved[i].id !== id)
+                continue
+            saved[i].name = trimmed
+            found = true
+            break
+        }
+        if (!found)
+            return false
+        theme.savedThemesJson = JSON.stringify(saved)
+        return true
+    }
+
+    function deleteTheme(id) {
+        if (!id || theme.isBuiltinId(id))
+            return false
+        const saved = theme.parsedSavedThemes.filter(item => item.id !== id)
+        if (saved.length === theme.parsedSavedThemes.length)
+            return false
+        theme.savedThemesJson = JSON.stringify(saved)
+        if (theme.activeThemeId === id)
+            theme.activeThemeId = "stock"
+        return true
     }
 
     // Older builds stored BASE as a leaf override, which left Theme.hsl() and
     // unedited swatches on the old seed. Fold that override back into the seed.
     Component.onCompleted: {
+        if (!theme.themeById(theme.activeThemeId))
+            theme.activeThemeId = "stock"
         const ov = theme.roleOverride("windowBase")
         if (!ov)
             return
@@ -212,7 +730,18 @@ QtObject {
             theme.hue = Math.round(theme.wrapHue(ov.hue - theme.recipeOf("windowBase").offset * theme.spread) * 1000) / 1000
         if (typeof ov.brightness === "number")
             theme.brightness = ov.brightness
-        theme.paletteJson = theme.overridesJson("windowBase")
+        const sat = typeof ov.sat === "number" ? ov.sat : undefined
+        const light = typeof ov.light === "number" ? ov.light : undefined
+        const rest = JSON.parse(theme.overridesJson("windowBase") || "{}")
+        if (sat !== undefined || light !== undefined) {
+            const extra = {}
+            if (sat !== undefined)
+                extra.sat = sat
+            if (light !== undefined)
+                extra.light = light
+            rest.windowBase = extra
+        }
+        theme.paletteJson = Object.keys(rest).length ? JSON.stringify(rest) : ""
     }
 
     // weight: how strongly the brightness slider moves this token (0 = fixed).
@@ -223,14 +752,7 @@ QtObject {
     function bake(h, sat, light, alpha, weight, brightness) {
         const w = weight === undefined ? 0 : weight
         const b = brightness === undefined ? theme.brightness : brightness
-        let l = light
-        if (b >= 0) {
-            l = light + b * 0.25 * w
-        } else {
-            // 0.75: at -1 a weight-1 token keeps a quarter of its lightness (text ~0.24, accent ~0.16).
-            l = light * (1 + b * 0.75 * w)
-        }
-        l = Math.min(0.97, Math.max(0.02, l))
+        const l = theme.bakedLight(light, w, b)
         return Qt.hsla(theme.wrapHue(h), sat, l, alpha === undefined ? 1 : alpha)
     }
 

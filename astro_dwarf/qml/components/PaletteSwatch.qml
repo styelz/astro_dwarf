@@ -2,9 +2,10 @@ import QtQuick
 import QtQuick.Controls
 import ".."
 
-// Clickable theme-role sample. Hue/brightness sliders edit the selected swatch;
-// BASE writes the palette seed so unedited colours follow. Double-click restores
-// that role to stock. A hue strip stays readable on near-black fills.
+// Clickable theme-role sample. Hue/saturation/lightness sliders edit the
+// selected swatch; BASE writes the palette seed so unedited colours follow.
+// Double-click restores that role to stock. A hue strip stays readable on
+// near-black fills. Tooltip carries the hex so neighbouring tokens can be matched.
 Item {
     id: swatch
     property string roleKey: ""
@@ -18,7 +19,19 @@ Item {
     }
     readonly property bool customized: {
         void Theme.paletteJson
+        void Theme.hue
+        void Theme.brightness
         return Theme.roleCustom(roleKey)
+    }
+    readonly property bool linked: {
+        void Theme.paletteJson
+        return Theme.roleLinked(roleKey)
+    }
+    readonly property string hex: {
+        void Theme.paletteJson
+        void Theme.hue
+        void Theme.brightness
+        return Theme.colorToHex(swatch.tint)
     }
     signal clicked()
     signal resetRequested()
@@ -27,9 +40,14 @@ Item {
     implicitHeight: 36
     Accessible.role: Accessible.Button
     Accessible.name: roleName + " colour"
-    Accessible.description: selected
-        ? "Selected. Hue and brightness sliders edit this colour. Double-click restores it."
-        : "Click to edit this colour. Double-click restores it."
+    Accessible.description: {
+        const hex = swatch.hex
+        if (selected)
+            return "Selected " + hex + ". Sliders edit this colour. Double-click restores it."
+        if (linked)
+            return hex + ". Follows " + Theme.roleName(Theme.parentOf(roleKey)) + ". Click to edit. Double-click restores it."
+        return hex + ". Click to edit this colour. Double-click restores it."
+    }
     Accessible.checkable: true
     Accessible.checked: selected
     activeFocusOnTab: true
@@ -86,6 +104,17 @@ Item {
                 radius: 1
                 color: Theme.warning
             }
+            Rectangle {
+                visible: swatch.linked && !swatch.customized
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 2
+                width: 5
+                height: 5
+                radius: 1
+                color: Theme.accent
+                opacity: 0.7
+            }
         }
         Text {
             width: parent.width
@@ -100,5 +129,12 @@ Item {
 
     ToolTip.visible: hover.hovered
     ToolTip.delay: Theme.tooltipDelay
-    ToolTip.text: (selected ? "Editing " : "Edit ") + roleName + ". Double-click restores this colour."
+    ToolTip.text: {
+        const parentName = Theme.parentOf(swatch.roleKey) ? Theme.roleName(Theme.parentOf(swatch.roleKey)) : ""
+        let line = (selected ? "Editing " : "Edit ") + roleName + "  " + swatch.hex + "."
+        if (parentName)
+            line += linked ? " Follows " + parentName + "." : " Unlocked from " + parentName + "."
+        line += " Double-click restores this colour."
+        return line
+    }
 }
