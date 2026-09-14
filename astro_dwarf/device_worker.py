@@ -796,7 +796,7 @@ def sdk_call(operation: str, *args: Any) -> Any:
     if operation in ("calibrate", "polar", "goto", "goto_solar"):
         # These home the steppers, so let the next centre tap probe positions again.
         _motors_unhomed = False
-    if operation in ("joystick", "stop_motors"):
+    if operation in ("joystick", "stop_motors", "joystick_nudge"):
         from dwarf_python_api.proto import motor_control_pb2
 
         if operation == "joystick":
@@ -804,6 +804,17 @@ def sdk_call(operation: str, *args: Any) -> Any:
             message.vector_angle = float(args[0])
             message.vector_length = float(args[1])
             return send_without_response(message, 14006, 6)
+        if operation == "joystick_nudge":
+            # Official short-press arrows. Stop a held 14006 first so the step is not
+            # blended into a leftover continuous vector.
+            try:
+                send_without_response(motor_control_pb2.ReqMotorServiceJoystickStop(), 14008, 6)
+            except Exception:
+                pass
+            message = motor_control_pb2.ReqMotorServiceJoystickFixedAngle()
+            message.vector_angle = float(args[0]) if args else 0.0
+            message.vector_length = max(0.0, min(1.0, float(args[1]))) if len(args) > 1 else 0.0
+            return send_without_response(message, 14007, 6)
         return send_without_response(motor_control_pb2.ReqMotorServiceJoystickStop(), 14008, 6)
     if operation == "center_tap":
         nx = float(args[0]) if args else 0.5
@@ -3396,10 +3407,10 @@ def execute(message: dict[str, Any]) -> None:
 
 
 def enqueue_command(message: dict[str, Any], priority: int = _PRIORITY_NORMAL) -> None:
-    """Queue a command; keep only the newest joystick vector before a move or stop."""
+    """Queue a command; keep only the newest joystick vector before a move, stop, or nudge."""
     command = message.get("command")
     superseded: list[dict[str, Any]] = []
-    if command in ("joystick", "stop_motors"):
+    if command in ("joystick", "stop_motors", "joystick_nudge"):
         with _commands.mutex:
             retained = []
             for item in _commands.queue:

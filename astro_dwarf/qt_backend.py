@@ -3222,6 +3222,15 @@ class AppBackend(QObject):
             worker.send("stop_motors")
 
     @Slot(str, float, float)
+    def joystickNudge(self, device_id: str, angle: float, speed: float) -> None:
+        self._joystick_pending.pop(device_id, None)
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            return
+        vector = (float(angle), max(0.0, min(1.0, float(speed))))
+        worker.send("joystick_nudge", {"args": list(vector)})
+
+    @Slot(str, float, float)
     @Slot(str, float, float, str)
     def centerOnTap(self, device_id: str, nx: float, ny: float, diag: str = "") -> None:
         """Slew so the tapped wide-view pixel is sent as Dual Lenses Locating.

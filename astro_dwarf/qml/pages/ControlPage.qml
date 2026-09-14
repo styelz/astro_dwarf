@@ -2028,15 +2028,22 @@ Item {
                                 return "PRIMED"
                             if (!cameraAllowed)
                                 return "TELE ONLY"
-                            if (!modeAllowed)
+                            if (!modeAllowed) {
+                                if (!root.scopeOnline)
+                                    return modelData.detail
                                 return modelData.mode === "both" || cameraPanel.shootingMode === "—"
                                     ? "SELECT PHOTO OR DSO"
                                     : "SWITCH TO " + String(modelData.mode).toUpperCase()
+                            }
                             if (!activeForState) {
                                 if (modelData.state === "autofocus")
-                                    return cameraPanel.shootingMode === "—" ? "SELECT PHOTO OR DSO" : cameraPanel.shootingMode + " · OPTICS"
+                                    return cameraPanel.photoMode || cameraPanel.dsoMode
+                                        ? cameraPanel.shootingMode + " · OPTICS"
+                                        : modelData.detail
                                 if (modelData.state === "infinity")
-                                    return cameraPanel.shootingMode === "—" ? "SWITCH TO DSO" : cameraPanel.shootingMode + " · FOCUS"
+                                    return cameraPanel.dsoMode
+                                        ? cameraPanel.shootingMode + " · FOCUS"
+                                        : modelData.detail
                                 return modelData.detail
                             }
                             switch (modelData.state) {
@@ -2156,8 +2163,8 @@ Item {
                         Item {
                             id: analogPad
                         anchors.centerIn: parent
-                        width: 108
-                        height: 108
+                        width: 96
+                        height: 96
                         property real stickDx: 0
                         property real stickDy: 0
                         property bool moving: false
@@ -2167,10 +2174,11 @@ Item {
                         property bool keyDown: false
                         readonly property real maxThrow: width / 2 - 15
                         readonly property real deadzone: 0.15
+                        readonly property bool nudgesEnabled: root.motionEnabled && !motionPanel.stacking && !stickArea.pressed && !moving
                         activeFocusOnTab: root.motionEnabled && !motionPanel.stacking
                         Accessible.name: "Mount joystick"
                         Accessible.role: Accessible.Dial
-                        Accessible.description: "Arrow keys slew the mount. Release to stop."
+                        Accessible.description: "Arrow keys slew the mount. Ring arrows nudge a preset step. Release to stop."
                         Keys.onPressed: (event) => {
                             if (!root.motionEnabled || motionPanel.stacking || event.isAutoRepeat)
                                 return
@@ -2228,7 +2236,7 @@ Item {
                             if (angle < 0)
                                 angle += 360
                             moving = true
-                            backend.joystick(backend.selectedDeviceId, angle, amount * root.joySpeed)
+                            backend.joystick(backend.selectedDeviceId, angle, amount * root.mappedJoySpeed)
                         }
 
                         function applyKeySlew() {
@@ -2253,6 +2261,13 @@ Item {
                             stickDy = 0
                             moving = false
                             backend.stopMotors(backend.selectedDeviceId)
+                        }
+
+                        function nudge(angle) {
+                            if (!analogPad.nudgesEnabled)
+                                return
+                            analogPad.forceActiveFocus()
+                            backend.joystickNudge(backend.selectedDeviceId, angle, root.mappedJoySpeed)
                         }
 
                         Rectangle {
@@ -2353,6 +2368,62 @@ Item {
                             }
                         }
                     }
+                        Repeater {
+                            model: [
+                                {heading: 90, name: "north", dx: 0, dy: -1},
+                                {heading: 0, name: "east", dx: 1, dy: 0},
+                                {heading: 270, name: "south", dx: 0, dy: 1},
+                                {heading: 180, name: "west", dx: -1, dy: 0}
+                            ]
+                            delegate: Item {
+                                required property var modelData
+                                width: 16
+                                height: 16
+                                x: analogPad.x + analogPad.width / 2 + modelData.dx * (analogPad.width / 2 + width / 2) - width / 2
+                                y: analogPad.y + analogPad.height / 2 + modelData.dy * (analogPad.height / 2 + height / 2) - height / 2
+                                z: 2
+                                Accessible.name: "Nudge " + modelData.name
+                                Accessible.role: Accessible.Button
+                                Accessible.description: "Nudge " + modelData.name + " at " + root.mappedJoySpeedText
+                                Canvas {
+                                    id: chevron
+                                    anchors.centerIn: parent
+                                    width: 9
+                                    height: 9
+                                    readonly property color ink: analogPad.nudgesEnabled
+                                        ? (nudgeArea.containsMouse ? Theme.accentSoft : Theme.accent)
+                                        : Theme.outlineStrong
+                                    readonly property real heading: modelData.heading
+                                    onInkChanged: requestPaint()
+                                    onHeadingChanged: requestPaint()
+                                    onPaint: {
+                                        const ctx = getContext("2d")
+                                        ctx.reset()
+                                        ctx.translate(width / 2, height / 2)
+                                        ctx.rotate((90 - heading) * Math.PI / 180)
+                                        ctx.fillStyle = "" + ink
+                                        ctx.beginPath()
+                                        ctx.moveTo(0, -4.5)
+                                        ctx.lineTo(3.6, 3.2)
+                                        ctx.lineTo(-3.6, 3.2)
+                                        ctx.closePath()
+                                        ctx.fill()
+                                    }
+                                }
+                                MouseArea {
+                                    id: nudgeArea
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    enabled: analogPad.nudgesEnabled
+                                    cursorShape: analogPad.nudgesEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                    onClicked: analogPad.nudge(modelData.heading)
+                                }
+                                HudToolTip {
+                                    visible: nudgeArea.containsMouse && analogPad.nudgesEnabled
+                                    text: "Nudge " + modelData.name + " · " + root.mappedJoySpeedText
+                                }
+                            }
+                        }
                     }
                     StackTimer {
                         id: stackTimer
@@ -2385,12 +2456,20 @@ Item {
                         Layout.fillWidth: true
                         enabled: root.motionEnabled
                         Accessible.name: "Slew speed"
-                        from: 0.03
+                        from: 0
                         to: 1
-                        value: 1
+                        value: root.joySpeed
                         onMoved: root.joySpeed = value
                         background: Rectangle { x: speedSlider.leftPadding; y: speedSlider.topPadding + speedSlider.availableHeight / 2 - 2; implicitHeight: 4; width: speedSlider.availableWidth; color: Theme.inputBg; Rectangle { width: speedSlider.visualPosition * parent.width; height: parent.height; color: Theme.accent } }
                         handle: Rectangle { x: speedSlider.leftPadding + speedSlider.visualPosition * (speedSlider.availableWidth - 12); y: speedSlider.topPadding + speedSlider.availableHeight / 2 - 6; width: 12; height: 12; radius: 6; color: Theme.accent }
+                    }
+                    Text {
+                        text: root.mappedJoySpeedText
+                        color: Theme.textPrimary
+                        font.pixelSize: 10
+                        font.family: Theme.fontMono
+                        Layout.preferredWidth: 42
+                        horizontalAlignment: Text.AlignRight
                     }
                 }
                 RowLayout {

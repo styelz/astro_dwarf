@@ -49,6 +49,17 @@ ApplicationWindow {
     readonly property int mediaPageIndex: 4
     readonly property int settingsPageIndex: 5
     property real joySpeed: 1
+    readonly property real joyMin: 0.004
+    readonly property real mappedJoySpeed: {
+        const t = Math.max(0, Math.min(1, joySpeed))
+        return joyMin * Math.pow(1 / joyMin, t)
+    }
+    readonly property string mappedJoySpeedText: {
+        const pct = mappedJoySpeed * 100
+        if (pct < 9.95)
+            return pct.toFixed(1) + "%"
+        return Math.round(pct) + "%"
+    }
     readonly property bool targetLocked: backend.selectedDevice.connected && backend.currentSession.status === "running"
     readonly property bool dataPage: currentPage !== 0
     readonly property bool scopeOnline: !!(backend.selectedDevice && backend.selectedDevice.connected)
