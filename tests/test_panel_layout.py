@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 from PySide6.QtCore import QCoreApplication, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuick import QQuickItem
 from PySide6.QtTest import QTest
 
 from astro_dwarf.runtime import package_root
@@ -56,6 +57,11 @@ Window {
         return saved + ">" + scrambled + ">" + snapshot() + ">" + ok + ":" + restored
     }
 
+    function resetLayout() {
+        PanelSwap.resetToDefault()
+        return snapshot()
+    }
+
     HudSplitView {
         id: columns
         settingsKey: "controlColumns"
@@ -98,6 +104,7 @@ Window {
         PanelSwap.registerSplit(center)
         PanelSwap.registerSplit(right)
         PanelSwap.store.panelOrderJson = ""
+        PanelSwap.captureDefaults()
     }
 }
 """
@@ -128,6 +135,11 @@ class PanelLayoutTests(unittest.TestCase):
         cls.win = cls.engine.rootObjects()[0]
         cls.warnings = warnings
 
+    def setUp(self):
+        if self.win.snapshot() != "a,b|c|d":
+            self.win.resetLayout()
+        self.assertEqual(self.win.snapshot(), "a,b|c|d")
+
     def test_qml_loads_clean(self):
         unexpected = [w for w in self.warnings if "SplitView state" in w or "Keys property" in w]
         self.assertEqual(unexpected, [])
@@ -137,6 +149,12 @@ class PanelLayoutTests(unittest.TestCase):
         self.assertEqual(self.win.moveAIntoCenter(), "b|c,a|d")
         result = str(self.win.persistRestore())
         self.assertEqual(result, "b|c,a|d>a,b|c|d>b|c,a|d>true:true")
+
+    def test_reset_restores_stock_order(self):
+        self.assertEqual(self.win.moveAIntoCenter(), "b|c,a|d")
+        self.assertEqual(self.win.resetLayout(), "a,b|c|d")
+        menu = self.win.findChild(QQuickItem, "resetControlLayout")
+        self.assertIsNotNone(menu)
 
 
 if __name__ == "__main__":

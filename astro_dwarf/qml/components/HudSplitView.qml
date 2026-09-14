@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
@@ -12,6 +13,8 @@ SplitView {
     id: splitView
     property string settingsKey: ""
     property bool autoRestore: true
+    readonly property bool controlLayoutSplit: splitView.settingsKey === "controlColumns"
+        || PanelSwap.columnKeys.indexOf(splitView.settingsKey) >= 0
 
     Settings {
         id: splitStore
@@ -61,6 +64,14 @@ SplitView {
         implicitWidth: 8
         implicitHeight: 8
         color: SplitHandle.pressed ? Theme.glowAccent : (SplitHandle.hovered ? Theme.hsl(0.039, 0.535, 0.253, 0.13) : "transparent")
+        TapHandler {
+            acceptedButtons: Qt.RightButton
+            enabled: splitView.controlLayoutSplit
+            onTapped: layoutMenu.popup()
+        }
+        LayoutContextMenu {
+            id: layoutMenu
+        }
         Rectangle {
             anchors.centerIn: parent
             width: parent.width >= parent.height ? 22 : 2

@@ -30,6 +30,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QImage
 
+from .screen_color import ScreenColorPicker
 from .version import __version__
 from .domain import (
     Camera,
@@ -704,6 +705,7 @@ class AppBackend(QObject):
             self.store.save_app_settings(self._settings)
         self._log_model = LogListModel(self)
         self._log_model.countsChanged.connect(self.logCountsChanged)
+        self._screen_color = ScreenColorPicker(self)
         self._show_debug_logs = False
         self._workers: dict[str, TelescopeProcess] = {}
         self._active_sessions: dict[str, str] = {}
@@ -1667,6 +1669,10 @@ class AppBackend(QObject):
     @Property(QObject, constant=True)
     def logModel(self) -> LogListModel:
         return self._log_model
+
+    @Property(QObject, constant=True)
+    def screenColor(self) -> ScreenColorPicker:
+        return self._screen_color
 
     @Slot(result=str)
     def allLogText(self) -> str:
@@ -6093,6 +6099,10 @@ class AppBackend(QObject):
         if self._shut_down:
             return
         self._shut_down = True
+        try:
+            self._screen_color.cancel()
+        except RuntimeError:
+            pass
         try:
             self.timer.stop()
         except RuntimeError:

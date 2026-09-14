@@ -2,36 +2,44 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Window
 import ".."
 import "../components"
 
-// In-window HSV picker. QtQuick.Dialogs ColorDialog uses a native Windows
-// chooser that can open as a dead modal overlay (clicks do nothing; Escape
-// is the only way out) when launched from the settings Flickable.
+// Compact HUD colour modal. The MDL2 pipette samples a screen pixel; while
+// it is live the veil lifts so the rest of the console stays visible.
 Dialog {
     id: pick
     objectName: "colourPick"
     property string roleName: "COLOUR"
     property color selectedColor: Theme.accent
     property color _original: Theme.accent
+    property color _dropSaved: Theme.accent
+    property var screenPicker: null
     property real hue: Theme.defaultHue
     property real sat: 0.8
     property real val: 0.8
     readonly property color currentColor: Qt.hsva(Theme.wrapHue(pick.hue), pick.sat, pick.val, 1)
     readonly property string currentHex: Theme.colorToHex(pick.currentColor)
+    readonly property bool dropping: !!(pick.screenPicker && pick.screenPicker.picking)
 
-    modal: true
+    modal: !pick.dropping
+    dim: !pick.dropping
     popupType: Popup.Item
     parent: Overlay.overlay
     anchors.centerIn: Overlay.overlay
-    closePolicy: Popup.CloseOnEscape
+    closePolicy: pick.dropping ? Popup.NoAutoClose : Popup.CloseOnEscape
     header: null
     footer: null
-    padding: Theme.s4
-    width: 360
+    padding: Theme.s3
+    width: 292
     height: body.implicitHeight + padding * 2
     background: DialogFrame {}
-    Overlay.modal: Rectangle { color: Theme.scrim }
+    Overlay.modal: Rectangle {
+        color: Qt.rgba(Theme.windowBase.r, Theme.windowBase.g, Theme.windowBase.b, 0.32)
+    }
+    opacity: pick.dropping ? 0 : 1
+    enabled: !pick.dropping
 
     function syncFrom(col) {
         pick._original = col
@@ -67,6 +75,22 @@ Dialog {
         pick.pickHue(hueBar.height * Math.max(0, Math.min(1, ny)))
     }
 
+    function applyLive(col) {
+        if (col === undefined || col === null)
+            return
+        const h = col.hsvHue
+        pick.hue = h >= 0 ? Theme.wrapHue(h) : pick.hue
+        pick.sat = Math.max(0, Math.min(1, col.hsvSaturation))
+        pick.val = Math.max(0, Math.min(1, col.hsvValue))
+    }
+
+    function beginDrop() {
+        if (!pick.screenPicker || pick.dropping)
+            return
+        pick._dropSaved = pick.currentColor
+        pick.screenPicker.start()
+    }
+
     onAboutToShow: {
         if (Overlay.overlay)
             pick.parent = Overlay.overlay
@@ -75,22 +99,72 @@ Dialog {
         pick.syncFrom(pick.selectedColor)
         plane.forceActiveFocus()
     }
+    onClosed: {
+        if (pick.screenPicker && pick.screenPicker.picking)
+            pick.screenPicker.cancel()
+    }
+
+    Connections {
+        target: pick.screenPicker
+        function onSampleChanged() {
+            if (pick.dropping)
+                pick.applyLive(pick.screenPicker.sample)
+        }
+        function onPicked(col) { pick.applyLive(col) }
+        function onCancelled() { pick.applyLive(pick._dropSaved) }
+    }
 
     contentItem: ColumnLayout {
         id: body
-        spacing: Theme.s3
+        spacing: Theme.s2
 
-        Text {
-            text: "PICK " + pick.roleName
-            color: Theme.accent
-            font.pixelSize: Theme.fontLg
-            font.letterSpacing: Theme.tracking2
-            Accessible.name: "Pick " + pick.roleName
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Theme.s2
+
+            Text {
+                Layout.fillWidth: true
+                text: "PICK " + pick.roleName
+                color: Theme.accent
+                font.pixelSize: Theme.fontLg
+                font.letterSpacing: Theme.tracking2
+                elide: Text.ElideRight
+                Accessible.name: "Pick " + pick.roleName
+            }
+            HudButton {
+                id: dropperBtn
+                objectName: "colourSample"
+                Layout.preferredWidth: implicitWidth
+                Layout.preferredHeight: Theme.controlHeight
+                text: "DROP"
+                enabled: !!pick.screenPicker
+                tooltip: "Eyedropper. Click a pixel on screen. Escape cancels."
+                accessibleDescription: "Sample a colour from anywhere on screen. Click a pixel, Escape cancels."
+                onClicked: pick.beginDrop()
+                contentItem: Row {
+                    spacing: 6
+                    leftPadding: 2
+                    rightPadding: 2
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "\uEF3C"
+                        font.family: Theme.fontIcon
+                        font.pixelSize: 14
+                        color: dropperBtn.enabled || dropperBtn.isBusy ? dropperBtn.foregroundColor : Theme.textSecondary
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: dropperBtn.isBusy && dropperBtn.busyText !== "" ? dropperBtn.busyText : dropperBtn.text
+                        color: dropperBtn.enabled || dropperBtn.isBusy ? dropperBtn.foregroundColor : Theme.textSecondary
+                        font: dropperBtn.font
+                    }
+                }
+            }
         }
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: Theme.s3
+            spacing: Theme.s2
 
             Item {
                 id: plane
@@ -261,7 +335,7 @@ Dialog {
             HudField {
                 id: hexField
                 objectName: "colourHex"
-                Layout.preferredWidth: 120
+                Layout.preferredWidth: 108
                 font.family: Theme.fontMono
                 maximumLength: 7
                 accessibleName: pick.roleName + " hex colour"
@@ -287,7 +361,7 @@ Dialog {
             }
 
             Rectangle {
-                Layout.preferredWidth: 36
+                Layout.preferredWidth: Theme.controlHeight
                 Layout.preferredHeight: Theme.controlHeight
                 radius: 2
                 color: pick._original
@@ -295,13 +369,8 @@ Dialog {
                 Accessible.name: "Previous " + pick.roleName
                 Accessible.description: Theme.colorToHex(pick._original)
             }
-            Text {
-                text: "→"
-                color: Theme.textSecondary
-                font.pixelSize: Theme.fontMd
-            }
             Rectangle {
-                Layout.preferredWidth: 36
+                Layout.preferredWidth: Theme.controlHeight
                 Layout.preferredHeight: Theme.controlHeight
                 radius: 2
                 color: pick.currentColor
@@ -329,6 +398,44 @@ Dialog {
                 foregroundColor: Theme.accent
                 accessibleDescription: "Set " + pick.roleName + " to " + pick.currentHex
                 onClicked: pick.commit()
+            }
+        }
+    }
+
+    Window {
+        id: sampleLoupe
+        visible: pick.dropping
+        flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
+        width: 108
+        height: 36
+        x: (pick.screenPicker ? pick.screenPicker.cursorX : 0) + 20
+        y: (pick.screenPicker ? pick.screenPicker.cursorY : 0) + 20
+        color: "transparent"
+        title: ""
+        Rectangle {
+            anchors.fill: parent
+            color: Theme.surface
+            border.color: Theme.accent
+            border.width: 1
+            radius: 2
+            Row {
+                anchors.fill: parent
+                anchors.margins: 4
+                spacing: 8
+                Rectangle {
+                    width: 28
+                    height: 28
+                    radius: 2
+                    color: pick.currentColor
+                    border.color: Theme.outline
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: pick.currentHex
+                    color: Theme.textPrimary
+                    font.family: Theme.fontMono
+                    font.pixelSize: Theme.fontSm
+                }
             }
         }
     }

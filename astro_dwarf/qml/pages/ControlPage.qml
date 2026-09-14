@@ -38,6 +38,7 @@ Item {
         PanelSwap.registerSplit(controlCenter)
         PanelSwap.registerSplit(controlRight)
         Qt.callLater(function() {
+            PanelSwap.captureDefaults()
             PanelSwap.restore()
             controlPage.layoutReady = true
         })

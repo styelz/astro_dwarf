@@ -419,6 +419,24 @@ ColumnLayout {
                             colourPick.open()
                         }
                     }
+                    HudButton {
+                        text: "\uEF3C"
+                        font.family: Theme.fontIcon
+                        font.pixelSize: 15
+                        font.letterSpacing: 0
+                        implicitWidth: Theme.controlHeight
+                        implicitHeight: Theme.controlHeight
+                        leftPadding: 0
+                        rightPadding: 0
+                        tooltip: "Eyedropper. Sample a pixel on screen, then APPLY."
+                        accessibleDescription: "Eyedropper. Sample a colour from the screen."
+                        onClicked: {
+                            colourPick.roleName = iface.tintRoleName
+                            colourPick.selectedColor = Theme.colorFor(iface.tintRole)
+                            colourPick.open()
+                            Qt.callLater(colourPick.beginDrop)
+                        }
+                    }
                     Item { Layout.fillWidth: true }
                 }
                 FieldLabel { text: "HUE" }
@@ -610,6 +628,7 @@ ColumnLayout {
 
     ColorPickDialog {
         id: colourPick
+        screenPicker: backend.screenColor
         onAccepted: Theme.applyColor(iface.tintRole, selectedColor)
     }
 }

@@ -12,6 +12,7 @@ VitalTile 1.0 VitalTile.qml
 HudMenu 1.0 HudMenu.qml
 HudMenuItem 1.0 HudMenuItem.qml
 HudMenuSeparator 1.0 HudMenuSeparator.qml
+LayoutContextMenu 1.0 LayoutContextMenu.qml
 SessionContextMenu 1.0 SessionContextMenu.qml
 MediaContextMenu 1.0 MediaContextMenu.qml
 MoveDeviceMenu 1.0 MoveDeviceMenu.qml

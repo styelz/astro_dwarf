@@ -17,6 +17,8 @@ QtObject {
 
     property var panels: []
     property var splits: ({})
+    property var defaultSplitStates: ({})
+    property bool defaultsCaptured: false
 
     property Settings store: Settings {
         id: orderStore
@@ -53,6 +55,11 @@ QtObject {
         const home = coord.ancestorWith(panel, function(n) { return !!(n && n.settingsKey) })
         if (home && home.settingsKey)
             panel.swapHome = home.settingsKey
+        if (panel.swapHomeIndex < 0) {
+            const split = coord.ancestorSplit(panel)
+            panel.swapHomeIndex = coord.indexOfItem(split, panel)
+            panel.swapDefaultProps = coord.captureProps(panel)
+        }
         const next = coord.panels.slice()
         next.push(panel)
         coord.panels = next
@@ -403,6 +410,71 @@ QtObject {
                 return false
         }
         return ids.length > 0
+    }
+
+    function captureDefaults() {
+        if (coord.defaultsCaptured)
+            return
+        const keys = coord.columnKeys.concat(["controlColumns"])
+        const next = {}
+        for (let k = 0; k < keys.length; k++) {
+            const key = keys[k]
+            const split = coord.splits[key]
+            if (!split)
+                continue
+            next[key] = {
+                attached: key === "controlColumns" ? null : coord.captureProps(split),
+                state: split.saveState ? split.saveState() : null
+            }
+        }
+        coord.defaultSplitStates = next
+        coord.defaultsCaptured = true
+    }
+
+    function resetToDefault() {
+        coord.cancel()
+        const list = coord.panels.slice()
+        const movable = []
+        for (let i = 0; i < list.length; i++) {
+            const panel = list[i]
+            if (!panel || !panel.movable || !panel.panelId)
+                continue
+            movable.push(panel)
+            const current = coord.ancestorSplit(panel)
+            if (current)
+                coord.takeFrom(current, panel)
+        }
+        movable.sort(function (a, b) {
+            const ha = String(a.swapHome || "")
+            const hb = String(b.swapHome || "")
+            if (ha !== hb)
+                return ha < hb ? -1 : 1
+            return Number(a.swapHomeIndex) - Number(b.swapHomeIndex)
+        })
+        for (let i = 0; i < movable.length; i++) {
+            const panel = movable[i]
+            const split = coord.splits[panel.swapHome]
+            if (!split)
+                continue
+            coord.insertAt(split, panel, split.count)
+            if (panel.swapDefaultProps)
+                coord.applyProps(panel, panel.swapDefaultProps)
+        }
+        const keys = coord.columnKeys.concat(["controlColumns"])
+        for (let k = 0; k < keys.length; k++) {
+            const key = keys[k]
+            const split = coord.splits[key]
+            const saved = coord.defaultSplitStates[key]
+            if (!split || !saved)
+                continue
+            if (key !== "controlColumns" && saved.attached)
+                coord.applyProps(split, saved.attached)
+            if (saved.state && split.restoreState)
+                split.restoreState(saved.state)
+        }
+        coord.discardSavedLayout()
+        coord.persist()
+        return true
     }
 
     function discardSavedLayout() {

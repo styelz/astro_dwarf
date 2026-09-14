@@ -28,6 +28,7 @@ ApplicationWindow {
     color: "#111"
     property string acceptedHex: ""
     property bool opened: colourPick.visible
+    property bool pickerModal: colourPick.modal
 
     function openPick(hex) {
         colourPick.roleName = "ACCENT"
@@ -104,6 +105,12 @@ class ColorPickTests(unittest.TestCase):
         self.assertFalse(self.warnings)
         joined = " ".join(self.warnings)
         self.assertNotIn("Keys property", joined)
+
+    def test_picker_is_modal_with_eyedropper(self):
+        self.assertTrue(bool(self.win.property("pickerModal")))
+        sample = self.win.findChild(QQuickItem, "colourSample")
+        self.assertIsNotNone(sample)
+        self.assertEqual(str(sample.property("text")), "DROP")
 
     def test_clicking_the_plane_changes_colour(self):
         self.win.openPick("#333333")

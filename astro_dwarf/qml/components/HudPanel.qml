@@ -20,6 +20,8 @@ Item {
     property bool movable: panelId !== ""
     property string moveLabel: heading.text
     property string swapHome: ""
+    property int swapHomeIndex: -1
+    property var swapDefaultProps: null
     property string dropMode: ""
     property bool moveStarted: false
     property bool hot: false          // set by callers for the "active" panel; hover also lights it
@@ -60,6 +62,11 @@ Item {
             return
         }
         PanelSwap.update(panel.mapPoint(item, mouse.x, mouse.y))
+    }
+    function openLayoutMenu() {
+        if (!panel.movable)
+            return
+        layoutMenu.popup()
     }
 
     Component.onCompleted: {
@@ -177,19 +184,29 @@ Item {
                     enabled: panel.movable && !DragCoordinator.active
                     hoverEnabled: true
                     preventStealing: true
-                    acceptedButtons: Qt.LeftButton
-                    cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-                    onPressed: (mouse) => { dragHandle.pressPos = Qt.point(mouse.x, mouse.y) }
-                    onPositionChanged: (mouse) => { if (pressed) panel.dragMoved(dragHandle, mouse) }
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    cursorShape: pressed && (pressedButtons & Qt.LeftButton) ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                    onPressed: (mouse) => {
+                        if (mouse.button === Qt.RightButton) {
+                            panel.openLayoutMenu()
+                            mouse.accepted = true
+                            return
+                        }
+                        dragHandle.pressPos = Qt.point(mouse.x, mouse.y)
+                    }
+                    onPositionChanged: (mouse) => {
+                        if (mouse.buttons & Qt.LeftButton)
+                            panel.dragMoved(dragHandle, mouse)
+                    }
                     onReleased: (mouse) => {
-                        if (panel.moveStarted)
+                        if (mouse.button === Qt.LeftButton && panel.moveStarted)
                             panel.finishMoveAt(dragHandle, mouse.x, mouse.y)
                     }
                     onCanceled: panel.cancelMove()
                 }
                 HudToolTip {
                     visible: panel.movable && headerMove.containsMouse && !headerMove.pressed && !PanelSwap.active
-                    text: "Drag onto a panel to swap, or onto an edge to insert"
+                    text: "Drag onto a panel to swap, or onto an edge to insert. Right-click to reset the layout."
                 }
             }
             Row {
@@ -273,19 +290,29 @@ Item {
             enabled: edgeHandle.visible && !DragCoordinator.active
             hoverEnabled: true
             preventStealing: true
-            acceptedButtons: Qt.LeftButton
-            cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-            onPressed: (mouse) => { edgeHandle.pressPos = Qt.point(mouse.x, mouse.y) }
-            onPositionChanged: (mouse) => { if (pressed) panel.dragMoved(edgeHandle, mouse) }
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            cursorShape: pressed && (pressedButtons & Qt.LeftButton) ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+            onPressed: (mouse) => {
+                if (mouse.button === Qt.RightButton) {
+                    panel.openLayoutMenu()
+                    mouse.accepted = true
+                    return
+                }
+                edgeHandle.pressPos = Qt.point(mouse.x, mouse.y)
+            }
+            onPositionChanged: (mouse) => {
+                if (mouse.buttons & Qt.LeftButton)
+                    panel.dragMoved(edgeHandle, mouse)
+            }
             onReleased: (mouse) => {
-                if (panel.moveStarted)
+                if (mouse.button === Qt.LeftButton && panel.moveStarted)
                     panel.finishMoveAt(edgeHandle, mouse.x, mouse.y)
             }
             onCanceled: panel.cancelMove()
         }
         HudToolTip {
             visible: edgeHandle.visible && edgeMove.containsMouse && !edgeMove.pressed && !PanelSwap.active
-            text: "Drag onto a panel to swap, or onto an edge to insert"
+            text: "Drag onto a panel to swap, or onto an edge to insert. Right-click to reset the layout."
         }
     }
     Rectangle {
@@ -306,5 +333,8 @@ Item {
         width: parent.width
         y: panel.dropMode === "after" ? parent.height - height : 0
         color: Theme.accent
+    }
+    LayoutContextMenu {
+        id: layoutMenu
     }
 }
