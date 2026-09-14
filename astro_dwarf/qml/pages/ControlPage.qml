@@ -30,6 +30,14 @@ Item {
             controlPage.selectedUpcomingIds = Util.pruneIdSet(controlPage.selectedUpcomingIds, backend.upcomingSessions)
         }
     }
+    Component.onCompleted: {
+        PanelSwap.host = controlPage
+        PanelSwap.registerSplit(controlColumns)
+        PanelSwap.registerSplit(controlLeft)
+        PanelSwap.registerSplit(controlCenter)
+        PanelSwap.registerSplit(controlRight)
+        PanelSwap.restore()
+    }
     HudSplitView {
         id: controlColumns
         settingsKey: "controlColumns"
@@ -44,6 +52,7 @@ Item {
             SplitView.minimumWidth: 196
 
             HudPanel {
+                panelId: "status"
                 title: "SYSTEM STATUS"
                 SplitView.preferredHeight: 180
                 SplitView.minimumHeight: 120
@@ -156,6 +165,7 @@ Item {
 
             HudPanel {
                 id: vitalsPanel
+                panelId: "vitals"
                 title: "VITALS"
                 SplitView.preferredHeight: 262
                 SplitView.minimumHeight: 150
@@ -289,6 +299,7 @@ Item {
 
             HudPanel {
                 id: targetPanel
+                panelId: "target"
                 title: "TARGET"
                 SplitView.preferredHeight: 140
                 SplitView.minimumHeight: 80
@@ -466,6 +477,7 @@ Item {
 
             HudPanel {
                 id: cameraPanel
+                panelId: "camera"
                 title: "CAMERA"
                 SplitView.fillHeight: true
                 SplitView.minimumHeight: 120
@@ -899,6 +911,8 @@ Item {
             SplitView.minimumWidth: 280
 
             HudPanel {
+                panelId: "preview"
+                moveLabel: "LIVE VIEW"
                 SplitView.fillHeight: true
                 SplitView.minimumHeight: 150
                 fill: Theme.popupBg
@@ -1924,6 +1938,7 @@ Item {
             }
 
             HudPanel {
+                panelId: "commands"
                 title: "COMMANDS"
                 SplitView.preferredHeight: 244
                 SplitView.minimumHeight: 140
@@ -2132,6 +2147,7 @@ Item {
 
             HudPanel {
                 id: motionPanel
+                panelId: "motion"
                 title: motionPanel.stacking ? "STACK" : "MOTION"
                 hot: motionPanel.stacking
                 readonly property bool stacking: root.scopeOnline && !!root.scopeTelemetry.capture_active
@@ -2506,6 +2522,7 @@ Item {
             }
 
             HudPanel {
+                panelId: "upcoming"
                 title: "UP NEXT"
                 SplitView.preferredHeight: 110
                 SplitView.minimumHeight: 72
@@ -2682,6 +2699,8 @@ Item {
 
             HudPanel {
                 id: logPanel
+                panelId: "log"
+                moveLabel: "LIVE LOG"
                 readonly property bool compactChrome: width < 420
                 title: width < 280 ? "" : "LIVE LOG"
                 SplitView.fillHeight: true
@@ -2986,6 +3005,30 @@ Item {
                     }
                 }
             }
+        }
+    }
+    Rectangle {
+        id: panelDragProxy
+        visible: PanelSwap.active
+        enabled: false
+        z: 4000
+        x: PanelSwap.pos.x + 12
+        y: PanelSwap.pos.y + 12
+        width: proxyLabel.implicitWidth + 16
+        height: 22
+        radius: Theme.radius
+        color: Theme.fillActive
+        border.color: Theme.accent
+        border.width: 1
+        Text {
+            id: proxyLabel
+            anchors.centerIn: parent
+            text: PanelSwap.source ? (PanelSwap.source.moveLabel || "PANEL") : ""
+            color: Theme.accent
+            font.pixelSize: 9
+            font.bold: true
+            font.letterSpacing: 1.2
+            font.family: Theme.fontMono
         }
     }
     SessionContextMenu {

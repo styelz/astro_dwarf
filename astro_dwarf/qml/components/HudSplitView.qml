@@ -28,6 +28,11 @@ SplitView {
             splitStore.setValue(splitView.settingsKey, splitView.saveState())
     }
 
+    function clearSaved() {
+        if (splitView.settingsKey !== "")
+            splitStore.setValue(splitView.settingsKey, "")
+    }
+
     Timer {
         interval: 1
         running: true

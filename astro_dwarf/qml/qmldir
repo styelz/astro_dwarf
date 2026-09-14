@@ -1,3 +1,4 @@
 singleton Theme 1.0 Theme.qml
 singleton Util 1.0 Util.qml
 singleton DragCoordinator 1.0 DragCoordinator.qml
+singleton PanelSwap 1.0 PanelSwap.qml

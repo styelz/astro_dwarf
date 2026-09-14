@@ -16,9 +16,57 @@ Item {
     implicitHeight: (headerRow.visible ? headerRow.implicitHeight + 17 : 0) + body.implicitHeight + 24
     clip: true
 
+    property string panelId: ""
+    property bool movable: panelId !== ""
+    property string moveLabel: heading.text
+    property string swapHome: ""
+    property string dropMode: ""
+    property bool moveStarted: false
     property bool hot: false          // set by callers for the "active" panel; hover also lights it
-    readonly property bool lit: hot || panelHover.hovered
+    readonly property bool dropTarget: dropMode === "swap"
+    readonly property bool lit: hot || panelHover.hovered || panel.dropTarget || panel.dropMode === "before" || panel.dropMode === "after"
+    readonly property bool dragging: PanelSwap.source === panel
     HoverHandler { id: panelHover }
+
+    function mapPoint(item, x, y) {
+        const host = PanelSwap.host
+        if (!host || !item)
+            return Qt.point(0, 0)
+        return item.mapToItem(host, x, y)
+    }
+    function beginMoveAt(item, x, y) {
+        panel.moveStarted = true
+        PanelSwap.begin(panel, panel.mapPoint(item, x, y))
+    }
+    function finishMoveAt(item, x, y) {
+        if (!panel.moveStarted)
+            return
+        panel.moveStarted = false
+        PanelSwap.finish(panel.mapPoint(item, x, y))
+    }
+    function cancelMove() {
+        if (!panel.moveStarted)
+            return
+        panel.moveStarted = false
+        PanelSwap.cancel()
+    }
+    function dragMoved(item, mouse) {
+        const dx = mouse.x - item.pressPos.x
+        const dy = mouse.y - item.pressPos.y
+        if (!panel.moveStarted) {
+            if (dx * dx + dy * dy < 36)
+                return
+            panel.beginMoveAt(item, mouse.x, mouse.y)
+            return
+        }
+        PanelSwap.update(panel.mapPoint(item, mouse.x, mouse.y))
+    }
+
+    Component.onCompleted: {
+        if (panel.panelId !== "")
+            PanelSwap.register(panel)
+    }
+    Component.onDestruction: PanelSwap.unregister(panel)
 
     Rectangle { anchors.fill: parent; color: panel.fill }
     // inner vignette: a lit top edge fading into the body
@@ -83,16 +131,66 @@ Item {
             visible: heading.text.length || headerExtraRow.children.length
             Layout.fillWidth: true
             spacing: 8
-            Text {
-                id: heading
-                visible: text.length
-                color: panel.titleColor
-                font.pixelSize: 11
-                font.letterSpacing: 1.6
-                font.bold: true
-                elide: Text.ElideRight
+            Item {
+                id: dragHandle
+                objectName: panel.panelId !== "" ? "panelDrag-" + panel.panelId : ""
                 Layout.fillWidth: true
                 Layout.minimumWidth: 0
+                Layout.preferredHeight: Math.max(heading.implicitHeight, 14)
+                Accessible.role: Accessible.Button
+                Accessible.name: "Move " + (panel.moveLabel || heading.text || "panel")
+                Accessible.description: "Drag onto another panel to swap, or onto an edge to insert"
+                property point pressPos: Qt.point(0, 0)
+                Row {
+                    id: handleRow
+                    anchors.fill: parent
+                    spacing: 6
+                    Item {
+                        id: grip
+                        visible: panel.movable
+                        width: visible ? 8 : 0
+                        height: parent.height
+                        readonly property color dot: headerMove.pressed || headerMove.containsMouse ? Theme.accent : Theme.textSecondary
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: 2
+                            Row { spacing: 2; Rectangle { width: 2; height: 2; color: grip.dot } Rectangle { width: 2; height: 2; color: grip.dot } }
+                            Row { spacing: 2; Rectangle { width: 2; height: 2; color: grip.dot } Rectangle { width: 2; height: 2; color: grip.dot } }
+                            Row { spacing: 2; Rectangle { width: 2; height: 2; color: grip.dot } Rectangle { width: 2; height: 2; color: grip.dot } }
+                        }
+                    }
+                    Text {
+                        id: heading
+                        visible: text.length
+                        width: visible ? Math.max(0, handleRow.width - grip.width - (grip.visible ? handleRow.spacing : 0)) : 0
+                        color: panel.titleColor
+                        font.pixelSize: 11
+                        font.letterSpacing: 1.6
+                        font.bold: true
+                        elide: Text.ElideRight
+                    }
+                }
+                MouseArea {
+                    id: headerMove
+                    anchors.fill: parent
+                    z: 10
+                    enabled: panel.movable && !DragCoordinator.active
+                    hoverEnabled: true
+                    preventStealing: true
+                    acceptedButtons: Qt.LeftButton
+                    cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                    onPressed: (mouse) => { dragHandle.pressPos = Qt.point(mouse.x, mouse.y) }
+                    onPositionChanged: (mouse) => { if (pressed) panel.dragMoved(dragHandle, mouse) }
+                    onReleased: (mouse) => {
+                        if (panel.moveStarted)
+                            panel.finishMoveAt(dragHandle, mouse.x, mouse.y)
+                    }
+                    onCanceled: panel.cancelMove()
+                }
+                HudToolTip {
+                    visible: panel.movable && headerMove.containsMouse && !headerMove.pressed && !PanelSwap.active
+                    text: "Drag onto a panel to swap, or onto an edge to insert"
+                }
             }
             Row {
                 id: headerExtraRow
@@ -138,7 +236,75 @@ Item {
     }
     Item {
         id: overlayHost
-        anchors.fill: parent
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.top: parent.top
+        anchors.topMargin: headerRow.visible ? 12 + headerRow.height + 8 : 0
         z: 5
+    }
+    Item {
+        id: edgeHandle
+        visible: panel.movable && !headerRow.visible
+        z: 8
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: 14
+        objectName: panel.panelId !== "" ? "panelEdge-" + panel.panelId : ""
+        property point pressPos: Qt.point(0, 0)
+        Accessible.role: Accessible.Button
+        Accessible.name: "Move " + (panel.moveLabel || "panel")
+        Accessible.description: "Drag onto another panel to swap, or onto an edge to insert"
+        Row {
+            anchors.centerIn: parent
+            spacing: 3
+            readonly property color dot: edgeMove.pressed || edgeMove.containsMouse ? Theme.accent : Theme.textSecondary
+            readonly property real dim: edgeMove.pressed || edgeMove.containsMouse ? 0.95 : 0.45
+            Rectangle { width: 3; height: 3; radius: 1; color: parent.dot; opacity: parent.dim }
+            Rectangle { width: 3; height: 3; radius: 1; color: parent.dot; opacity: parent.dim }
+            Rectangle { width: 3; height: 3; radius: 1; color: parent.dot; opacity: parent.dim }
+            Rectangle { width: 3; height: 3; radius: 1; color: parent.dot; opacity: parent.dim }
+            Rectangle { width: 3; height: 3; radius: 1; color: parent.dot; opacity: parent.dim }
+        }
+        MouseArea {
+            id: edgeMove
+            anchors.fill: parent
+            enabled: edgeHandle.visible && !DragCoordinator.active
+            hoverEnabled: true
+            preventStealing: true
+            acceptedButtons: Qt.LeftButton
+            cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+            onPressed: (mouse) => { edgeHandle.pressPos = Qt.point(mouse.x, mouse.y) }
+            onPositionChanged: (mouse) => { if (pressed) panel.dragMoved(edgeHandle, mouse) }
+            onReleased: (mouse) => {
+                if (panel.moveStarted)
+                    panel.finishMoveAt(edgeHandle, mouse.x, mouse.y)
+            }
+            onCanceled: panel.cancelMove()
+        }
+        HudToolTip {
+            visible: edgeHandle.visible && edgeMove.containsMouse && !edgeMove.pressed && !PanelSwap.active
+            text: "Drag onto a panel to swap, or onto an edge to insert"
+        }
+    }
+    Rectangle {
+        anchors.fill: parent
+        anchors.topMargin: headerRow.visible ? 12 + headerRow.height + 8 : (panel.movable ? 14 : 0)
+        z: 20
+        enabled: false
+        visible: panel.dragging || panel.dropMode === "swap"
+        color: panel.dropMode === "swap" ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.12) : Qt.rgba(0, 0, 0, 0.22)
+        border.color: panel.dropMode === "swap" ? Theme.accent : Theme.outlineStrong
+        border.width: panel.dropMode === "swap" ? 2 : 1
+    }
+    Rectangle {
+        z: 21
+        enabled: false
+        visible: panel.dropMode === "before" || panel.dropMode === "after"
+        height: 3
+        width: parent.width
+        y: panel.dropMode === "after" ? parent.height - height : 0
+        color: Theme.accent
     }
 }
