@@ -67,6 +67,7 @@ _PRIORITY_NORMAL = 1
 _connected = threading.Event()
 _connecting = threading.Event()
 _connect_cancel = threading.Event()
+_discover_cancel = threading.Event()
 _session_active = threading.Event()
 _session_phase: str | None = None
 _stop_phase: str | None = None
@@ -1126,7 +1127,7 @@ def _run_async(factory):
         if remaining <= 0:
             raise TimeoutError("Bluetooth operation timed out")
         thread.join(timeout=min(0.2, remaining))
-        if _stop.is_set() or _connect_cancel.is_set():
+        if _stop.is_set() or _connect_cancel.is_set() or _discover_cancel.is_set():
             raise InterruptedError("Connection cancelled")
     if "error" in result:
         raise result["error"]
@@ -1152,15 +1153,20 @@ def _ble_name_key(name: str) -> str:
     return (name or "").replace(" ", "").replace("-", "_").upper()
 
 
-def _pick_ble_device(devices: list[Any], model: str) -> Any:
+def _ble_devices_for_model(devices: list[Any], model: str) -> list[Any]:
     prefixes = _BLE_NAME_PREFIXES.get(model, ())
     matches = [
         device
         for device in devices
         if any(_ble_name_key(device.name).startswith(prefix) for prefix in prefixes)
     ]
-    chosen = (matches or devices)[0]
-    if len(matches or devices) > 1:
+    return matches or list(devices)
+
+
+def _pick_ble_device(devices: list[Any], model: str) -> Any:
+    chosen_list = _ble_devices_for_model(devices, model)
+    chosen = chosen_list[0]
+    if len(chosen_list) > 1:
         log(f"Several Dwarf Bluetooth devices found; using {chosen.name}")
     return chosen
 
@@ -1309,6 +1315,7 @@ async def _ble_wifi_session(
     sta_ssid: str,
     sta_password: str,
     preferred: str = "auto",
+    on_log: Any = None,
 ) -> dict[str, Any]:
     from bleak import BleakClient
     from dwarf_ble_connect.lib.dwarf_lib_ble import DWARF_CHARACTERISTIC_UUID
@@ -1318,6 +1325,7 @@ async def _ble_wifi_session(
         set_wifi_STA_message,
     )
 
+    report = on_log or log
     replies: dict[int, dict[str, Any]] = {}
     wanted = {"cmd": 1}
     ready = asyncio.Event()
@@ -1353,10 +1361,10 @@ async def _ble_wifi_session(
         current_ssid = str(config.get("ssid") or "").strip()
         wifi_mode = config.get("wifi_mode")
         mode_name = {1: "AP", 2: "STA"}.get(wifi_mode, f"mode {wifi_mode}")
-        log(f"Telescope Wi-Fi is {mode_name}" + (f" ({current_ssid} at {current_ip})" if current_ip else ""))
+        report(f"Telescope Wi-Fi is {mode_name}" + (f" ({current_ssid} at {current_ip})" if current_ip else ""))
 
         async def start_hotspot() -> dict[str, Any]:
-            log("Starting telescope hotspot…")
+            report("Starting telescope hotspot…")
             try:
                 ap = await write_and_wait(_set_wifi_ap_message(ble_password), 2, 15)
             except TimeoutError:
@@ -1369,6 +1377,9 @@ async def _ble_wifi_session(
                 "wifi_mode": 1,
             }
 
+        if preferred == "read":
+            return {"ip_address": current_ip, "ssid": current_ssid, "wifi_mode": wifi_mode}
+
         if preferred == "ap":
             if wifi_mode == 1:
                 return {"ip_address": current_ip or "192.168.88.1", "ssid": current_ssid, "wifi_mode": 1}
@@ -1380,7 +1391,7 @@ async def _ble_wifi_session(
                     "Station mode needs the router's Wi-Fi name and password. "
                     "Do not enter the Dwarf hotspot name."
                 )
-            log(f"Asking the telescope to join {sta_ssid}…")
+            report(f"Asking the telescope to join {sta_ssid}…")
             try:
                 sta = await write_and_wait(
                     set_wifi_STA_message(1, ble_password, sta_ssid, sta_password),
@@ -1401,6 +1412,92 @@ async def _ble_wifi_session(
             await client.disconnect()
         except Exception:
             pass
+
+
+def ble_wifi_mode(wifi_mode: Any, ip: str = "", ssid: str = "") -> str:
+    if wifi_mode in (1, "1", "ap", "AP"):
+        return "ap"
+    if wifi_mode in (2, "2", "sta", "STA"):
+        return "sta"
+    ip_text = str(ip or "").strip()
+    if ip_text == "192.168.88.1" or _is_dwarf_hotspot(str(ssid or "")):
+        return "ap"
+    if ip_text:
+        return "sta"
+    return "auto"
+
+
+def nearby_dwarf_record(
+    name: str,
+    address: str = "",
+    state: dict[str, Any] | None = None,
+    error: str = "",
+) -> dict[str, Any]:
+    state = state or {}
+    ip = str(state.get("ip_address") or "").strip()
+    ssid = str(state.get("ssid") or "").strip()
+    mode = ble_wifi_mode(state.get("wifi_mode"), ip, ssid)
+    router = "" if mode == "ap" or _is_dwarf_hotspot(ssid) else ssid
+    return {
+        "name": str(name or "").strip(),
+        "address": str(address or "").strip(),
+        "model": device_name_model(name),
+        "ip_address": ip,
+        "wifi_mode": mode,
+        "wifi_ssid": router,
+        "error": str(error or "").strip(),
+    }
+
+
+def cancel_nearby_discovery() -> None:
+    _discover_cancel.set()
+
+
+def discover_nearby_dwarfs(
+    ble_password: str = "DWARF_12345678",
+    model: str = "",
+    on_log: Any = None,
+) -> list[dict[str, Any]]:
+    try:
+        from dwarf_ble_connect.lib.dwarf_lib_ble import discover_dwarf_devices
+    except ImportError as exc:
+        raise RuntimeError("Bluetooth support is not available in this install") from exc
+
+    report = on_log or log
+    password = str(ble_password or "DWARF_12345678")
+    _discover_cancel.clear()
+    report("Scanning Bluetooth for nearby telescopes…")
+    with contextlib.redirect_stdout(sys.stderr):
+        found = _run_async(discover_dwarf_devices)
+    if _discover_cancel.is_set():
+        raise InterruptedError("Connection cancelled")
+    devices = (found or {}).get("dwarf_devices") or []
+    if found and found.get("error"):
+        raise RuntimeError(f"Bluetooth scan failed: {found['error']}")
+    if not devices:
+        raise RuntimeError("No Dwarf found over Bluetooth. Power it on and keep it near this computer.")
+
+    names = ", ".join(device.name or device.address for device in devices)
+    report(f"Bluetooth found: {names}")
+    chosen = _ble_devices_for_model(devices, str(model or ""))
+    items: list[dict[str, Any]] = []
+    for dwarf in chosen:
+        if _discover_cancel.is_set():
+            raise InterruptedError("Connection cancelled")
+        label = dwarf.name or dwarf.address
+        report(f"Reading Wi-Fi from {label}…")
+        try:
+            with contextlib.redirect_stdout(sys.stderr):
+                state = _run_async(
+                    lambda item=dwarf: _ble_wifi_session(item, password, "", "", "read", on_log=report)
+                )
+            items.append(nearby_dwarf_record(dwarf.name, dwarf.address, state))
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            report(str(exc), "warning")
+            items.append(nearby_dwarf_record(dwarf.name, dwarf.address, error=str(exc)))
+    return items
 
 
 def _mark_disconnected() -> None:

@@ -658,6 +658,8 @@ class AppBackend(QObject):
     logCountsChanged = Signal()
     locationLookupReady = Signal("QVariantMap")
     locationLookupBusyChanged = Signal()
+    deviceDiscoveryReady = Signal("QVariantList")
+    deviceDiscoveryBusyChanged = Signal()
     _asyncResult = Signal(str, object)
     uiBusyChanged = Signal()
     previewActiveChanged = Signal()
@@ -778,6 +780,8 @@ class AppBackend(QObject):
         self._center_tap_token: dict[str, int] = {}
         self._ui_busy = ""
         self._location_lookup_busy = False
+        self._device_discovery_busy = False
+        self._device_discovery_token = 0
         self._asyncResult.connect(self._handle_async_result)
         self._sync_shared_device_fields()
         for device in self._devices:
@@ -2925,6 +2929,17 @@ class AppBackend(QObject):
         self._location_lookup_busy = on
         self.locationLookupBusyChanged.emit()
 
+    @Property(bool, notify=deviceDiscoveryBusyChanged)
+    def deviceDiscoveryBusy(self) -> bool:
+        return self._device_discovery_busy
+
+    def _set_device_discovery_busy(self, busy: bool) -> None:
+        on = bool(busy)
+        if on == self._device_discovery_busy:
+            return
+        self._device_discovery_busy = on
+        self.deviceDiscoveryBusyChanged.emit()
+
     def _set_ui_busy(self, operation: str) -> None:
         if self._ui_busy == operation:
             return
@@ -3404,17 +3419,27 @@ class AppBackend(QObject):
             model = current.model if current else DeviceModel.DWARF_3
             if values.get("model"):
                 model = DeviceModel(values["model"])
+            try:
+                wifi_mode = WifiMode(str(values.get("wifi_mode") or WifiMode.AUTO).lower())
+            except ValueError:
+                wifi_mode = WifiMode.AUTO
+            ssid = str(values.get("wifi_ssid") or "").strip()
+            if wifi_mode == WifiMode.AP:
+                ssid = ""
             device = Device(
-                name=f"Dwarf {len(self._devices) + 1}",
+                name=str(values.get("name") or "").strip() or f"Dwarf {len(self._devices) + 1}",
                 color=colors[len(self._devices) % len(colors)],
                 model=model,
-                ip_address="",
+                ip_address=str(values.get("ip_address") or "").strip(),
                 timezone_name=timezone_name,
                 latitude=latitude,
                 longitude=longitude,
                 location_configured=has_site_coordinates(latitude, longitude),
                 observing_day_cutoff_hour=self._cutoff_hour(),
                 stellarium_url=self._settings.stellarium_url,
+                wifi_mode=wifi_mode,
+                wifi_ssid=ssid,
+                ble_password=str(values.get("ble_password") or "DWARF_12345678"),
             )
             self.store.devices.save(device)
             self._devices.append(device)
@@ -4581,6 +4606,52 @@ class AppBackend(QObject):
             return False
 
     @Slot(str)
+    def discoverNearbyDevice(self, payload: str) -> None:
+        if self._device_discovery_busy:
+            self._toast("Bluetooth discovery is still running", "warning")
+            return
+        try:
+            values = json.loads(payload or "{}")
+        except Exception:
+            values = {}
+        if not isinstance(values, dict):
+            values = {}
+        ble_password = str(values.get("ble_password") or "DWARF_12345678")
+        model = str(values.get("model") or "")
+        self._device_discovery_token += 1
+        token = self._device_discovery_token
+        self._set_device_discovery_busy(True)
+
+        def on_log(message: str, level: str = "info") -> None:
+            self._asyncResult.emit(
+                "deviceDiscoverLog",
+                (True, {"token": token, "level": level, "message": message}),
+            )
+
+        def work() -> None:
+            try:
+                from .device_worker import discover_nearby_dwarfs
+
+                found = discover_nearby_dwarfs(ble_password=ble_password, model=model, on_log=on_log)
+                self._asyncResult.emit("deviceDiscover", (True, {"token": token, "devices": found}))
+            except InterruptedError:
+                self._asyncResult.emit("deviceDiscover", (True, {"token": token, "cancelled": True, "devices": []}))
+            except Exception as exc:
+                self._asyncResult.emit("deviceDiscover", (False, {"token": token, "error": str(exc)}))
+
+        threading.Thread(target=work, daemon=True, name="dwarf-discover").start()
+
+    @Slot()
+    def cancelNearbyDiscovery(self) -> None:
+        if not self._device_discovery_busy:
+            return
+        self._device_discovery_token += 1
+        from .device_worker import cancel_nearby_discovery
+
+        cancel_nearby_discovery()
+        self._set_device_discovery_busy(False)
+
+    @Slot(str)
     def lookupLocation(self, query: str) -> None:
         text = query.strip()
         if not text:
@@ -5686,6 +5757,30 @@ class AppBackend(QObject):
                 self._toast(str(value), "warning")
                 return
             self.locationLookupReady.emit(value)
+            return
+        if operation == "deviceDiscoverLog":
+            payload = value if isinstance(value, dict) else {}
+            if payload.get("token") != self._device_discovery_token:
+                return
+            self.add_log(str(payload.get("level") or "info"), str(payload.get("message") or ""))
+            return
+        if operation == "deviceDiscover":
+            payload = value if isinstance(value, dict) else {"error": str(value), "devices": []}
+            if payload.get("token") != self._device_discovery_token:
+                return
+            self._set_device_discovery_busy(False)
+            if payload.get("cancelled"):
+                return
+            if not ok:
+                self._toast(str(payload.get("error") or "Bluetooth discovery failed"), "error")
+                return
+            devices = payload.get("devices") or []
+            self.deviceDiscoveryReady.emit(devices)
+            if not devices:
+                self._toast("No Dwarf found over Bluetooth", "warning")
+            else:
+                count = len(devices)
+                self._toast(f"Found {count} telescope{'s' if count != 1 else ''}", "success")
             return
         self._set_ui_busy("")
         if not ok:
