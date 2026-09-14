@@ -275,6 +275,9 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        // Break the startup size bindings so maximize / restore can own geometry.
+        root.width = root.width
+        root.height = root.height
         DragCoordinator.contentItem = root.contentItem
         DragCoordinator.proxy = sessionDragProxy
         DragCoordinator.timeline = calendarPage

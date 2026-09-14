@@ -62,6 +62,24 @@ Window {
         return snapshot()
     }
 
+    function sizes() {
+        return Math.round(left.width) + "," + Math.round(panelA.height)
+    }
+
+    function setNonFill(lw, ah) {
+        left.SplitView.preferredWidth = lw
+        panelA.SplitView.preferredHeight = ah
+        Qt.callLater(function() {
+            columns.captureLocked()
+            left.captureLocked()
+        })
+    }
+
+    function corruptNonFill(lw, ah) {
+        left.SplitView.preferredWidth = lw
+        panelA.SplitView.preferredHeight = ah
+    }
+
     HudSplitView {
         id: columns
         settingsKey: "controlColumns"
@@ -136,6 +154,8 @@ class PanelLayoutTests(unittest.TestCase):
         cls.warnings = warnings
 
     def setUp(self):
+        self.win.setWidth(720)
+        self.win.setHeight(480)
         if self.win.snapshot() != "a,b|c|d":
             self.win.resetLayout()
         self.assertEqual(self.win.snapshot(), "a,b|c|d")
@@ -155,6 +175,41 @@ class PanelLayoutTests(unittest.TestCase):
         self.assertEqual(self.win.resetLayout(), "a,b|c|d")
         menu = self.win.findChild(QQuickItem, "resetControlLayout")
         self.assertIsNotNone(menu)
+
+    def test_nonfill_sizes_survive_window_resize(self):
+        self.win.setNonFill(220, 180)
+        QTest.qWait(80)
+        self.assertEqual(self.win.sizes(), "220,180")
+        self.win.setWidth(1400)
+        self.win.setHeight(900)
+        QTest.qWait(80)
+        self.assertEqual(self.win.sizes(), "220,180")
+        self.win.setWidth(720)
+        self.win.setHeight(480)
+        QTest.qWait(80)
+        self.assertEqual(self.win.sizes(), "220,180")
+        self.win.setWidth(1400)
+        self.win.setHeight(900)
+        QTest.qWait(80)
+        self.assertEqual(self.win.sizes(), "220,180")
+        self.win.setWidth(720)
+        self.win.setHeight(480)
+        QTest.qWait(80)
+        self.assertEqual(self.win.sizes(), "220,180")
+
+    def test_locked_sizes_reapplied_after_preferred_corruption(self):
+        self.win.setNonFill(220, 180)
+        QTest.qWait(80)
+        self.win.corruptNonFill(360, 260)
+        QTest.qWait(30)
+        self.win.setWidth(1400)
+        self.win.setHeight(900)
+        QTest.qWait(80)
+        self.assertEqual(self.win.sizes(), "220,180")
+        self.win.setWidth(720)
+        self.win.setHeight(480)
+        QTest.qWait(80)
+        self.assertEqual(self.win.sizes(), "220,180")
 
 
 if __name__ == "__main__":
