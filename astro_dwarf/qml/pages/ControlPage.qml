@@ -998,6 +998,8 @@ Item {
                     }
                     readonly property bool previewFailed: root.previewFailed
                     readonly property bool previewStartEnabled: backend.selectedDevice.connected && !root.scopeLinking && !root.scopeStopping && (!backend.previewActive || backend.previewPlaying || previewFailed)
+                    readonly property bool startBriefVisible: root.previewStarting && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack
+                    readonly property bool startBriefCompact: height < 280
                     readonly property string actionLabel: {
                         if (!backend.previewActive || backend.previewPlaying)
                             return "STARTING CAMERA…"
@@ -1271,7 +1273,7 @@ Item {
                     }
                     Image {
                         anchors.fill: parent
-                        visible: previewHost.idlePreviewArt
+                        visible: previewHost.idlePreviewArt && !previewHost.startBriefVisible
                         source: {
                             const model = String((backend.selectedDevice && backend.selectedDevice.model) || "")
                             if (model === "Dwarf II")
@@ -1447,9 +1449,10 @@ Item {
                         }
                     }
                     Column {
+                        z: 5
                         anchors.centerIn: parent
                         spacing: 8
-                        visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack
+                        visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.startBriefVisible
                         Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: Theme.textPrimary; font.pixelSize: 16; font.letterSpacing: 3; font.bold: true }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -1469,6 +1472,81 @@ Item {
                             buttonColor: Theme.fillActive
                             foregroundColor: Theme.accent
                             onClicked: previewHost.startPreview()
+                        }
+                    }
+                    Item {
+                        id: startBriefOverlay
+                        z: 5
+                        anchors.fill: parent
+                        visible: previewHost.startBriefVisible
+                        Accessible.name: previewHost.actionLabel + ". " + previewHost.statusText + ". Double-click the wide view to centre, then TRACK and STACK."
+                        Rectangle {
+                            anchors.fill: parent
+                            color: Theme.scrim
+                            opacity: 0.42
+                        }
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: Theme.s3
+                            width: Math.min(parent.width - 48, 440)
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: parent.width
+                                wrapMode: Text.Wrap
+                                horizontalAlignment: Text.AlignHCenter
+                                text: previewHost.actionLabel
+                                color: Theme.warning
+                                font.pixelSize: Theme.fontLg
+                                font.letterSpacing: 3
+                                font.bold: true
+                            }
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: parent.width
+                                wrapMode: Text.Wrap
+                                horizontalAlignment: Text.AlignHCenter
+                                text: previewHost.statusText
+                                color: Theme.textPrimary
+                                font.pixelSize: Theme.fontBase
+                            }
+                            Rectangle {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: 40
+                                height: 1
+                                color: Theme.outline
+                            }
+                            Repeater {
+                                model: [
+                                    {key: "DOUBLE-CLICK WIDE", detail: "Slew TELE onto the target"},
+                                    {key: "TRACK THEN STACK", detail: "Sidereal tracking, then capture"},
+                                    {key: "HOVER FOR CONTROLS", detail: "STOP, PIP, and SWAP — SWAP puts WIDE on the main view", extra: true}
+                                ]
+                                delegate: Column {
+                                    required property string key
+                                    required property string detail
+                                    property bool extra: false
+                                    visible: !extra || !previewHost.startBriefCompact
+                                    width: parent.width
+                                    spacing: 2
+                                    Text {
+                                        width: parent.width
+                                        text: key
+                                        color: Theme.accent
+                                        font.pixelSize: Theme.fontMd
+                                        font.bold: true
+                                        font.letterSpacing: Theme.tracking2
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
+                                    Text {
+                                        width: parent.width
+                                        text: detail
+                                        wrapMode: Text.Wrap
+                                        color: Theme.textSecondary
+                                        font.pixelSize: Theme.fontSm
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
+                                }
+                            }
                         }
                     }
                     Item {
