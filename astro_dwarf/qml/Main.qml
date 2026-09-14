@@ -24,6 +24,7 @@ ApplicationWindow {
     flags: Qt.Window | Qt.WindowTitleHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint | Qt.WindowSystemMenuHint
     readonly property bool windowMaximized: visibility === Window.Maximized
     onClosing: (close) => {
+        PanelSwap.persist()
         if (root.currentPage === root.settingsPageIndex && settingsPage.isDirty()) {
             close.accepted = false
             root.askLeaveSettings(-2, "")

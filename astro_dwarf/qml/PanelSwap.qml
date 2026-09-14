@@ -20,7 +20,7 @@ QtObject {
 
     property Settings store: Settings {
         id: orderStore
-        category: "controlLayout"
+        category: "panelLayout"
         property string panelOrderJson: ""
     }
 
@@ -347,8 +347,6 @@ QtObject {
                     const item = split.itemAt(i)
                     if (!item || !item.panelId || !item.movable || seen[item.panelId])
                         continue
-                    if (coord.ancestorSplit(item) !== split)
-                        continue
                     seen[item.panelId] = true
                     entries.push(coord.captureProps(item))
                 }
@@ -356,8 +354,19 @@ QtObject {
             out[key] = entries
         }
         if (!coord.layoutComplete(out))
-            return
+            return false
         orderStore.panelOrderJson = JSON.stringify(out)
+        coord.persistSplitSizes()
+        return true
+    }
+
+    function persistSplitSizes() {
+        const keys = coord.columnKeys.concat(["controlColumns"])
+        for (let k = 0; k < keys.length; k++) {
+            const split = coord.splits[keys[k]]
+            if (split && split.persist)
+                split.persist()
+        }
     }
 
     function collectedIds(saved) {
@@ -406,20 +415,32 @@ QtObject {
         }
     }
 
+    function restoreSplitSizes() {
+        const keys = coord.columnKeys.concat(["controlColumns"])
+        for (let k = 0; k < keys.length; k++) {
+            const split = coord.splits[keys[k]]
+            if (split && split.restore)
+                split.restore()
+        }
+    }
+
     function restore() {
         const raw = String(orderStore.panelOrderJson || "")
-        if (!raw)
-            return
+        if (!raw) {
+            coord.restoreSplitSizes()
+            return false
+        }
         let saved
         try {
             saved = JSON.parse(raw)
         } catch (e) {
-            coord.discardSavedLayout()
-            return
+            orderStore.panelOrderJson = ""
+            coord.restoreSplitSizes()
+            return false
         }
         if (!saved || typeof saved !== "object" || !coord.layoutComplete(saved)) {
-            coord.discardSavedLayout()
-            return
+            coord.restoreSplitSizes()
+            return false
         }
         const byId = {}
         const list = coord.panels
@@ -428,7 +449,14 @@ QtObject {
             if (panel && panel.panelId)
                 byId[panel.panelId] = panel
         }
-        const placed = {}
+        for (let i = 0; i < list.length; i++) {
+            const panel = list[i]
+            if (!panel || !panel.movable || !panel.panelId)
+                continue
+            const current = coord.ancestorSplit(panel)
+            if (current)
+                coord.takeFrom(current, panel)
+        }
         const keys = coord.columnKeys
         for (let k = 0; k < keys.length; k++) {
             const key = keys[k]
@@ -440,30 +468,13 @@ QtObject {
                 const entry = typeof entries[i] === "string" ? { id: entries[i] } : entries[i]
                 const id = entry && entry.id ? String(entry.id) : ""
                 const panel = byId[id]
-                if (!panel || placed[id])
+                if (!panel)
                     continue
-                const current = coord.ancestorSplit(panel)
-                if (current && current !== split)
-                    coord.takeFrom(current, panel)
                 coord.insertAt(split, panel, split.count)
-                let dest = 0
-                while (dest < split.count) {
-                    const occupant = split.itemAt(dest)
-                    if (occupant && occupant.panelId && occupant.movable && !placed[occupant.panelId])
-                        break
-                    dest++
-                }
-                const idx = coord.indexOfItem(split, panel)
-                if (idx >= 0 && idx !== dest && dest < split.count)
-                    split.moveItem(idx, dest)
                 coord.applyProps(panel, entry)
-                placed[id] = true
             }
         }
-        for (let k = 0; k < keys.length; k++) {
-            const split = coord.splits[keys[k]]
-            if (split && split.restore)
-                split.restore()
-        }
+        coord.restoreSplitSizes()
+        return true
     }
 }

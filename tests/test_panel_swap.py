@@ -135,6 +135,39 @@ Window {
         return hoverHit
     }
 
+    function persistThenRestore() {
+        const prev = split.settingsKey
+        split.settingsKey = "controlLeft"
+        PanelSwap.registerSplit(split)
+        PanelSwap.insertPanel(panelA, panelC, true)
+        const afterInsert = idsInSplit()
+        const n = split.count
+        resetOrder()
+        PanelSwap.restore()
+        const afterRestore = idsInSplit()
+        const restoredCount = split.count
+        PanelSwap.store.panelOrderJson = ""
+        split.settingsKey = prev
+        PanelSwap.registerSplit(split)
+        resetOrder()
+        return afterInsert + "|" + afterRestore + "|" + n + ":" + restoredCount
+    }
+
+    function restoreSameSplitKeepsCount() {
+        const prev = split.settingsKey
+        split.settingsKey = "controlLeft"
+        PanelSwap.registerSplit(split)
+        PanelSwap.persist()
+        const before = split.count
+        PanelSwap.restore()
+        const after = split.count
+        const ids = idsInSplit()
+        PanelSwap.store.panelOrderJson = ""
+        split.settingsKey = prev
+        PanelSwap.registerSplit(split)
+        return before + ":" + after + ":" + ids
+    }
+
     function restoreCorrupt() {
         PanelSwap.store.panelOrderJson = '{"controlLeft":[{"id":"a"}],"controlCenter":[{"id":"a"},{"id":"b"}],"controlRight":[]}'
         PanelSwap.restore()
@@ -212,6 +245,12 @@ class PanelSwapTests(unittest.TestCase):
     def test_corrupt_saved_order_is_ignored(self):
         self.assertEqual(self.win.restoreCorrupt(), "a,b,c")
         self.assertEqual(self.win.idsInSplit(), "a,b,c")
+
+    def test_restore_reapplies_insert_without_growing_split(self):
+        self.assertEqual(self.win.persistThenRestore(), "b,c,a|b,c,a|3:3")
+
+    def test_restore_same_split_keeps_count(self):
+        self.assertEqual(self.win.restoreSameSplitKeepsCount(), "3:3:a,b,c")
 
     def test_header_drag_swaps_panels(self):
         self.win.simulateDropById("a", "b", 0.5, 0.5)

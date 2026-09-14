@@ -102,6 +102,8 @@ class ColorPickTests(unittest.TestCase):
 
     def test_qml_loads_clean(self):
         self.assertFalse(self.warnings)
+        joined = " ".join(self.warnings)
+        self.assertNotIn("Keys property", joined)
 
     def test_clicking_the_plane_changes_colour(self):
         self.win.openPick("#333333")

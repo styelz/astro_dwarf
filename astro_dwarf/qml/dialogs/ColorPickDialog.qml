@@ -117,6 +117,9 @@ Dialog {
                     } else if (event.key === Qt.Key_Up) {
                         pick.val = Math.min(1, pick.val + step)
                         event.accepted = true
+                    } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        pick.commit()
+                        event.accepted = true
                     }
                 }
 
@@ -194,6 +197,9 @@ Dialog {
                         event.accepted = true
                     } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Left) {
                         pick.hue = Theme.wrapHue(pick.hue - step)
+                        event.accepted = true
+                    } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        pick.commit()
                         event.accepted = true
                     }
                 }
@@ -326,7 +332,4 @@ Dialog {
             }
         }
     }
-
-    Keys.onReturnPressed: pick.commit()
-    Keys.onEnterPressed: pick.commit()
 }

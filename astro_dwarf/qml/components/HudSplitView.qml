@@ -6,17 +6,25 @@ import ".."
 
 // SplitView that remembers its own sizes. Give it a settingsKey and it restores on
 // startup and saves when the window closes; no coordinator needs to know its id.
+// Set autoRestore false when a coordinator (PanelSwap) reorders children first —
+// restoreState warns and no-ops if the saved blob has more items than exist yet.
 SplitView {
     id: splitView
     property string settingsKey: ""
+    property bool autoRestore: true
 
     Settings {
         id: splitStore
         category: "splitLayout"
     }
 
+    readonly property string countKey: splitView.settingsKey === "" ? "" : splitView.settingsKey + "Count"
+
     function restore() {
         if (splitView.settingsKey === "")
+            return
+        const savedCount = Number(splitStore.value(splitView.countKey))
+        if (isFinite(savedCount) && savedCount > 0 && savedCount !== splitView.count)
             return
         const state = splitStore.value(splitView.settingsKey)
         if (state)
@@ -24,18 +32,22 @@ SplitView {
     }
 
     function persist() {
-        if (splitView.settingsKey !== "")
-            splitStore.setValue(splitView.settingsKey, splitView.saveState())
+        if (splitView.settingsKey === "")
+            return
+        splitStore.setValue(splitView.settingsKey, splitView.saveState())
+        splitStore.setValue(splitView.countKey, splitView.count)
     }
 
     function clearSaved() {
-        if (splitView.settingsKey !== "")
-            splitStore.setValue(splitView.settingsKey, "")
+        if (splitView.settingsKey === "")
+            return
+        splitStore.setValue(splitView.settingsKey, "")
+        splitStore.setValue(splitView.countKey, 0)
     }
 
     Timer {
         interval: 1
-        running: true
+        running: splitView.autoRestore
         repeat: false
         onTriggered: splitView.restore()
     }

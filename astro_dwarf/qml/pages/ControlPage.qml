@@ -30,23 +30,33 @@ Item {
             controlPage.selectedUpcomingIds = Util.pruneIdSet(controlPage.selectedUpcomingIds, backend.upcomingSessions)
         }
     }
+    property bool layoutReady: false
     Component.onCompleted: {
         PanelSwap.host = controlPage
         PanelSwap.registerSplit(controlColumns)
         PanelSwap.registerSplit(controlLeft)
         PanelSwap.registerSplit(controlCenter)
         PanelSwap.registerSplit(controlRight)
-        PanelSwap.restore()
+        Qt.callLater(function() {
+            PanelSwap.restore()
+            controlPage.layoutReady = true
+        })
     }
-    HudSplitView {
-        id: controlColumns
-        settingsKey: "controlColumns"
-        anchors.fill: parent
-        orientation: Qt.Horizontal
+    onVisibleChanged: {
+        if (controlPage.layoutReady && !controlPage.visible)
+            PanelSwap.persist()
+    }
+        HudSplitView {
+            id: controlColumns
+            settingsKey: "controlColumns"
+            autoRestore: false
+            anchors.fill: parent
+            orientation: Qt.Horizontal
 
         HudSplitView {
             id: controlLeft
             settingsKey: "controlLeft"
+            autoRestore: false
             orientation: Qt.Vertical
             SplitView.preferredWidth: 268
             SplitView.minimumWidth: 196
@@ -906,6 +916,7 @@ Item {
         HudSplitView {
             id: controlCenter
             settingsKey: "controlCenter"
+            autoRestore: false
             orientation: Qt.Vertical
             SplitView.fillWidth: true
             SplitView.minimumWidth: 280
@@ -2119,6 +2130,7 @@ Item {
         HudSplitView {
             id: controlRight
             settingsKey: "controlRight"
+            autoRestore: false
             orientation: Qt.Vertical
             SplitView.preferredWidth: 312
             SplitView.minimumWidth: 220
