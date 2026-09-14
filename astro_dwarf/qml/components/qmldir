@@ -27,6 +27,7 @@ FieldLabel 1.0 FieldLabel.qml
 FieldHint 1.0 FieldHint.qml
 SettingGroup 1.0 SettingGroup.qml
 PaletteSwatch 1.0 PaletteSwatch.qml
+ThemePresetChip 1.0 ThemePresetChip.qml
 ThemePreview 1.0 ThemePreview.qml
 HudSlider 1.0 HudSlider.qml
 HudSpinBox 1.0 HudSpinBox.qml

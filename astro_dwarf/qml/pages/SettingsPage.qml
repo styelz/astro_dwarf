@@ -5,6 +5,7 @@ import "../components"
 
 Item {
     id: settingsPage
+    objectName: "settingsPage"
     property string loadedDeviceId: ""
     property string loadedSnapshot: ""
     property bool applyingDeviceSelect: false

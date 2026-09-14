@@ -8,10 +8,12 @@ import "../components"
 // Console appearance: layout, named themes, and per-token colour matching.
 ColumnLayout {
     id: iface
+    objectName: "interfaceSettings"
     property int controlWidth: 320
     property string tintRole: "accent"
     property string matchSourceKey: "surface"
     property bool naming: false
+    property string testApplyId: ""
     spacing: Theme.s3
     Layout.fillWidth: true
     Layout.alignment: Qt.AlignTop | Qt.AlignLeft
@@ -52,19 +54,6 @@ ColumnLayout {
     readonly property string tintRoleName: Theme.roleName(iface.tintRole)
     readonly property string tintParentKey: Theme.parentOf(iface.tintRole)
     readonly property bool tintLinked: Theme.roleLinked(iface.tintRole)
-    readonly property var themeNames: {
-        void Theme.savedThemesJson
-        const list = Theme.listedThemes
-        const names = []
-        for (let i = 0; i < list.length; i++)
-            names.push(list[i].name)
-        return names
-    }
-    readonly property int themeIndex: {
-        void Theme.savedThemesJson
-        void Theme.activeThemeId
-        return Theme.themeIndexOf(Theme.activeThemeId)
-    }
     readonly property string themeStatus: {
         void Theme.savedThemesJson
         void Theme.activeThemeId
@@ -110,6 +99,27 @@ ColumnLayout {
     }
     readonly property bool seedRole: iface.tintRole === "windowBase"
     readonly property bool savedSlot: !Theme.isBuiltinId(Theme.activeThemeId)
+    readonly property bool colourSplit: iface.width >= 620
+    readonly property string probeThemeId: Theme.activeThemeId
+    readonly property string probeAccentHex: {
+        void Theme.paletteJson
+        void Theme.hue
+        void Theme.brightness
+        return Theme.colorToHex(Theme.accent)
+    }
+    readonly property string probeSnapshot: {
+        void Theme.savedThemesJson
+        void Theme.activeThemeId
+        void Theme.paletteJson
+        void Theme.hue
+        void Theme.brightness
+        return JSON.stringify({
+            id: Theme.activeThemeId,
+            hue: Theme.hue,
+            brightness: Theme.brightness,
+            paletteJson: Theme.paletteJson
+        })
+    }
 
     function confirmSaveAs() {
         const id = Theme.saveThemeAs(themeNameField.text)
@@ -127,13 +137,32 @@ ColumnLayout {
         themeNameField.selectAll()
     }
 
+    function applyListedTheme(id) {
+        Theme.applyTheme(id)
+        iface.naming = false
+    }
+
+    function restoreThemeSnapshot(json) {
+        try {
+            const snap = JSON.parse(json)
+            Theme.restoreSnapshot(snap.id, snap.hue, snap.brightness, snap.paletteJson)
+        } catch (exc) {
+        }
+        iface.naming = false
+    }
+
     onTintRoleChanged: {
         if (iface.matchSourceKey === iface.tintRole)
             iface.matchSourceKey = iface.tintRole === "accent" ? "surface" : "accent"
     }
 
+    onTestApplyIdChanged: {
+        if (iface.testApplyId)
+            iface.applyListedTheme(iface.testApplyId)
+    }
+
     FieldHint {
-        text: "How the console looks on this computer. Changes apply immediately and are remembered here, not on the telescope. Saved themes stay on this machine."
+        text: "Console look on this computer. Changes apply immediately and stay here, not on the telescope."
     }
 
     SettingGroup {
@@ -146,11 +175,11 @@ ColumnLayout {
             onActivated: layoutSettings.navBarOnTop = currentIndex === 1
             accessibleName: "Navigation button position"
         }
-        FieldHint { text: "Where the page tabs sit. Top keeps them under the device bar; Bottom leaves the header clear and puts them along the lower edge." }
+        FieldHint { text: "Top sits under the device bar. Bottom keeps the header clear." }
     }
 
     SettingGroup {
-        title: "THEMES"
+        title: "THEME"
         trailing: [
             HudChip {
                 label: iface.themeStatus
@@ -165,33 +194,46 @@ ColumnLayout {
                 anchors.verticalCenter: parent.verticalCenter
             }
         ]
-        FieldLabel { text: "PRESET" }
-        HudCombo {
-            id: themeCombo
-            Layout.preferredWidth: iface.controlWidth
-            model: iface.themeNames
-            accessibleName: "Saved theme"
-            accessibleDescription: "Apply a built-in or saved console theme"
-            onActivated: {
-                const list = Theme.listedThemes
-                if (currentIndex >= 0 && currentIndex < list.length)
-                    Theme.applyTheme(list[currentIndex].id)
-                iface.naming = false
+        FieldLabel { text: "PRESETS" }
+        Flow {
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.minimumWidth: 240
+            spacing: 6
+            Repeater {
+                model: Theme.listedThemes
+                delegate: ThemePresetChip {
+                    required property var modelData
+                    themeEntry: modelData
+                    selected: Theme.activeThemeId === modelData.id
+                    onClicked: iface.applyListedTheme(modelData.id)
+                }
             }
-            Binding {
-                target: themeCombo
-                property: "currentIndex"
-                value: iface.themeIndex
-                when: !themeCombo.popup.visible && iface.themeIndex >= 0
+            HudButton {
+                text: iface.naming ? "CANCEL" : "SAVE AS"
+                implicitHeight: 40
+                enabled: iface.naming || Theme.savedThemeCount < Theme.maxSavedThemes
+                accessibleDescription: iface.naming ? "Cancel saving a new theme" : "Save the current palette as a new theme"
+                onClicked: iface.naming ? iface.naming = false : iface.startSaveAs()
+            }
+            HudButton {
+                text: "STOCK"
+                implicitHeight: 40
+                visible: (iface.tintCustom || Theme.activeThemeId !== "stock") && !iface.naming
+                accessibleDescription: "Return every palette colour to stock cyan"
+                onClicked: Theme.resetPalette()
             }
         }
-        FieldHint { text: "Built-in starting points, then themes you have saved. Switching applies immediately. Edits stay on the selected slot until you update it, save a copy, or reset." }
-        FieldLabel { text: iface.naming ? "SAVE AS" : "NAME" }
+        FieldLabel {
+            visible: iface.naming || iface.savedSlot
+            text: iface.naming ? "SAVE AS" : "NAME"
+        }
         HudField {
             id: themeNameField
+            visible: iface.naming || iface.savedSlot
             Layout.preferredWidth: iface.controlWidth
             enabled: iface.naming || iface.savedSlot
-            placeholderText: iface.naming ? "Theme name" : "Built-in"
+            placeholderText: iface.naming ? "Theme name" : "Saved name"
             accessibleName: iface.naming ? "New theme name" : "Theme name"
             maximumLength: 40
             onEditingFinished: {
@@ -208,20 +250,32 @@ ColumnLayout {
             }
         }
         FieldHint {
+            visible: iface.naming || iface.savedSlot
             text: iface.naming
-                ? "Name this palette and confirm. Up to " + Theme.maxSavedThemes + " saved themes on this computer (" + Theme.savedThemeCount + " used)."
-                : iface.savedSlot
-                    ? "Rename the selected saved theme. Built-in presets keep their names."
-                    : "Built-in presets cannot be renamed. Save a copy to keep your edits."
+                ? "Name this look, then confirm. " + Theme.savedThemeCount + "/" + Theme.maxSavedThemes + " saved."
+                : "Rename this saved theme."
+        }
+        FieldLabel {
+            visible: iface.naming || (Theme.themeEdited && !!Theme.activeTheme) || iface.savedSlot
+            text: "ACTIONS"
         }
         RowLayout {
-            Layout.columnSpan: 3
+            visible: iface.naming || (Theme.themeEdited && !!Theme.activeTheme) || iface.savedSlot
             Layout.fillWidth: true
+            Layout.minimumWidth: 240
             spacing: 6
+            HudButton {
+                text: "CONFIRM"
+                implicitHeight: 28
+                visible: iface.naming
+                enabled: themeNameField.text.trim().length > 0
+                accessibleDescription: "Save the current palette under this name"
+                onClicked: iface.confirmSaveAs()
+            }
             HudButton {
                 text: "REVERT"
                 implicitHeight: 28
-                enabled: Theme.themeEdited && !!Theme.activeTheme
+                visible: Theme.themeEdited && !!Theme.activeTheme && !iface.naming
                 accessibleDescription: "Reload the selected theme and discard edits"
                 onClicked: {
                     Theme.applyTheme(Theme.activeThemeId)
@@ -231,52 +285,35 @@ ColumnLayout {
             HudButton {
                 text: "UPDATE"
                 implicitHeight: 28
-                enabled: iface.savedSlot && Theme.themeEdited && !iface.naming
+                visible: iface.savedSlot && Theme.themeEdited && !iface.naming
                 accessibleDescription: "Overwrite the selected saved theme with the current palette"
                 onClicked: Theme.updateTheme(Theme.activeThemeId)
             }
             HudButton {
-                text: iface.naming ? "CONFIRM" : "SAVE AS"
+                text: "DELETE"
                 implicitHeight: 28
-                enabled: iface.naming ? themeNameField.text.trim().length > 0 : Theme.savedThemeCount < Theme.maxSavedThemes
-                accessibleDescription: iface.naming ? "Save the current palette under this name" : "Save the current palette as a new theme"
-                onClicked: iface.naming ? iface.confirmSaveAs() : iface.startSaveAs()
-            }
-            HudButton {
-                text: iface.naming ? "CANCEL" : "DELETE"
-                implicitHeight: 28
-                enabled: iface.naming || iface.savedSlot
-                accessibleDescription: iface.naming ? "Cancel saving a new theme" : "Delete the selected saved theme"
-                onClicked: {
-                    if (iface.naming) {
-                        iface.naming = false
-                        return
-                    }
-                    Theme.deleteTheme(Theme.activeThemeId)
-                }
-            }
-            HudButton {
-                text: "RESET"
-                implicitHeight: 28
-                enabled: iface.tintCustom || Theme.activeThemeId !== "stock"
-                accessibleDescription: "Return every palette colour to stock cyan"
-                onClicked: {
-                    Theme.resetPalette()
-                    iface.naming = false
-                }
+                visible: iface.savedSlot && !iface.naming
+                accessibleDescription: "Delete the selected saved theme"
+                onClicked: Theme.deleteTheme(Theme.activeThemeId)
             }
             Item { Layout.fillWidth: true }
         }
         FieldHint {
+            visible: iface.naming || Theme.themeEdited || iface.savedSlot
+            text: iface.naming
+                ? "Confirm writes a new saved look. Cancel drops the name field."
+                : Theme.themeEdited
+                    ? "Edits are live. Revert reloads this look; Update writes over a saved one."
+                    : "Delete removes this saved look."
+        }
+        ThemePreview {
             Layout.columnSpan: 3
-            text: Theme.savedThemeCount >= Theme.maxSavedThemes
-                ? "Saved theme list is full. Delete one before saving another."
-                : "Update writes over a saved theme. Save as keeps a copy. Reset returns to stock cyan."
+            Layout.fillWidth: true
         }
     }
 
     SettingGroup {
-        title: "PALETTE"
+        title: "COLOURS"
         trailing: [
             HudChip {
                 label: iface.tintRoleName
@@ -290,289 +327,283 @@ ColumnLayout {
                 anchors.verticalCenter: parent.verticalCenter
             }
         ]
-        ColumnLayout {
+        GridLayout {
             Layout.columnSpan: 3
             Layout.fillWidth: true
-            spacing: Theme.s2
-            Repeater {
-                model: Theme.swatchGroups
-                delegate: ColumnLayout {
-                    id: groupBlock
-                    required property var modelData
-                    Layout.fillWidth: true
-                    spacing: 4
-                    Text {
-                        text: groupBlock.modelData.title
-                        color: Theme.muted
-                        font.pixelSize: Theme.fontXs
-                        font.bold: true
-                        font.letterSpacing: Theme.tracking2
-                    }
-                    RowLayout {
+            columns: iface.colourSplit ? 2 : 1
+            columnSpacing: Theme.s4
+            rowSpacing: Theme.s3
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignTop
+                Layout.minimumWidth: 260
+                spacing: Theme.s2
+                Repeater {
+                    model: Theme.swatchGroups
+                    delegate: ColumnLayout {
+                        id: groupBlock
+                        required property var modelData
                         Layout.fillWidth: true
-                        spacing: 6
-                        Repeater {
-                            model: groupBlock.modelData.keys
-                            delegate: PaletteSwatch {
-                                required property var modelData
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 40
-                                Layout.minimumWidth: 36
-                                roleKey: modelData.key
-                                roleName: modelData.name
-                                selected: iface.tintRole === modelData.key
-                                onClicked: iface.tintRole = modelData.key
-                                onResetRequested: Theme.clearRole(modelData.key)
+                        spacing: 4
+                        Text {
+                            text: groupBlock.modelData.title
+                            color: Theme.muted
+                            font.pixelSize: Theme.fontXs
+                            font.bold: true
+                            font.letterSpacing: Theme.tracking2
+                        }
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Repeater {
+                                model: groupBlock.modelData.keys
+                                delegate: PaletteSwatch {
+                                    required property var modelData
+                                    width: 56
+                                    roleKey: modelData.key
+                                    roleName: modelData.name
+                                    selected: iface.tintRole === modelData.key
+                                    onClicked: iface.tintRole = modelData.key
+                                    onResetRequested: Theme.clearRole(modelData.key)
+                                }
                             }
                         }
                     }
                 }
+                FieldHint {
+                    text: "Click a swatch to edit it. BASE tints unedited colours. Double-click restores one colour."
+                }
             }
-        }
-        FieldHint {
-            Layout.columnSpan: 3
-            text: "Click a swatch to edit it. BASE is the console seed: unedited colours, fills and the background art follow it. Amber dots are unlocked. Accent dots follow a parent. Double-click restores one colour. Success, warning and danger stay fixed so status still reads."
-        }
-    }
 
-    SettingGroup {
-        title: "COLOUR"
-        FieldLabel { text: "HEX" }
-        RowLayout {
-            Layout.preferredWidth: iface.controlWidth
-            Layout.fillWidth: true
-            Layout.minimumWidth: 240
-            spacing: 6
-            HudField {
-                id: hexField
+            GridLayout {
                 Layout.fillWidth: true
-                Layout.preferredWidth: 120
-                Layout.maximumWidth: 140
-                font.family: Theme.fontMono
-                maximumLength: 7
-                accessibleName: iface.tintRoleName + " hex colour"
-                validator: RegularExpressionValidator { regularExpression: /^#?[0-9A-Fa-f]{0,6}$/ }
-                onEditingFinished: {
-                    if (!Theme.applyHex(iface.tintRole, text))
-                        text = iface.tintHex
-                }
-                Binding {
-                    target: hexField
-                    property: "text"
-                    value: iface.tintHex
-                    when: !hexField.activeFocus
-                }
-            }
-            HudButton {
-                text: "PICK"
-                implicitHeight: Theme.controlHeight
-                accessibleDescription: "Open a colour picker for the selected swatch"
-                onClicked: {
-                    colourPick.selectedColor = Theme.colorFor(iface.tintRole)
-                    colourPick.open()
-                }
-            }
-        }
-        FieldHint { text: "Paste a #RRGGBB value or pick a colour to match an element. Hue, saturation and lightness are solved so this swatch lands on that colour." }
-        FieldLabel { text: "MATCH" }
-        RowLayout {
-            Layout.preferredWidth: iface.controlWidth
-            Layout.fillWidth: true
-            Layout.minimumWidth: 240
-            spacing: 6
-            HudCombo {
-                id: matchCombo
-                Layout.fillWidth: true
-                model: iface.matchNames
-                accessibleName: "Colour to match from"
-                onActivated: {
-                    if (currentIndex >= 0 && currentIndex < iface.matchKeys.length)
-                        iface.matchSourceKey = iface.matchKeys[currentIndex]
-                }
-                Binding {
-                    target: matchCombo
-                    property: "currentIndex"
-                    value: Math.max(0, iface.matchIndex)
-                    when: !matchCombo.popup.visible
-                }
-            }
-        }
-        FieldHint { text: "Choose another swatch, then copy only its hue (same family, keep this lightness) or the full colour." }
-        RowLayout {
-            Layout.columnSpan: 3
-            Layout.fillWidth: true
-            spacing: 6
-            HudButton {
-                text: "MATCH HUE"
-                implicitHeight: 28
-                enabled: iface.matchSourceKey !== iface.tintRole && iface.matchSourceKey !== ""
-                accessibleDescription: "Copy hue from the match source onto the selected swatch"
-                onClicked: Theme.matchHue(iface.tintRole, iface.matchSourceKey)
-            }
-            HudButton {
-                text: "MATCH COLOUR"
-                implicitHeight: 28
-                enabled: iface.matchSourceKey !== iface.tintRole && iface.matchSourceKey !== ""
-                accessibleDescription: "Copy the full colour from the match source onto the selected swatch"
-                onClicked: Theme.matchRole(iface.tintRole, iface.matchSourceKey)
-            }
-            HudButton {
-                text: "FOLLOW PARENT"
-                implicitHeight: 28
-                visible: iface.tintParentKey !== ""
-                enabled: !iface.tintLinked
-                accessibleDescription: "Let this colour follow " + Theme.roleName(iface.tintParentKey) + " again"
-                onClicked: Theme.clearRole(iface.tintRole)
-            }
-            HudButton {
-                text: "RESET SWATCH"
-                implicitHeight: 28
-                visible: iface.tintParentKey === ""
-                enabled: Theme.roleCustom(iface.tintRole)
-                accessibleDescription: "Restore the selected colour to stock"
-                onClicked: Theme.clearRole(iface.tintRole)
-            }
-            Item { Layout.fillWidth: true }
-        }
-        FieldHint {
-            Layout.columnSpan: 3
-            visible: iface.tintParentKey !== ""
-            text: iface.tintLinked
-                ? iface.tintRoleName + " follows " + Theme.roleName(iface.tintParentKey) + ". Editing hue, saturation or lightness unlocks it."
-                : iface.tintRoleName + " is unlocked from " + Theme.roleName(iface.tintParentKey) + ". Follow parent to hitch it again."
-        }
-        FieldLabel { text: "HUE" }
-        HudSlider {
-            id: hueSlider
-            Layout.fillWidth: true
-            Layout.preferredWidth: iface.controlWidth
-            Layout.minimumWidth: 240
-            from: 0
-            to: 1
-            stepSize: 0.001
-            onMoved: Theme.setRole(iface.tintRole, value, iface.tintBrightness)
-            markerPosition: iface.seedRole ? Theme.defaultHue : Theme.stockHue(iface.tintRole)
-            valueText: Math.round(iface.tintHue * 360) + "°"
-            accessibleName: iface.tintRoleName + " hue"
-            trackGradient: Gradient {
-                orientation: Gradient.Horizontal
-                GradientStop { position: 0.000; color: Qt.hsla(0.000, 0.9, 0.55, 1) }
-                GradientStop { position: 0.167; color: Qt.hsla(0.167, 0.9, 0.55, 1) }
-                GradientStop { position: 0.333; color: Qt.hsla(0.333, 0.9, 0.55, 1) }
-                GradientStop { position: 0.500; color: Qt.hsla(0.500, 0.9, 0.55, 1) }
-                GradientStop { position: 0.667; color: Qt.hsla(0.667, 0.9, 0.55, 1) }
-                GradientStop { position: 0.833; color: Qt.hsla(0.833, 0.9, 0.55, 1) }
-                GradientStop { position: 1.000; color: Qt.hsla(1.000, 0.9, 0.55, 1) }
-            }
-            Binding {
-                target: hueSlider
-                property: "value"
-                value: iface.tintHue
-                when: !hueSlider.pressed
-            }
-        }
-        FieldHint { text: iface.seedRole ? "Seed hue. Unedited swatches, Theme washes and the title bar follow this. The tick is stock cyan." : "Hue of the selected swatch. The tick is its stock position on the cyan HUD. Locked swatches stay put when BASE moves." }
-        FieldLabel { text: "SAT" }
-        HudSlider {
-            id: satSlider
-            Layout.fillWidth: true
-            Layout.preferredWidth: iface.controlWidth
-            Layout.minimumWidth: 240
-            from: 0
-            to: 1
-            stepSize: 0.01
-            onMoved: Theme.setRoleSat(iface.tintRole, value)
-            markerPosition: Theme.stockSat(iface.tintRole)
-            valueText: Math.round(iface.tintSat * 100) + "%"
-            accessibleName: iface.tintRoleName + " saturation"
-            trackGradient: Gradient {
-                orientation: Gradient.Horizontal
-                GradientStop { position: 0.0; color: Qt.hsla(iface.tintHue, 0, iface.tintLight, 1) }
-                GradientStop { position: 1.0; color: Qt.hsla(iface.tintHue, 1, iface.tintLight, 1) }
-            }
-            Binding {
-                target: satSlider
-                property: "value"
-                value: iface.tintSat
-                when: !satSlider.pressed
-            }
-        }
-        FieldHint { text: "How strong the selected colour is. 0% is grey at the same lightness; 100% is full tint. The tick is stock saturation for this swatch." }
-        FieldLabel { text: iface.seedRole ? "LIFT" : "LIGHT" }
-        HudSlider {
-            id: lightSlider
-            Layout.fillWidth: true
-            Layout.preferredWidth: iface.controlWidth
-            Layout.minimumWidth: 240
-            from: iface.seedRole ? -1 : 0.02
-            to: iface.seedRole ? 1 : 0.97
-            stepSize: iface.seedRole ? 0.01 : 0.005
-            onMoved: {
-                if (iface.seedRole)
-                    Theme.setRole(iface.tintRole, iface.tintHue, value)
-                else
-                    Theme.setRoleLight(iface.tintRole, value)
-            }
-            markerPosition: iface.seedRole ? 0.5 : (Theme.stockLight(iface.tintRole) - 0.02) / 0.95
-            valueText: iface.seedRole
-                ? ((iface.tintBrightness > 0 ? "+" : "") + Math.round(iface.tintBrightness * 100))
-                : Math.round(iface.tintLight * 100) + "%"
-            accessibleName: iface.seedRole ? "Palette brightness lift" : iface.tintRoleName + " lightness"
-            trackGradient: Gradient {
-                orientation: Gradient.Horizontal
-                GradientStop { position: 0.0; color: Qt.hsla(iface.tintHue, iface.tintSat, 0.10, 1) }
-                GradientStop { position: 0.5; color: Qt.hsla(iface.tintHue, iface.tintSat, 0.50, 1) }
-                GradientStop { position: 1.0; color: Qt.hsla(iface.tintHue, iface.tintSat, 0.90, 1) }
-            }
-            Binding {
-                target: lightSlider
-                property: "value"
-                value: iface.seedRole ? iface.tintBrightness : iface.tintLight
-                when: !lightSlider.pressed
-            }
-        }
-        FieldHint {
-            text: iface.seedRole
-                ? "Seed lift for unedited swatches. 0 is stock; negative deepens the HUD, positive raises it. Locked swatches keep their own lightness."
-                : "Lightness of the selected swatch. The tick is stock. Use this with hex matching to land a colour without guessing the old brightness slider."
-        }
-        FieldLabel { text: "RELATED"; visible: iface.relatedKeys.length > 0 }
-        RowLayout {
-            visible: iface.relatedKeys.length > 0
-            Layout.preferredWidth: iface.controlWidth
-            Layout.fillWidth: true
-            spacing: 6
-            Repeater {
-                model: iface.relatedKeys
-                delegate: PaletteSwatch {
-                    required property var modelData
+                Layout.preferredWidth: iface.colourSplit ? 420 : -1
+                Layout.minimumWidth: 240
+                Layout.alignment: Qt.AlignTop
+                columns: 2
+                columnSpacing: Theme.s3
+                rowSpacing: Theme.s2
+
+                FieldLabel { text: "HEX" }
+                RowLayout {
                     Layout.fillWidth: true
-                    Layout.preferredWidth: 40
-                    roleKey: modelData
-                    roleName: Theme.roleName(modelData)
-                    selected: iface.tintRole === modelData
-                    onClicked: iface.tintRole = modelData
-                    onResetRequested: Theme.clearRole(modelData)
+                    spacing: 6
+                    HudField {
+                        id: hexField
+                        Layout.preferredWidth: 120
+                        Layout.maximumWidth: 140
+                        font.family: Theme.fontMono
+                        maximumLength: 7
+                        accessibleName: iface.tintRoleName + " hex colour"
+                        tooltip: "Paste #RRGGBB or pick a colour. Hue, saturation and lightness are solved to land on it."
+                        validator: RegularExpressionValidator { regularExpression: /^#?[0-9A-Fa-f]{0,6}$/ }
+                        onEditingFinished: {
+                            if (!Theme.applyHex(iface.tintRole, text))
+                                text = iface.tintHex
+                        }
+                        Binding {
+                            target: hexField
+                            property: "text"
+                            value: iface.tintHex
+                            when: !hexField.activeFocus
+                        }
+                    }
+                    HudButton {
+                        text: "PICK"
+                        implicitHeight: Theme.controlHeight
+                        accessibleDescription: "Open a colour picker for the selected swatch"
+                        onClicked: {
+                            colourPick.selectedColor = Theme.colorFor(iface.tintRole)
+                            colourPick.open()
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+                FieldLabel { text: "HUE" }
+                HudSlider {
+                    id: hueSlider
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 160
+                    from: 0
+                    to: 1
+                    stepSize: 0.001
+                    onMoved: Theme.setRole(iface.tintRole, value, iface.tintBrightness)
+                    markerPosition: iface.seedRole ? Theme.defaultHue : Theme.stockHue(iface.tintRole)
+                    valueText: Math.round(iface.tintHue * 360) + "°"
+                    accessibleName: iface.tintRoleName + " hue"
+                    tooltip: iface.seedRole
+                        ? "Seed hue. Unedited swatches, washes and the title bar follow this. The tick is stock cyan."
+                        : "Hue of the selected swatch. The tick is its stock position. Locked swatches stay put when BASE moves."
+                    trackGradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0.000; color: Qt.hsla(0.000, 0.9, 0.55, 1) }
+                        GradientStop { position: 0.167; color: Qt.hsla(0.167, 0.9, 0.55, 1) }
+                        GradientStop { position: 0.333; color: Qt.hsla(0.333, 0.9, 0.55, 1) }
+                        GradientStop { position: 0.500; color: Qt.hsla(0.500, 0.9, 0.55, 1) }
+                        GradientStop { position: 0.667; color: Qt.hsla(0.667, 0.9, 0.55, 1) }
+                        GradientStop { position: 0.833; color: Qt.hsla(0.833, 0.9, 0.55, 1) }
+                        GradientStop { position: 1.000; color: Qt.hsla(1.000, 0.9, 0.55, 1) }
+                    }
+                    Binding {
+                        target: hueSlider
+                        property: "value"
+                        value: iface.tintHue
+                        when: !hueSlider.pressed
+                    }
+                }
+                FieldLabel { text: "SAT" }
+                HudSlider {
+                    id: satSlider
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 160
+                    from: 0
+                    to: 1
+                    stepSize: 0.01
+                    onMoved: Theme.setRoleSat(iface.tintRole, value)
+                    markerPosition: Theme.stockSat(iface.tintRole)
+                    valueText: Math.round(iface.tintSat * 100) + "%"
+                    accessibleName: iface.tintRoleName + " saturation"
+                    tooltip: "How strong the selected colour is. 0% is grey at the same lightness; 100% is full tint."
+                    trackGradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0.0; color: Qt.hsla(iface.tintHue, 0, iface.tintLight, 1) }
+                        GradientStop { position: 1.0; color: Qt.hsla(iface.tintHue, 1, iface.tintLight, 1) }
+                    }
+                    Binding {
+                        target: satSlider
+                        property: "value"
+                        value: iface.tintSat
+                        when: !satSlider.pressed
+                    }
+                }
+                FieldLabel { text: iface.seedRole ? "LIFT" : "LIGHT" }
+                HudSlider {
+                    id: lightSlider
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 160
+                    from: iface.seedRole ? -1 : 0.02
+                    to: iface.seedRole ? 1 : 0.97
+                    stepSize: iface.seedRole ? 0.01 : 0.005
+                    onMoved: {
+                        if (iface.seedRole)
+                            Theme.setRole(iface.tintRole, iface.tintHue, value)
+                        else
+                            Theme.setRoleLight(iface.tintRole, value)
+                    }
+                    markerPosition: iface.seedRole ? 0.5 : (Theme.stockLight(iface.tintRole) - 0.02) / 0.95
+                    valueText: iface.seedRole
+                        ? ((iface.tintBrightness > 0 ? "+" : "") + Math.round(iface.tintBrightness * 100))
+                        : Math.round(iface.tintLight * 100) + "%"
+                    accessibleName: iface.seedRole ? "Palette brightness lift" : iface.tintRoleName + " lightness"
+                    tooltip: iface.seedRole
+                        ? "Seed lift for unedited swatches. 0 is stock; negative deepens the HUD, positive raises it."
+                        : "Lightness of the selected swatch. The tick is stock."
+                    trackGradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0.0; color: Qt.hsla(iface.tintHue, iface.tintSat, 0.10, 1) }
+                        GradientStop { position: 0.5; color: Qt.hsla(iface.tintHue, iface.tintSat, 0.50, 1) }
+                        GradientStop { position: 1.0; color: Qt.hsla(iface.tintHue, iface.tintSat, 0.90, 1) }
+                    }
+                    Binding {
+                        target: lightSlider
+                        property: "value"
+                        value: iface.seedRole ? iface.tintBrightness : iface.tintLight
+                        when: !lightSlider.pressed
+                    }
+                }
+                FieldLabel { text: "MATCH" }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    HudCombo {
+                        id: matchCombo
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 100
+                        model: iface.matchNames
+                        accessibleName: "Colour to match from"
+                        tooltip: "Copy hue or the full colour from another swatch onto the selected one."
+                        onActivated: {
+                            if (currentIndex >= 0 && currentIndex < iface.matchKeys.length)
+                                iface.matchSourceKey = iface.matchKeys[currentIndex]
+                        }
+                        Binding {
+                            target: matchCombo
+                            property: "currentIndex"
+                            value: Math.max(0, iface.matchIndex)
+                            when: !matchCombo.popup.visible
+                        }
+                    }
+                    HudButton {
+                        text: "HUE"
+                        implicitHeight: Theme.controlHeight
+                        enabled: iface.matchSourceKey !== iface.tintRole && iface.matchSourceKey !== ""
+                        accessibleDescription: "Copy hue from the match source onto the selected swatch"
+                        onClicked: Theme.matchHue(iface.tintRole, iface.matchSourceKey)
+                    }
+                    HudButton {
+                        text: "COLOUR"
+                        implicitHeight: Theme.controlHeight
+                        enabled: iface.matchSourceKey !== iface.tintRole && iface.matchSourceKey !== ""
+                        accessibleDescription: "Copy the full colour from the match source onto the selected swatch"
+                        onClicked: Theme.matchRole(iface.tintRole, iface.matchSourceKey)
+                    }
+                }
+                FieldLabel {
+                    visible: iface.tintParentKey !== "" || Theme.roleCustom(iface.tintRole)
+                    text: "LINK"
+                }
+                RowLayout {
+                    visible: iface.tintParentKey !== "" || Theme.roleCustom(iface.tintRole)
+                    Layout.fillWidth: true
+                    spacing: 6
+                    HudButton {
+                        text: "FOLLOW PARENT"
+                        implicitHeight: 28
+                        visible: iface.tintParentKey !== ""
+                        enabled: !iface.tintLinked
+                        accessibleDescription: "Let this colour follow " + Theme.roleName(iface.tintParentKey) + " again"
+                        onClicked: Theme.clearRole(iface.tintRole)
+                    }
+                    HudButton {
+                        text: "RESET SWATCH"
+                        implicitHeight: 28
+                        visible: iface.tintParentKey === ""
+                        enabled: Theme.roleCustom(iface.tintRole)
+                        accessibleDescription: "Restore the selected colour to stock"
+                        onClicked: Theme.clearRole(iface.tintRole)
+                    }
+                    Text {
+                        visible: iface.tintParentKey !== ""
+                        Layout.fillWidth: true
+                        text: iface.tintLinked
+                            ? iface.tintRoleName + " follows " + Theme.roleName(iface.tintParentKey) + "."
+                            : iface.tintRoleName + " is unlocked from " + Theme.roleName(iface.tintParentKey) + "."
+                        color: Theme.textSecondary
+                        font.pixelSize: Theme.fontSm
+                        elide: Text.ElideRight
+                    }
+                }
+                FieldLabel { text: "RELATED"; visible: iface.relatedKeys.length > 0 }
+                RowLayout {
+                    visible: iface.relatedKeys.length > 0
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Repeater {
+                        model: iface.relatedKeys
+                        delegate: PaletteSwatch {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 40
+                            roleKey: modelData
+                            roleName: Theme.roleName(modelData)
+                            selected: iface.tintRole === modelData
+                            onClicked: iface.tintRole = modelData
+                            onResetRequested: Theme.clearRole(modelData)
+                        }
+                    }
                 }
             }
-        }
-        FieldHint {
-            visible: iface.relatedKeys.length > 0
-            text: iface.tintParentKey
-                ? "Parent and followers of " + iface.tintRoleName + ". Match hue across this family so panels, lines and accents stay in the same tint."
-                : "Tokens that follow " + iface.tintRoleName + ". They hitch to this colour until you unlock one and give it its own hex."
-        }
-    }
-
-    SettingGroup {
-        title: "SAMPLE"
-        ThemePreview {
-            Layout.columnSpan: 3
-            Layout.fillWidth: true
-        }
-        FieldHint {
-            Layout.columnSpan: 3
-            text: "Live chrome using the current palette. OK / WARN / ERR stay on the fixed status colours so they still contrast. The Windows title bar follows panel, line and accent a moment after the sliders stop."
         }
     }
 

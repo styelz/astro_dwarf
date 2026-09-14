@@ -285,24 +285,33 @@ QtObject {
         return Object.keys(ov).length ? JSON.stringify(ov) : ""
     }
 
-    function paramsFor(key) {
+    function snapshotSpread(hue) {
+        const d = Math.abs(theme.wrapHue(hue) - theme.defaultHue)
+        return 1 - (Math.min(d, 1 - d) / 0.5) * 0.7
+    }
+
+    function paramsFromSnapshot(key, hue, brightness, overrides) {
         const recipe = theme.recipeOf(key)
-        const own = theme.roleOverride(key)
+        const ov = overrides && typeof overrides === "object" && !Array.isArray(overrides) ? overrides : {}
+        const own = ov[key] && typeof ov[key] === "object" ? ov[key] : null
         const parentKey = recipe.from || ""
-        const parentOv = parentKey ? theme.roleOverride(parentKey) : null
+        const parentOv = parentKey && ov[parentKey] && typeof ov[parentKey] === "object" ? ov[parentKey] : null
         const hueSrc = own && (typeof own.hue === "number" || typeof own.brightness === "number")
             ? own
             : (parentOv && (typeof parentOv.hue === "number" || typeof parentOv.brightness === "number") ? parentOv : null)
+        const seedH = theme.wrapHue(hue === undefined || hue === null ? theme.defaultHue : hue)
+        const seedB = brightness === undefined || brightness === null ? 0 : brightness
+        const spread = theme.snapshotSpread(seedH)
         let h
         let b
         if (hueSrc && typeof hueSrc.hue === "number")
             h = theme.wrapHue(hueSrc.hue)
         else
-            h = theme.wrapHue(theme.hue + recipe.offset * theme.spread)
+            h = theme.wrapHue(seedH + recipe.offset * spread)
         if (hueSrc && typeof hueSrc.brightness === "number")
             b = hueSrc.brightness
         else
-            b = theme.brightness
+            b = seedB
         let sat = recipe.sat
         if (own && typeof own.sat === "number")
             sat = theme.clamp(own.sat, 0, 1)
@@ -310,6 +319,24 @@ QtObject {
         if (own && typeof own.light === "number")
             light = theme.clamp(own.light, 0.02, 0.97)
         return { h: h, sat: sat, light: light, alpha: recipe.alpha, weight: recipe.weight, brightness: b }
+    }
+
+    function paramsFor(key) {
+        return theme.paramsFromSnapshot(key, theme.hue, theme.brightness, theme.parsedOverrides)
+    }
+
+    function previewColor(entry, key) {
+        if (!entry)
+            return theme.colorFor(key)
+        const p = theme.paramsFromSnapshot(key, entry.hue, entry.brightness, entry.palette)
+        return theme.bake(p.h, p.sat, p.light, p.alpha, p.weight, p.brightness)
+    }
+
+    function restoreSnapshot(id, hue, brightness, paletteJson) {
+        theme.hue = theme.roundHue(hue === undefined || hue === null ? theme.defaultHue : hue)
+        theme.brightness = theme.roundBright(brightness === undefined || brightness === null ? 0 : brightness)
+        theme.paletteJson = paletteJson === undefined || paletteJson === null ? "" : String(paletteJson)
+        theme.activeThemeId = id || "stock"
     }
 
     function effectiveHue(key) {
