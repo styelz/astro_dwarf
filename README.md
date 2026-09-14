@@ -27,7 +27,7 @@ Set each telescope's IP, model, and location in Settings. The scheduler stays st
 
 ## Installers
 
-Unsigned builds are on [GitHub Releases](https://github.com/styelz/astro_dwarf/releases). Pushing a change to the root `VERSION` file on `main` publishes a new set; you can also run **Build OS installers** in Actions.
+Unsigned builds are on [GitHub Releases](https://github.com/styelz/astro_dwarf/releases). Pushing a **new** version in the root `VERSION` file on `main` publishes a replacement set (previous `v*` releases and tags are removed). You can also run **Build OS installers** in Actions to rebuild and replace the current tag.
 
 - **Windows x64:** `AstroDwarf-Setup-<version>-win64.exe` (also in a `.zip`). Per-user install to `%LOCALAPPDATA%\Astro Dwarf`; no admin required. SmartScreen may warn on an unrecognized app: **More info** → **Run anyway**. Uninstall any older Program Files copy first. For a copy that does not need installing, extract `AstroDwarf-<version>-win64-portable.zip` and run `AstroDwarf\AstroDwarf.exe`.
 - **macOS Apple Silicon:** open the `.dmg`, drag to Applications, then right-click the app and choose **Open** the first time (unsigned / Gatekeeper). The `.pkg` also installs `astro-dwarf` on `PATH` (`/usr/local/bin`).
