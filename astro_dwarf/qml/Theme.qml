@@ -27,6 +27,8 @@ QtObject {
         property bool deepCleanImages: false
         property real enhanceDenoise: 1
         property real enhanceSkyCrush: 1
+        property bool hudBackground: true
+        property real hudBackgroundOpacity: 0.42
     }
     property alias hue: appearanceStore.hue
     // -1 … 1; 0 is the stock look. Negative gives deep, saturated tints; positive lifts them.
@@ -39,6 +41,8 @@ QtObject {
     property alias deepCleanImages: appearanceStore.deepCleanImages
     property alias enhanceDenoise: appearanceStore.enhanceDenoise
     property alias enhanceSkyCrush: appearanceStore.enhanceSkyCrush
+    property alias hudBackground: appearanceStore.hudBackground
+    property alias hudBackgroundOpacity: appearanceStore.hudBackgroundOpacity
 
     readonly property var swatchGroups: [
         { title: "SEED", keys: [

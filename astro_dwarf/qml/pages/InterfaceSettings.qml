@@ -179,6 +179,43 @@ ColumnLayout {
     }
 
     SettingGroup {
+        title: "BACKGROUND"
+        trailing: [
+            HudChip {
+                label: !Theme.hudBackground ? "OFF" : (Math.round(Theme.hudBackgroundOpacity * 100) + "%")
+                tone: Theme.hudBackground ? Theme.success : Theme.textSecondary
+                dim: !Theme.hudBackground
+                glow: Theme.hudBackground
+                anchors.verticalCenter: parent.verticalCenter
+            }
+        ]
+        FieldLabel { text: "ART" }
+        HudCheck {
+            Layout.preferredWidth: iface.controlWidth
+            text: "Show HUD background art"
+            checked: Theme.hudBackground
+            onToggled: Theme.hudBackground = checked
+            accessibleName: "Show HUD background art"
+        }
+        FieldHint { text: "The decorative wash behind the console. Off leaves the solid HUD fill and hue tint." }
+        FieldLabel { text: "OPACITY" }
+        HudSlider {
+            Layout.preferredWidth: iface.controlWidth
+            from: 0
+            to: 1
+            stepSize: 0.01
+            enabled: Theme.hudBackground
+            value: Theme.hudBackgroundOpacity
+            onMoved: Theme.hudBackgroundOpacity = value
+            markerPosition: 0.42
+            valueText: Math.round(Theme.hudBackgroundOpacity * 100) + "%"
+            accessibleName: "HUD background opacity"
+            tooltip: "How strong the background art is on Control. Other pages stay dimmer. The tick is the stock look."
+        }
+        FieldHint { text: "Stock is 42% on Control. Calendar, sessions, media, and settings keep a dimmer wash so lists stay readable." }
+    }
+
+    SettingGroup {
         title: "THEME"
         trailing: [
             HudChip {

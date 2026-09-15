@@ -269,7 +269,7 @@ ApplicationWindow {
     Settings {
         id: layoutSettings
         category: "controlLayout"
-        property bool navBarOnTop: false
+        property bool navBarOnTop: true
     }
 
     Component.onCompleted: {
@@ -351,6 +351,19 @@ ApplicationWindow {
     Item {
         id: shell
         anchors.fill: parent
+        Image {
+            anchors.fill: parent
+            source: root.asset("hud-background.png")
+            fillMode: Image.PreserveAspectCrop
+            visible: Theme.hudBackground
+            opacity: {
+                if (!Theme.hudBackground)
+                    return 0
+                const base = Math.max(0, Math.min(1, Theme.hudBackgroundOpacity))
+                return root.dataPage ? base * (0.14 / 0.42) : base
+            }
+            Behavior on opacity { NumberAnimation { duration: Theme.normal } }
+        }
         Rectangle { anchors.fill: parent; color: root.dataPage ? Theme.hsl(0.082, 0.684, 0.037, 0.800) : Theme.hsl(0.082, 0.684, 0.037, 0.600) }
         Rectangle {
             // Tints the (cyan) background art toward the chosen hue; stronger the further from default.
