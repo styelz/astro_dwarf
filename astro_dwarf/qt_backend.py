@@ -100,7 +100,14 @@ from .services import (
 )
 from .duration_suggest import suggest_hardware_profile
 from .location import has_site_coordinates, match_timezone, resolve_location, suggested_timezone, timezone_locations
-from .runtime import PROCESS_CREATION_FLAGS, kill_pid_tree, prepare_worker_environment, worker_command
+from .runtime import (
+    PROCESS_CREATION_FLAGS,
+    is_frozen,
+    kill_pid_tree,
+    native_webview_plugin_present,
+    prepare_worker_environment,
+    worker_command,
+)
 from .storage import SessionStore
 from .image_enhance import (
     CacheEnhanceJob,
@@ -121,6 +128,10 @@ def _webview_available() -> bool:
     try:
         from PySide6.QtWebView import QtWebView  # noqa: F401
     except Exception:
+        return False
+    # Importing QtWebView is not enough: the backend lives in plugins/webview
+    # and is loaded only when QML creates a WebView. Missing that plugin aborts.
+    if is_frozen() and not native_webview_plugin_present():
         return False
     return True
 

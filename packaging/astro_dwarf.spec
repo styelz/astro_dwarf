@@ -33,6 +33,25 @@ def collect_pyside_qml() -> list[tuple[str, str]]:
     return collected
 
 
+def collect_native_webview_plugins() -> list[tuple[str, str]]:
+    """Ship the OS WebView backend. Analysis does not see this lazy plugin."""
+    import PySide6
+
+    base = Path(PySide6.__file__).resolve().parent
+    collected: list[tuple[str, str]] = []
+    for src_root, dest_root in (
+        (base / "plugins" / "webview", "PySide6/plugins/webview"),
+        (base / "Qt" / "plugins" / "webview", "PySide6/Qt/plugins/webview"),
+    ):
+        if not src_root.is_dir():
+            continue
+        for path in src_root.iterdir():
+            if not path.is_file() or "webengine" in path.name.lower():
+                continue
+            collected.append((str(path), dest_root))
+    return collected
+
+
 datas = [
     (str(ROOT / "VERSION"), "."),
     (str(ROOT / "astro_dwarf" / "qml"), "qml"),
@@ -65,6 +84,9 @@ for filename in ("ffmpeg.exe", "ffmpeg"):
     candidate = ROOT / "vendor" / filename
     if candidate.is_file():
         binaries.append((str(candidate), "."))
+native_webview_plugins = collect_native_webview_plugins()
+binaries += native_webview_plugins
+webview_upx_exclude = [Path(src).name for src, _dest in native_webview_plugins]
 
 hiddenimports = [
     "app",
@@ -204,6 +226,7 @@ collection = COLLECT(
     analysis.datas,
     strip=False,
     upx=USE_UPX,
+    upx_exclude=webview_upx_exclude,
     name="AstroDwarf",
 )
 

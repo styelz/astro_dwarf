@@ -183,6 +183,7 @@ def _apply_windows_frame(window, caption_hex: str = "#0B1520", border_hex: str =
 def _initialize_webview() -> None:
     """Use the OS web view (WebView2 / WKWebView). Must run before QGuiApplication."""
     os.environ.setdefault("QTWEBVIEW_BACKEND", "native")
+    os.environ.setdefault("QT_WEBVIEW_PLUGIN", "native")
     try:
         from PySide6.QtWebView import QtWebView
         QtWebView.initialize()

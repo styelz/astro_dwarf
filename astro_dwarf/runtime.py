@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths
+from PySide6.QtCore import QLibraryInfo, QStandardPaths
 
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -39,6 +39,56 @@ def configure_quick_runtime() -> None:
 
     configure_qt_display()
     os.environ.setdefault("QSG_RENDER_LOOP", "basic")
+
+
+def _webview_plugin_dirs() -> list[Path]:
+    """Directories Qt searches for WebView backends (WebView2 / WKWebView)."""
+    folders: list[Path] = []
+    try:
+        plugins = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath))
+        folders.append(plugins / "webview")
+    except Exception:
+        pass
+    try:
+        import PySide6
+
+        base = Path(PySide6.__file__).resolve().parent
+        folders.extend(
+            (
+                base / "plugins" / "webview",
+                base / "Qt" / "plugins" / "webview",
+            )
+        )
+    except Exception:
+        pass
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for folder in folders:
+        key = str(folder)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(folder)
+    return unique
+
+
+def native_webview_plugin_present() -> bool:
+    """True when a non-WebEngine WebView backend plugin is on disk.
+
+    Creating a QML WebView without plugins/webview makes Qt 6.11 qFatal()
+    ('No WebView plug-in found!'), which Windows reports as 0xc0000409 in
+    Qt6Core.dll. Frozen builds strip WebEngine, so only the OS backend counts.
+    """
+    for folder in _webview_plugin_dirs():
+        if not folder.is_dir():
+            continue
+        for path in folder.iterdir():
+            name = path.name.lower()
+            if "webengine" in name or "webview" not in name:
+                continue
+            if path.suffix.lower() in {".dll", ".so", ".dylib"} or ".so." in name:
+                return True
+    return False
 
 
 def configure_qml_import_path() -> None:
