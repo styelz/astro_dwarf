@@ -106,6 +106,7 @@ Dialog {
         addIp.text = ""
         addWifiMode.currentIndex = 0
         addBlePassword.text = "DWARF_12345678"
+        addColor.assignUnused()
         locationDialog.foundDevices = []
         locationDialog.foundLabels = []
         locationDialog.foundSsid = ""
@@ -128,6 +129,7 @@ Dialog {
     }
     onClosed: {
         addingDevice = false
+        addColor.dismiss()
         backend.cancelNearbyDiscovery()
         Qt.callLater(root.maybeAskLocation)
     }
@@ -182,7 +184,7 @@ Dialog {
             }
             Text {
                 text: locationDialog.addingDevice
-                    ? "Name the telescope, then scan Bluetooth to fill IP and Wi-Fi mode. Choose a timezone or city. Nothing is created until you save."
+                    ? "Name the telescope, pick a marker colour, then scan Bluetooth to fill IP and Wi-Fi mode. Choose a timezone or city. Nothing is created until you save."
                     : "Choose the telescope model and a timezone or city so Astro Dwarf can set longitude and latitude. A location is required before connecting or running sessions."
                 color: Theme.textPrimary
                 wrapMode: Text.Wrap
@@ -202,6 +204,20 @@ Dialog {
                     Layout.fillWidth: true
                     placeholderText: "Optional — used in the device list"
                     accessibleName: "Telescope name"
+                }
+
+                FieldLabel { visible: locationDialog.addingDevice; text: "COLOUR" }
+                DeviceColorField {
+                    id: addColor
+                    visible: locationDialog.addingDevice
+                    Layout.fillWidth: true
+                    roleName: String(addName.text).trim() ? String(addName.text).trim().toUpperCase() : "DEVICE DOT"
+                }
+                FieldHint {
+                    visible: locationDialog.addingDevice
+                    Layout.columnSpan: 2
+                    Layout.minimumWidth: 0
+                    text: "Dot on this telescope in the device bar, calendar and session lists."
                 }
 
                 FieldLabel { text: "MODEL" }
@@ -345,7 +361,8 @@ Dialog {
                             ip_address: addIp.text,
                             wifi_mode: locationDialog.wifiModeValue(),
                             wifi_ssid: locationDialog.foundSsid,
-                            ble_password: addBlePassword.text
+                            ble_password: addBlePassword.text,
+                            color: addColor.colorHex
                         })
                         if (locationDialog.addingDevice) {
                             if (backend.addDevice(payload))

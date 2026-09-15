@@ -37,6 +37,7 @@ PageHeader 1.0 PageHeader.qml
 StatusChip 1.0 StatusChip.qml
 PageNavBar 1.0 PageNavBar.qml
 DeviceCombo 1.0 DeviceCombo.qml
+DeviceColorField 1.0 DeviceColorField.qml
 HudSplitView 1.0 HudSplitView.qml
 
 ScrollHint 1.0 ScrollHint.qml

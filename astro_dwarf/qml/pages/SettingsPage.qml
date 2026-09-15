@@ -26,7 +26,7 @@ Item {
         { key: "calendar", title: "CALENDAR", hint: "Night cutoff · Stellarium", glyph: "◑", device: false, group: "APP" }
     ]
     readonly property var categoryKeys: ({
-        device: ["name", "model", "camera", "timezone_name", "latitude", "longitude"],
+        device: ["name", "model", "color", "camera", "timezone_name", "latitude", "longitude"],
         connect: ["ip_address", "ble_enabled", "wifi_mode", "wifi_ssid", "wifi_password", "ble_password", "auto_start_preview"],
         capture: ["capture_defaults"],
         timing: ["slew_seconds", "settle_seconds", "calibration_seconds", "autofocus_seconds", "infinite_focus_seconds", "polar_seconds", "readout_seconds", "pane_slew_seconds", "startup_seconds"],
@@ -50,6 +50,7 @@ Item {
         return {
             id: settingsPage.loadedDeviceId || backend.selectedDeviceId, name: nameField.text, model: modelField.currentText,
             ip_address: ipField.text, camera: settingsPage.cameraWideAvailable && cameraField.currentIndex === 1 ? "wide" : "tele",
+            color: colorField.colorHex,
             ble_enabled: bleField.checked,
             auto_start_preview: autoPreviewField.checked,
             latitude: settingsPage.coordNumber(latField.text), longitude: settingsPage.coordNumber(lonField.text),
@@ -162,6 +163,7 @@ Item {
         loadedDeviceId = d.id || ""
         const hw = d.hardware || {}
         nameField.text = d.name || ""
+        colorField.setHex(d.color || "#62A0FF")
         modelField.currentIndex = Math.max(0, ["Dwarf II", "Dwarf 3", "Dwarf Mini"].indexOf(d.model))
         ipField.text = d.ip_address || ""
         cameraField.currentIndex = settingsPage.cameraWideAvailable && d.camera === "wide" ? 1 : 0
@@ -638,6 +640,13 @@ Item {
                             FieldLabel { text: "NAME" }
                             HudField { id: nameField; Layout.preferredWidth: settingsPage.controlWidth; accessibleName: "Telescope name" }
                             FieldHint { text: "Shown in the device bar, calendar, session lists and logs." }
+                            FieldLabel { text: "COLOUR" }
+                            DeviceColorField {
+                                id: colorField
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                roleName: String(nameField.text).trim() ? String(nameField.text).trim().toUpperCase() : "DEVICE DOT"
+                            }
+                            FieldHint { text: "Dot on this telescope in the device bar, calendar and session lists." }
                             FieldLabel { text: "MODEL" }
                             HudCombo {
                                 id: modelField

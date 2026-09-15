@@ -57,8 +57,11 @@ from .domain import (
     camera_settings_from_capture,
     capture_defaults_from_dict,
     clamp_cutoff_hour,
+    DEVICE_COLORS,
     device_from_dict,
     firmware_exposure_name,
+    next_device_color,
+    normalize_device_color,
     history_record_for_run,
     normalized_stellarium_url,
     session_from_dict,
@@ -1333,6 +1336,10 @@ class AppBackend(QObject):
     @Property("QVariant", constant=True)
     def suggestedLocation(self) -> dict[str, Any]:
         return suggested_timezone() or {}
+
+    @Property("QVariantList", constant=True)
+    def deviceColorPresets(self) -> list[str]:
+        return list(DEVICE_COLORS)
 
     @Property("QVariantList", notify=devicesChanged)
     def devices(self) -> list[dict[str, Any]]:
@@ -3409,7 +3416,6 @@ class AppBackend(QObject):
 
     @Slot(str, result=bool)
     def addDevice(self, payload: str) -> bool:
-        colors = ["#62A0FF", "#E879F9", "#34D399", "#FBBF24", "#FB7185"]
         current = next((item for item in self._devices if item.id == self._selected_device_id), None)
         try:
             values = json.loads(payload or "{}")
@@ -3432,9 +3438,15 @@ class AppBackend(QObject):
             ssid = str(values.get("wifi_ssid") or "").strip()
             if wifi_mode == WifiMode.AP:
                 ssid = ""
+            requested_color = str(values.get("color") or "").strip()
+            color = (
+                normalize_device_color(requested_color)
+                if requested_color
+                else next_device_color(item.color for item in self._devices)
+            )
             device = Device(
                 name=str(values.get("name") or "").strip() or f"Dwarf {len(self._devices) + 1}",
-                color=colors[len(self._devices) % len(colors)],
+                color=color,
                 model=model,
                 ip_address=str(values.get("ip_address") or "").strip(),
                 timezone_name=timezone_name,
@@ -4545,7 +4557,7 @@ class AppBackend(QObject):
                 model=model,
                 ip_address=values["ip_address"].strip(),
                 camera=camera,
-                color=values.get("color", current.color),
+                color=normalize_device_color(values.get("color", current.color), current.color),
                 latitude=latitude,
                 longitude=longitude,
                 timezone_name=timezone_name,

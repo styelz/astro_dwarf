@@ -474,6 +474,50 @@ class CaptureDefaults:
     frame_count: int = DEFAULT_FRAME_COUNT
 
 
+DEVICE_COLORS: tuple[str, ...] = (
+    "#62A0FF",
+    "#E879F9",
+    "#34D399",
+    "#FBBF24",
+    "#FB7185",
+)
+_DEVICE_COLOR_RE = re.compile(r"^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$")
+
+
+def parse_device_color(value: Any) -> str:
+    text = str(value or "").strip()
+    match = _DEVICE_COLOR_RE.fullmatch(text)
+    if not match:
+        return ""
+    hex_body = match.group(1)
+    if len(hex_body) == 3:
+        hex_body = "".join(ch * 2 for ch in hex_body)
+    return f"#{hex_body.upper()}"
+
+
+def normalize_device_color(value: Any, fallback: str | None = None) -> str:
+    parsed = parse_device_color(value)
+    if parsed:
+        return parsed
+    parsed = parse_device_color(fallback)
+    return parsed or DEVICE_COLORS[0]
+
+
+def next_device_color(existing: Any = None) -> str:
+    used: set[str] = set()
+    count = 0
+    if existing:
+        for item in existing:
+            count += 1
+            parsed = parse_device_color(item)
+            if parsed:
+                used.add(parsed)
+    for color in DEVICE_COLORS:
+        if color not in used:
+            return color
+    return DEVICE_COLORS[count % len(DEVICE_COLORS)]
+
+
 @dataclass(slots=True)
 class Device:
     name: str
@@ -717,6 +761,7 @@ def device_from_dict(data: dict[str, Any]) -> Device:
     data["hardware"] = hardware_from_dict(data.get("hardware", {}))
     data["capture_defaults"] = capture_defaults_from_dict(data.get("capture_defaults", {}))
     data["auto_start_preview"] = bool(data.get("auto_start_preview", False))
+    data["color"] = normalize_device_color(data.get("color"), Device.__dataclass_fields__["color"].default)
     data["location_configured"] = has_site_coordinates(data.get("latitude"), data.get("longitude"))
     data["observing_day_cutoff_hour"] = clamp_cutoff_hour(data.get("observing_day_cutoff_hour"))
     data["stellarium_url"] = normalized_stellarium_url(data.get("stellarium_url"))
