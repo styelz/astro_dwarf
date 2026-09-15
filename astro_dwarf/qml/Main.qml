@@ -243,8 +243,6 @@ ApplicationWindow {
             return name
         return name + "  ·  " + model
     }
-    function setThemeEnhance(on) { Theme.enhanceImages = !!on }
-    function setThemeDeep(on) { Theme.deepCleanImages = !!on }
     function goToPage(idx) {
         if (idx === root.currentPage) {
             if (idx === root.settingsPageIndex && !settingsPage.isDirty())
@@ -353,12 +351,6 @@ ApplicationWindow {
     Item {
         id: shell
         anchors.fill: parent
-        Image {
-            anchors.fill: parent
-            source: root.asset("hud-background.png")
-            fillMode: Image.PreserveAspectCrop
-            opacity: root.dataPage ? 0.14 : 0.42
-        }
         Rectangle { anchors.fill: parent; color: root.dataPage ? Theme.hsl(0.082, 0.684, 0.037, 0.800) : Theme.hsl(0.082, 0.684, 0.037, 0.600) }
         Rectangle {
             // Tints the (cyan) background art toward the chosen hue; stronger the further from default.

@@ -99,7 +99,6 @@ from .image_enhance import (
     enhance_cache_key,
     is_enhance_cache_valid,
     set_enhance_levels,
-    set_model_dir,
 )
 from .stream_preview import LiveFrames, StreamPlayer, port_is_open, preview_window_is_live, set_live_frames, stream_port
 from .telemetry_view import AlertEngine, camera_params_to_telemetry, derive_activity, format_telemetry
@@ -635,9 +634,6 @@ class LogListModel(QAbstractListModel):
         self._visible = [entry for entry in self._all if self._is_visible(entry)]
         self.endResetModel()
 
-    def set_show_debug(self, enabled: bool, force: bool = False) -> None:
-        self.set_filter("debug" if enabled else "all")
-
     def _is_visible(self, entry: dict[str, Any]) -> bool:
         allowed = _LOG_FILTERS.get(self._filter)
         if allowed is None:
@@ -666,7 +662,6 @@ class AppBackend(QObject):
     templatesChanged = Signal()
     historyChanged = Signal()
     durationSuggestionChanged = Signal()
-    showDebugLogsChanged = Signal()
     selectedDeviceChanged = Signal()
     statusChanged = Signal()
     schedulerEnabledChanged = Signal()
@@ -685,11 +680,8 @@ class AppBackend(QObject):
     previewActiveChanged = Signal()
     previewPlayingChanged = Signal()
     previewStatusChanged = Signal()
-    previewGenerationChanged = Signal()
     previewTelePlayingChanged = Signal()
     previewWidePlayingChanged = Signal()
-    previewTeleGenerationChanged = Signal()
-    previewWideGenerationChanged = Signal()
     previewHoldChanged = Signal()
     previewStackingChanged = Signal()
     previewResultChanged = Signal()
@@ -698,7 +690,6 @@ class AppBackend(QObject):
     enhanceDenoiseChanged = Signal()
     enhanceSkyCrushChanged = Signal()
     enhanceCacheChanged = Signal()
-    albumChanged = Signal()
     mediaChanged = Signal()
     mediaItemsChanged = Signal()
     appSettingsChanged = Signal()
@@ -711,7 +702,6 @@ class AppBackend(QObject):
     def __init__(self, data_root: Path, parent: QObject | None = None):
         super().__init__(parent)
         self.store = SessionStore(data_root)
-        set_model_dir(Path(data_root) / "models")
         self._devices = self.store.devices.all()
         if not self._devices:
             self._devices = [self.store.seed_device()]
@@ -725,7 +715,6 @@ class AppBackend(QObject):
         self._log_model = LogListModel(self)
         self._log_model.countsChanged.connect(self.logCountsChanged)
         self._screen_color = ScreenColorPicker(self)
-        self._show_debug_logs = False
         self._workers: dict[str, TelescopeProcess] = {}
         self._active_sessions: dict[str, str] = {}
         self._stop_requested: set[str] = set()
@@ -825,9 +814,6 @@ class AppBackend(QObject):
         self._preview_tele_playing = False
         self._preview_wide_playing = False
         self._preview_status = ""
-        self._preview_generation = 0
-        self._preview_tele_generation = 0
-        self._preview_wide_generation = 0
         self._last_preview_ui: dict[str, float] = {}
         self._preview_window = None
         self._preview_window_filter = None
@@ -1658,20 +1644,6 @@ class AppBackend(QObject):
         self.durationSuggestionChanged.emit()
         self._toast("Duration profile updated from history", "success")
 
-    @Property(bool, notify=showDebugLogsChanged)
-    def showDebugLogs(self) -> bool:
-        return self._show_debug_logs
-
-    @Slot(bool)
-    def setShowDebugLogs(self, enabled: bool) -> None:
-        enabled = bool(enabled)
-        if self._show_debug_logs == enabled:
-            return
-        self._show_debug_logs = enabled
-        self._log_model.set_filter("debug" if enabled else "all")
-        self.showDebugLogsChanged.emit()
-        self.logFilterChanged.emit()
-
     @Property(str, notify=logFilterChanged)
     def logFilter(self) -> str:
         return self._log_model.filter_name
@@ -1679,10 +1651,6 @@ class AppBackend(QObject):
     @Slot(str)
     def setLogFilter(self, name: str) -> None:
         self._log_model.set_filter(str(name or "all"))
-        debug = self._log_model.filter_name == "debug"
-        if debug != self._show_debug_logs:
-            self._show_debug_logs = debug
-            self.showDebugLogsChanged.emit()
         self.logFilterChanged.emit()
 
     @Property(int, notify=logCountsChanged)
@@ -1853,10 +1821,6 @@ class AppBackend(QObject):
     def previewStatus(self) -> str:
         return self._preview_status
 
-    @Property(int, notify=previewGenerationChanged)
-    def previewGeneration(self) -> int:
-        return self._preview_generation
-
     @Property(bool, notify=previewTelePlayingChanged)
     def previewTelePlaying(self) -> bool:
         return self._preview_tele_playing
@@ -1864,14 +1828,6 @@ class AppBackend(QObject):
     @Property(bool, notify=previewWidePlayingChanged)
     def previewWidePlaying(self) -> bool:
         return self._preview_wide_playing
-
-    @Property(int, notify=previewTeleGenerationChanged)
-    def previewTeleGeneration(self) -> int:
-        return self._preview_tele_generation
-
-    @Property(int, notify=previewWideGenerationChanged)
-    def previewWideGeneration(self) -> int:
-        return self._preview_wide_generation
 
     @Property(bool, notify=previewHoldChanged)
     def previewHeld(self) -> bool:
@@ -2033,10 +1989,6 @@ class AppBackend(QObject):
         self._enhance_cache_rev += 1
         self.enhanceCacheChanged.emit()
 
-    @Property("QVariantList", notify=albumChanged)
-    def albumItems(self) -> list[dict[str, Any]]:
-        return list(self._album_items)
-
     @Property(str, notify=mediaChanged)
     def mediaSource(self) -> str:
         return self._media_source
@@ -2057,20 +2009,6 @@ class AppBackend(QObject):
     def selectedMedia(self) -> dict[str, Any]:
         return next((item for item in self._media_items if item.get("id") == self._media_selected_id), {})
 
-    @Property(str, notify=albumChanged)
-    def lastAlbumPath(self) -> str:
-        return self._album_path
-
-    @Property(str, notify=albumChanged)
-    def lastAlbumUrl(self) -> str:
-        if not self._album_path:
-            return ""
-        return Path(self._album_path).resolve().as_uri()
-
-    @Property(str, notify=albumChanged)
-    def albumBusy(self) -> str:
-        return self._album_busy
-
     @Property(str, notify=mediaChanged)
     def mediaBusy(self) -> str:
         return self._album_busy
@@ -2078,10 +2016,6 @@ class AppBackend(QObject):
     @Property(bool, notify=mediaChanged)
     def mediaLocked(self) -> bool:
         return self._session_is_capturing(self._selected_device_id)
-
-    @Property(str, notify=mediaChanged)
-    def albumFolderUrl(self) -> str:
-        return self._album_dir().resolve().as_uri()
 
     @Property(str, notify=previewHoldChanged)
     def previewHoldMessage(self) -> str:
@@ -2341,9 +2275,6 @@ class AppBackend(QObject):
         self.previewPlayingChanged.emit()
         self.previewTelePlayingChanged.emit()
         self.previewWidePlayingChanged.emit()
-        self.previewGenerationChanged.emit()
-        self.previewTeleGenerationChanged.emit()
-        self.previewWideGenerationChanged.emit()
 
     def _clear_preview_hold(self) -> None:
         if not self._preview_hold_device_id and not self._preview_hold_target:
@@ -2603,7 +2534,6 @@ class AppBackend(QObject):
         self._preview_result_detail = self._stack_result_final_detail or _STACK_RESULT_READY
         self._set_preview_status(self._preview_result_detail)
         self.previewResultChanged.emit()
-        self.previewGenerationChanged.emit()
         self.add_log("info", "Showing the completed stack in live preview", device_id)
         return True
 
@@ -2871,22 +2801,16 @@ class AppBackend(QObject):
         else:
             self.live_images.update(camera, raw)
         if first_frame:
-            self._preview_generation += 1
             if camera == "wide":
-                self._preview_wide_generation += 1
                 self._preview_wide_playing = True
                 self.previewWidePlayingChanged.emit()
-                self.previewWideGenerationChanged.emit()
             else:
-                self._preview_tele_generation += 1
                 self._preview_tele_playing = True
                 self.previewTelePlayingChanged.emit()
-                self.previewTeleGenerationChanged.emit()
             if not self._preview_playing:
                 self._preview_playing = True
                 self._set_preview_status(self.videoUrl)
                 self.previewPlayingChanged.emit()
-            self.previewGenerationChanged.emit()
         if window_live:
             self.live_images.notify(camera)
 
@@ -3683,10 +3607,6 @@ class AppBackend(QObject):
                 values.append(value)
         return values
 
-    @Slot(str)
-    def deleteTemplate(self, template_id: str) -> None:
-        self.deleteTemplates([template_id])
-
     @Slot(list)
     @Slot("QVariantList")
     def deleteTemplates(self, template_ids: list) -> None:
@@ -3843,7 +3763,6 @@ class AppBackend(QObject):
         return folder
 
     def _emit_media(self, items: bool = False) -> None:
-        self.albumChanged.emit()
         self.mediaChanged.emit()
         if items:
             self.mediaItemsChanged.emit()
@@ -4342,11 +4261,6 @@ class AppBackend(QObject):
 
         worker.send("album_camera_list", {}, done)
 
-    @Slot(str, str)
-    def downloadMedia(self, device_id: str, item_id: str = "") -> None:
-        chosen = str(item_id or self._media_selected_id or "").strip()
-        self._start_media_downloads(device_id, [chosen] if chosen else [])
-
     @Slot(str, "QVariantList")
     def downloadMediaItems(self, device_id: str, item_ids: list) -> None:
         self._start_media_downloads(device_id, item_ids)
@@ -4520,10 +4434,6 @@ class AppBackend(QObject):
             self._continue_media_download(device_id)
 
         worker.send("album_download", {"args": [name, dest, camera]}, done)
-
-    @Slot(str)
-    def deleteMediaItem(self, item_id: str) -> None:
-        self.deleteMedia([item_id])
 
     @Slot(list)
     @Slot("QVariantList")
@@ -5256,10 +5166,6 @@ class AppBackend(QObject):
                 f"Cleared {deleted} recorded run{'s' if deleted != 1 else ''}",
                 "success",
             )
-
-    @Slot(str)
-    def deleteHistoryRecord(self, record_id: str) -> None:
-        self.deleteHistoryRecords([record_id])
 
     @Slot(list)
     @Slot("QVariantList")

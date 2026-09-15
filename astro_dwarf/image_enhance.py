@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import threading
 import urllib.request
 from pathlib import Path
 from urllib.parse import unquote
@@ -23,8 +22,6 @@ except ImportError:  # pragma: no cover
 
 _log = logging.getLogger(__name__)
 
-_URLS: dict[str, str] = {}
-_URL_LOCK = threading.Lock()
 _DISPLAY_EDGE = 1920
 _NUMPY_WARNED = False
 _denoise_level = 1.0
@@ -41,25 +38,6 @@ def _warn_numpy_missing() -> None:
         return
     _NUMPY_WARNED = True
     _log.warning("numpy is not installed; showing original images instead of enhanced ones")
-
-
-def set_model_dir(path: Path | str | None) -> None:
-    """Kept so older callers still import; models are no longer downloaded."""
-    return
-
-
-def register_enhance_url(url: str) -> str:
-    """Store a file/http URL and return a slash-free token for image://enhance."""
-    text = (url or "").strip()
-    key = hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()
-    with _URL_LOCK:
-        _URLS[key] = text
-    return key
-
-
-def lookup_enhance_url(key: str) -> str:
-    with _URL_LOCK:
-        return _URLS.get(str(key or "").strip(), "")
 
 
 def canonical_image_url(url: str) -> str:
@@ -334,8 +312,8 @@ def parse_enhance_id(identity: str) -> tuple[str, str]:
     for prefix, profile in (("deep--", "deep"), ("std--", "standard"), ("deep/", "deep"), ("std/", "standard")):
         if text.startswith(prefix):
             rest = unquote(text[len(prefix) :])
-            return profile, lookup_enhance_url(rest) or rest
-    return "standard", lookup_enhance_url(text) or text
+            return profile, rest
+    return "standard", text
 
 
 class _EnhanceSignals(QObject):

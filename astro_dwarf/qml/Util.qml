@@ -305,17 +305,6 @@ QtObject {
         default: return item && item.source === "stills" ? "▣" : "◈"
         }
     }
-    function mediaDisplayUrl(item, which) {
-        const raw = which === "thumb"
-            ? ((item && (item.thumbnail_url || item.image_url)) || "")
-            : ((item && (item.local_path ? backend.mediaFileUrl(String(item.local_path)) : (item.image_url || item.thumbnail_url))) || "")
-        if (!raw)
-            return ""
-        if (which === "thumb" || !Theme.enhanceImages || !Util.shouldEnhanceMedia(item))
-            return raw
-        const profile = Theme.deepCleanImages ? "deep" : "std"
-        return backend.mediaEnhanceSource(raw, profile)
-    }
     function captureDefaults(device) {
         const cap = (device && device.capture_defaults) || {}
         const exposure = Number(cap.exposure_seconds)
