@@ -7,6 +7,8 @@ The Control page shows live view, device status, camera settings, commands, the 
 Sessions can be created by hand, from templates, from Stellarium's current target, or from a Telescopius CSV. Duration includes hardware overheads you can edit per telescope (slew, settle, calibration, focus, and so on). Tele/wide cameras and mosaics are supported.
 
 <img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/47288be4-c3c4-437b-9ec5-ccc7d02f8a81" />
+<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/62947b84-3492-41c9-a7e0-89dece4f7d06" />
+
 
 Hardware commands go through [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api) on the **`multi_V3`** branch (V3 protobuf/WebSocket protocol). Connect sends time, timezone, and site location; DSO sessions use shooting mode 2. Live camera parameters can be read from the telescope HTTP API on port `8082` after the WebSocket session is up. The Media page lists astro sessions from that same HTTP album API and can download stacked frames; still photos are still available there over FTP. Polar / EQ shows the last azimuth and altitude correction after solving, and Polar Pos homes the mount into the polar-alignment pose.
 
