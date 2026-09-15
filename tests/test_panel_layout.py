@@ -66,13 +66,26 @@ Window {
         return Math.round(left.width) + "," + Math.round(panelA.height)
     }
 
+    function sizeRatios() {
+        const colW = Math.max(1, columns.width)
+        const leftH = Math.max(1, left.height)
+        return (left.width / colW) + "," + (panelA.height / leftH)
+    }
+
+    function captureLocks() {
+        columns.captureLocked()
+        left.captureLocked()
+        center.captureLocked()
+        right.captureLocked()
+    }
+
     function setNonFill(lw, ah) {
         left.SplitView.preferredWidth = lw
         panelA.SplitView.preferredHeight = ah
-        Qt.callLater(function() {
-            columns.captureLocked()
-            left.captureLocked()
-        })
+        columns.captureLocked()
+        left.captureLocked()
+        columns.applyLocked()
+        left.applyLocked()
     }
 
     function corruptNonFill(lw, ah) {
@@ -176,40 +189,91 @@ class PanelLayoutTests(unittest.TestCase):
         menu = self.win.findChild(QQuickItem, "resetControlLayout")
         self.assertIsNotNone(menu)
 
-    def test_nonfill_sizes_survive_window_resize(self):
-        self.win.setNonFill(220, 180)
-        QTest.qWait(80)
-        self.assertEqual(self.win.sizes(), "220,180")
-        self.win.setWidth(1400)
-        self.win.setHeight(900)
-        QTest.qWait(80)
-        self.assertEqual(self.win.sizes(), "220,180")
-        self.win.setWidth(720)
-        self.win.setHeight(480)
-        QTest.qWait(80)
-        self.assertEqual(self.win.sizes(), "220,180")
-        self.win.setWidth(1400)
-        self.win.setHeight(900)
-        QTest.qWait(80)
-        self.assertEqual(self.win.sizes(), "220,180")
-        self.win.setWidth(720)
-        self.win.setHeight(480)
-        QTest.qWait(80)
-        self.assertEqual(self.win.sizes(), "220,180")
+    def _parse_ratios(self):
+        parts = str(self.win.sizeRatios()).split(",")
+        return float(parts[0]), float(parts[1])
 
-    def test_locked_sizes_reapplied_after_preferred_corruption(self):
+    def _parse_sizes(self):
+        parts = str(self.win.sizes()).split(",")
+        return int(parts[0]), int(parts[1])
+
+    def _assert_ratios_close(self, actual, expected, tol=0.02):
+        self.assertAlmostEqual(actual[0], expected[0], delta=tol, msg=f"width ratio {actual[0]} vs {expected[0]}")
+        self.assertAlmostEqual(actual[1], expected[1], delta=tol, msg=f"height ratio {actual[1]} vs {expected[1]}")
+
+    def _assert_sizes_close(self, actual, expected, tol=4):
+        self.assertAlmostEqual(actual[0], expected[0], delta=tol, msg=f"width {actual[0]} vs {expected[0]}")
+        self.assertAlmostEqual(actual[1], expected[1], delta=tol, msg=f"height {actual[1]} vs {expected[1]}")
+
+    def test_pane_ratios_survive_window_resize(self):
         self.win.setNonFill(220, 180)
         QTest.qWait(80)
+        self.win.captureLocks()
+        original = self._parse_sizes()
+        self._assert_sizes_close(original, (220, 180))
+        ratios = self._parse_ratios()
+        self.win.setWidth(1400)
+        self.win.setHeight(900)
+        QTest.qWait(80)
+        grown = self._parse_sizes()
+        self.assertGreater(grown[0], original[0] + 20)
+        self.assertGreater(grown[1], original[1] + 20)
+        self._assert_ratios_close(self._parse_ratios(), ratios)
+        self.win.setWidth(720)
+        self.win.setHeight(480)
+        QTest.qWait(80)
+        self._assert_sizes_close(self._parse_sizes(), original)
+        self._assert_ratios_close(self._parse_ratios(), ratios)
+        self.win.setWidth(1400)
+        self.win.setHeight(900)
+        QTest.qWait(80)
+        self._assert_ratios_close(self._parse_ratios(), ratios)
+        self.win.setWidth(720)
+        self.win.setHeight(480)
+        QTest.qWait(80)
+        self._assert_sizes_close(self._parse_sizes(), original)
+
+    def test_splitter_drag_ratios_survive_grow(self):
+        self.win.setNonFill(220, 180)
+        QTest.qWait(80)
+        self.win.captureLocks()
+        first = self._parse_ratios()
+        self.win.setWidth(1400)
+        self.win.setHeight(900)
+        QTest.qWait(80)
+        self._assert_ratios_close(self._parse_ratios(), first)
+        self.win.setNonFill(300, 220)
+        QTest.qWait(80)
+        self.win.captureLocks()
+        dragged = self._parse_ratios()
+        self.assertGreater(abs(dragged[0] - first[0]), 0.01)
+        self.win.setWidth(720)
+        self.win.setHeight(480)
+        QTest.qWait(80)
+        self._assert_ratios_close(self._parse_ratios(), dragged)
+        self.win.setWidth(1600)
+        self.win.setHeight(1000)
+        QTest.qWait(80)
+        self._assert_ratios_close(self._parse_ratios(), dragged)
+
+    def test_locked_ratios_reapplied_after_preferred_corruption(self):
+        self.win.setNonFill(220, 180)
+        QTest.qWait(80)
+        self.win.captureLocks()
+        original = self._parse_sizes()
+        ratios = self._parse_ratios()
         self.win.corruptNonFill(360, 260)
         QTest.qWait(30)
         self.win.setWidth(1400)
         self.win.setHeight(900)
         QTest.qWait(80)
-        self.assertEqual(self.win.sizes(), "220,180")
+        grown = self._parse_sizes()
+        self.assertNotAlmostEqual(grown[0], 360, delta=8)
+        self._assert_ratios_close(self._parse_ratios(), ratios)
         self.win.setWidth(720)
         self.win.setHeight(480)
         QTest.qWait(80)
-        self.assertEqual(self.win.sizes(), "220,180")
+        self._assert_sizes_close(self._parse_sizes(), original)
 
 
 if __name__ == "__main__":

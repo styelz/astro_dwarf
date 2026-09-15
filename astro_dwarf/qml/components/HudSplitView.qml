@@ -10,16 +10,16 @@ import ".."
 // Set autoRestore false when a coordinator (PanelSwap) reorders children first —
 // restoreState warns and no-ops if the saved blob has more items than exist yet.
 //
-// Non-fill panes keep their pixel size across window maximize/restore. Qt SplitView
-// otherwise rewrites preferred sizes while the window is large, so unmaximize does
-// not put the layout back. Fill panes still absorb leftover space.
+// Visible panes keep their share of the split across window maximize/restore.
+// Qt SplitView otherwise rewrites preferred sizes while the window is large, so
+// proportions drift. Fill panes still absorb leftover pixels after rounding.
 SplitView {
     id: splitView
     property string settingsKey: ""
     property bool autoRestore: true
     readonly property bool controlLayoutSplit: splitView.settingsKey === "controlColumns"
         || PanelSwap.columnKeys.indexOf(splitView.settingsKey) >= 0
-    property var lockedSizes: []
+    property var lockedRatios: []
     property int handleDragCount: 0
     property bool applyingLocks: false
     property real lastAlong: -1
@@ -32,6 +32,7 @@ SplitView {
     }
 
     readonly property string countKey: splitView.settingsKey === "" ? "" : splitView.settingsKey + "Count"
+    readonly property string ratiosKey: splitView.settingsKey === "" ? "" : splitView.settingsKey + "Ratios"
 
     function viewAlong() {
         return splitView.verticalSplit ? splitView.height : splitView.width
@@ -39,6 +40,15 @@ SplitView {
 
     function itemAlong(item) {
         return splitView.verticalSplit ? item.height : item.width
+    }
+
+    function itemMinimum(item) {
+        if (!item || !item.SplitView)
+            return 0
+        const n = splitView.verticalSplit
+            ? Number(item.SplitView.minimumHeight)
+            : Number(item.SplitView.minimumWidth)
+        return isFinite(n) && n > 0 ? n : 0
     }
 
     function itemIsFill(item) {
@@ -56,15 +66,6 @@ SplitView {
             item.SplitView.preferredWidth = size
     }
 
-    function clearFillPreferred(item) {
-        if (!item || !item.SplitView)
-            return
-        if (splitView.verticalSplit)
-            item.SplitView.preferredHeight = undefined
-        else
-            item.SplitView.preferredWidth = undefined
-    }
-
     function itemPreferred(item) {
         if (!item || !item.SplitView)
             return -1
@@ -73,8 +74,55 @@ SplitView {
             : Number(item.SplitView.preferredWidth)
         if (isFinite(n) && n >= 8)
             return n
-        const laidOut = splitView.itemAlong(item)
-        return laidOut >= 8 ? laidOut : -1
+        return -1
+    }
+
+    function paneUsable() {
+        let sum = 0
+        for (let i = 0; i < splitView.count; i++) {
+            const it = splitView.itemAt(i)
+            if (it && it.visible)
+                sum += splitView.itemAlong(it)
+        }
+        if (sum >= 8)
+            return sum
+        return splitView.viewAlong()
+    }
+
+    function parseRatios(raw) {
+        if (raw === undefined || raw === null || raw === "")
+            return null
+        try {
+            const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
+            if (!parsed || parsed.length === undefined)
+                return null
+            const out = []
+            for (let i = 0; i < parsed.length; i++) {
+                const n = Number(parsed[i])
+                if (!isFinite(n))
+                    return null
+                out.push(n)
+            }
+            return out
+        } catch (e) {
+            return null
+        }
+    }
+
+    function ratiosValid(ratios) {
+        if (!ratios || ratios.length !== splitView.count)
+            return false
+        let sum = 0
+        let any = false
+        for (let i = 0; i < ratios.length; i++) {
+            const r = Number(ratios[i])
+            if (!isFinite(r) || r < 0)
+                continue
+            if (r > 0)
+                any = true
+            sum += r
+        }
+        return any && sum > 0.5 && sum < 1.5
     }
 
     function captureLocked() {
@@ -82,21 +130,63 @@ SplitView {
             return
         if (splitView.viewAlong() < 64)
             return
-        const next = []
-        let usable = false
+        const usable = splitView.paneUsable()
+        if (usable < 8)
+            return
+        const sizes = []
+        const fillIdx = []
+        let reserved = 0
+        let fillLaid = 0
         for (let i = 0; i < splitView.count; i++) {
             const it = splitView.itemAt(i)
-            if (!it || !it.visible || splitView.itemIsFill(it)) {
+            if (!it || !it.visible) {
+                sizes.push(-1)
+                continue
+            }
+            if (splitView.itemIsFill(it)) {
+                sizes.push(0)
+                fillIdx.push(i)
+                const laid = splitView.itemAlong(it)
+                fillLaid += laid >= 0 ? laid : 0
+                continue
+            }
+            const pref = splitView.itemPreferred(it)
+            const laid = splitView.itemAlong(it)
+            const size = pref >= 8 ? pref : laid
+            if (size < 8) {
+                sizes.push(-1)
+                continue
+            }
+            sizes.push(size)
+            reserved += size
+        }
+        let fillSpace = Math.max(0, usable - reserved)
+        if (fillIdx.length === 0) {
+            if (reserved < 8)
+                return
+            fillSpace = reserved
+        }
+        for (let f = 0; f < fillIdx.length; f++) {
+            const i = fillIdx[f]
+            const it = splitView.itemAt(i)
+            const laid = it ? splitView.itemAlong(it) : 0
+            sizes[i] = fillLaid > 0 ? fillSpace * laid / fillLaid : fillSpace / fillIdx.length
+        }
+        const total = fillIdx.length === 0 ? reserved : reserved + fillSpace
+        if (total < 8)
+            return
+        const next = []
+        let any = false
+        for (let i = 0; i < sizes.length; i++) {
+            if (sizes[i] < 0) {
                 next.push(-1)
                 continue
             }
-            const size = splitView.itemPreferred(it)
-            next.push(size)
-            if (size >= 8)
-                usable = true
+            next.push(sizes[i] / total)
+            any = true
         }
-        if (usable)
-            splitView.lockedSizes = next
+        if (any)
+            splitView.lockedRatios = next
     }
 
     function applyLocked() {
@@ -104,25 +194,32 @@ SplitView {
             return
         if (splitView.viewAlong() < 64)
             return
-        const sizes = splitView.lockedSizes
-        if (!sizes || sizes.length !== splitView.count) {
+        const ratios = splitView.lockedRatios
+        if (!splitView.ratiosValid(ratios)) {
             splitView.captureLocked()
             return
         }
+        const usable = splitView.paneUsable()
+        if (usable < 8)
+            return
         splitView.applyingLocks = true
         for (let i = 0; i < splitView.count; i++) {
             const it = splitView.itemAt(i)
             if (!it || !it.visible)
                 continue
-            if (splitView.itemIsFill(it)) {
-                splitView.clearFillPreferred(it)
+            const ratio = Number(ratios[i])
+            if (!isFinite(ratio) || ratio < 0)
                 continue
-            }
-            const size = Number(sizes[i])
+            const size = Math.max(splitView.itemMinimum(it), Math.round(ratio * usable))
             if (size >= 8)
                 splitView.setItemPreferred(it, size)
         }
         splitView.applyingLocks = false
+    }
+
+    function relock() {
+        splitView.captureLocked()
+        splitView.applyLocked()
     }
 
     function scheduleApply() {
@@ -141,10 +238,16 @@ SplitView {
         const savedCount = Number(splitStore.value(splitView.countKey))
         if (isFinite(savedCount) && savedCount > 0 && savedCount !== splitView.count)
             return
+        const ratios = splitView.parseRatios(splitStore.value(splitView.ratiosKey))
+        if (splitView.ratiosValid(ratios)) {
+            splitView.lockedRatios = ratios
+            splitView.applyLocked()
+            return
+        }
         const state = splitStore.value(splitView.settingsKey)
         if (state)
             splitView.restoreState(state)
-        Qt.callLater(splitView.captureLocked)
+        splitView.captureLocked()
     }
 
     function persist() {
@@ -155,6 +258,7 @@ SplitView {
         splitView.captureLocked()
         splitStore.setValue(splitView.settingsKey, splitView.saveState())
         splitStore.setValue(splitView.countKey, splitView.count)
+        splitStore.setValue(splitView.ratiosKey, JSON.stringify(splitView.lockedRatios || []))
     }
 
     function clearSaved() {
@@ -162,7 +266,8 @@ SplitView {
             return
         splitStore.setValue(splitView.settingsKey, "")
         splitStore.setValue(splitView.countKey, 0)
-        splitView.lockedSizes = []
+        splitStore.setValue(splitView.ratiosKey, "")
+        splitView.lockedRatios = []
     }
 
     onWidthChanged: if (!splitView.verticalSplit)

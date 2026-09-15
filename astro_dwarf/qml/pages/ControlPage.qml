@@ -324,6 +324,7 @@ Item {
                     TapHandler {
                         acceptedButtons: Qt.RightButton
                         enabled: !!backend.currentSession.id
+                        grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
                         onTapped: targetMenu.popup()
                     }
                 ]
@@ -483,6 +484,8 @@ Item {
                         enabled: backend.currentSession.status === "running" && !root.scopeStopping
                         onTriggered: backend.stopSession(backend.currentSession.id)
                     }
+                    HudMenuSeparator {}
+                    LayoutResetMenuItem {}
                 }
             }
 
@@ -1902,6 +1905,7 @@ Item {
                     }
                     TapHandler {
                         acceptedButtons: Qt.RightButton
+                        grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
                         onTapped: previewMenu.popup()
                     }
                     HudMenu {
@@ -1945,6 +1949,8 @@ Item {
                             enabled: backend.selectedDevice.connected && backend.videoUrl !== ""
                             onTriggered: backend.copyText(backend.videoUrl)
                         }
+                        HudMenuSeparator {}
+                        LayoutResetMenuItem {}
                     }
                 }
             }
@@ -2372,6 +2378,7 @@ Item {
                         MouseArea {
                             id: stickArea
                             anchors.fill: parent
+                            acceptedButtons: Qt.LeftButton
                             enabled: root.motionEnabled && !motionPanel.stacking
                             preventStealing: true
                             cursorShape: root.motionEnabled && !motionPanel.stacking ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
@@ -2442,6 +2449,7 @@ Item {
                                 MouseArea {
                                     id: nudgeArea
                                     anchors.fill: parent
+                                    acceptedButtons: Qt.LeftButton
                                     hoverEnabled: true
                                     enabled: analogPad.nudgesEnabled
                                     cursorShape: analogPad.nudgesEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
@@ -2700,6 +2708,7 @@ Item {
                                 }
                                 TapHandler {
                                     acceptedButtons: Qt.RightButton
+                                    grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
                                     onTapped: controlPage.openSessionMenu(upcomingRow.modelData)
                                 }
                                 }
@@ -2978,6 +2987,7 @@ Item {
                             ToolTip.text: logRow.message
                             TapHandler {
                                 acceptedButtons: Qt.RightButton
+                                grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
                                 onTapped: {
                                     logMenu.lineText = logRow.lineText
                                     logMenu.popup()
@@ -3006,6 +3016,8 @@ Item {
                                 enabled: logList.count > 0
                                 onTriggered: backend.clearLog()
                             }
+                            HudMenuSeparator {}
+                            LayoutResetMenuItem {}
                         }
                     }
                     EmptyHint {
@@ -3056,5 +3068,7 @@ Item {
             controlPage.selectedUpcomingIds = ({})
             controlPage.selectionAnchorId = ""
         }
+        HudMenuSeparator {}
+        LayoutResetMenuItem {}
     }
 }

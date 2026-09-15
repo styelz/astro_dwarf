@@ -68,6 +68,10 @@ Item {
             return
         layoutMenu.popup()
     }
+    function closeLayoutMenu() {
+        layoutMenu.close()
+    }
+    readonly property bool layoutMenuOpen: layoutMenu.opened
 
     Component.onCompleted: {
         if (panel.panelId !== "")
@@ -334,7 +338,21 @@ Item {
         y: panel.dropMode === "after" ? parent.height - height : 0
         color: Theme.accent
     }
+    TapHandler {
+        id: panelLayoutTap
+        acceptedButtons: Qt.RightButton
+        enabled: panel.movable && !DragCoordinator.active && !PanelSwap.active
+        grabPermissions: PointerHandler.ApprovesTakeOverByAnything
+        gesturePolicy: TapHandler.ReleaseWithinBounds
+        onTapped: (eventPoint) => {
+            const grabber = eventPoint["exclusiveGrabber"]
+            if (grabber && grabber !== panelLayoutTap)
+                return
+            panel.openLayoutMenu()
+        }
+    }
     LayoutContextMenu {
         id: layoutMenu
+        objectName: panel.panelId !== "" ? "layoutResetMenu-" + panel.panelId : "layoutResetMenu"
     }
 }

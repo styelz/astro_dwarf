@@ -469,8 +469,8 @@ QtObject {
                 continue
             if (key !== "controlColumns" && saved.attached)
                 coord.applyProps(split, saved.attached)
-            if (saved.state && split.restoreState)
-                split.restoreState(saved.state)
+            if (split.relock)
+                split.relock()
         }
         coord.discardSavedLayout()
         coord.persist()

@@ -31,6 +31,20 @@ Window {
     property bool swapOk: false
     property bool hoverHit: false
 
+    function panelMenuOpened(id) {
+        const p = id === "a" ? panelA : id === "b" ? panelB : panelC
+        return !!(p && p.layoutMenuOpen)
+    }
+    function extraMenuOpened() {
+        return extraMenu.opened
+    }
+    function closeAllMenus() {
+        panelA.closeLayoutMenu()
+        panelB.closeLayoutMenu()
+        panelC.closeLayoutMenu()
+        extraMenu.close()
+    }
+
     HudSplitView {
         id: split
         objectName: "probeSplit"
@@ -54,6 +68,23 @@ Window {
             title: "BETA"
             SplitView.fillHeight: true
             SplitView.minimumHeight: 80
+            overlay: [
+                TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
+                    onTapped: extraMenu.popup()
+                },
+                HudMenu {
+                    id: extraMenu
+                    objectName: "panelBBodyMenu"
+                    HudMenuItem {
+                        objectName: "existingAction"
+                        text: "Existing action"
+                    }
+                    HudMenuSeparator {}
+                    LayoutResetMenuItem {}
+                }
+            ]
             Text { text: "body B"; color: "#fff" }
         }
         HudPanel {
@@ -211,6 +242,16 @@ class PanelSwapTests(unittest.TestCase):
         if self.win.idsInSplit() != "a,b,c":
             self.win.resetOrder()
         self.assertEqual(self.win.idsInSplit(), "a,b,c")
+        self._close_menus()
+
+    def _close_menus(self):
+        self.win.closeAllMenus()
+        QTest.qWait(20)
+
+    def _right_click(self, item: QQuickItem, fx: float = 0.5, fy: float = 0.6) -> None:
+        window = item.window()
+        QTest.mouseClick(window, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier, _window_pos(item, fx, fy))
+        QTest.qWait(80)
 
     def test_qml_loads_clean(self):
         self.assertFalse(self.warnings)
@@ -271,6 +312,25 @@ class PanelSwapTests(unittest.TestCase):
         QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, end)
         QTest.qWait(100)
         self.assertEqual(self.win.idsInSplit(), "b,c,a")
+
+    def test_body_right_click_opens_layout_menu(self):
+        panel = self.win.findChild(QQuickItem, "panelA")
+        self._right_click(panel, 0.5, 0.65)
+        self.assertTrue(self.win.panelMenuOpened("a"))
+        self.assertFalse(self.win.extraMenuOpened())
+
+    def test_header_right_click_opens_layout_menu(self):
+        handle = self.win.findChild(QQuickItem, "panelDrag-a")
+        self._right_click(handle, 0.5, 0.5)
+        self.assertTrue(self.win.panelMenuOpened("a"))
+
+    def test_existing_panel_menu_keeps_reset_item(self):
+        panel = self.win.findChild(QQuickItem, "panelB")
+        self._right_click(panel, 0.5, 0.55)
+        self.assertTrue(self.win.extraMenuOpened())
+        self.assertFalse(self.win.panelMenuOpened("b"))
+        self.assertIsNotNone(self.win.findChild(QQuickItem, "existingAction"))
+        self.assertIsNotNone(self.win.findChild(QQuickItem, "resetControlLayout"))
 
 
 if __name__ == "__main__":
