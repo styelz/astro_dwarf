@@ -15,7 +15,9 @@ SpinBox {
     Layout.preferredWidth: implicitWidth
     font.pixelSize: Theme.fontBase
     hoverEnabled: true
+    wheelEnabled: true
     focusPolicy: Qt.StrongFocus
+    validator: RegularExpressionValidator { regularExpression: /^-?\d{0,6}.*$/ }
     palette.text: Theme.textPrimary
     palette.base: Theme.inputBg
     palette.button: Theme.surfaceHigh
@@ -29,6 +31,28 @@ SpinBox {
         visible: box.tooltip !== "" && box.hovered
         text: box.tooltip
     }
+    function nudge(direction) {
+        const step = box.stepSize === 0 ? 1 : box.stepSize
+        let next = box.value + (direction > 0 ? step : -step)
+        if (box.wrap) {
+            const span = box.to - box.from + step
+            if (span <= 0)
+                return
+            next = box.from + ((((next - box.from) % span) + span) % span)
+        } else {
+            next = Math.max(box.from, Math.min(box.to, next))
+        }
+        if (next === box.value)
+            return
+        box.value = next
+        if (spinText.activeFocus)
+            spinText.text = String(box.value)
+        box.valueModified()
+    }
+    onValueChanged: {
+        if (spinText.activeFocus)
+            spinText.text = String(box.value)
+    }
     WheelHandler {
         enabled: box.enabled
         acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
@@ -38,11 +62,7 @@ SpinBox {
             const delta = event.angleDelta.y !== 0 ? event.angleDelta.y : event.pixelDelta.y
             if (!delta)
                 return
-            const next = Math.max(box.from, Math.min(box.to, box.value + (delta > 0 ? box.stepSize : -box.stepSize)))
-            if (next !== box.value) {
-                box.value = next
-                box.valueModified()
-            }
+            box.nudge(delta > 0 ? 1 : -1)
             event.accepted = true
         }
     }
@@ -60,15 +80,40 @@ SpinBox {
         inputMethodHints: box.inputMethodHints
         leftPadding: 22
         rightPadding: 22
+        text: box.textFromValue(box.value, box.locale)
         Binding {
             target: spinText
             property: "text"
             value: box.textFromValue(box.value, box.locale)
             when: !spinText.activeFocus
+            restoreMode: Binding.RestoreNone
+        }
+        onActiveFocusChanged: {
+            if (!spinText.activeFocus)
+                return
+            spinText.text = String(box.value)
+            spinText.selectAll()
+        }
+        Keys.onPressed: event => {
+            if (event.key === Qt.Key_Up) {
+                box.nudge(1)
+                event.accepted = true
+            } else if (event.key === Qt.Key_Down) {
+                box.nudge(-1)
+                event.accepted = true
+            }
         }
         onEditingFinished: {
-            const next = box.valueFromText(text, box.locale)
-            box.value = Math.max(box.from, Math.min(box.to, isNaN(next) ? box.value : next))
+            const parsed = box.valueFromText(text, box.locale)
+            let next = isNaN(parsed) ? box.value : parsed
+            if (box.wrap) {
+                const span = box.to - box.from + (box.stepSize === 0 ? 1 : box.stepSize)
+                next = box.from + ((((next - box.from) % span) + span) % span)
+            } else {
+                next = Math.max(box.from, Math.min(box.to, next))
+            }
+            box.value = next
+            spinText.text = box.textFromValue(box.value, box.locale)
             box.valueModified()
         }
     }

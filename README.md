@@ -1,31 +1,32 @@
-# Astro Dwarf - Multi Device Controller and Scheduler
+# Astro Dwarf
 
-Desktop app for controlling and scheduling [Dwarf II](https://dwarflab.com/), Dwarf 3, and Dwarf Mini telescopes. Each telescope is a separate profile with its own IP, location, and session queue.
+Tired of babysitting a Dwarf all night? Astro Dwarf is a desktop controller and unattended imaging scheduler for [Dwarf II](https://dwarflab.com/), Dwarf 3, and Dwarf Mini.
 
-The Control page shows live view, device status, camera settings, commands, the upcoming queue, and a log. Calendar, Sessions, History, Media, and Settings are the other pages. Media lists real astro sessions on the telescope (thumbnails, capture details, download) and files already saved locally.
+[Project site](https://styelz.github.io/astro_dwarf/) · [Installers](https://github.com/styelz/astro_dwarf/releases/latest)
 
-Sessions can be created by hand, from templates, from Stellarium's current target, or from a Telescopius CSV. Duration includes hardware overheads you can edit per telescope (slew, settle, calibration, focus, and so on). Tele/wide cameras and mosaics are supported.
+## What it does
 
-<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/47288be4-c3c4-437b-9ec5-ccc7d02f8a81" />
-<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/62947b84-3492-41c9-a7e0-89dece4f7d06" />
+- Schedule unattended DSO imaging sessions — a Dwarf 3 scheduler and sequencer that also covers Dwarf II and Mini
+- Run several telescope profiles from one desktop, each with its own IP, location, and session queue
+- Live Control HUD: view, device status, camera settings, commands, upcoming queue, and log
+- Session planning by hand, from templates, from Stellarium's current target, or from a Telescopius CSV
+- Tele/wide cameras, mosaics, Dual Lenses Locating, Polar / EQ, and polar-alignment pose
+- Media album of real astro sessions on the telescope (thumbnails, capture details, stacked-frame download) plus files already saved locally
 
+Duration includes hardware overheads you can edit per telescope (slew, settle, calibration, focus, and so on). Calendar, Sessions, History, Media, and Settings sit alongside Control.
+
+<p align="center">
+  <a href="https://styelz.github.io/astro_dwarf/#screens">
+    <img src="docs/screens/tour.webp" alt="Astro Dwarf page tour: Control, calendar, sessions, media, sky map, and settings" width="800">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://styelz.github.io/astro_dwarf/#screens">Interactive slideshow on the project site</a>
+  · Control · Calendar · Sessions · Media · Sky · Settings
+</p>
 
 Hardware commands go through [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api) on the **`multi_V3`** branch (V3 protobuf/WebSocket protocol). Connect sends time, timezone, and site location; DSO sessions use shooting mode 2. Live camera parameters can be read from the telescope HTTP API on port `8082` after the WebSocket session is up. The Media page lists astro sessions from that same HTTP album API and can download stacked frames; still photos are still available there over FTP. Polar / EQ shows the last azimuth and altitude correction after solving, and Polar Pos homes the mount into the polar-alignment pose.
-
-## Run from source
-
-Needs [Python 3.11+](https://www.python.org/downloads/) and Git.
-
-```text
-git clone https://github.com/styelz/astro_dwarf.git
-cd astro_dwarf
-./start.sh          # macOS / Linux
-.\start.bat         # Windows
-```
-
-The first run creates a local `.venv` and installs packages, including `dwarf_python_api@multi_V3`. Later runs skip that unless the V3 helpers are missing. If you already had an older venv, delete `.venv` or run `pip install -e ".[device]"` inside it.
-
-Set each telescope's IP, model, and location in Settings. The scheduler stays stopped until you start it from Control. Dwarf 3 and Mini live view needs `ffmpeg` on `PATH` (installers already include it). With the camera set to Wide, double-click a spot on the live view and the telescope slews the tele camera onto it (the official app's Dual Lenses Locating).
 
 ## Installers
 
@@ -46,6 +47,21 @@ astro-dwarf
 ```
 
 Linux installers start with software Qt Quick so the window still opens when the host GPU stack cannot initialize GLX (common on NVIDIA and XWayland). GTK module warnings such as `xapp-gtk3-module` are harmless. To use the host OpenGL driver instead: `ASTRO_DWARF_QT_SYSTEM=1 astro-dwarf`.
+
+## Run from source
+
+Needs [Python 3.11+](https://www.python.org/downloads/) and Git.
+
+```text
+git clone https://github.com/styelz/astro_dwarf.git
+cd astro_dwarf
+./start.sh          # macOS / Linux
+.\start.bat         # Windows
+```
+
+The first run creates a local `.venv` and installs packages, including `dwarf_python_api@multi_V3`. Later runs skip that unless the V3 helpers are missing. If you already had an older venv, delete `.venv` or run `pip install -e ".[device]"` inside it.
+
+Set each telescope's IP, model, and location in Settings. The scheduler stays stopped until you start it from Control. Dwarf 3 and Mini live view needs `ffmpeg` on `PATH` (installers already include it). With the camera set to Wide, double-click a spot on the live view and the telescope slews the tele camera onto it (the official app's Dual Lenses Locating).
 
 ## Data
 

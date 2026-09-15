@@ -5,8 +5,8 @@ version: "${VERSION}"
 section: science
 priority: optional
 maintainer: Astro Dwarf
-description: Native multi-device Dwarf telescope control and scheduling
-homepage: https://github.com/styelz/astro_dwarf
+description: Desktop scheduler and multi-telescope controller for Dwarf II, Dwarf 3, and Dwarf Mini
+homepage: https://styelz.github.io/astro_dwarf/
 license: Proprietary
 archlinux:
   packager: Astro Dwarf

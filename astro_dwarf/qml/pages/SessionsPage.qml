@@ -9,6 +9,25 @@ import ".."
 import "../components"
 
 Item {
+    function revealTemplates(ids) {
+        const created = []
+        if (Array.isArray(ids)) {
+            for (let i = 0; i < ids.length; i++) {
+                const id = String(ids[i] || "").trim()
+                if (id)
+                    created.push(id)
+            }
+        } else {
+            String(ids || "").split(",").forEach(part => {
+                const id = String(part || "").trim()
+                if (id)
+                    created.push(id)
+            })
+        }
+        sessionsTabs.currentIndex = 1
+        Qt.callLater(() => templatesPage.revealCreated(created))
+    }
+
     Flickable {
         id: sessionsFlick
         anchors.fill: parent
@@ -32,7 +51,7 @@ Item {
                 const running = backend.sessions.filter(item => item.status === "running").length
                 return planned + " planned · " + (running > 0 ? running + " running · " : "") + backend.templates.length + " template" + (backend.templates.length === 1 ? "" : "s")
             }
-            HudButton { text: "IMPORT STELLARIUM"; busy: backend.uiBusy === "stellarium"; busyText: "IMPORTING…"; busyMs: 0; enabled: backend.uiBusy === ""; onClicked: backend.importStellarium() }
+            HudButton { text: "IMPORT STELLARIUM"; busy: backend.uiBusy === "stellarium"; busyText: "IMPORTING…"; busyMs: 0; enabled: backend.uiBusy === ""; onClicked: root.harvestStellarium("import") }
             HudButton { text: "IMPORT TELESCOPIUS"; busy: backend.uiBusy === "telescopius"; busyText: backend.uiBusy === "telescopius" ? "IMPORTING…" : "OPENING…"; enabled: backend.uiBusy === ""; onClicked: telescopiusDialog.open() }
             HudButton { text: "+ MANUAL SESSION"; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: sessionDialog.openForDate(Qt.formatDate(new Date(), "yyyy-MM-dd")) }
         }
@@ -398,6 +417,7 @@ Item {
             Item {
                 id: templatesPage
                 property var selectedIds: ({})
+                property var flashIds: ({})
                 property string selectionAnchorId: ""
                 readonly property int selectedCount: Util.idSetCount(selectedIds)
                 function selectClick(id, shift) {
@@ -410,6 +430,37 @@ Item {
                         root.confirmBulkDelete("deleteTemplates", selectedIds, "template")
                     else
                         root.confirmBulkDelete("deleteTemplates", id, "template")
+                }
+                function revealCreated(ids) {
+                    const wanted = {}
+                    const list = backend.templates
+                    let firstIndex = -1
+                    for (let i = 0; i < list.length; i++) {
+                        const item = list[i]
+                        const members = item.member_ids || [item.id]
+                        let match = false
+                        for (let n = 0; n < ids.length; n++) {
+                            if (item.id === ids[n] || members.indexOf(ids[n]) >= 0) {
+                                match = true
+                                break
+                            }
+                        }
+                        if (!match)
+                            continue
+                        wanted[item.id] = true
+                        if (firstIndex < 0)
+                            firstIndex = i
+                    }
+                    templatesPage.flashIds = wanted
+                    flashClear.restart()
+                    if (firstIndex >= 0)
+                        templatesView.positionViewAtIndex(firstIndex, GridView.Contain)
+                }
+                Timer {
+                    id: flashClear
+                    interval: Theme.slow * 2 + Theme.normal
+                    repeat: false
+                    onTriggered: templatesPage.flashIds = ({})
                 }
                 Connections {
                     target: backend
@@ -432,6 +483,7 @@ Item {
                         onDeleteRequested: root.confirmBulkDelete("deleteTemplates", templatesPage.selectedIds, "template")
                     }
                 GridView {
+                    id: templatesView
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
@@ -448,9 +500,22 @@ Item {
                         height: 212
                         title: modelData.name
                         readonly property bool grouped: Util.isGrouped(modelData)
+                        readonly property bool flashing: Util.idSetHas(templatesPage.flashIds, modelData.id)
                         readonly property color groupTone: Util.sessionTone(modelData)
+                        readonly property color restFill: Util.idSetHas(templatesPage.selectedIds, modelData.id) ? Theme.hsl(0.036, 0.640, 0.196, 0.753) : (grouped ? Util.groupFill(modelData.group_id) : Theme.panelFill)
+                        property real flashLevel: 0
                         titleColor: grouped ? groupTone : Theme.accent
-                        fill: Util.idSetHas(templatesPage.selectedIds, modelData.id) ? Theme.hsl(0.036, 0.640, 0.196, 0.753) : (grouped ? Util.groupFill(modelData.group_id) : Theme.panelFill)
+                        hot: flashing
+                        fill: Qt.rgba(
+                            restFill.r + (Theme.fillActive.r - restFill.r) * flashLevel,
+                            restFill.g + (Theme.fillActive.g - restFill.g) * flashLevel,
+                            restFill.b + (Theme.fillActive.b - restFill.b) * flashLevel,
+                            restFill.a
+                        )
+                        onFlashingChanged: {
+                            if (!flashing)
+                                flashLevel = 0
+                        }
                         overlay: [
                             Rectangle {
                                 visible: templateCard.grouped
@@ -461,6 +526,12 @@ Item {
                                 anchors.topMargin: 10
                                 anchors.bottomMargin: 10
                                 color: templateCard.groupTone
+                            },
+                            SequentialAnimation {
+                                running: templateCard.flashing
+                                loops: 1
+                                NumberAnimation { target: templateCard; property: "flashLevel"; from: 0; to: 1; duration: Theme.slow }
+                                NumberAnimation { target: templateCard; property: "flashLevel"; from: 1; to: 0; duration: Theme.slow }
                             },
                             HoverHandler { id: templateHover },
                             TapHandler {
@@ -612,6 +683,8 @@ Item {
                             text: modelData.notes
                             color: Theme.textSecondary
                             font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                            maximumLineCount: 3
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                         }

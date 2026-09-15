@@ -20,7 +20,7 @@ def collect_pyside_qml() -> list[tuple[str, str]]:
     import PySide6
 
     base = Path(PySide6.__file__).resolve().parent
-    modules = ("QtCore", "QtMultimedia", "QtQml", "QtQuick")
+    modules = ("QtCore", "QtMultimedia", "QtQml", "QtQuick", "QtWebView")
     collected: list[tuple[str, str]] = []
     for src_root, dest_root in (
         (base / "qml", "PySide6/qml"),
@@ -51,10 +51,12 @@ datas += collect_data_files(
         "qml/QtMultimedia/**",
         "qml/QtQml/**",
         "qml/QtQuick/**",
+        "qml/QtWebView/**",
         "Qt/qml/QtCore/**",
         "Qt/qml/QtMultimedia/**",
         "Qt/qml/QtQml/**",
         "Qt/qml/QtQuick/**",
+        "Qt/qml/QtWebView/**",
     ],
 )
 
@@ -87,6 +89,7 @@ hiddenimports = [
     "PySide6.QtQuick",
     "PySide6.QtQuickControls2",
     "PySide6.QtSvg",
+    "PySide6.QtWebView",
     "filelock",
     "google.protobuf",
     "websockets",
@@ -145,6 +148,15 @@ if sys.platform.startswith("linux"):
     analysis.binaries = [
         entry for entry in analysis.binaries if not _linux_host_gl_lib(entry[0])
     ]
+
+# Prefer the OS web view. The WebEngine plugin would pull Chromium into the bundle.
+def _is_webengine_payload(entry) -> bool:
+    text = " ".join(str(part) for part in entry[:2]).lower()
+    return "webengine" in text
+
+
+analysis.binaries = [entry for entry in analysis.binaries if not _is_webengine_payload(entry)]
+analysis.datas = [entry for entry in analysis.datas if not _is_webengine_payload(entry)]
 
 pyz = PYZ(analysis.pure)
 

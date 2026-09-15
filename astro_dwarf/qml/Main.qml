@@ -47,8 +47,11 @@ ApplicationWindow {
     readonly property string scopeActivityDetail: String((backend.selectedDevice && backend.selectedDevice.activity_detail) || "")
     readonly property bool scopeActivityFromDevice: !!(backend.selectedDevice && backend.selectedDevice.activity_from_device)
     property int currentPage: 0
+    readonly property int sessionsPageIndex: 2
     readonly property int mediaPageIndex: 4
-    readonly property int settingsPageIndex: 5
+    readonly property int skyPageIndex: 5
+    readonly property int settingsPageIndex: 6
+    readonly property alias skyToolsEnabled: layoutSettings.skyToolsEnabled
     property real joySpeed: 1
     readonly property real joyMin: 0.004
     readonly property real mappedJoySpeed: {
@@ -258,6 +261,15 @@ ApplicationWindow {
             settingsPage.load()
     }
 
+    function harvestStellarium(action) {
+        skyPage.withSkySources(action)
+    }
+
+    function revealTemplates(ids) {
+        root.goToPage(root.sessionsPageIndex)
+        Qt.callLater(() => sessionsPage.revealTemplates(ids))
+    }
+
     function askLeaveSettings(page, deviceId) {
         if (settingsLeaveDialog.visible)
             return
@@ -270,6 +282,11 @@ ApplicationWindow {
         id: layoutSettings
         category: "controlLayout"
         property bool navBarOnTop: true
+        property bool skyToolsEnabled: true
+        onSkyToolsEnabledChanged: {
+            if (!layoutSettings.skyToolsEnabled && root.currentPage === root.skyPageIndex)
+                root.goToPage(0)
+        }
     }
 
     Component.onCompleted: {
@@ -804,6 +821,7 @@ ApplicationWindow {
             visible: layoutSettings.navBarOnTop
             Layout.topMargin: 8
             currentIndex: root.currentPage
+            skyToolsEnabled: layoutSettings.skyToolsEnabled
             attentionIndex: settingsPage.dirty ? root.settingsPageIndex : -1
             attentionDescription: "Unsaved settings"
             onPageRequested: index => root.goToPage(index)
@@ -822,6 +840,7 @@ ApplicationWindow {
             SessionsPage { id: sessionsPage }
             HistoryPage { id: historyPage }
             MediaPage { id: mediaPage }
+            SkyPage { id: skyPage }
             SettingsPage { id: settingsPage }
         }
 
@@ -829,6 +848,7 @@ ApplicationWindow {
             visible: !layoutSettings.navBarOnTop
             Layout.bottomMargin: 8
             currentIndex: root.currentPage
+            skyToolsEnabled: layoutSettings.skyToolsEnabled
             attentionIndex: settingsPage.dirty ? root.settingsPageIndex : -1
             attentionDescription: "Unsaved settings"
             onPageRequested: index => root.goToPage(index)
@@ -929,7 +949,9 @@ ApplicationWindow {
         readonly property int maxToasts: 4
         property int nextId: 1
 
-        function durationFor(level) {
+        function durationFor(level, hasLink) {
+            if (hasLink)
+                return 7000
             switch (String(level || "").toLowerCase()) {
             case "error": return 8000
             case "warning": return 6000
@@ -937,16 +959,30 @@ ApplicationWindow {
             default: return 3000
             }
         }
-        function push(message, level, detail) {
+        function actionIdsFrom(meta) {
+            const raw = meta && meta.ids
+            if (Array.isArray(raw))
+                return raw.map(id => String(id || "").trim()).filter(id => id !== "").join(",")
+            return String(raw || "").trim()
+        }
+        function push(message, level, detail, meta) {
             const text = String(message || "").trim()
             if (text === "")
                 return
             const tone = String(level || "info").toLowerCase()
+            const info = meta || ({})
+            const actionKind = String(info.kind || "")
+            const actionIds = toastHost.actionIdsFrom(info)
+            const actionLabel = String(info.link || "")
+            const hasLink = actionKind !== "" && actionLabel !== ""
             for (let i = 0; i < toastModel.count; i++) {
                 const existing = toastModel.get(i)
                 if (existing.message === text && existing.level === tone) {
                     toastModel.setProperty(i, "count", existing.count + 1)
                     toastModel.setProperty(i, "detail", String(detail || existing.detail || ""))
+                    toastModel.setProperty(i, "actionKind", actionKind || existing.actionKind)
+                    toastModel.setProperty(i, "actionIds", actionIds || existing.actionIds)
+                    toastModel.setProperty(i, "actionLabel", actionLabel || existing.actionLabel)
                     toastModel.setProperty(i, "restart", existing.restart + 1)
                     return
                 }
@@ -958,9 +994,12 @@ ApplicationWindow {
                 message: text,
                 level: tone,
                 detail: String(detail || ""),
+                actionKind: actionKind,
+                actionIds: actionIds,
+                actionLabel: actionLabel,
                 count: 1,
                 restart: 0,
-                duration: durationFor(tone)
+                duration: durationFor(tone, hasLink)
             })
         }
         function dismiss(toastId) {
@@ -993,6 +1032,9 @@ ApplicationWindow {
                     required property string message
                     required property string level
                     required property string detail
+                    required property string actionKind
+                    required property string actionIds
+                    required property string actionLabel
                     required property int count
                     required property int restart
                     required property int duration
@@ -1067,10 +1109,24 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                             }
                             RowLayout {
-                                visible: toastCard.level === "error" || toastCard.level === "warning"
+                                visible: toastCard.level === "error" || toastCard.level === "warning" || toastCard.actionKind === "template"
                                 spacing: 10
                                 Layout.topMargin: 2
                                 Text {
+                                    visible: toastCard.actionKind === "template"
+                                    text: toastCard.actionLabel || "VIEW TEMPLATE"
+                                    color: viewTemplateHover.hovered ? Theme.textPrimary : toastCard.tone
+                                    font.pixelSize: 9; font.bold: true; font.letterSpacing: Theme.tracking2
+                                    HoverHandler { id: viewTemplateHover; cursorShape: Qt.PointingHandCursor }
+                                    TapHandler {
+                                        onTapped: {
+                                            root.revealTemplates(toastCard.actionIds)
+                                            toastHost.dismiss(toastCard.toastId)
+                                        }
+                                    }
+                                }
+                                Text {
+                                    visible: toastCard.level === "error" || toastCard.level === "warning"
                                     text: "VIEW LOG"
                                     color: viewLogHover.hovered ? Theme.textPrimary : toastCard.tone
                                     font.pixelSize: 9; font.bold: true; font.letterSpacing: Theme.tracking2
@@ -1134,7 +1190,11 @@ ApplicationWindow {
                     HoverHandler { id: toastHover }
                     TapHandler {
                         acceptedButtons: Qt.LeftButton
-                        onTapped: toastHost.dismiss(toastCard.toastId)
+                        onTapped: {
+                            if (toastCard.actionKind === "template")
+                                root.revealTemplates(toastCard.actionIds)
+                            toastHost.dismiss(toastCard.toastId)
+                        }
                     }
                 }
             }
@@ -1143,8 +1203,8 @@ ApplicationWindow {
 
     Connections {
         target: backend
-        function onToast(message, level, detail) {
-            toastHost.push(message, level, detail)
+        function onToast(message, level, detail, meta) {
+            toastHost.push(message, level, detail, meta)
         }
         function onLocationLookupReady(item) {
             if (locationDialog.visible)

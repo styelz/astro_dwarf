@@ -70,15 +70,28 @@ from .domain import (
     to_dict,
 )
 from .services import (
+    DEFAULT_TELE_FOV_H,
+    DEFAULT_TELE_FOV_V,
+    DEFAULT_WIDE_FOV_H,
+    DEFAULT_WIDE_FOV_V,
     DurationEngine,
+    STELLARIUM_WEB_URL,
+    SKY_WEB_HARVEST_JS,
     StellariumClient,
+    generate_mosaic_plan,
     import_telescopius,
     mosaic_group_title,
+    mosaic_pane_footprints,
     mosaic_pane_workflow,
+    mosaic_south_up,
     next_free_start,
     observing_date,
     pane_sort_key,
+    parse_sky_web_target,
     parse_in_zone,
+    sky_web_fov_script,
+    sky_web_site_script,
+    sky_web_template_notes,
     session_window,
     sessions_overlap,
     stagger_mosaic_sessions,
@@ -102,6 +115,14 @@ from .image_enhance import (
 )
 from .stream_preview import LiveFrames, StreamPlayer, port_is_open, preview_window_is_live, set_live_frames, stream_port
 from .telemetry_view import AlertEngine, camera_params_to_telemetry, derive_activity, format_telemetry
+
+
+def _webview_available() -> bool:
+    try:
+        from PySide6.QtWebView import QtWebView  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 
 class TelescopeProcess(QObject):
@@ -567,20 +588,60 @@ class LogListModel(QAbstractListModel):
         self._unread[level] += 1
         self.countsChanged.emit()
 
+    @staticmethod
+    def _same_line(last: dict[str, Any] | None, entry: dict[str, Any]) -> bool:
+        return (
+            last is not None
+            and last.get("message") == entry.get("message")
+            and last.get("level") == entry.get("level")
+            and last.get("device") == entry.get("device")
+        )
+
+    def _visible_row(self, entry: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "time": entry.get("time", ""),
+            "level": entry.get("level", "INFO"),
+            "device": entry.get("device", ""),
+            "message": entry.get("message", ""),
+            "category": entry.get("category", "app"),
+            "count": int(entry.get("count", 1)),
+        }
+
+    def _coalesced_visible(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for entry in self._all:
+            if not self._is_visible(entry):
+                continue
+            if rows and self._same_line(rows[-1], entry):
+                rows[-1]["count"] = int(rows[-1].get("count", 1)) + int(entry.get("count", 1))
+                rows[-1]["time"] = entry.get("time", rows[-1]["time"])
+            else:
+                rows.append(self._visible_row(entry))
+        return rows
+
+    def _bump_visible(self, entry: dict[str, Any]) -> bool:
+        if not (self._visible and self._same_line(self._visible[-1], entry)):
+            return False
+        last = self._visible[-1]
+        last["count"] = int(last.get("count", 1)) + int(entry.get("count", 1))
+        last["time"] = entry.get("time", last["time"])
+        row = len(self._visible) - 1
+        self.dataChanged.emit(self.index(row), self.index(row), [self.TimeRole, self.CountRole])
+        return True
+
     def append(self, entry: dict[str, Any]) -> None:
         last = self._all[-1] if self._all else None
-        if (
-            last is not None
-            and last["message"] == entry["message"]
-            and last["level"] == entry["level"]
-            and last["device"] == entry["device"]
-        ):
+        if last is not None and self._same_line(last, entry):
             last["count"] = int(last.get("count", 1)) + 1
             last["time"] = entry["time"]
-            self._note_unread(last["level"])
-            if self._visible and self._visible[-1] is last:
-                row = len(self._visible) - 1
-                self.dataChanged.emit(self.index(row), self.index(row), [self.TimeRole, self.CountRole])
+            self._note_unread(str(last.get("level") or ""))
+            self._bump_visible({
+                "time": entry["time"],
+                "level": last["level"],
+                "device": last["device"],
+                "message": last["message"],
+                "count": 1,
+            })
             return
         entry.setdefault("count", 1)
         self._all.append(entry)
@@ -588,30 +649,25 @@ class LogListModel(QAbstractListModel):
         if level in self._counts:
             self._counts[level] += 1
             self._note_unread(level)
-        if self._is_visible(entry):
+        if self._is_visible(entry) and not self._bump_visible(entry):
             row = len(self._visible)
             self.beginInsertRows(QModelIndex(), row, row)
-            self._visible.append(entry)
+            self._visible.append(self._visible_row(entry))
             self.endInsertRows()
         if len(self._all) > _LOG_LIMIT:
             self._trim(_LOG_TRIM_BATCH + len(self._all) - _LOG_LIMIT)
 
     def _trim(self, count: int) -> None:
         removed = self._all[:count]
-        removed_ids = {id(entry) for entry in removed}
         del self._all[:count]
         for entry in removed:
             if entry["level"] in self._counts:
                 self._counts[entry["level"]] = max(0, self._counts[entry["level"]] - 1)
         for level in self._unread:
             self._unread[level] = min(self._unread[level], self._counts[level])
-        drop = 0
-        while drop < len(self._visible) and id(self._visible[drop]) in removed_ids:
-            drop += 1
-        if drop:
-            self.beginRemoveRows(QModelIndex(), 0, drop - 1)
-            del self._visible[:drop]
-            self.endRemoveRows()
+        self.beginResetModel()
+        self._visible = self._coalesced_visible()
+        self.endResetModel()
         self.countsChanged.emit()
 
     def clear(self) -> None:
@@ -631,7 +687,7 @@ class LogListModel(QAbstractListModel):
             return
         self._filter = name
         self.beginResetModel()
-        self._visible = [entry for entry in self._all if self._is_visible(entry)]
+        self._visible = self._coalesced_visible()
         self.endResetModel()
 
     def _is_visible(self, entry: dict[str, Any]) -> bool:
@@ -667,7 +723,7 @@ class AppBackend(QObject):
     schedulerEnabledChanged = Signal()
     clockChanged = Signal()
     sessionProgressChanged = Signal()
-    toast = Signal(str, str, str)
+    toast = Signal(str, str, str, "QVariantMap")
     commandFeedback = Signal(str, str, bool)
     logFilterChanged = Signal()
     logCountsChanged = Signal()
@@ -693,6 +749,8 @@ class AppBackend(QObject):
     mediaChanged = Signal()
     mediaItemsChanged = Signal()
     appSettingsChanged = Signal()
+    skyTargetChanged = Signal()
+    stellariumRcChanged = Signal()
     _openTeleStream = Signal(str)
     _openWideStream = Signal(str)
     _closeWideStream = Signal()
@@ -790,6 +848,14 @@ class AppBackend(QObject):
         self._center_tap_pending: dict[str, tuple[float, float, str]] = {}
         self._center_tap_token: dict[str, int] = {}
         self._ui_busy = ""
+        self._sky_target: Target | None = None
+        self._web_view_available = _webview_available()
+        self._stellarium_rc_live = False
+        self._stellarium_rc_watch = False
+        self._stellarium_rc_inflight = False
+        self._stellarium_rc_timer = QTimer(self)
+        self._stellarium_rc_timer.setInterval(4000)
+        self._stellarium_rc_timer.timeout.connect(self._poll_stellarium_rc)
         self._location_lookup_busy = False
         self._device_discovery_busy = False
         self._device_discovery_token = 0
@@ -1180,7 +1246,7 @@ class AppBackend(QObject):
         self._notify_devices(immediate=False)
         self._sync_media_lock()
 
-    def _toast(self, message: str, level: str = "info", detail: str = "") -> None:
+    def _toast(self, message: str, level: str = "info", detail: str = "", meta: dict | None = None) -> None:
         """Emit a toast, collapsing identical messages fired within two seconds."""
         text = str(message or "").strip()
         if not text:
@@ -1191,7 +1257,12 @@ class AppBackend(QObject):
         if text == last_text and level == last_level and now - last_at < 2.0:
             return
         self._last_toast = (text, level, now)
-        self.toast.emit(text, level, str(detail or ""))
+        self.toast.emit(text, level, str(detail or ""), dict(meta or {}))
+
+    def _toast_templates(self, message: str, template_ids: list[str] | tuple[str, ...]) -> None:
+        ids = [str(item).strip() for item in template_ids if str(item).strip()]
+        label = "VIEW TEMPLATE" if len(ids) <= 1 else "VIEW TEMPLATES"
+        self._toast(message, "success", "", {"kind": "template", "ids": ids, "link": label})
 
     def _set_activity(self, device_id: str, activity: str) -> None:
         current = self._device_activity.get(device_id, "")
@@ -1737,6 +1808,196 @@ class AppBackend(QObject):
             return
         self._settings = replace(self._settings, stellarium_url=url)
         self._persist_app_settings()
+        self._poll_stellarium_rc()
+
+    @Property(bool, notify=stellariumRcChanged)
+    def stellariumRcLive(self) -> bool:
+        return self._stellarium_rc_live
+
+    @Slot(bool)
+    def setStellariumRcWatch(self, enabled: bool) -> None:
+        watching = bool(enabled)
+        if watching == self._stellarium_rc_watch:
+            if watching:
+                self._poll_stellarium_rc()
+            return
+        self._stellarium_rc_watch = watching
+        if watching:
+            self._stellarium_rc_timer.start()
+            self._poll_stellarium_rc()
+            return
+        self._stellarium_rc_timer.stop()
+        self._set_stellarium_rc_live(False)
+
+    def _set_stellarium_rc_live(self, live: bool) -> None:
+        live = bool(live)
+        if live == self._stellarium_rc_live:
+            return
+        self._stellarium_rc_live = live
+        self.stellariumRcChanged.emit()
+
+    def _poll_stellarium_rc(self) -> None:
+        if not self._stellarium_rc_watch or self._stellarium_rc_inflight:
+            return
+        url = self._settings.stellarium_url
+        self._stellarium_rc_inflight = True
+
+        def work() -> None:
+            try:
+                live = StellariumClient(url).available()
+            except Exception:
+                live = False
+            self._asyncResult.emit("stellariumRcPing", (True, live))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _mosaic_south_up(self) -> bool:
+        device = self._schedule_device()
+        if device is None:
+            return False
+        return mosaic_south_up(device.latitude)
+
+    @Property(bool, notify=selectedDeviceChanged)
+    def mosaicSouthUp(self) -> bool:
+        return self._mosaic_south_up()
+
+    @Property(bool, constant=True)
+    def webViewAvailable(self) -> bool:
+        return self._web_view_available
+
+    @Property(str, constant=True)
+    def stellariumWebUrl(self) -> str:
+        return STELLARIUM_WEB_URL
+
+    @Property(str, constant=True)
+    def skyWebHarvestScript(self) -> str:
+        return SKY_WEB_HARVEST_JS
+
+    @Property(str, notify=selectedDeviceChanged)
+    def skyWebSiteScript(self) -> str:
+        device = self._schedule_device()
+        if device is None:
+            return sky_web_site_script(0.0, 0.0, "UTC", "UTC")
+        return sky_web_site_script(
+            device.latitude,
+            device.longitude,
+            device.timezone_name,
+            device.name,
+        )
+
+    @Property("QVariantMap", notify=skyTargetChanged)
+    def skyTarget(self) -> dict[str, Any]:
+        target = self._sky_target
+        if target is None or target.ra_hours is None or target.dec_degrees is None:
+            return {}
+        return {
+            "name": target.name,
+            "ra_hours": float(target.ra_hours),
+            "dec_degrees": float(target.dec_degrees),
+            "locked": True,
+        }
+
+    def _set_sky_target(self, target: Target | None) -> None:
+        self._sky_target = target
+        self.skyTargetChanged.emit()
+
+    def _mosaic_fov(self) -> tuple[float, float, str]:
+        device = self._schedule_device()
+        camera = Camera.TELE
+        if device is not None:
+            value = device.camera.value if isinstance(device.camera, Camera) else str(device.camera or "tele")
+            camera = Camera.WIDE if value == Camera.WIDE.value else Camera.TELE
+        telemetry = self._device_telemetry.get(self._selected_device_id) or {}
+        if camera == Camera.WIDE:
+            raw_h, raw_v = telemetry.get("wide_fov_h"), telemetry.get("wide_fov_v")
+            defaults = (DEFAULT_WIDE_FOV_H, DEFAULT_WIDE_FOV_V)
+        else:
+            raw_h, raw_v = telemetry.get("tele_fov_h"), telemetry.get("tele_fov_v")
+            defaults = (DEFAULT_TELE_FOV_H, DEFAULT_TELE_FOV_V)
+        try:
+            fov_h = float(raw_h or 0)
+            fov_v = float(raw_v or 0)
+        except (TypeError, ValueError):
+            fov_h = fov_v = 0.0
+        if fov_h <= 0 or fov_v <= 0:
+            fov_h, fov_v = defaults
+        return fov_h, fov_v, camera.value
+
+    @Property(str, notify=selectedDeviceChanged)
+    def mosaicFovText(self) -> str:
+        fov_h, fov_v, camera = self._mosaic_fov()
+        return f"{camera.upper()} {fov_h:.2f}° × {fov_v:.2f}°"
+
+    @Slot("QVariant", int, int, float, str, float, result=str)
+    def skyWebFovScript(
+        self, web_raw: Any, columns: int, rows: int, overlap: float, color: str, position_angle: float = 0.0
+    ) -> str:
+        fov_h, fov_v, camera = self._mosaic_fov()
+        south_up = self._mosaic_south_up()
+        payload: dict[str, Any] = {
+            "color": str(color or "").strip() or "#7ee0d0",
+            "label": f"{camera.upper()} {fov_h:.2f}° × {fov_v:.2f}°  PA {float(position_angle) % 360.0:.0f}°",
+            "fov_h": fov_h,
+            "fov_v": fov_v,
+            "south_up": south_up,
+            "position_angle": float(position_angle) % 360.0,
+            "columns": 1,
+            "rows": 1,
+            "overlap": 0.0,
+            "panes": [],
+            "mode": "center",
+        }
+        target: Target | None
+        try:
+            target = parse_sky_web_target(self._snapshot_web_raw(web_raw))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            target = self._sky_target
+        grid_ok = True
+        try:
+            columns_n = int(columns)
+            rows_n = int(rows)
+            overlap_n = float(overlap)
+            grid_ok = columns_n >= 1 and rows_n >= 1
+        except (TypeError, ValueError):
+            columns_n, rows_n, overlap_n, grid_ok = 1, 1, 0.0, False
+        if grid_ok:
+            payload["columns"] = columns_n
+            payload["rows"] = rows_n
+            payload["overlap"] = max(0.0, min(0.8, overlap_n))
+        if target is not None and target.ra_hours is not None and target.dec_degrees is not None and grid_ok:
+            try:
+                payload["panes"] = mosaic_pane_footprints(
+                    target,
+                    columns_n,
+                    rows_n,
+                    fov_h,
+                    fov_v,
+                    overlap_n,
+                    south_up=south_up,
+                    position_angle=payload["position_angle"],
+                )
+                payload["mode"] = "panes"
+            except ValueError:
+                payload["mode"] = "center"
+        return sky_web_fov_script(payload)
+
+    @Slot("QVariant")
+    def pushSkyToDesktop(self, web_raw: Any) -> None:
+        payload = self._snapshot_web_raw(web_raw)
+
+        def work() -> str:
+            target = self._resolve_stellarium_target(payload)
+            self._push_sky_to_desktop(target)
+            return target.name
+
+        self._run_async("stellariumPush", work)
+
+    @Slot(str)
+    def openExternalUrl(self, url: str) -> None:
+        parsed = urlparse(str(url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return
+        QDesktopServices.openUrl(QUrl(parsed.geturl()))
 
     @Property(float, notify=sessionProgressChanged)
     def sessionProgress(self) -> float:
@@ -4999,15 +5260,18 @@ class AppBackend(QObject):
                         proposed[sibling.id] = sibling
             self._commit_device_sessions(list(proposed.values()), device)
             if values.get("save_template"):
-                self.store.templates.save(SessionTemplate(
+                template = SessionTemplate(
                     name=session.name,
                     target=session.target,
                     camera=session.camera,
                     workflow=session.workflow,
                     mosaic=session.mosaic,
-                ))
+                )
+                self.store.templates.save(template)
                 self.templatesChanged.emit()
-            self._toast("Session saved", "success")
+                self._toast_templates("Session saved as a template", [template.id])
+            else:
+                self._toast("Session saved", "success")
         except Exception as exc:
             self._toast(f"Could not save session: {exc}", "error")
 
@@ -5045,15 +5309,18 @@ class AppBackend(QObject):
         saved = self._commit_device_sessions(drafts, device)
         anchor = next((item for item in saved if item.id == anchor_id), saved[0])
         if values.get("save_template"):
-            self.store.templates.save(SessionTemplate(
+            template = SessionTemplate(
                 name=anchor.name,
                 target=anchor.target,
                 camera=anchor.camera,
                 workflow=anchor.workflow,
                 mosaic=anchor.mosaic,
-            ))
+            )
+            self.store.templates.save(template)
             self.templatesChanged.emit()
-        self._toast("Session saved", "success")
+            self._toast_templates("Session saved as a template", [template.id])
+        else:
+            self._toast("Session saved", "success")
 
     def _save_one_template(self, values: dict[str, Any]) -> SessionTemplate:
         existing = self.store.templates.get(values.get("id", "")) if values.get("id") else None
@@ -5089,21 +5356,23 @@ class AppBackend(QObject):
     def saveTemplate(self, payload: str) -> None:
         try:
             values = json.loads(payload)
+            saved_ids: list[str] = []
             panes = values.get("members")
             if isinstance(panes, list) and panes:
                 shared = {key: value for key, value in values.items() if key != "members"}
                 for pane in panes:
                     merged = {**shared, **pane}
-                    self._save_one_template(merged)
+                    saved_ids.append(self._save_one_template(merged).id)
             else:
                 saved = self._save_one_template(values)
+                saved_ids.append(saved.id)
                 group_id = saved.mosaic.group_id
                 if group_id:
                     for item in self.store.templates.all():
                         if item.id != saved.id and item.mosaic.group_id == group_id:
                             self.store.templates.save(replace(item, camera=saved.camera, workflow=saved.workflow))
             self.templatesChanged.emit()
-            self._toast("Template saved", "success")
+            self._toast_templates("Saved session template", saved_ids)
         except Exception as exc:
             self._toast(f"Could not save template: {exc}", "error")
 
@@ -5790,9 +6059,87 @@ class AppBackend(QObject):
         path = self._local_path(raw_path)
         self._run_async("telescopius", lambda: import_telescopius(path))
 
+    @Slot("QVariant")
+    def importStellariumSmart(self, web_raw: Any) -> None:
+        payload = self._snapshot_web_raw(web_raw)
+
+        def work() -> dict[str, Any]:
+            target = self._resolve_stellarium_target(payload)
+            return {"target": target, "notes": sky_web_template_notes(payload)}
+
+        self._run_async("stellarium", work)
+
     @Slot()
     def importStellarium(self) -> None:
-        self._run_async("stellarium", lambda: StellariumClient(self._settings.stellarium_url).current_target())
+        self.importStellariumSmart("")
+
+    def _snapshot_web_raw(self, raw: Any) -> Any:
+        if raw is None:
+            return ""
+        if isinstance(raw, dict):
+            return dict(raw)
+        text = str(raw).strip()
+        if text in {"", "undefined", "null"}:
+            return ""
+        return text
+
+    def _resolve_stellarium_target(self, web_raw: Any) -> Target:
+        """Prefer the SKY tab selection; use desktop Stellarium only if the map has none."""
+        try:
+            return parse_sky_web_target(web_raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+        try:
+            return StellariumClient(self._settings.stellarium_url).current_target()
+        except Exception as desktop_exc:
+            if self._sky_target is not None:
+                return self._sky_target
+            raise ValueError(
+                "Select a target in the sky map, or open Stellarium with Remote Control"
+            ) from desktop_exc
+
+    @Slot("QVariant")
+    def lockStellariumSmart(self, web_raw: Any) -> None:
+        payload = self._snapshot_web_raw(web_raw)
+        self._run_async("stellariumLock", lambda: self._resolve_stellarium_target(payload))
+
+    @Slot()
+    def lockStellariumTarget(self) -> None:
+        self.lockStellariumSmart("")
+
+    @Slot("QVariant", int, int, float, float)
+    def generateStellariumMosaic(
+        self, web_raw: Any, columns: int, rows: int, overlap: float, position_angle: float = 0.0
+    ) -> None:
+        payload = self._snapshot_web_raw(web_raw)
+        pa = float(position_angle) % 360.0
+
+        def work() -> dict[str, Any]:
+            target = self._resolve_stellarium_target(payload)
+            fov_h, fov_v, _camera = self._mosaic_fov()
+            extra = sky_web_template_notes(payload)
+            templates = generate_mosaic_plan(
+                target,
+                columns,
+                rows,
+                fov_h,
+                fov_v,
+                overlap,
+                south_up=self._mosaic_south_up(),
+                position_angle=pa,
+            )
+            if extra:
+                templates = [
+                    replace(item, notes="  ·  ".join(part for part in (extra, item.notes) if part))
+                    for item in templates
+                ]
+            return {
+                "target": target,
+                "fetched": True,
+                "templates": templates,
+            }
+
+        self._run_async("stellariumMosaic", work)
 
     @Slot(str)
     def importLegacy(self, raw_path: str) -> None:
@@ -5823,9 +6170,42 @@ class AppBackend(QObject):
 
         threading.Thread(target=run, daemon=True).start()
 
+    def _push_sky_to_desktop(self, target: Target) -> None:
+        device = self._schedule_device()
+        fov_h, fov_v, _camera = self._mosaic_fov()
+        latitude = longitude = None
+        name = ""
+        if device is not None and has_site_coordinates(device.latitude, device.longitude):
+            latitude = float(device.latitude)
+            longitude = float(device.longitude)
+            name = device.name
+        StellariumClient(self._settings.stellarium_url).push_view(
+            target,
+            latitude,
+            longitude,
+            name,
+            max(fov_h, fov_v),
+        )
+
+    def _maybe_push_sky_to_desktop(self, target: Target | None) -> None:
+        if not self._stellarium_rc_live or not isinstance(target, Target):
+            return
+
+        def work() -> None:
+            try:
+                self._push_sky_to_desktop(target)
+            except Exception:
+                return
+
+        threading.Thread(target=work, daemon=True).start()
+
     @Slot(str, object)
     def _handle_async_result(self, operation: str, result: tuple[bool, Any]) -> None:
         ok, value = result
+        if operation == "stellariumRcPing":
+            self._stellarium_rc_inflight = False
+            self._set_stellarium_rc_live(bool(value) if ok else False)
+            return
         if operation == "locationLookup":
             self._set_location_lookup_busy(False)
             if not ok:
@@ -5859,22 +6239,71 @@ class AppBackend(QObject):
             return
         self._set_ui_busy("")
         if not ok:
-            self._toast(f"{operation.title()}: {value}", "error")
+            labels = {
+                "stellarium": "Stellarium",
+                "stellariumLock": "Stellarium",
+                "stellariumMosaic": "Mosaic",
+                "stellariumPush": "Stellarium",
+                "telescopius": "Telescopius",
+            }
+            self._toast(f"{labels.get(operation, operation.title())}: {value}", "error")
             return
         if operation == "telescopius":
             camera = self._camera_settings_for()
+            saved_ids: list[str] = []
             for template in value:
-                self.store.templates.save(replace(template, camera=camera))
+                saved = replace(template, camera=camera)
+                self.store.templates.save(saved)
+                saved_ids.append(saved.id)
             self.templatesChanged.emit()
-            self._toast(f"Imported {len(value)} session templates", "success")
+            count = len(saved_ids)
+            self._toast_templates(
+                f"Imported {count} session template{'s' if count != 1 else ''}",
+                saved_ids,
+            )
         elif operation == "stellarium":
-            self.store.templates.save(SessionTemplate(
-                name=value.name,
-                target=value,
+            if isinstance(value, dict):
+                target = value.get("target")
+                notes = str(value.get("notes") or "")
+            else:
+                target = value
+                notes = ""
+            if not isinstance(target, Target):
+                self._toast("Stellarium: Select a target in the sky map", "error")
+                return
+            saved = SessionTemplate(
+                name=target.name,
+                target=target,
                 camera=self._camera_settings_for(),
-            ))
+                notes=notes,
+            )
+            self.store.templates.save(saved)
             self.templatesChanged.emit()
-            self._toast(f"Imported {value.name}", "success")
+            self._toast_templates(f"Imported {target.name} as a session template", [saved.id])
+            self._maybe_push_sky_to_desktop(target)
+        elif operation == "stellariumLock":
+            self._set_sky_target(value)
+            self._toast(f"Locked {value.name}", "success")
+        elif operation == "stellariumPush":
+            self._toast(f"Pushed {value} to desktop Stellarium", "success")
+        elif operation == "stellariumMosaic":
+            payload = value if isinstance(value, dict) else {}
+            templates = payload.get("templates") or []
+            if payload.get("fetched") and payload.get("target") is not None:
+                self._set_sky_target(payload["target"])
+            camera = self._camera_settings_for()
+            saved_ids: list[str] = []
+            for template in templates:
+                saved = replace(template, camera=camera)
+                self.store.templates.save(saved)
+                saved_ids.append(saved.id)
+            self.templatesChanged.emit()
+            count = len(saved_ids)
+            self._toast_templates(
+                f"Generated {count} mosaic pane template{'s' if count != 1 else ''}",
+                saved_ids,
+            )
+            self._maybe_push_sky_to_desktop(payload.get("target"))
 
     def _scheduler_tick(self) -> None:
         if not self._scheduler_enabled:
@@ -6179,6 +6608,7 @@ class AppBackend(QObject):
         self._devices_notify_timer.stop()
         self._retarget_timer.stop()
         self._stack_result_timer.stop()
+        self._stellarium_rc_timer.stop()
         self.stopPreview()
         self._enhance_pool.waitForDone(1500)
         self._enhance_cache_pool.waitForDone(1500)

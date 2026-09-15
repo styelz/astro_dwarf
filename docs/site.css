@@ -1,0 +1,318 @@
+:root {
+  --window-base: hsl(222 50% 3.9%);
+  --surface: hsl(211 49% 8.4%);
+  --surface-high: hsl(215 48% 13.5%);
+  --outline: hsl(202 54% 25.3%);
+  --outline-soft: hsl(204 51% 20.8%);
+  --text: hsl(201 100% 95.5%);
+  --text-dim: hsl(201 29% 61%);
+  --muted: hsl(204 26% 40%);
+  --accent: hsl(188 100% 65.1%);
+  --accent-soft: hsl(188 100% 95.5%);
+  --fill: hsl(195 67% 17%);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--window-base);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  line-height: 1.45;
+  overflow-x: hidden;
+}
+
+body {
+  background-image:
+    linear-gradient(180deg, hsl(211 49% 8.4% / 0.35), transparent 28%),
+    radial-gradient(1200px 500px at 80% -10%, hsl(188 100% 65% / 0.08), transparent 60%);
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-soft); text-decoration: underline; }
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.wrap {
+  max-width: 1040px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 20px 18px 48px;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 20px;
+  border-bottom: 1px solid var(--outline);
+  padding-bottom: 12px;
+  margin-bottom: 22px;
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0.18em;
+  font-weight: 700;
+}
+
+.kicker {
+  font-family: "Cascadia Mono", ui-monospace, "Segoe UI Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-family: "Cascadia Mono", ui-monospace, "Segoe UI Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pitch {
+  font-size: 18px;
+  max-width: 42rem;
+  margin: 0 0 18px;
+}
+
+.facts {
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--outline);
+  background: hsl(211 49% 8.4% / 0.55);
+}
+
+.facts li {
+  display: grid;
+  grid-template-columns: 7.5rem 1fr;
+  gap: 10px 16px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--outline-soft);
+  font-size: 14px;
+}
+
+.facts li:first-child { border-top: 0; }
+
+.facts dt, .facts .label {
+  font-family: "Cascadia Mono", ui-monospace, "Segoe UI Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  padding-top: 2px;
+}
+
+.slideshow {
+  margin: 0 0 22px;
+}
+
+.stage {
+  position: relative;
+  border: 1px solid var(--outline);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.stage img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1024 / 640;
+  object-fit: contain;
+  background: var(--window-base);
+}
+
+.slide-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 48px;
+  padding: 0;
+  border: 1px solid var(--outline);
+  background: hsl(211 49% 8.4% / 0.82);
+  color: var(--accent);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.slide-btn:hover,
+.slide-btn:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent-soft);
+  background: var(--fill);
+}
+
+.slide-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.slide-btn.prev { left: 8px; }
+.slide-btn.next { right: 8px; }
+
+.slide-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px 14px;
+  align-items: baseline;
+  margin: 0;
+  padding: 8px 10px 6px;
+  border: 1px solid var(--outline);
+  border-top: 0;
+  background: hsl(211 49% 8.4% / 0.55);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.slide-meta .count {
+  font-family: "Cascadia Mono", ui-monospace, "Segoe UI Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 0 2px;
+}
+
+.thumbs button {
+  flex: 0 0 auto;
+  width: 92px;
+  padding: 0;
+  border: 1px solid var(--outline-soft);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.thumbs button img {
+  display: block;
+  width: 90px;
+  height: 56px;
+  object-fit: cover;
+}
+
+.thumbs button[aria-selected="true"],
+.thumbs button:hover,
+.thumbs button:focus-visible {
+  border-color: var(--accent);
+}
+
+.thumbs button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.downloads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 28px;
+}
+
+.btn {
+  display: inline-block;
+  padding: 8px 14px;
+  border: 1px solid var(--accent);
+  background: var(--fill);
+  color: var(--accent-soft);
+  font-family: "Cascadia Mono", ui-monospace, "Segoe UI Mono", monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.btn:hover {
+  color: var(--window-base);
+  background: var(--accent);
+  text-decoration: none;
+}
+
+.btn.ghost {
+  background: transparent;
+  border-color: var(--outline);
+  color: var(--text);
+}
+
+.btn.ghost:hover {
+  border-color: var(--accent);
+  color: var(--accent-soft);
+  background: var(--fill);
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+section { margin-bottom: 24px; }
+
+p, li { color: var(--text); }
+.dim { color: var(--text-dim); }
+
+pre, code {
+  font-family: "Cascadia Mono", ui-monospace, "Segoe UI Mono", monospace;
+  font-size: 12px;
+}
+
+pre {
+  margin: 10px 0 0;
+  padding: 12px;
+  overflow-x: auto;
+  border: 1px solid var(--outline);
+  background: var(--surface-high);
+  color: var(--accent-soft);
+  white-space: pre;
+}
+
+ul.notes {
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+ul.notes li { margin: 0.35rem 0; }
+
+footer {
+  border-top: 1px solid var(--outline);
+  padding-top: 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+@media (max-width: 720px) {
+  .facts li { grid-template-columns: 1fr; gap: 2px; }
+  .brand h1 { font-size: 18px; letter-spacing: 0.12em; }
+  .pitch { font-size: 16px; }
+  .slide-btn { width: 32px; height: 40px; }
+  .thumbs button { width: 76px; }
+  .thumbs button img { width: 74px; height: 46px; }
+}

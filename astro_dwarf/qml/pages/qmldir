@@ -3,5 +3,6 @@ CalendarPage 1.0 CalendarPage.qml
 SessionsPage 1.0 SessionsPage.qml
 HistoryPage 1.0 HistoryPage.qml
 MediaPage 1.0 MediaPage.qml
+SkyPage 1.0 SkyPage.qml
 SettingsPage 1.0 SettingsPage.qml
 InterfaceSettings 1.0 InterfaceSettings.qml

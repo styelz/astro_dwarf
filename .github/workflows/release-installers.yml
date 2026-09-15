@@ -389,5 +389,9 @@ jobs:
           tag_name: ${{ env.TAG }}
           name: Astro Dwarf ${{ env.VERSION }}
           generate_release_notes: true
+          body: |
+            ![Astro Dwarf Control page](https://raw.githubusercontent.com/styelz/astro_dwarf/main/docs/screens/control.jpg)
+
+            Desktop scheduler and multi-telescope controller for Dwarf II, Dwarf 3, and Dwarf Mini. Unattended imaging, mosaics, Stellarium targeting, and live control from one HUD.
           files: release/*
           fail_on_unmatched_files: true

@@ -8,6 +8,7 @@ RowLayout {
     property int currentIndex: 0
     property int attentionIndex: -1
     property string attentionDescription: "Needs attention"
+    property bool skyToolsEnabled: false
     signal pageRequested(int index)
     Layout.fillWidth: true
     Layout.preferredHeight: 48
@@ -16,16 +17,23 @@ RowLayout {
     Layout.leftMargin: 10
     Layout.rightMargin: 10
     spacing: 8
-    Repeater {
-        id: navRepeater
-        model: [
+    readonly property var pages: {
+        void navBar.skyToolsEnabled
+        const items = [
             {label: "CONTROL", idx: 0},
             {label: "CALENDAR", idx: 1},
             {label: "SESSIONS", idx: 2},
             {label: "HISTORY", idx: 3},
-            {label: "MEDIA", idx: 4},
-            {label: "SETTINGS", idx: 5}
+            {label: "MEDIA", idx: 4}
         ]
+        if (navBar.skyToolsEnabled)
+            items.push({label: "SKY", idx: 5})
+        items.push({label: "SETTINGS", idx: 6})
+        return items
+    }
+    Repeater {
+        id: navRepeater
+        model: navBar.pages
         delegate: HudButton {
             required property int index
             required property var modelData
@@ -44,12 +52,12 @@ RowLayout {
             Keys.onLeftPressed: {
                 const previousIndex = (index + navRepeater.count - 1) % navRepeater.count
                 navRepeater.itemAt(previousIndex).forceActiveFocus()
-                navBar.pageRequested(previousIndex)
+                navBar.pageRequested(navBar.pages[previousIndex].idx)
             }
             Keys.onRightPressed: {
                 const nextIndex = (index + 1) % navRepeater.count
                 navRepeater.itemAt(nextIndex).forceActiveFocus()
-                navBar.pageRequested(nextIndex)
+                navBar.pageRequested(navBar.pages[nextIndex].idx)
             }
             Rectangle {
                 anchors.bottom: parent.bottom

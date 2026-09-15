@@ -5,7 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "astro-dwarf"
 dynamic = ["version"]
-description = "Native multi-device Dwarf telescope control and scheduling"
+description = "Desktop scheduler and multi-telescope controller for Dwarf II, Dwarf 3, and Dwarf Mini"
+keywords = [
+  "dwarf",
+  "dwarf-3",
+  "dwarf-ii",
+  "dwarf-mini",
+  "scheduler",
+  "astrophotography",
+  "telescope",
+  "unattended-imaging",
+  "astronomy",
+  "automation",
+]
 requires-python = ">=3.11"
 dependencies = [
   "PySide6>=6.8,<7",

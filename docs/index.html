@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Astro Dwarf — Dwarf telescope scheduler</title>
+  <meta name="description" content="Desktop scheduler and multi-telescope controller for Dwarf II, Dwarf 3, and Dwarf Mini. Unattended imaging, mosaics, Stellarium targeting, and live control from one HUD.">
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <span class="kicker">Observatory command</span>
+        <h1>Astro Dwarf</h1>
+      </div>
+      <nav>
+        <a href="#screens">Screens</a>
+        <a href="https://github.com/styelz/astro_dwarf">GitHub</a>
+        <a href="https://github.com/styelz/astro_dwarf/releases/latest">Releases</a>
+        <a href="https://github.com/styelz/astro_dwarf#run-from-source">Source</a>
+      </nav>
+    </header>
+
+    <p class="pitch">Tired of babysitting a Dwarf all night? Astro Dwarf is a desktop controller and unattended imaging scheduler for Dwarf II, Dwarf 3, and Dwarf Mini.</p>
+
+    <ul class="facts">
+      <li><span class="label">Schedule</span><span>Unattended DSO sessions — a Dwarf 3 scheduler and sequencer that also covers Dwarf II and Mini.</span></li>
+      <li><span class="label">Multi-scope</span><span>Several telescope profiles from one desktop, each with its own IP, location, and session queue.</span></li>
+      <li><span class="label">Control</span><span>Live HUD: view, status, camera, commands, upcoming queue, and log. Polar / EQ and Dual Lenses Locating included.</span></li>
+      <li><span class="label">Planning</span><span>Build sessions by hand, from templates, from Stellarium’s current target, or from a Telescopius CSV. Tele/wide cameras and mosaics.</span></li>
+      <li><span class="label">Media</span><span>Album of real astro sessions on the telescope — thumbnails, capture details, stacked-frame download.</span></li>
+    </ul>
+
+    <figure class="slideshow" id="screens" aria-roledescription="carousel" aria-label="Astro Dwarf pages">
+      <div class="stage">
+        <img id="slide-img" src="screens/control.jpg" width="1024" height="640" alt="Astro Dwarf Control page during a DSO stack.">
+        <button type="button" class="slide-btn prev" id="slide-prev" aria-label="Previous screenshot">‹</button>
+        <button type="button" class="slide-btn next" id="slide-next" aria-label="Next screenshot">›</button>
+      </div>
+      <figcaption class="slide-meta">
+        <span class="count" id="slide-count">1 / 15</span>
+        <span id="slide-cap">Control HUD during a DSO stack on a Dwarf 3 — live tele view, stacking progress, and command pad.</span>
+      </figcaption>
+      <div class="thumbs" id="slide-thumbs" role="tablist" aria-label="Screenshot pages"></div>
+    </figure>
+
+    <div class="downloads">
+      <a class="btn" href="https://github.com/styelz/astro_dwarf/releases/latest">Download installers</a>
+      <a class="btn ghost" href="https://github.com/styelz/astro_dwarf">Repository</a>
+    </div>
+
+    <section>
+      <h2>Installers</h2>
+      <ul class="notes">
+        <li><strong>Windows x64:</strong> <code>AstroDwarf-Setup-&lt;version&gt;-win64.exe</code>. Per-user install; no admin. SmartScreen may warn: More info → Run anyway. Portable zip also available.</li>
+        <li><strong>macOS Apple Silicon:</strong> open the <code>.dmg</code>, drag to Applications, then right-click Open the first time (unsigned / Gatekeeper).</li>
+        <li><strong>Linux x64:</strong> AppImage, <code>.deb</code>, <code>.rpm</code>, or Arch <code>.pkg.tar.zst</code>.</li>
+      </ul>
+      <p class="dim">Unsigned builds. Pushing a new version on main replaces the previous release set.</p>
+    </section>
+
+    <section>
+      <h2>Run from source</h2>
+      <p class="dim">Python 3.11+ and Git. The scheduler stays stopped until you start it from Control. Dwarf 3 and Mini live view needs ffmpeg on PATH (installers already include it).</p>
+      <pre>git clone https://github.com/styelz/astro_dwarf.git
+cd astro_dwarf
+./start.sh          # macOS / Linux
+.\start.bat         # Windows</pre>
+    </section>
+
+    <footer>
+      Telescope commands come from <a href="https://github.com/stevejcl/dwarf_python_api">dwarf_python_api</a> by JC L. (<a href="https://github.com/stevejcl">stevejcl</a>).
+    </footer>
+  </div>
+  <script src="slideshow.js"></script>
+</body>
+</html>

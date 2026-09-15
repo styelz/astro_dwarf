@@ -176,6 +176,15 @@ ColumnLayout {
             accessibleName: "Navigation button position"
         }
         FieldHint { text: "Top sits under the device bar. Bottom keeps the header clear." }
+        FieldLabel { text: "SKY TOOLS" }
+        HudCheck {
+            Layout.preferredWidth: iface.controlWidth
+            text: "Show SKY tab"
+            checked: layoutSettings.skyToolsEnabled
+            onToggled: layoutSettings.skyToolsEnabled = checked
+            accessibleName: "Show sky tools tab"
+        }
+        FieldHint { text: "Adds a SKY page to find a Stellarium target and generate an X-by-Y mosaic plan. Off by default." }
     }
 
     SettingGroup {

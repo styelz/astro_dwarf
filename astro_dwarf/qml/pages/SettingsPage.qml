@@ -622,7 +622,7 @@ Item {
                                 accessibleName: "Stellarium remote control URL"
                                 onEditingFinished: backend.setStellariumUrl(text)
                             }
-                            FieldHint { text: "Address of Stellarium's Remote Control plugin. Sessions can pull the object currently selected in Stellarium from here." }
+                            FieldHint { text: "Address of Stellarium's Remote Control plugin. Sessions can pull the selected object from here, and SKY can push the current target, site, time, and FOV to the desktop app." }
                         }
                     }
 

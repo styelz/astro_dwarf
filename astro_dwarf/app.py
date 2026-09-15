@@ -180,12 +180,23 @@ def _apply_windows_frame(window, caption_hex: str = "#0B1520", border_hex: str =
         pass
 
 
+def _initialize_webview() -> None:
+    """Use the OS web view (WebView2 / WKWebView). Must run before QGuiApplication."""
+    os.environ.setdefault("QTWEBVIEW_BACKEND", "native")
+    try:
+        from PySide6.QtWebView import QtWebView
+        QtWebView.initialize()
+    except Exception:
+        pass
+
+
 def run() -> int:
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
     os.environ["QML_DISABLE_DISK_CACHE"] = "1"
     configure_quick_runtime()
     configure_qml_import_path()
     _configure_windows_app_id()
+    _initialize_webview()
     application = QGuiApplication(sys.argv)
     application.setApplicationName("Astro Dwarf")
     application.setApplicationVersion(__version__)
