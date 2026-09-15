@@ -1,16 +1,9 @@
 (function () {
   const slides = [
     {
-      src: "screens/control.jpg",
-      thumb: "screens/thumbs/control.jpg",
-      label: "Control",
-      alt: "Astro Dwarf Control page during a DSO stack on a Dwarf 3, showing live tele view, stacking progress, and command pad.",
-      cap: "Control HUD during a DSO stack on a Dwarf 3 — live tele view, stacking progress, and command pad.",
-    },
-    {
       src: "screens/control-live.jpg",
       thumb: "screens/thumbs/control-live.jpg",
-      label: "Live",
+      label: "Control",
       alt: "Control page with live video ready, motion pad, upcoming mosaic panes, and command deck.",
       cap: "Between stacks: live preview, motion pad, upcoming queue, and the command deck.",
     },
