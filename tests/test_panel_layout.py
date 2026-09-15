@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QML_DISABLE_DISK_CACHE", "1")
 os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
-from PySide6.QtCore import QCoreApplication, QUrl
+from PySide6.QtCore import QCoreApplication, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickItem
@@ -79,6 +79,19 @@ Window {
         right.captureLocked()
     }
 
+    function neighborSizes() {
+        return Math.round(stackA.height) + "," + Math.round(stackB.height) + ","
+            + Math.round(stackC.height) + "," + Math.round(stackD.height)
+    }
+
+    function showNeighborStack() {
+        neighborStack.visible = true
+    }
+
+    function hideNeighborStack() {
+        neighborStack.visible = false
+    }
+
     function setNonFill(lw, ah) {
         left.SplitView.preferredWidth = lw
         panelA.SplitView.preferredHeight = ah
@@ -137,6 +150,20 @@ Window {
         PanelSwap.store.panelOrderJson = ""
         PanelSwap.captureDefaults()
     }
+
+    HudSplitView {
+        id: neighborStack
+        objectName: "neighborStack"
+        autoRestore: false
+        orientation: Qt.Vertical
+        visible: false
+        anchors.fill: parent
+        z: 20
+        HudPanel { id: stackA; objectName: "stackA"; title: "NA"; SplitView.preferredHeight: 90; SplitView.minimumHeight: 40 }
+        HudPanel { id: stackB; objectName: "stackB"; title: "NB"; SplitView.preferredHeight: 90; SplitView.minimumHeight: 40 }
+        HudPanel { id: stackC; objectName: "stackC"; title: "NC"; SplitView.preferredHeight: 90; SplitView.minimumHeight: 40 }
+        HudPanel { id: stackD; objectName: "stackD"; title: "ND"; SplitView.fillHeight: true; SplitView.minimumHeight: 40 }
+    }
 }
 """
 
@@ -167,6 +194,7 @@ class PanelLayoutTests(unittest.TestCase):
         cls.warnings = warnings
 
     def setUp(self):
+        self.win.hideNeighborStack()
         self.win.setWidth(720)
         self.win.setHeight(480)
         if self.win.snapshot() != "a,b|c|d":
@@ -274,6 +302,46 @@ class PanelLayoutTests(unittest.TestCase):
         self.win.setHeight(480)
         QTest.qWait(80)
         self._assert_sizes_close(self._parse_sizes(), original)
+
+
+    def _split_handles(self, split):
+        return sorted(
+            [child for child in split.childItems() if child.objectName() == "splitHandle"],
+            key=lambda item: item.y(),
+        )
+
+    def _window_pos(self, item, fx=0.5, fy=0.5):
+        pt = item.mapToScene(QPointF(item.width() * fx, item.height() * fy))
+        return QPoint(int(pt.x()), int(pt.y()))
+
+    def test_handle_resizes_joining_neighbor_only(self):
+        self.win.showNeighborStack()
+        QTest.qWait(80)
+        a = self.win.findChild(QQuickItem, "stackA")
+        b = self.win.findChild(QQuickItem, "stackB")
+        c = self.win.findChild(QQuickItem, "stackC")
+        d = self.win.findChild(QQuickItem, "stackD")
+        stack = self.win.findChild(QQuickItem, "neighborStack")
+        before = [a.height(), b.height(), c.height(), d.height()]
+        handles = self._split_handles(stack)
+        self.assertGreaterEqual(len(handles), 1)
+        window = stack.window()
+        start = self._window_pos(handles[0])
+        end = start + QPoint(0, 40)
+        QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
+        QTest.mouseMove(window, start + QPoint(0, 16))
+        QTest.qWait(30)
+        QTest.mouseMove(window, end)
+        QTest.qWait(30)
+        QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, end)
+        QTest.qWait(80)
+        after = [a.height(), b.height(), c.height(), d.height()]
+        self.assertGreater(after[0], before[0] + 20)
+        self.assertLess(after[1], before[1] - 20)
+        self.assertAlmostEqual(after[0] - before[0], before[1] - after[1], delta=8)
+        self.assertAlmostEqual(after[2], before[2], delta=6)
+        self.assertAlmostEqual(after[3], before[3], delta=6)
+        self.win.hideNeighborStack()
 
 
 if __name__ == "__main__":
