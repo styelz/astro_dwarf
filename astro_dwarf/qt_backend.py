@@ -58,8 +58,10 @@ from .domain import (
     capture_defaults_from_dict,
     clamp_cutoff_hour,
     DEVICE_COLORS,
+    default_device_name,
     device_from_dict,
     firmware_exposure_name,
+    is_first_device_setup,
     next_device_color,
     normalize_device_color,
     history_record_for_run,
@@ -1356,6 +1358,13 @@ class AppBackend(QObject):
         if self._devices_dirty or self._selected_device_view is None:
             self._rebuild_devices_view()
         return self._selected_device_view or {}
+
+    def _needs_first_device(self) -> bool:
+        return is_first_device_setup(self._devices)
+
+    @Property(bool, notify=devicesChanged)
+    def needsFirstDevice(self) -> bool:
+        return self._needs_first_device()
 
     def _session_dict(self, session: Session) -> dict[str, Any]:
         device = next((item for item in self._devices if item.id == session.device_id), None)
@@ -3414,9 +3423,15 @@ class AppBackend(QObject):
         except Exception:
             pass
 
+    @Slot(result=str)
+    def suggestedDeviceName(self) -> str:
+        count = 0 if self._needs_first_device() else len(self._devices)
+        return default_device_name(count)
+
     @Slot(str, result=bool)
     def addDevice(self, payload: str) -> bool:
         current = next((item for item in self._devices if item.id == self._selected_device_id), None)
+        claim_first = self._needs_first_device()
         try:
             values = json.loads(payload or "{}")
             timezone_name, latitude, longitude = self._resolved_location(
@@ -3442,10 +3457,40 @@ class AppBackend(QObject):
             color = (
                 normalize_device_color(requested_color)
                 if requested_color
-                else next_device_color(item.color for item in self._devices)
+                else next_device_color([] if claim_first else (item.color for item in self._devices))
             )
+            name = str(values.get("name") or "").strip()
+            if not name:
+                raise ValueError("A telescope name is required")
+            if claim_first:
+                placeholder = current or self._devices[0]
+                updated = replace(
+                    placeholder,
+                    name=name,
+                    color=color,
+                    model=model,
+                    ip_address=str(values.get("ip_address") or "").strip(),
+                    timezone_name=timezone_name,
+                    latitude=latitude,
+                    longitude=longitude,
+                    location_configured=has_site_coordinates(latitude, longitude),
+                    observing_day_cutoff_hour=self._cutoff_hour(),
+                    stellarium_url=self._settings.stellarium_url,
+                    wifi_mode=wifi_mode,
+                    wifi_ssid=ssid,
+                    ble_password=str(values.get("ble_password") or "DWARF_12345678"),
+                )
+                if not self._commit_device(placeholder, updated):
+                    return False
+                self._selected_device_id = updated.id
+                self._persist_last_device_id(updated.id)
+                self._notify_devices()
+                self.durationSuggestionChanged.emit()
+                self.clockChanged.emit()
+                self._toast("Device added", "success")
+                return True
             device = Device(
-                name=str(values.get("name") or "").strip() or f"Dwarf {len(self._devices) + 1}",
+                name=name,
                 color=color,
                 model=model,
                 ip_address=str(values.get("ip_address") or "").strip(),
@@ -4527,6 +4572,9 @@ class AppBackend(QObject):
                 raise ValueError("Latitude must be a number")
             if "longitude" in values and values["longitude"] is None:
                 raise ValueError("Longitude must be a number")
+            name = str(values.get("name") or "").strip()
+            if not name:
+                raise ValueError("A telescope name is required")
             hardware = replace(current.hardware, **{
                 key: float(values.get(key, getattr(current.hardware, key)))
                 for key in current.hardware.__dataclass_fields__
@@ -4553,7 +4601,7 @@ class AppBackend(QObject):
                 camera = Camera.TELE
             updated = replace(
                 current,
-                name=values["name"].strip(),
+                name=name,
                 model=model,
                 ip_address=values["ip_address"].strip(),
                 camera=camera,

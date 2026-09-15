@@ -562,6 +562,27 @@ Item {
                     root.confirmBulkDelete("deleteSessions", chosen, "session")
                 }
             }
+            Text {
+                readonly property bool monthEmpty: calendarPage.viewMode === 0 && calendarPage.shownMonthSessionCount === 0
+                readonly property bool nightEmpty: calendarPage.viewMode === 1 && calendarPage.nightSessions.length === 0
+                visible: monthEmpty || nightEmpty
+                Layout.fillWidth: true
+                color: Theme.muted
+                font.pixelSize: Theme.fontSm
+                font.letterSpacing: 0.4
+                wrapMode: Text.NoWrap
+                elide: Text.ElideRight
+                text: {
+                    if (monthEmpty)
+                        return calendarPage.showAllDevices
+                            ? "Nothing scheduled this month. Drop a session onto a night, or create a new one."
+                            : "Nothing scheduled on this telescope this month."
+                    return calendarPage.showAllDevices
+                        ? "Nothing scheduled for this night. Drop a session onto the timeline, or create a new one."
+                        : "Nothing scheduled on this telescope for this night."
+                }
+                Accessible.name: text
+            }
             RowLayout {
                 visible: calendarPage.viewMode === 0
                 Layout.fillWidth: true
@@ -791,15 +812,6 @@ Item {
                             }
                         }
                     }
-                }
-                EmptyHint {
-                    anchors.centerIn: parent
-                    glyph: "☾"
-                    enabled: false
-                    visible: calendarPage.shownMonthSessionCount === 0
-                    text: calendarPage.showAllDevices
-                          ? "Nothing scheduled this month. Drop a session onto a night, or create a new one."
-                          : "Nothing scheduled on this telescope this month."
                 }
             }
             Item {
@@ -1209,14 +1221,6 @@ Item {
                         }
                     }
                 }
-                }
-                EmptyHint {
-                    anchors.centerIn: parent
-                    glyph: "☾"
-                    visible: calendarPage.nightSessions.length === 0
-                    text: calendarPage.showAllDevices
-                          ? "Nothing scheduled for this night. Drop a session onto the timeline, or create a new one."
-                          : "Nothing scheduled on this telescope for this night."
                 }
             }
         }

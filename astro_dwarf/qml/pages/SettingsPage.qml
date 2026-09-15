@@ -996,7 +996,7 @@ Item {
             }
             HudButton {
                 text: settingsPage.dirty ? "SAVE DEVICE" : "SAVED"
-                enabled: settingsPage.dirty
+                enabled: settingsPage.dirty && String(nameField.text).trim()
                 busyText: "SAVING…"
                 buttonColor: settingsPage.dirty ? Theme.fillActive : Theme.surfaceHigh
                 foregroundColor: settingsPage.dirty ? Theme.accent : Theme.textSecondary

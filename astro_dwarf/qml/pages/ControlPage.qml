@@ -1117,10 +1117,19 @@ Item {
                         id: previewHover
                         enabled: backend.previewPlaying
                         acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                        onPointChanged: previewHost.revealControls()
+                        onPointChanged: {
+                            if (hovered)
+                                previewHost.revealControls()
+                        }
                         onHoveredChanged: {
-                            if (!hovered)
-                                previewHost.hideControls()
+                            if (hovered) {
+                                previewHost.revealControls()
+                                return
+                            }
+                            // Leaving the live view must drop a stale control hold
+                            // (PiP MouseArea / buttons can latch containsMouse).
+                            previewHost.controlHovered = false
+                            previewHost.hideControls()
                         }
                     }
                     TapHandler {
@@ -1233,17 +1242,19 @@ Item {
                             footprintNh: previewHost.teleMatchNh
                             onCenterRequested: (nx, ny, diag) => backend.centerOnTap(backend.selectedDeviceId, nx, ny, diag)
                         }
+                        HoverHandler {
+                            id: pipHover
+                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                        }
                         MouseArea {
                             id: pipDrag
                             anchors.fill: parent
-                            hoverEnabled: true
                             drag.target: pipBox
                             drag.minimumX: 8
                             drag.maximumX: Math.max(8, previewHost.width - pipBox.width - 8)
                             drag.minimumY: 8
                             drag.maximumY: Math.max(8, previewHost.height - pipBox.height - 8)
                             onPressed: pipBox.beginFloat()
-                            onContainsMouseChanged: previewHost.holdControls(containsMouse)
                             onDoubleClicked: (mouse) => pipPane.centerOn(mouse.x, mouse.y)
                         }
                         Rectangle {
@@ -1270,7 +1281,16 @@ Item {
                             anchors.margins: 6
                             spacing: 4
                             z: 2
+                            // Mouse: only while the pointer is over the PiP. Touch: same
+                            // tap that reveals the main preview chrome.
+                            readonly property bool shown: pipHover.hovered || pipSwapBtn.hovered || pipHideBtn.hovered
+                                || (previewHost.chromeShown && !previewHover.hovered)
+                            opacity: shown ? 1 : 0
+                            visible: opacity > 0
+                            enabled: shown
+                            Behavior on opacity { NumberAnimation { duration: Theme.normal } }
                             HudButton {
+                                id: pipSwapBtn
                                 text: "SWAP"
                                 implicitHeight: 18
                                 implicitWidth: implicitContentWidth + 14
@@ -1281,10 +1301,10 @@ Item {
                                 buttonColor: Theme.fillActive
                                 foregroundColor: Theme.accent
                                 tooltip: "Swap main and picture-in-picture cameras"
-                                onHoveredChanged: previewHost.holdControls(hovered)
                                 onClicked: previewHost.swapViews()
                             }
                             HudButton {
+                                id: pipHideBtn
                                 text: "HIDE"
                                 implicitHeight: 18
                                 implicitWidth: implicitContentWidth + 14
@@ -1295,7 +1315,6 @@ Item {
                                 buttonColor: Theme.fillActive
                                 foregroundColor: Theme.accent
                                 tooltip: "Hide picture-in-picture"
-                                onHoveredChanged: previewHost.holdControls(hovered)
                                 onClicked: previewHost.pipEnabled = false
                             }
                         }
@@ -2189,26 +2208,34 @@ Item {
                     width: Math.min(110, implicitWidth)
                 }
                 Item {
+                    id: padHost
                     Layout.fillWidth: true
+                    Layout.fillHeight: true
                     Layout.preferredHeight: 128
+                    Layout.minimumHeight: 96
+                    readonly property real padSize: Theme.fitPadSize(Math.min(width, height))
                     Item {
                         anchors.fill: parent
                         visible: !motionPanel.stacking
                         opacity: root.motionEnabled ? 1 : 0.38
                         Item {
                             id: analogPad
-                        anchors.centerIn: parent
-                        width: 96
-                        height: 96
-                        property real stickDx: 0
-                        property real stickDy: 0
-                        property bool moving: false
-                        property bool keyLeft: false
-                        property bool keyRight: false
-                        property bool keyUp: false
-                        property bool keyDown: false
-                        readonly property real maxThrow: width / 2 - 15
-                        readonly property real deadzone: 0.15
+                            anchors.centerIn: parent
+                            width: padHost.padSize
+                            height: width
+                            readonly property real padScale: width / 96
+                            readonly property real knobSize: Math.max(18, Math.round(28 * padScale))
+                            readonly property real tickMargin: Math.max(6, Math.round(10 * padScale))
+                            readonly property real hairInset: Math.max(12, Math.round(18 * padScale))
+                            property real stickDx: 0
+                            property real stickDy: 0
+                            property bool moving: false
+                            property bool keyLeft: false
+                            property bool keyRight: false
+                            property bool keyUp: false
+                            property bool keyDown: false
+                            readonly property real maxThrow: Math.max(8, width / 2 - knobSize / 2 - 1)
+                            readonly property real deadzone: 0.15
                         readonly property bool nudgesEnabled: root.motionEnabled && !motionPanel.stacking && !stickArea.pressed && !moving
                         activeFocusOnTab: root.motionEnabled && !motionPanel.stacking
                         Accessible.name: "Mount joystick"
@@ -2315,7 +2342,7 @@ Item {
                         Canvas {
                             // bearing ticks around the ring
                             anchors.fill: parent
-                            anchors.margins: -10
+                            anchors.margins: -analogPad.tickMargin
                             readonly property color majorInk: Theme.accent
                             readonly property color minorInk: Theme.outlineStrong
                             onMajorInkChanged: requestPaint()
@@ -2325,10 +2352,11 @@ Item {
                                 ctx.reset()
                                 const cx = width / 2, cy = height / 2
                                 const rOuter = width / 2 - 1
+                                const scale = analogPad.padScale
                                 for (let i = 0; i < 36; i++) {
                                     const major = i % 9 === 0
                                     const a = i * Math.PI * 2 / 36
-                                    const len = major ? 8 : 4
+                                    const len = (major ? 8 : 4) * scale
                                     ctx.strokeStyle = major ? majorInk : minorInk
                                     ctx.lineWidth = major ? 2 : 1
                                     ctx.beginPath()
@@ -2343,13 +2371,13 @@ Item {
                         Rectangle {
                             anchors.centerIn: parent
                             width: 2
-                            height: parent.height - 18
+                            height: parent.height - analogPad.hairInset
                             color: Theme.outlineStrong
                             opacity: 0.45
                         }
                         Rectangle {
                             anchors.centerIn: parent
-                            width: parent.width - 18
+                            width: parent.width - analogPad.hairInset
                             height: 2
                             color: Theme.outlineStrong
                             opacity: 0.45
@@ -2366,8 +2394,8 @@ Item {
                             id: analogKnob
                             x: parent.width / 2 - width / 2 + analogPad.stickDx
                             y: parent.height / 2 - height / 2 + analogPad.stickDy
-                            width: 28
-                            height: 28
+                            width: analogPad.knobSize
+                            height: analogPad.knobSize
                             radius: width / 2
                             color: analogPad.moving ? Theme.accent : Theme.accentSoft
                             border.color: Theme.accentSoft
@@ -2413,8 +2441,8 @@ Item {
                             ]
                             delegate: Item {
                                 required property var modelData
-                                width: 16
-                                height: 16
+                                width: Math.max(Theme.s4, Math.round(16 * analogPad.padScale))
+                                height: width
                                 x: analogPad.x + analogPad.width / 2 + modelData.dx * (analogPad.width / 2 + width / 2) - width / 2
                                 y: analogPad.y + analogPad.height / 2 + modelData.dy * (analogPad.height / 2 + height / 2) - height / 2
                                 z: 2
@@ -2424,14 +2452,16 @@ Item {
                                 Canvas {
                                     id: chevron
                                     anchors.centerIn: parent
-                                    width: 9
-                                    height: 9
+                                    width: Math.round(parent.width * 9 / 16)
+                                    height: width
                                     readonly property color ink: analogPad.nudgesEnabled
                                         ? (nudgeArea.containsMouse ? Theme.accentSoft : Theme.accent)
                                         : Theme.outlineStrong
                                     readonly property real heading: modelData.heading
                                     onInkChanged: requestPaint()
                                     onHeadingChanged: requestPaint()
+                                    onWidthChanged: requestPaint()
+                                    onHeightChanged: requestPaint()
                                     onPaint: {
                                         const ctx = getContext("2d")
                                         ctx.reset()
@@ -2439,9 +2469,9 @@ Item {
                                         ctx.rotate((90 - heading) * Math.PI / 180)
                                         ctx.fillStyle = "" + ink
                                         ctx.beginPath()
-                                        ctx.moveTo(0, -4.5)
-                                        ctx.lineTo(3.6, 3.2)
-                                        ctx.lineTo(-3.6, 3.2)
+                                        ctx.moveTo(0, -height / 2)
+                                        ctx.lineTo(width * 0.4, height * 0.355)
+                                        ctx.lineTo(-width * 0.4, height * 0.355)
                                         ctx.closePath()
                                         ctx.fill()
                                     }
@@ -2465,6 +2495,7 @@ Item {
                     StackTimer {
                         id: stackTimer
                         anchors.fill: parent
+                        padSize: padHost.padSize
                         visible: motionPanel.stacking
                         active: motionPanel.stacking
                         firmwareElapsed: Number(root.scopeTelemetry.exposure_elapsed_s) || 0

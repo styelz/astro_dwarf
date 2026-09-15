@@ -14,6 +14,7 @@ Item {
     property int stacked: 0
     property int total: 0
     property string target: ""
+    property real padSize: Theme.fitPadSize(Math.min(width, height))
 
     readonly property int frameKey: Math.max(timer.current, timer.stacked)
     readonly property real elapsed: displayedElapsed
@@ -119,8 +120,11 @@ Item {
     Item {
         id: analogPad
         anchors.centerIn: parent
-        width: Math.min(108, parent.width - 8, parent.height - 8)
+        width: timer.padSize
         height: width
+        readonly property real padScale: width / 96
+        readonly property real tickMargin: Math.max(6, Math.round(10 * padScale))
+        readonly property real hairInset: Math.max(12, Math.round(18 * padScale))
 
         Rectangle {
             anchors.fill: parent
@@ -132,13 +136,13 @@ Item {
         Canvas {
             id: ring
             anchors.fill: parent
-            anchors.margins: -10
+            anchors.margins: -analogPad.tickMargin
             readonly property color majorInk: Theme.accent
             readonly property color minorInk: Theme.outlineStrong
             readonly property color trackInk: Theme.outline
             readonly property color arcInk: Theme.accent
             readonly property real fill: timer.progress
-            readonly property real padRadius: analogPad.width / 2 - 6
+            readonly property real padRadius: analogPad.width / 2 - Math.max(4, Math.round(6 * analogPad.padScale))
             onMajorInkChanged: requestPaint()
             onMinorInkChanged: requestPaint()
             onTrackInkChanged: requestPaint()
@@ -150,10 +154,11 @@ Item {
                 ctx.reset()
                 const cx = width / 2, cy = height / 2
                 const rOuter = width / 2 - 1
+                const scale = analogPad.padScale
                 for (let i = 0; i < 36; i++) {
                     const major = i % 9 === 0
                     const a = i * Math.PI * 2 / 36
-                    const len = major ? 8 : 4
+                    const len = (major ? 8 : 4) * scale
                     ctx.strokeStyle = major ? majorInk : minorInk
                     ctx.lineWidth = major ? 2 : 1
                     ctx.beginPath()
@@ -163,7 +168,7 @@ Item {
                 }
                 const r = padRadius
                 ctx.lineCap = "round"
-                ctx.lineWidth = 4
+                ctx.lineWidth = Math.max(3, 4 * scale)
                 ctx.strokeStyle = trackInk
                 ctx.beginPath()
                 ctx.arc(cx, cy, r, 0, Math.PI * 2)
@@ -171,7 +176,7 @@ Item {
                 if (fill > 0) {
                     ctx.strokeStyle = arcInk
                     ctx.shadowColor = arcInk
-                    ctx.shadowBlur = 8
+                    ctx.shadowBlur = 8 * scale
                     ctx.beginPath()
                     ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * fill)
                     ctx.stroke()
@@ -183,20 +188,20 @@ Item {
         Rectangle {
             anchors.centerIn: parent
             width: 2
-            height: parent.height - 18
+            height: parent.height - analogPad.hairInset
             color: Theme.outlineStrong
             opacity: 0.45
         }
         Rectangle {
             anchors.centerIn: parent
-            width: parent.width - 18
+            width: parent.width - analogPad.hairInset
             height: 2
             color: Theme.outlineStrong
             opacity: 0.45
         }
         Rectangle {
             anchors.centerIn: parent
-            width: Math.min(64, parent.width * 0.58)
+            width: parent.width * 0.58
             height: width
             radius: width / 2
             color: Theme.hsl(0.062, 0.488, 0.169)
@@ -209,7 +214,7 @@ Item {
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: timer.secondsText
                 color: Theme.textPrimary
-                font.pixelSize: analogPad.width >= 96 ? 22 : 16
+                font.pixelSize: Math.max(14, Math.round(22 * analogPad.padScale))
                 font.family: Theme.fontMono
                 font.bold: true
             }
@@ -217,7 +222,7 @@ Item {
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: timer.exposureText
                 color: Theme.textSecondary
-                font.pixelSize: analogPad.width >= 96 ? 9 : 8
+                font.pixelSize: Math.max(8, Math.round(9 * analogPad.padScale))
                 font.bold: true
                 font.letterSpacing: 0.8
             }

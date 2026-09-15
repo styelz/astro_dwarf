@@ -335,6 +335,11 @@ ApplicationWindow {
     function maybeAskLocation() {
         if (locationDialog.addingDevice)
             return
+        if (backend.needsFirstDevice) {
+            if (!locationDialog.visible)
+                locationDialog.openForAdd()
+            return
+        }
         const configured = !!backend.selectedDevice.location_configured
         if (!configured) {
             if (!locationDialog.visible)

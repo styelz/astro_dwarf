@@ -849,6 +849,14 @@ QtObject {
     readonly property int compactControlHeight: 24
     readonly property real focusStroke: 1.5
 
+    // Largest square pad that keeps ticks, nudges, and inset inside `box`.
+    // The inset is a fraction of the box so it still reads as padding when the panel grows.
+    function fitPadSize(box) {
+        const span = Math.max(0, Number(box) || 0)
+        const edge = Math.max(theme.s3, span * 0.125)
+        return Math.max(48, Math.min(0.75 * (span - 2 * edge), span - 2 * (theme.s4 + edge)))
+    }
+
     // Motion.
     readonly property int quick: 120
     readonly property int normal: 180

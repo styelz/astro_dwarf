@@ -314,13 +314,10 @@ Dialog {
         if (sessionDialog.applyToAllPanes === !!on)
             return
         syncingPane = true
-        if (on) {
-            applyToAllPanes = true
-            sessionDialog.commitPendingEdits()
-        } else {
-            sessionDialog.commitPendingEdits()
-            applyToAllPanes = false
-        }
+        // Commit first so THIS PANE ticks stay on this pane. Switching the
+        // scope before commit copied them onto every pane.
+        sessionDialog.commitPendingEdits()
+        applyToAllPanes = !!on
         syncingPane = false
         sessionDialog.loadCommonFields(sessionDialog.selectedMembers())
     }

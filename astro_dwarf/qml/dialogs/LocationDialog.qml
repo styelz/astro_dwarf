@@ -19,7 +19,7 @@ Dialog {
     property color discoveryTone: Theme.textSecondary
     readonly property var wifiModeOptions: ["Auto", "AP hotspot", "STA station"]
     readonly property var wifiModeValues: ["auto", "ap", "sta"]
-    readonly property bool locationRequired: !addingDevice && !backend.selectedDevice.location_configured
+    readonly property bool locationRequired: backend.needsFirstDevice || (!addingDevice && !backend.selectedDevice.location_configured)
     readonly property var modelOptions: ["Dwarf II", "Dwarf 3", "Dwarf Mini"]
     modal: true
     closePolicy: Popup.NoAutoClose
@@ -102,11 +102,11 @@ Dialog {
         locationDialog.applyFoundDevice(list[chosen])
     }
     function resetAddFields() {
-        addName.text = ""
+        addName.text = backend.suggestedDeviceName()
         addIp.text = ""
         addWifiMode.currentIndex = 0
         addBlePassword.text = "DWARF_12345678"
-        addColor.assignUnused()
+        addColor.assignUnused(backend.needsFirstDevice ? [] : undefined)
         locationDialog.foundDevices = []
         locationDialog.foundLabels = []
         locationDialog.foundSsid = ""
@@ -202,7 +202,7 @@ Dialog {
                     id: addName
                     visible: locationDialog.addingDevice
                     Layout.fillWidth: true
-                    placeholderText: "Optional — used in the device list"
+                    placeholderText: backend.suggestedDeviceName()
                     accessibleName: "Telescope name"
                 }
 
@@ -342,6 +342,8 @@ Dialog {
                     enabled: {
                         if (locationDialog.addingDevice && backend.deviceDiscoveryBusy)
                             return false
+                        if (locationDialog.addingDevice && !String(addName.text).trim())
+                            return false
                         const lat = Number(locationLat.text)
                         const lon = Number(locationLon.text)
                         const named = locationTimezone.selectedName.length > 0 || locationTimezone.editText.length > 0
@@ -353,7 +355,7 @@ Dialog {
                     onClicked: {
                         const payload = JSON.stringify({
                             id: locationDialog.addingDevice ? "" : backend.selectedDeviceId,
-                            name: addName.text,
+                            name: String(addName.text).trim(),
                             model: locationModel.currentText,
                             timezone_name: locationTimezone.selectedName || locationTimezone.editText,
                             latitude: Number(locationLat.text),

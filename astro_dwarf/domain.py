@@ -48,6 +48,23 @@ def album_http_url(ip: str, path: str) -> str:
     return f"http://{host}{encoded}"
 
 
+def default_device_name(existing_count: int) -> str:
+    try:
+        count = int(existing_count)
+    except (TypeError, ValueError):
+        count = 0
+    return f"DWARF #{max(count, 0) + 1}"
+
+
+def is_first_device_setup(devices: list[Any]) -> bool:
+    if len(devices) != 1:
+        return False
+    device = devices[0]
+    if isinstance(device, dict):
+        return not bool(device.get("location_configured"))
+    return not bool(getattr(device, "location_configured", False))
+
+
 def device_name_model(name: str) -> str:
     token = str(name or "").upper().replace(" ", "").replace("-", "_")
     if token.startswith("DWARF3"):
