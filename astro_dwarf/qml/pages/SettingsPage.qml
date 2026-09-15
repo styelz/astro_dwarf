@@ -624,6 +624,9 @@ Item {
                             }
                             FieldHint { text: "Address of Stellarium's Remote Control plugin. Sessions can pull the selected object from here, and SKY can push the current target, site, time, and FOV to the desktop app." }
                         }
+                        FieldHint {
+                            text: "SKY loads Stellarium Web (stellarium-web.org). Astro Dwarf is unofficial and not affiliated with DwarfLab or Stellarium Labs."
+                        }
                     }
 
                     // DEVICE

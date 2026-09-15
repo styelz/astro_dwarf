@@ -184,7 +184,7 @@ ColumnLayout {
             onToggled: layoutSettings.skyToolsEnabled = checked
             accessibleName: "Show sky tools tab"
         }
-        FieldHint { text: "Adds a SKY page to find a Stellarium target and generate an X-by-Y mosaic plan. Off by default." }
+        FieldHint { text: "Adds a SKY page that uses Stellarium Web to find a target and generate an X-by-Y mosaic plan. Off by default. Unofficial; not affiliated with Stellarium Labs or DwarfLab." }
     }
 
     SettingGroup {

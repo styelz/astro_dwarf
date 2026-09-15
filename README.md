@@ -80,4 +80,10 @@ Old `Astro_Sessions` JSON can be imported from Settings. The old app's files are
 
 ## Credits
 
+Astro Dwarf is an unofficial third-party tool. It is not affiliated with, endorsed by, or supported by [DwarfLab](https://dwarflab.com/) or [Stellarium Labs](https://stellarium-labs.com/).
+
+Sky targeting talks to [Stellarium](https://stellarium.org/) desktop Remote Control when that plugin is running, and the SKY page loads [Stellarium Web](https://stellarium-web.org/) (operated by Stellarium Labs) as a sky map. Observing lists can be imported from a [Telescopius](https://telescopius.com/) CSV you export.
+
+This project is licensed under the [MIT License](LICENSE).
+
 Telescope commands come from [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api) by [JC L. (`stevejcl`)](https://github.com/stevejcl).

@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "astro-dwarf"
 dynamic = ["version"]
 description = "Desktop scheduler and multi-telescope controller for Dwarf II, Dwarf 3, and Dwarf Mini"
+license = {file = "LICENSE"}
 keywords = [
   "dwarf",
   "dwarf-3",
