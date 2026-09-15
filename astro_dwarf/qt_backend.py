@@ -138,6 +138,7 @@ class TelescopeProcess(QObject):
         self.configured = False
         self.connected = False
         self.busy = False
+        self._reject_link = False
         self._stopping = False
 
     @property
@@ -188,15 +189,28 @@ class TelescopeProcess(QObject):
         self.process.write((json.dumps(message) + "\n").encode())
         return request_id
 
-    def connect_device(self, callback: Callable[[bool, Any], None]) -> None:
-        self.send("connect", callback=lambda ok, result: self._connected(ok, result, callback))
+    def connect_device(
+        self,
+        callback: Callable[[bool, Any], None],
+        claimed_ips: list[str] | None = None,
+    ) -> None:
+        self._reject_link = False
+        ips = [str(ip).strip() for ip in (claimed_ips or []) if str(ip).strip()]
+        self.send(
+            "connect",
+            {"claimed_ips": ips},
+            callback=lambda ok, result: self._connected(ok, result, callback),
+        )
 
     def _connected(self, ok: bool, result: Any, callback: Callable[[bool, Any], None]) -> None:
-        self.connected = bool(ok and result)
+        handshake = bool(ok and result)
+        self.connected = handshake and not self._reject_link
         self.availabilityChanged.emit()
-        callback(self.connected, result)
+        callback(handshake, result)
 
     def disconnect_device(self, callback: Callable[[bool, Any], None] | None = None) -> None:
+        self._reject_link = True
+
         def done(ok: bool, result: Any) -> None:
             self.connected = False
             self.availabilityChanged.emit()
@@ -268,7 +282,7 @@ class TelescopeProcess(QObject):
             elif event == "status":
                 self.statusReceived.emit(str(message.get("kind") or ""), str(message.get("step") or ""))
             elif event == "connected":
-                if not self.connected:
+                if not self._reject_link and not self.connected:
                     self.connected = True
                     self.availabilityChanged.emit()
             elif event == "response":
@@ -719,6 +733,7 @@ class AppBackend(QObject):
         self._clock_text = datetime.now(self._zone_for()).strftime("%H:%M:%S")
         self._connecting_ids: set[str] = set()
         self._cancel_connect_ids: set[str] = set()
+        self._cancel_disconnect_done: set[str] = set()
         self._disconnecting_ids: set[str] = set()
         self._pending_reconnect_ids: set[str] = set()
         self._pending_actions: dict[str, str] = {}
@@ -2968,6 +2983,34 @@ class AppBackend(QObject):
         self._ui_busy = operation
         self.uiBusyChanged.emit()
 
+    def _claimed_ips(self, device_id: str) -> list[str]:
+        return [
+            str(item.ip_address or "").strip()
+            for item in self._devices
+            if item.id != device_id and str(item.ip_address or "").strip()
+        ]
+
+    def _ip_owner(self, ip_address: str, device_id: str) -> Device | None:
+        ip = str(ip_address or "").strip()
+        if not ip:
+            return None
+        return next(
+            (
+                item
+                for item in self._devices
+                if item.id != device_id and str(item.ip_address or "").strip() == ip
+            ),
+            None,
+        )
+
+    def _connect_failure_text(self, result: Any) -> str:
+        if result is False or result is None:
+            return "Could not reach the telescope. Check the IP address, or enable Bluetooth."
+        text = str(result).strip()
+        if not text or text.lower() in {"false", "none"}:
+            return "Could not reach the telescope. Check the IP address, or enable Bluetooth."
+        return text
+
     @Slot(str)
     def connectDevice(self, device_id: str) -> None:
         device = next((item for item in self._devices if item.id == device_id), None)
@@ -2976,11 +3019,18 @@ class AppBackend(QObject):
         if not device.location_configured:
             self._toast("Choose an observing location before connecting the telescope", "warning")
             return
-        worker = self._workers[device_id]
+        worker = self._workers.get(device_id)
+        if worker is None:
+            self.add_log("error", "Connection failed: telescope worker is not running", device_id)
+            self._toast("Connection failed", "error", "Telescope worker is not running")
+            return
         self._connecting_ids.add(device_id)
         self._notify_devices()
         self.add_log("info", "Connection requested; UI remains available", device_id)
-        worker.connect_device(lambda ok, result: self._connection_done(device_id, ok, result))
+        worker.connect_device(
+            lambda ok, result: self._connection_done(device_id, ok, result),
+            claimed_ips=self._claimed_ips(device_id),
+        )
 
     @Slot(str)
     def cancelConnect(self, device_id: str) -> None:
@@ -2990,51 +3040,104 @@ class AppBackend(QObject):
         if device_id == self._selected_device_id:
             self.stopPreview()
         self._cancel_connect_ids.add(device_id)
+        self._cancel_disconnect_done.discard(device_id)
+        worker.connected = False
         self.add_log("info", "Cancelling connection", device_id)
         self._notify_devices()
 
         def done(_ok: bool, _result: Any) -> None:
-            self._cancel_connect_ids.discard(device_id)
-            self._set_activity(device_id, "")
-            self._device_telemetry.pop(device_id, None)
-            self._telemetry_updated.pop(device_id, None)
-            self._hold_session_capture.discard(device_id)
-            self._pending_session_finish.pop(device_id, None)
-            self._device_lights.pop(device_id, None)
-            self._device_indicators.pop(device_id, None)
-            self.add_log("info", "Connection cancelled", device_id)
-            self._toast("Connection cancelled", "info")
-            self._disarm_scheduler_if_offline()
-            self._notify_devices()
+            self._mark_cancel_disconnect_done(device_id)
 
         worker.disconnect_device(done)
 
+    def _mark_cancel_disconnect_done(self, device_id: str) -> None:
+        self._cancel_disconnect_done.add(device_id)
+        self._finish_cancelled_connect(device_id)
+
+    def _finish_cancelled_connect(self, device_id: str) -> None:
+        if device_id not in self._cancel_connect_ids:
+            return
+        if device_id in self._connecting_ids:
+            return
+        if device_id not in self._cancel_disconnect_done:
+            return
+        self._cancel_connect_ids.discard(device_id)
+        self._cancel_disconnect_done.discard(device_id)
+        worker = self._workers.get(device_id)
+        if worker:
+            worker.connected = False
+        self._set_activity(device_id, "")
+        self._device_telemetry.pop(device_id, None)
+        self._telemetry_updated.pop(device_id, None)
+        self._hold_session_capture.discard(device_id)
+        self._pending_session_finish.pop(device_id, None)
+        self._device_lights.pop(device_id, None)
+        self._device_indicators.pop(device_id, None)
+        self.add_log("info", "Connection cancelled", device_id)
+        self._toast("Connection cancelled", "info")
+        self._disarm_scheduler_if_offline()
+        self._notify_devices()
+
     def _persist_discovered_ip(self, device_id: str, ip_address: str) -> None:
         current = self._device_by_id(device_id)
-        if not current or not ip_address or current.ip_address == ip_address:
+        ip = str(ip_address or "").strip()
+        if not current or not ip or current.ip_address == ip:
             return
-        updated = replace(current, ip_address=ip_address)
+        if self._ip_owner(ip, device_id) is not None:
+            return
+        updated = replace(current, ip_address=ip)
         self.store.devices.save(updated)
         self._devices = [updated if item.id == updated.id else item for item in self._devices]
         worker = self._workers.get(device_id)
         if worker:
             worker.device = updated
-        self.add_log("info", f"Saved Bluetooth IP {ip_address}", device_id)
+        self.add_log("info", f"Saved Bluetooth IP {ip}", device_id)
 
     def _connection_done(self, device_id: str, ok: bool, result: Any) -> None:
         cancelled = (
             device_id in self._cancel_connect_ids
             or (not ok and "connection cancelled" in str(result or "").lower())
         )
+        if cancelled and device_id not in self._cancel_connect_ids:
+            self._cancel_connect_ids.add(device_id)
+        discovered = ""
+        if ok and isinstance(result, dict):
+            discovered = str(result.get("ip_address") or "").strip()
+        owner = self._ip_owner(discovered, device_id) if discovered else None
         self._connecting_ids.discard(device_id)
-        if ok and isinstance(result, dict) and result.get("ip_address"):
-            self._persist_discovered_ip(device_id, str(result["ip_address"]))
         if cancelled:
+            worker = self._workers.get(device_id)
+            if worker:
+                worker.connected = False
             if ok:
                 self.add_log("info", "Connected, dropping the link after cancel", device_id)
+                if worker and device_id in self._cancel_disconnect_done:
+                    self._cancel_disconnect_done.discard(device_id)
+                    worker.disconnect_device(
+                        lambda _ok, _result, did=device_id: self._mark_cancel_disconnect_done(did)
+                    )
+                    self._notify_devices()
+                    return
+            self._finish_cancelled_connect(device_id)
             self._notify_devices()
             return
-        self.add_log("success" if ok else "error", "Connected" if ok else f"Connection failed: {result}", device_id)
+        if owner is not None:
+            worker = self._workers.get(device_id)
+            if worker:
+                worker.connected = False
+                worker.disconnect_device()
+            message = (
+                f"Bluetooth found {discovered}, but that address is already saved as {owner.name}."
+            )
+            self.add_log("error", f"Connection failed: {message}", device_id)
+            self._toast("Connection failed", "error", message)
+            self._disarm_scheduler_if_offline()
+            self._notify_devices()
+            return
+        if discovered:
+            self._persist_discovered_ip(device_id, discovered)
+        fail_text = self._connect_failure_text(result)
+        self.add_log("success" if ok else "error", "Connected" if ok else f"Connection failed: {fail_text}", device_id)
         if ok:
             device = self._device_by_id(device_id)
             telemetry = result.get("telemetry") if isinstance(result, dict) else None
@@ -3055,7 +3158,7 @@ class AppBackend(QObject):
             delay_ms = 8000 if device and device.model == DeviceModel.DWARF_3 else 2500
             QTimer.singleShot(delay_ms, lambda did=device_id: self.refreshCameraParams(did))
         else:
-            self._toast("Connection failed", "error", str(result))
+            self._toast("Connection failed", "error", fail_text)
             self._disarm_scheduler_if_offline()
         self._notify_devices()
 

@@ -1209,6 +1209,29 @@ def _hotspot_password() -> str:
     return str(_device.get("wifi_password") or _device.get("ble_password") or "DWARF_12345678")
 
 
+_AP_IP = "192.168.88.1"
+
+
+def _allows_ble_fallback(ip: str) -> bool:
+    """BLE rediscovery is for an empty IP or the default telescope hotspot."""
+    return not str(ip or "").strip() or str(ip).strip() == _AP_IP
+
+
+def _claimed_ip_set() -> set[str]:
+    raw = _device.get("_claimed_ips") or []
+    return {str(ip).strip() for ip in raw if str(ip).strip()}
+
+
+def _claimed_ip_conflict(ip: str) -> str:
+    address = str(ip or "").strip()
+    if address and address in _claimed_ip_set():
+        return (
+            f"Bluetooth found a telescope at {address}, "
+            "but that address is already saved on another device."
+        )
+    return ""
+
+
 def _host_reachable(host: str, port: int = 8092, timeout: float = 1.5) -> bool:
     try:
         socket.create_connection((host, port), timeout).close()
@@ -1627,6 +1650,9 @@ def provision_bluetooth() -> str:
         raise RuntimeError("Bluetooth connected but did not return an IP address")
 
     ip = str(state["ip_address"])
+    conflict = _claimed_ip_conflict(ip)
+    if conflict:
+        raise RuntimeError(conflict)
     _device["_ble_ssid"] = str(state.get("ssid") or "")
     _write_config_ip(ip, state.get("device_dwarf_id"))
     log(f"Bluetooth assigned IP {ip}")
@@ -1652,19 +1678,26 @@ def _connect() -> bool | dict[str, Any]:
     ble_enabled = bool(_device.get("ble_enabled"))
     if ip:
         log(f"Connecting to {ip}…")
-        if ip == "192.168.88.1" and not _host_reachable(ip):
+        if ip == _AP_IP and not _host_reachable(ip):
             _ensure_hotspot_link(ip)
         telemetry = _handshake()
         if telemetry is not None:
             return {"ip_address": ip, "telemetry": telemetry}
         _check_connect_cancelled()
-        log("IP connection failed" + (", trying Bluetooth…" if ble_enabled else ""), "warning")
+        can_ble = ble_enabled and _allows_ble_fallback(ip)
+        log("IP connection failed" + (", trying Bluetooth…" if can_ble else ""), "warning")
         _safe_disconnect()
+        if not can_ble:
+            if ble_enabled:
+                raise RuntimeError(f"Could not reach {ip}.")
+            raise RuntimeError(
+                f"Could not reach {ip}. Enable Bluetooth to search, or check the IP."
+            )
     elif not ble_enabled:
         raise RuntimeError("Set a telescope IP, or enable Bluetooth and try again")
 
     if not ble_enabled:
-        return False
+        raise RuntimeError("Could not reach the telescope. Check the IP address, or enable Bluetooth.")
 
     discovered = provision_bluetooth()
     _check_connect_cancelled()
@@ -3373,6 +3406,9 @@ def dispatch(message: dict[str, Any]) -> Any:
     if command == "configure":
         return configure(message["device"])
     if command == "connect":
+        claimed = message.get("claimed_ips")
+        if claimed is not None:
+            _device["_claimed_ips"] = list(claimed)
         return connect()
     if command == "run_session":
         return run_session(message["session"])
