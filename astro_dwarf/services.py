@@ -25,6 +25,44 @@ from .domain import (
 )
 
 STELLARIUM_WEB_URL = "https://stellarium-web.org/"
+# Stellarium Web shows "This site uses cookies... I Agree" and the atlas is WebGL.
+SKY_WEB_BOOT_JS = r"""
+(function() {
+  try {
+    var clicked = false;
+    var nodes = document.querySelectorAll("button, [role='button'], a, input[type='button']");
+    for (var i = 0; i < nodes.length; i++) {
+      var text = String(nodes[i].innerText || nodes[i].textContent || nodes[i].value || "")
+        .replace(/\s+/g, " ").trim();
+      if (/^i agree$/i.test(text) || /^accept( all)?$/i.test(text) || /^agree$/i.test(text)) {
+        nodes[i].click();
+        clicked = true;
+        break;
+      }
+    }
+    try {
+      var app = document.getElementById("app");
+      var vue = app && app.__vue_app__;
+      var store = vue && vue.config && vue.config.globalProperties && vue.config.globalProperties.$store;
+      if (store && store.state) {
+        if (store.state.showCookieNotice)
+          store.commit("toggleBool", "showCookieNotice");
+        if (store.state.showCookies)
+          store.commit("toggleBool", "showCookies");
+      }
+    } catch (err) {}
+    var canvas = document.querySelector("canvas");
+    var gl = null;
+    if (canvas) {
+      try { gl = canvas.getContext("webgl2") || canvas.getContext("webgl") || canvas.getContext("experimental-webgl"); }
+      catch (err) {}
+    }
+    return clicked ? "clicked" : (gl ? "ok" : "waiting");
+  } catch (err) {
+    return "error";
+  }
+})()
+"""
 MAX_MOSAIC_AXIS = 10
 DEFAULT_TELE_FOV_H = 2.95
 DEFAULT_TELE_FOV_V = 1.66

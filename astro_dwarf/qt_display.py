@@ -56,20 +56,63 @@ def needs_software_qt(
     return bool(frozen) and platform.startswith("linux")
 
 
+# Stellarium Web needs WebGL. --disable-gpu leaves a black atlas. SwiftShader
+# keeps the map drawing when the bundled Qt scene graph cannot use host GLX.
+SOFTWARE_WEBENGINE_FLAGS = (
+    "--enable-webgl --ignore-gpu-blocklist --in-process-gpu "
+    "--enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader"
+)
+LINUX_WEBENGINE_FLAGS = "--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox"
+
+
+def _strip_readline_library_path() -> None:
+    """Keep system /bin/sh from loading Qt's older libreadline.
+
+    Fedora/Arch bash looks up rl_trim_arg_from_keyseq. Qt's copy of
+    libreadline is older, so a poisoned LD_LIBRARY_PATH prints
+    'undefined symbol: rl_trim_arg_from_keyseq' and child shells fail.
+    """
+    raw = os.environ.get("LD_LIBRARY_PATH")
+    if not raw:
+        return
+    kept: list[str] = []
+    for part in raw.split(":"):
+        if not part:
+            continue
+        folder = Path(part)
+        try:
+            names = [path.name for path in folder.iterdir()] if folder.is_dir() else []
+        except OSError:
+            kept.append(part)
+            continue
+        has_readline = any(name.startswith("libreadline.so") for name in names)
+        has_qt = any(name.startswith("libQt") for name in names)
+        if has_readline and not has_qt:
+            continue
+        kept.append(part)
+    if kept:
+        os.environ["LD_LIBRARY_PATH"] = ":".join(kept)
+    else:
+        os.environ.pop("LD_LIBRARY_PATH", None)
+
+
 def apply_software_qt_env() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
     os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
     os.environ.setdefault("QT_QUICK_BACKEND", "software")
     os.environ.setdefault("QSG_RHI_BACKEND", "software")
-    os.environ.setdefault(
-        "QTWEBENGINE_CHROMIUM_FLAGS",
-        "--disable-gpu --disable-gpu-compositing",
-    )
+    os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", SOFTWARE_WEBENGINE_FLAGS)
 
 
 def configure_qt_display() -> None:
     """Skip GLX/EGL when bundled Qt cannot talk to the host GPU driver."""
+    if sys.platform.startswith("linux"):
+        _strip_readline_library_path()
+        os.environ.setdefault("NO_AT_BRIDGE", "1")
+        os.environ.setdefault("GTK_MODULES", "")
+        os.environ.setdefault("GTK3_MODULES", "")
+        os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
     if needs_software_qt():
         apply_software_qt_env()
-    if running_frozen() and sys.platform.startswith("linux"):
-        os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+    elif sys.platform.startswith("linux"):
+        os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", LINUX_WEBENGINE_FLAGS)

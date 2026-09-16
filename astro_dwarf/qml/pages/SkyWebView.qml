@@ -103,9 +103,13 @@ Item {
         if (!map.initialLoadDone && !revealDelay.running)
             revealDelay.start()
     }
+    function applyBootFixes() {
+        map.runJavaScript(backend.skyWebBootScript)
+    }
     function probeAppReady() {
         if (map.initialLoadDone || map.initialLoadFailed || !map.documentReady)
             return
+        map.applyBootFixes()
         map.runJavaScript(map.appReadyScript, result => {
             if (String(result) === "ok")
                 map.markInitialReady()
@@ -175,6 +179,13 @@ Item {
             map.initialLoadDone = true
             map.applyFovOverlay()
         }
+    }
+
+    Timer {
+        interval: 400
+        repeat: true
+        running: map.documentReady && !map.initialLoadFailed
+        onTriggered: map.applyBootFixes()
     }
 
     Timer {

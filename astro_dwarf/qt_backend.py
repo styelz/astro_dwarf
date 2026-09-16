@@ -76,6 +76,7 @@ from .services import (
     DEFAULT_WIDE_FOV_V,
     DurationEngine,
     STELLARIUM_WEB_URL,
+    SKY_WEB_BOOT_JS,
     SKY_WEB_HARVEST_JS,
     StellariumClient,
     generate_mosaic_plan,
@@ -1887,6 +1888,10 @@ class AppBackend(QObject):
     @Property(str, constant=True)
     def skyWebHarvestScript(self) -> str:
         return SKY_WEB_HARVEST_JS
+
+    @Property(str, constant=True)
+    def skyWebBootScript(self) -> str:
+        return SKY_WEB_BOOT_JS
 
     @Property(str, notify=selectedDeviceChanged)
     def skyWebSiteScript(self) -> str:

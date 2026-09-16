@@ -191,6 +191,12 @@ if sys.platform.startswith("linux"):
     analysis.binaries = [
         entry for entry in analysis.binaries if not _linux_host_gl_lib(entry[0])
     ]
+    analysis.binaries = [
+        entry
+        for entry in analysis.binaries
+        if "libreadline" not in Path(str(entry[0])).name.lower()
+        and "libhistory.so" not in Path(str(entry[0])).name.lower()
+    ]
 
 # Windows and macOS use the OS web view. Keep Chromium out of those bundles.
 # Linux has no native QtWebView backend, so the SKY page needs Qt WebEngine.
