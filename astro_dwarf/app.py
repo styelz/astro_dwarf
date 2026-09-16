@@ -12,7 +12,7 @@ from .qt_display import configure_qt_display
 
 configure_qt_display()
 
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import QTimer, Qt, QUrl
 from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
 from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
 
@@ -208,6 +208,7 @@ def run() -> int:
     configure_quick_runtime()
     configure_qml_import_path()
     _configure_windows_app_id()
+    QGuiApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
     _initialize_webview()
     application = QGuiApplication(sys.argv)
     application.setApplicationName("Astro Dwarf")

@@ -1,3 +1,4 @@
+import QtQuick
 import QtCore
 import QtWebEngine
 
@@ -65,5 +66,17 @@ Item {
         httpCacheType: WebEngineProfile.DiskHttpCache
         persistentStoragePath: StandardPaths.writableLocation(StandardPaths.AppDataLocation) + "/webengine"
         cachePath: StandardPaths.writableLocation(StandardPaths.CacheLocation) + "/webengine"
+        Component.onCompleted: {
+            try {
+                userScripts.collection = [{
+                    name: "astro-dwarf-sky-boot",
+                    injectionPoint: WebEngineScript.DocumentReady,
+                    worldId: WebEngineScript.MainWorld,
+                    sourceCode: backend.skyWebBootScript,
+                    runsOnSubFrames: false
+                }]
+            } catch (err) {
+            }
+        }
     }
 }

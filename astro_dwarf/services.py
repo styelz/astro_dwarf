@@ -28,16 +28,32 @@ STELLARIUM_WEB_URL = "https://stellarium-web.org/"
 # Stellarium Web shows "This site uses cookies... I Agree" and the atlas is WebGL.
 SKY_WEB_BOOT_JS = r"""
 (function() {
+  function labelOf(node) {
+    return String(node.innerText || node.textContent || node.value || "")
+      .replace(/\s+/g, " ").trim();
+  }
+  function isAgree(text) {
+    return /^i agree$/i.test(text) || /^accept( all)?$/i.test(text) || /^agree$/i.test(text);
+  }
   try {
     var clicked = false;
-    var nodes = document.querySelectorAll("button, [role='button'], a, input[type='button']");
+    var nodes = document.querySelectorAll("button, [role='button'], a, input[type='button'], .v-btn, [class*='btn']");
     for (var i = 0; i < nodes.length; i++) {
-      var text = String(nodes[i].innerText || nodes[i].textContent || nodes[i].value || "")
-        .replace(/\s+/g, " ").trim();
-      if (/^i agree$/i.test(text) || /^accept( all)?$/i.test(text) || /^agree$/i.test(text)) {
+      if (isAgree(labelOf(nodes[i]))) {
         nodes[i].click();
         clicked = true;
         break;
+      }
+    }
+    if (!clicked) {
+      var all = document.querySelectorAll("div, span, p, button, a");
+      for (var j = 0; j < all.length; j++) {
+        if (isAgree(labelOf(all[j]))) {
+          var target = all[j].closest("button, [role='button'], a, .v-btn") || all[j];
+          target.click();
+          clicked = true;
+          break;
+        }
       }
     }
     try {
@@ -51,6 +67,13 @@ SKY_WEB_BOOT_JS = r"""
           store.commit("toggleBool", "showCookies");
       }
     } catch (err) {}
+    var walk = document.querySelectorAll("div, section, aside");
+    for (var k = 0; k < walk.length; k++) {
+      var blob = labelOf(walk[k]);
+      if (/this site uses cookies/i.test(blob) && blob.length < 400) {
+        walk[k].style.display = "none";
+      }
+    }
     var canvas = document.querySelector("canvas");
     var gl = null;
     if (canvas) {
