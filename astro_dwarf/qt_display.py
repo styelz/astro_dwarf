@@ -61,9 +61,15 @@ def apply_software_qt_env() -> None:
     os.environ.setdefault("QT_XCB_GL_INTEGRATION", "none")
     os.environ.setdefault("QT_QUICK_BACKEND", "software")
     os.environ.setdefault("QSG_RHI_BACKEND", "software")
+    os.environ.setdefault(
+        "QTWEBENGINE_CHROMIUM_FLAGS",
+        "--disable-gpu --disable-gpu-compositing",
+    )
 
 
 def configure_qt_display() -> None:
     """Skip GLX/EGL when bundled Qt cannot talk to the host GPU driver."""
     if needs_software_qt():
         apply_software_qt_env()
+    if running_frozen() and sys.platform.startswith("linux"):
+        os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")

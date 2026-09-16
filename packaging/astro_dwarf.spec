@@ -20,7 +20,9 @@ def collect_pyside_qml() -> list[tuple[str, str]]:
     import PySide6
 
     base = Path(PySide6.__file__).resolve().parent
-    modules = ("QtCore", "QtMultimedia", "QtQml", "QtQuick", "QtWebView")
+    modules = ["QtCore", "QtMultimedia", "QtQml", "QtQuick", "QtWebView"]
+    if sys.platform.startswith("linux"):
+        modules.extend(("QtWebEngine", "QtWebChannel"))
     collected: list[tuple[str, str]] = []
     for src_root, dest_root in (
         (base / "qml", "PySide6/qml"),
@@ -46,7 +48,9 @@ def collect_native_webview_plugins() -> list[tuple[str, str]]:
         if not src_root.is_dir():
             continue
         for path in src_root.iterdir():
-            if not path.is_file() or "webengine" in path.name.lower():
+            if not path.is_file() or "webview" not in path.name.lower():
+                continue
+            if "webengine" in path.name.lower() and not sys.platform.startswith("linux"):
                 continue
             collected.append((str(path), dest_root))
     return collected
@@ -63,21 +67,28 @@ for _icon_name in ("astro-dwarf.ico", "astro-dwarf.png"):
         datas.append((str(_icon_path), "."))
         datas.append((str(_icon_path), "qml/assets"))
 datas += collect_pyside_qml()
-datas += collect_data_files(
-    "PySide6",
-    includes=[
-        "qml/QtCore/**",
-        "qml/QtMultimedia/**",
-        "qml/QtQml/**",
-        "qml/QtQuick/**",
-        "qml/QtWebView/**",
-        "Qt/qml/QtCore/**",
-        "Qt/qml/QtMultimedia/**",
-        "Qt/qml/QtQml/**",
-        "Qt/qml/QtQuick/**",
-        "Qt/qml/QtWebView/**",
-    ],
-)
+_qml_includes = [
+    "qml/QtCore/**",
+    "qml/QtMultimedia/**",
+    "qml/QtQml/**",
+    "qml/QtQuick/**",
+    "qml/QtWebView/**",
+    "Qt/qml/QtCore/**",
+    "Qt/qml/QtMultimedia/**",
+    "Qt/qml/QtQml/**",
+    "Qt/qml/QtQuick/**",
+    "Qt/qml/QtWebView/**",
+]
+if sys.platform.startswith("linux"):
+    _qml_includes.extend(
+        (
+            "qml/QtWebEngine/**",
+            "qml/QtWebChannel/**",
+            "Qt/qml/QtWebEngine/**",
+            "Qt/qml/QtWebChannel/**",
+        )
+    )
+datas += collect_data_files("PySide6", includes=_qml_includes)
 
 binaries = []
 for filename in ("ffmpeg.exe", "ffmpeg"):
@@ -128,6 +139,16 @@ def collect_package(name: str) -> None:
 
 for package in ("dwarf_python_api", "dwarf_ble_connect", "websockets", "google.protobuf", "filelock", "bleak", "tzdata", "numpy", "cv2"):
     collect_package(package)
+if sys.platform.startswith("linux"):
+    hiddenimports.extend(
+        (
+            "PySide6.QtWebEngineCore",
+            "PySide6.QtWebEngineQuick",
+            "PySide6.QtWebChannel",
+        )
+    )
+    for package in ("PySide6.QtWebEngineCore", "PySide6.QtWebEngineQuick", "PySide6.QtWebChannel"):
+        collect_package(package)
 
 analysis = Analysis(
     [str(ROOT / "packaging" / "entrypoint.py")],
@@ -171,14 +192,16 @@ if sys.platform.startswith("linux"):
         entry for entry in analysis.binaries if not _linux_host_gl_lib(entry[0])
     ]
 
-# Prefer the OS web view. The WebEngine plugin would pull Chromium into the bundle.
+# Windows and macOS use the OS web view. Keep Chromium out of those bundles.
+# Linux has no native QtWebView backend, so the SKY page needs Qt WebEngine.
 def _is_webengine_payload(entry) -> bool:
     text = " ".join(str(part) for part in entry[:2]).lower()
     return "webengine" in text
 
 
-analysis.binaries = [entry for entry in analysis.binaries if not _is_webengine_payload(entry)]
-analysis.datas = [entry for entry in analysis.datas if not _is_webengine_payload(entry)]
+if not sys.platform.startswith("linux"):
+    analysis.binaries = [entry for entry in analysis.binaries if not _is_webengine_payload(entry)]
+    analysis.datas = [entry for entry in analysis.datas if not _is_webengine_payload(entry)]
 
 pyz = PYZ(analysis.pure)
 

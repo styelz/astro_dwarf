@@ -286,12 +286,15 @@ Item {
 
             Loader {
                 id: mapLoader
-                // Native WebView2 paints above QML and ignores overlay z-order. Keep the
-                // HWND full-size so it can load, but park it outside the window until
-                // Stellarium JS is ready. Windows clips child HWNDs to the app frame.
+                // Native WebView2 / WKWebView paint above QML and ignore overlay z-order.
+                // Keep the native view full-size so it can load, but park it outside the
+                // window until Stellarium JS is ready. Linux uses Qt WebEngine in the
+                // scene graph, so the boot overlay can cover it without parking.
+                readonly property bool nativeMapOverlay: Qt.platform.os === "windows"
+                                                           || Qt.platform.os === "osx"
                 width: parent.width - 2
                 height: parent.height - 2
-                x: skyPage.mapInitialReady ? 1 : -4096
+                x: (!mapLoader.nativeMapOverlay || skyPage.mapInitialReady) ? 1 : -4096
                 y: 1
                 active: skyPage.webReady && root.skyToolsEnabled && (skyPage.mapLive || skyPage.mapKeepAlive)
                 source: Qt.resolvedUrl("SkyWebView.qml")

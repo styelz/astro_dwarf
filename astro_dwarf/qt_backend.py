@@ -104,6 +104,7 @@ from .runtime import (
     PROCESS_CREATION_FLAGS,
     is_frozen,
     kill_pid_tree,
+    linux_webengine_available,
     native_webview_plugin_present,
     prepare_worker_environment,
     worker_command,
@@ -125,6 +126,9 @@ from .telemetry_view import AlertEngine, camera_params_to_telemetry, derive_acti
 
 
 def _webview_available() -> bool:
+    # Linux has no WebView2/WKWebView. Stellarium Web is Qt WebEngine there.
+    if sys.platform.startswith("linux"):
+        return linux_webengine_available()
     try:
         from PySide6.QtWebView import QtWebView  # noqa: F401
     except Exception:

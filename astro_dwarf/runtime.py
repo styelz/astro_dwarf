@@ -77,7 +77,8 @@ def native_webview_plugin_present() -> bool:
 
     Creating a QML WebView without plugins/webview makes Qt 6.11 qFatal()
     ('No WebView plug-in found!'), which Windows reports as 0xc0000409 in
-    Qt6Core.dll. Frozen builds strip WebEngine, so only the OS backend counts.
+    Qt6Core.dll. Frozen Windows/macOS builds strip WebEngine, so only the OS
+    backend counts there. Linux uses Qt WebEngine instead of this plugin.
     """
     for folder in _webview_plugin_dirs():
         if not folder.is_dir():
@@ -89,6 +90,15 @@ def native_webview_plugin_present() -> bool:
             if path.suffix.lower() in {".dll", ".so", ".dylib"} or ".so." in name:
                 return True
     return False
+
+
+def linux_webengine_available() -> bool:
+    """True when Stellarium Web can use Qt WebEngine on Linux."""
+    try:
+        from PySide6.QtWebEngineQuick import QtWebEngineQuick  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 
 def configure_qml_import_path() -> None:

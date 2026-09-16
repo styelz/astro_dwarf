@@ -181,7 +181,18 @@ def _apply_windows_frame(window, caption_hex: str = "#0B1520", border_hex: str =
 
 
 def _initialize_webview() -> None:
-    """Use the OS web view (WebView2 / WKWebView). Must run before QGuiApplication."""
+    """Select a web view backend before QGuiApplication.
+
+    Windows and macOS use the OS web view (WebView2 / WKWebView). Linux has no
+    native QtWebView backend, so Stellarium Web is Qt WebEngine there.
+    """
+    if sys.platform.startswith("linux"):
+        try:
+            from PySide6.QtWebEngineQuick import QtWebEngineQuick
+            QtWebEngineQuick.initialize()
+        except Exception:
+            pass
+        return
     os.environ.setdefault("QTWEBVIEW_BACKEND", "native")
     os.environ.setdefault("QT_WEBVIEW_PLUGIN", "native")
     try:

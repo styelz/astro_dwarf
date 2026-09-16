@@ -1,11 +1,9 @@
 import QtQuick
-import QtWebView
 import ".."
 
-WebView {
+Item {
     id: map
     anchors.fill: parent
-    url: backend.stellariumWebUrl
     property string appliedSiteKey: ""
     property bool pageReady: false
     property bool documentReady: false
@@ -18,6 +16,8 @@ WebView {
     property real mosaicPa: 0
     property string overlayKey: ""
     readonly property string appReadyScript: "(function(){try{var stel=window._stel;if(!stel||!stel.core||!stel.observer)return\"loading\";var app=document.getElementById(\"app\");if(!app||!app.__vue_app__)return\"loading\";return\"ok\"}catch(e){return\"loading\"}})()"
+    readonly property var engineItem: engineLoader.item
+
     function harvestLooksSelected(raw) {
         if (raw === undefined || raw === null || raw === false)
             return false
@@ -39,6 +39,12 @@ WebView {
         const ra = Number(data.ra_hours)
         const dec = Number(data.dec_degrees)
         return isFinite(ra) && isFinite(dec)
+    }
+    function runJavaScript(script, callback) {
+        const view = map.engineItem
+        if (!view || typeof view.runJavaScript !== "function")
+            return
+        view.runJavaScript(script, callback)
     }
     function readSelectedTarget(callback) {
         map.runJavaScript(backend.skyWebHarvestScript, result => {
@@ -105,15 +111,8 @@ WebView {
                 map.markInitialReady()
         })
     }
-    onMosaicColumnsChanged: if (map.pageReady) map.applyFovOverlay()
-    onMosaicRowsChanged: if (map.pageReady) map.applyFovOverlay()
-    onMosaicOverlapChanged: if (map.pageReady) map.applyFovOverlay()
-    onMosaicPaChanged: if (map.pageReady) map.applyFovOverlay()
-    onPageReadyChanged: if (!map.pageReady) map.hasSelectedTarget = false
-    onLoadingChanged: function(loadRequest) {
-        if (!loadRequest || loadRequest.status === undefined)
-            return
-        if (loadRequest.status === WebView.LoadStartedStatus) {
+    function handleLoadState(state) {
+        if (state === "started") {
             if (map.initialLoadDone)
                 return
             map.pageReady = false
@@ -122,7 +121,9 @@ WebView {
             map.overlayKey = ""
             map.hasSelectedTarget = false
             revealDelay.stop()
-        } else if (loadRequest.status === WebView.LoadSucceededStatus) {
+            return
+        }
+        if (state === "succeeded") {
             map.documentReady = true
             if (map.initialLoadDone) {
                 map.pageReady = true
@@ -131,7 +132,9 @@ WebView {
             }
             map.pageReady = false
             map.probeAppReady()
-        } else if (loadRequest.status === WebView.LoadFailedStatus && !map.initialLoadDone) {
+            return
+        }
+        if (state === "failed" && !map.initialLoadDone) {
             appReadyPoll.stop()
             bootTimeout.stop()
             revealDelay.stop()
@@ -139,6 +142,28 @@ WebView {
             map.documentReady = false
             map.hasSelectedTarget = false
             map.initialLoadFailed = true
+        }
+    }
+    onMosaicColumnsChanged: if (map.pageReady) map.applyFovOverlay()
+    onMosaicRowsChanged: if (map.pageReady) map.applyFovOverlay()
+    onMosaicOverlapChanged: if (map.pageReady) map.applyFovOverlay()
+    onMosaicPaChanged: if (map.pageReady) map.applyFovOverlay()
+    onPageReadyChanged: if (!map.pageReady) map.hasSelectedTarget = false
+
+    Loader {
+        id: engineLoader
+        anchors.fill: parent
+        source: Qt.resolvedUrl(Qt.platform.os === "linux" ? "SkyWebEngineItem.qml" : "SkyWebNativeItem.qml")
+        onStatusChanged: {
+            if (status === Loader.Error && !map.initialLoadDone)
+                map.initialLoadFailed = true
+        }
+    }
+
+    Connections {
+        target: map.engineItem
+        function onLoadState(state) {
+            map.handleLoadState(state)
         }
     }
 
