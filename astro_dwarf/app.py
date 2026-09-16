@@ -187,6 +187,10 @@ def _initialize_webview() -> None:
     native QtWebView backend, so Stellarium Web is Qt WebEngine there.
     """
     if sys.platform.startswith("linux"):
+        from .runtime import linux_webengine_available
+
+        if not linux_webengine_available():
+            return
         try:
             from PySide6.QtWebEngineQuick import QtWebEngineQuick
             QtWebEngineQuick.initialize()
@@ -208,7 +212,13 @@ def run() -> int:
     configure_quick_runtime()
     configure_qml_import_path()
     _configure_windows_app_id()
-    QGuiApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+    if sys.platform.startswith("linux"):
+        from .runtime import linux_webengine_available
+
+        if linux_webengine_available():
+            QGuiApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+    else:
+        QGuiApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
     _initialize_webview()
     application = QGuiApplication(sys.argv)
     application.setApplicationName("Astro Dwarf")

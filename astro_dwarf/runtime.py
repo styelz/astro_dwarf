@@ -93,7 +93,16 @@ def native_webview_plugin_present() -> bool:
 
 
 def linux_webengine_available() -> bool:
-    """True when Stellarium Web can use Qt WebEngine on Linux."""
+    """True when Stellarium Web can embed Qt WebEngine without aborting.
+
+    Hyper-V and other software-Qt sessions disable GLX/EGL so the window
+    can open. Creating a WebEngineView there makes Chromium/ANGLE abort
+    (IOT / core dump) as soon as the SKY tab loads.
+    """
+    from .qt_display import needs_software_qt
+
+    if needs_software_qt():
+        return False
     try:
         from PySide6.QtWebEngineQuick import QtWebEngineQuick  # noqa: F401
     except Exception:

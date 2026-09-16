@@ -319,7 +319,9 @@ Item {
                 anchors.centerIn: parent
                 mode: "unavailable"
                 glyph: "✧"
-                text: "Stellarium Web is not available in this window. Open it in a browser to find a target, then come back if the map loads."
+                text: backend.skyWebBlockedByGpu
+                      ? "Stellarium Web cannot run inside this window. This session has no OpenGL, which is typical on Hyper-V. Open it in a browser, then import the target here."
+                      : "Stellarium Web is not available in this window. Open it in a browser to find a target, then come back if the map loads."
             }
 
             HudButton {

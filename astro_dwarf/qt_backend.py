@@ -126,8 +126,17 @@ from .stream_preview import LiveFrames, StreamPlayer, port_is_open, preview_wind
 from .telemetry_view import AlertEngine, camera_params_to_telemetry, derive_activity, format_telemetry
 
 
+def _sky_web_blocked_by_gpu() -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    from .qt_display import needs_software_qt
+
+    return needs_software_qt()
+
+
 def _webview_available() -> bool:
-    # Linux has no WebView2/WKWebView. Stellarium Web is Qt WebEngine there.
+    # Linux has no WebView2/WKWebView. Stellarium Web is Qt WebEngine there,
+    # but only when the session can create a GL context.
     if sys.platform.startswith("linux"):
         return linux_webengine_available()
     try:
@@ -866,6 +875,7 @@ class AppBackend(QObject):
         self._ui_busy = ""
         self._sky_target: Target | None = None
         self._web_view_available = _webview_available()
+        self._sky_web_blocked_by_gpu = _sky_web_blocked_by_gpu()
         self._stellarium_rc_live = False
         self._stellarium_rc_watch = False
         self._stellarium_rc_inflight = False
@@ -1880,6 +1890,10 @@ class AppBackend(QObject):
     @Property(bool, constant=True)
     def webViewAvailable(self) -> bool:
         return self._web_view_available
+
+    @Property(bool, constant=True)
+    def skyWebBlockedByGpu(self) -> bool:
+        return self._sky_web_blocked_by_gpu
 
     @Property(str, constant=True)
     def stellariumWebUrl(self) -> str:
