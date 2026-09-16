@@ -5,9 +5,15 @@ export PATH="$HERE/usr/bin:$PATH"
 GTK_MODULES=
 GTK3_MODULES=
 export GTK_MODULES GTK3_MODULES
-# Chromium in the AppImage cannot use the host GPU sandbox.
-# Qt display/GL flags are applied in astro_dwarf.qt_display so Stellarium Web
-# can create a WebGL context. Do not set QT_XCB_GL_INTEGRATION=none here.
+# Hyper-V and many NVIDIA/XWayland hosts abort in GLX/EGL. Software Qt Quick
+# plus no xcb GL integration keeps the window opening. Stellarium WebGL then
+# uses SwiftShader. ASTRO_DWARF_QT_SYSTEM=1 uses the host GPU instead.
 [ -n "$QTWEBENGINE_DISABLE_SANDBOX" ] || export QTWEBENGINE_DISABLE_SANDBOX=1
 [ -n "$NO_AT_BRIDGE" ] || export NO_AT_BRIDGE=1
+if [ "${ASTRO_DWARF_QT_SYSTEM:-}" != "1" ]; then
+    [ -n "$QT_QPA_PLATFORM" ] || export QT_QPA_PLATFORM=xcb
+    [ -n "$QT_XCB_GL_INTEGRATION" ] || export QT_XCB_GL_INTEGRATION=none
+    [ -n "$QT_QUICK_BACKEND" ] || export QT_QUICK_BACKEND=software
+    [ -n "$QTWEBENGINE_CHROMIUM_FLAGS" ] || export QTWEBENGINE_CHROMIUM_FLAGS="--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader"
+fi
 exec "$HERE/usr/bin/AstroDwarf" "$@"

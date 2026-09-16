@@ -108,4 +108,23 @@ printf '\n'
 step "Starting Astro Dwarf..."
 info "The app window should open in a moment."
 printf '\n'
+# WSL and Hyper-V guests usually have no GLX/EGL. Python also applies this
+# in qt_display; set it here so a leftover host-GL export cannot abort Qt.
+if [ "${ASTRO_DWARF_QT_SYSTEM:-}" != "1" ]; then
+    in_wsl=0
+    in_hv=0
+    if [ -r /proc/sys/kernel/osrelease ] && grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease; then
+        in_wsl=1
+    fi
+    for dmi in /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name; do
+        if [ -r "$dmi" ] && grep -qiE 'microsoft|hyper-v|virtual machine' "$dmi"; then
+            in_hv=1
+        fi
+    done
+    if [ "$in_wsl" -eq 1 ] || [ "$in_hv" -eq 1 ]; then
+        [ -n "$QT_QPA_PLATFORM" ] || export QT_QPA_PLATFORM=xcb
+        [ -n "$QT_XCB_GL_INTEGRATION" ] || export QT_XCB_GL_INTEGRATION=none
+        [ -n "$QT_QUICK_BACKEND" ] || export QT_QUICK_BACKEND=software
+    fi
+fi
 exec "$VENV_PYTHON" app.py

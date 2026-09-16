@@ -46,7 +46,7 @@ sudo pacman -U ./AstroDwarf-*-linux-x86_64.pkg.tar.zst
 astro-dwarf
 ```
 
-Linux uses host EGL (not GLX) so the window still opens when XWayland or NVIDIA cannot match a GLX FBConfig. Stellarium Web needs that EGL context for WebGL. GTK module warnings such as `xapp-gtk3-module` are harmless. If graphics still fail, try `ASTRO_DWARF_QT_SOFTWARE=1 astro-dwarf`. WSL uses the software path by default; `ASTRO_DWARF_QT_SYSTEM=1` forces host graphics there. To force the old GLX path: `QT_XCB_GL_INTEGRATION=xcb_glx astro-dwarf`.
+Linux installers start with software Qt Quick and skip GLX/EGL so the window still opens on Hyper-V, WSL, and hosts that cannot initialize a GPU context. GTK module warnings such as `xapp-gtk3-module` are harmless. Stellarium Web then uses SwiftShader; it may stay dark if Chromium cannot create WebGL without a guest GPU. To try the host driver instead: `ASTRO_DWARF_QT_SYSTEM=1 astro-dwarf`.
 
 ## Run from source
 

@@ -20,6 +20,40 @@ def running_in_wsl() -> bool:
     return False
 
 
+def running_in_hypervisor() -> bool:
+    """True on Hyper-V and similar VMs where host GLX/EGL often abort Qt."""
+    tokens = (
+        "microsoft",
+        "hyper-v",
+        "hyperv",
+        "virtual machine",
+        "kvm",
+        "qemu",
+        "vmware",
+        "virtualbox",
+        "xen",
+        "bochs",
+    )
+    for candidate in (
+        Path("/sys/class/dmi/id/sys_vendor"),
+        Path("/sys/class/dmi/id/product_name"),
+        Path("/sys/devices/virtual/dmi/id/sys_vendor"),
+        Path("/sys/devices/virtual/dmi/id/product_name"),
+        Path("/sys/hypervisor/type"),
+    ):
+        try:
+            text = candidate.read_text(encoding="utf-8", errors="ignore").lower()
+        except OSError:
+            continue
+        if any(token in text for token in tokens):
+            return True
+    try:
+        cpu = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    return "hypervisor" in cpu and any(token in cpu for token in ("microsoft", "hyperv", "hyper-v", "kvm"))
+
+
 def running_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
@@ -30,15 +64,16 @@ def needs_software_qt(
     platform: str | None = None,
     frozen: bool | None = None,
     wsl: bool | None = None,
+    hypervisor: bool | None = None,
     system_qt: bool | None = None,
     software_qt: bool | None = None,
 ) -> bool:
-    """True when Qt Quick should use the software scene graph.
+    """True when Qt would abort without a software scene graph.
 
-    Stellarium Web needs a GL or EGL context. Frozen Linux builds use the
-    host driver via EGL (not GLX) so XWayland/NVIDIA FBConfig mismatch
-    cannot qFatal. WSL and ASTRO_DWARF_QT_SOFTWARE=1 keep software Qt Quick.
-    ASTRO_DWARF_QT_SYSTEM=1 keeps host graphics even on WSL.
+    Frozen Linux installers, WSL, and Hyper-V/QEMU guests often cannot
+    initialize GLX or EGL. Qt then qFatal("Could not initialize GLX") and
+    the window never opens. Skip platform GL there. ASTRO_DWARF_QT_SYSTEM=1
+    uses the host GPU instead.
     """
     os_name = os.name if os_name is None else os_name
     platform = sys.platform if platform is None else platform
@@ -56,20 +91,25 @@ def needs_software_qt(
         return True
     if wsl is None:
         wsl = running_in_wsl()
-    return bool(wsl)
+    if wsl:
+        return True
+    if hypervisor is None:
+        hypervisor = running_in_hypervisor()
+    if hypervisor:
+        return True
+    if frozen is None:
+        frozen = running_frozen()
+    return bool(frozen)
 
 
-# Stellarium Web is WebGL. --disable-gpu and QT_XCB_GL_INTEGRATION=none leave a
-# black atlas. Default GLX abort()s on many Manjaro/NVIDIA/XWayland hosts
-# ("Could not initialize GLX"). EGL does not qFatal when configs are missing.
+# Chromium still needs WebGL for Stellarium. --disable-gpu leaves a black atlas.
+# SwiftShader can draw without a host GPU. It cannot recover a missing Qt GL
+# context; QT_XCB_GL_INTEGRATION=none is required so the window still opens.
 SOFTWARE_WEBENGINE_FLAGS = (
     "--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox "
     "--enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader"
 )
-LINUX_WEBENGINE_FLAGS = (
-    "--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox "
-    "--use-gl=angle --use-angle=egl"
-)
+LINUX_WEBENGINE_FLAGS = "--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox"
 
 
 def _chromium_flag_tokens(raw: str | None) -> list[str]:
@@ -111,62 +151,30 @@ def _strip_readline_library_path() -> None:
         os.environ.pop("LD_LIBRARY_PATH", None)
 
 
-def _clear_blocked_gl_env(*, drop_software_quick: bool) -> None:
-    """Undo flags that prevent WebEngine from creating a GL context.
-
-    QSG_RHI_BACKEND=software is not a valid Qt RHI backend. Qt logs
-    'Unknown key software' and falls back to OpenGL, which then fails when
-    QT_XCB_GL_INTEGRATION=none has disabled both GLX and EGL.
-    """
-    if os.environ.get("QT_XCB_GL_INTEGRATION") == "none":
-        os.environ.pop("QT_XCB_GL_INTEGRATION", None)
+def apply_software_qt_env() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+    # none skips GLX/EGL init. xcb_egl/xcb_glx qFatal on Hyper-V and many
+    # NVIDIA/XWayland hosts ("Could not initialize GLX").
+    os.environ["QT_XCB_GL_INTEGRATION"] = "none"
+    os.environ.setdefault("QT_QUICK_BACKEND", "software")
     if os.environ.get("QSG_RHI_BACKEND", "").strip().lower() == "software":
         os.environ.pop("QSG_RHI_BACKEND", None)
-    if drop_software_quick and os.environ.get("QT_QUICK_BACKEND") == "software":
-        os.environ.pop("QT_QUICK_BACKEND", None)
-
-
-def apply_linux_gl_integration() -> None:
-    """Use xcb EGL instead of GLX so a missing FBConfig cannot abort the app.
-
-    Qt's GLX path calls qFatal("Could not initialize GLX"). The EGL
-    integration returns false and continues. Chromium is pointed at ANGLE
-    EGL so the SKY page does not reopen the broken GLX path. Set
-    QT_XCB_GL_INTEGRATION=xcb_glx to force the old path.
-    """
-    current = os.environ.get("QT_XCB_GL_INTEGRATION")
-    if current in (None, "", "none"):
-        os.environ["QT_XCB_GL_INTEGRATION"] = "xcb_egl"
-
-
-def apply_software_qt_env() -> None:
-    _clear_blocked_gl_env(drop_software_quick=False)
-    apply_linux_gl_integration()
-    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-    os.environ.setdefault("QT_QUICK_BACKEND", "software")
-    os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
     os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = SOFTWARE_WEBENGINE_FLAGS
 
 
 def configure_qt_display() -> None:
-    """Keep Linux WebEngine able to create GL/EGL for Stellarium Web."""
+    """Keep the Linux window opening when the guest has no usable GPU."""
     if sys.platform.startswith("linux"):
         _strip_readline_library_path()
         os.environ.setdefault("NO_AT_BRIDGE", "1")
         os.environ.setdefault("GTK_MODULES", "")
         os.environ.setdefault("GTK3_MODULES", "")
         os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
-        software = needs_software_qt()
-        _clear_blocked_gl_env(drop_software_quick=not software)
-        apply_linux_gl_integration()
-        if software:
-            apply_software_qt_env()
-        else:
-            flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS")
-            tokens = _chromium_flag_tokens(flags)
-            if (
-                not flags
-                or _has_disable_gpu(flags)
-                or "--use-angle=egl" not in tokens
-            ):
-                os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = LINUX_WEBENGINE_FLAGS
+    if needs_software_qt():
+        apply_software_qt_env()
+    elif sys.platform.startswith("linux"):
+        flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS")
+        if not flags or _has_disable_gpu(flags):
+            os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = LINUX_WEBENGINE_FLAGS
+        elif "--enable-webgl" not in _chromium_flag_tokens(flags):
+            os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --enable-webgl"
