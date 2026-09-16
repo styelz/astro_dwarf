@@ -35,10 +35,10 @@ def needs_software_qt(
 ) -> bool:
     """True when Qt Quick should use the software scene graph.
 
-    Stellarium Web needs a real GL or EGL context. Never disable xcb GL
-    integration for that reason. Frozen Linux builds use the host libGL, so
-    they follow the GPU path unless WSL or ASTRO_DWARF_QT_SOFTWARE=1.
-    ASTRO_DWARF_QT_SYSTEM=1 keeps host OpenGL even on WSL.
+    Stellarium Web needs a GL or EGL context. Frozen Linux builds use the
+    host driver via EGL (not GLX) so XWayland/NVIDIA FBConfig mismatch
+    cannot qFatal. WSL and ASTRO_DWARF_QT_SOFTWARE=1 keep software Qt Quick.
+    ASTRO_DWARF_QT_SYSTEM=1 keeps host graphics even on WSL.
     """
     os_name = os.name if os_name is None else os_name
     platform = sys.platform if platform is None else platform
@@ -60,14 +60,15 @@ def needs_software_qt(
 
 
 # Stellarium Web is WebGL. --disable-gpu and QT_XCB_GL_INTEGRATION=none leave a
-# black atlas (createProgram on a missing GL context). SwiftShader is only a
-# GPU-less fallback; Qt still needs GLX or EGL enabled to host WebEngine.
+# black atlas. Default GLX abort()s on many Manjaro/NVIDIA/XWayland hosts
+# ("Could not initialize GLX"). EGL does not qFatal when configs are missing.
 SOFTWARE_WEBENGINE_FLAGS = (
     "--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox "
     "--enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader"
 )
 LINUX_WEBENGINE_FLAGS = (
-    "--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox"
+    "--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox "
+    "--use-gl=angle --use-angle=egl"
 )
 
 
@@ -125,8 +126,22 @@ def _clear_blocked_gl_env(*, drop_software_quick: bool) -> None:
         os.environ.pop("QT_QUICK_BACKEND", None)
 
 
+def apply_linux_gl_integration() -> None:
+    """Use xcb EGL instead of GLX so a missing FBConfig cannot abort the app.
+
+    Qt's GLX path calls qFatal("Could not initialize GLX"). The EGL
+    integration returns false and continues. Chromium is pointed at ANGLE
+    EGL so the SKY page does not reopen the broken GLX path. Set
+    QT_XCB_GL_INTEGRATION=xcb_glx to force the old path.
+    """
+    current = os.environ.get("QT_XCB_GL_INTEGRATION")
+    if current in (None, "", "none"):
+        os.environ["QT_XCB_GL_INTEGRATION"] = "xcb_egl"
+
+
 def apply_software_qt_env() -> None:
     _clear_blocked_gl_env(drop_software_quick=False)
+    apply_linux_gl_integration()
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
     os.environ.setdefault("QT_QUICK_BACKEND", "software")
     os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
@@ -143,11 +158,15 @@ def configure_qt_display() -> None:
         os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
         software = needs_software_qt()
         _clear_blocked_gl_env(drop_software_quick=not software)
+        apply_linux_gl_integration()
         if software:
             apply_software_qt_env()
         else:
             flags = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS")
-            if not flags or _has_disable_gpu(flags):
+            tokens = _chromium_flag_tokens(flags)
+            if (
+                not flags
+                or _has_disable_gpu(flags)
+                or "--use-angle=egl" not in tokens
+            ):
                 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = LINUX_WEBENGINE_FLAGS
-            elif "--enable-webgl" not in _chromium_flag_tokens(flags):
-                os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --enable-webgl"
