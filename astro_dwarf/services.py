@@ -666,11 +666,17 @@ SKY_WEB_FOV_JS = r"""
     var ctl = window[CTL];
     return !!(ctl && ctl.liveEnabled);
   }
+  function clampLiveOpacity(op) {
+    op = Number(op);
+    if (!isFinite(op)) return 0.65;
+    if (op < 0) return 0;
+    if (op > 1) return 1;
+    return Math.round(op * 100) / 100;
+  }
   function applyLiveImages(el) {
     var ctl = window[CTL];
     var href = ctl && ctl.liveEnabled ? String(ctl.liveUrl || "") : "";
-    var op = Number(ctl && ctl.liveOpacity);
-    if (!(op > 0) || op > 1) op = 0.65;
+    var op = clampLiveOpacity(ctl && ctl.liveOpacity);
     var imgs = el ? el.querySelectorAll("image.astro-dwarf-live") : [];
     for (var i = 0; i < imgs.length; i++) {
       if (href) {
@@ -703,9 +709,7 @@ SKY_WEB_FOV_JS = r"""
     return livePaneIndex() > 0 || paneUrlKey() !== "";
   }
   function imageOpacity() {
-    var op = Number(window[CTL] && window[CTL].liveOpacity);
-    if (!(op > 0) || op > 1) op = 0.65;
-    return op;
+    return clampLiveOpacity(window[CTL] && window[CTL].liveOpacity);
   }
   function liveImageRect(x, y, w, h) {
     if (!liveEnabled() || !(w > 2) || !(h > 2)) return "";
@@ -1185,6 +1189,27 @@ SKY_WEB_FOV_JS = r"""
       ctl.menuY = e.clientY;
     }, true);
   }
+  function bindLiveOpacityWheel(ctl) {
+    if (!ctl || ctl.wheelBound) return;
+    ctl.wheelBound = true;
+    document.addEventListener("wheel", function(e) {
+      if (!e.ctrlKey || !onSky(e.target) || !ctl.liveEnabled) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === "function")
+        e.stopImmediatePropagation();
+      var delta = -Number(e.deltaY);
+      if (!isFinite(delta) || delta === 0) return;
+      if (e.deltaMode === 1) delta *= 16;
+      else if (e.deltaMode === 2) delta *= 120;
+      var next = clampLiveOpacity(ctl.liveOpacity + delta / 120 * 0.05);
+      if (next === clampLiveOpacity(ctl.liveOpacity)) return;
+      ctl.liveOpacity = next;
+      ctl.wheelOpacity = true;
+      ctl.opacityAt = Date.now();
+      try { applyLiveImages(document.getElementById("astro-dwarf-sky-overlay")); } catch (err) {}
+    }, {capture: true, passive: false});
+  }
   try {
     var stel = window._stel;
     if (!stel || !stel.core)
@@ -1212,6 +1237,7 @@ SKY_WEB_FOV_JS = r"""
     }
     bindDoubleClick(ctl);
     bindContextMenu(ctl);
+    bindLiveOpacityWheel(ctl);
     ctl.payload = p;
     ctl.payloadKey = [
       p.mode, p.label, p.color, p.fov_h, p.fov_v, p.columns, p.rows, p.overlap, p.south_up, p.position_angle,
@@ -1240,17 +1266,24 @@ SKY_WEB_LIVE_JS = r"""
   if (!ctl) return "loading";
   var on = !!enabled;
   var op = Number(opacity);
-  if (!(op > 0) || op > 1) op = 0.65;
+  if (!isFinite(op) || op < 0 || op > 1) op = 0.65;
   var href = on ? String(url || "") : "";
   var pane = Math.max(0, Number(livePane) || 0);
   var was = !!ctl.liveEnabled;
   var paneChanged = pane !== (Number(ctl.livePane) || 0);
   ctl.liveEnabled = on;
   ctl.liveUrl = href;
-  ctl.liveOpacity = op;
+  if (ctl.wheelOpacity) {
+    if (Math.abs(Number(ctl.liveOpacity) - op) < 0.005)
+      ctl.wheelOpacity = false;
+  } else {
+    ctl.liveOpacity = op;
+  }
   ctl.livePane = pane;
   var el = document.getElementById("astro-dwarf-sky-overlay");
   var imgs = el ? el.querySelectorAll("image.astro-dwarf-live") : [];
+  op = Number(ctl.liveOpacity);
+  if (!isFinite(op) || op < 0 || op > 1) op = 0.65;
   if (on !== was || paneChanged || (on && !imgs.length)) {
     ctl.lastKey = "";
     try { if (typeof ctl.draw === "function") ctl.draw(true); } catch (err) {}
@@ -1321,6 +1354,17 @@ SKY_WEB_DBLCLICK_POLL_JS = r"""
   if (!ctl || !ctl.trackAt) return "";
   var payload = JSON.stringify({at: ctl.trackAt});
   ctl.trackAt = 0;
+  return payload;
+})()
+"""
+
+
+SKY_WEB_OPACITY_POLL_JS = r"""
+(function(){
+  var ctl = window.__astroDwarfFovCtl;
+  if (!ctl || !ctl.opacityAt) return "";
+  var payload = JSON.stringify({opacity: Number(ctl.liveOpacity), at: ctl.opacityAt});
+  ctl.opacityAt = 0;
   return payload;
 })()
 """

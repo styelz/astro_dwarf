@@ -25,6 +25,7 @@ Item {
         property int mosaicPa: 180
         property bool mosaicPaSet: false
         property bool liveFovOverlay: false
+        property real liveFovOpacity: 0.65
         property bool dblclickTrack: false
     }
     function clampInt(value, lo, hi, fallback) {
@@ -32,6 +33,12 @@ Item {
         if (!isFinite(n))
             return fallback
         return Math.max(lo, Math.min(hi, Math.round(n)))
+    }
+    function clampOpacity(value) {
+        const n = Number(value)
+        if (!isFinite(n))
+            return 0.65
+        return Math.max(0, Math.min(1, Math.round(n * 100) / 100))
     }
     function restoreSkySettings() {
         columnsBox.value = skyPage.clampInt(skyStore.mosaicColumns, 1, 10, 1)
@@ -344,6 +351,7 @@ Item {
                     map.mosaicOverlap = Qt.binding(() => overlapBox.value / 100)
                     map.mosaicPa = Qt.binding(() => paBox.value)
                     map.liveOverlay = Qt.binding(() => skyStore.liveFovOverlay)
+                    map.liveOpacity = Qt.binding(() => skyPage.clampOpacity(skyStore.liveFovOpacity))
                 }
                 onStatusChanged: {
                     if (status === Loader.Error)
@@ -380,6 +388,9 @@ Item {
                         return
                     skyPage.withSkySources("track")
                 }
+                function onLiveOpacityNudged(opacity) {
+                    skyStore.liveFovOpacity = skyPage.clampOpacity(opacity)
+                }
             }
 
             TapHandler {
@@ -392,6 +403,7 @@ Item {
             SkyContextMenu {
                 id: skyMenu
                 overlayEnabled: skyStore.liveFovOverlay
+                overlayOpacity: skyPage.clampOpacity(skyStore.liveFovOpacity)
                 dblclickTrack: skyStore.dblclickTrack
                 hasTarget: skyPage.mapHasTarget
                 trackEnabled: !!(backend.selectedDevice && backend.selectedDevice.connected)

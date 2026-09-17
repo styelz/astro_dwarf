@@ -15,7 +15,8 @@ Item {
     property real mosaicOverlap: 0.2
     property real mosaicPa: 0
     property bool liveOverlay: false
-    readonly property real liveOpacity: 0.65
+    property real liveOpacity: 0.65
+    signal liveOpacityNudged(real opacity)
     readonly property string liveCamera: (backend.previewStacking || backend.previewResult)
         ? "tele"
         : (backend.selectedDevice.camera === "wide" ? "wide" : "tele")
@@ -142,6 +143,21 @@ Item {
             map.trackRequested()
         })
     }
+    function pollLiveOpacity() {
+        map.runJavaScript(backend.skyWebOpacityPollScript, result => {
+            const text = String(result || "").trim()
+            if (!text || text === "undefined" || text === "null")
+                return
+            try {
+                const data = JSON.parse(text)
+                const opacity = Number(data.opacity)
+                if (!isFinite(opacity))
+                    return
+                map.liveOpacityNudged(opacity)
+            } catch (err) {
+            }
+        })
+    }
     function markInitialReady() {
         if (map.initialLoadFailed)
             return
@@ -205,6 +221,7 @@ Item {
     onMosaicOverlapChanged: if (map.pageReady) map.applyFovOverlay()
     onMosaicPaChanged: if (map.pageReady) map.applyFovOverlay()
     onLiveOverlayChanged: if (map.pageReady) map.applyLiveOverlay()
+    onLiveOpacityChanged: if (map.pageReady && map.liveOverlay) map.applyLiveOverlay()
     onPageReadyChanged: {
         if (!map.pageReady) {
             map.hasSelectedTarget = false
@@ -318,6 +335,7 @@ Item {
         onTriggered: {
             map.pollContextMenu()
             map.pollTrackRequest()
+            map.pollLiveOpacity()
         }
     }
 }

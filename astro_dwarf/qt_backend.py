@@ -95,6 +95,7 @@ from .services import (
     parse_in_zone,
     SKY_WEB_CONTEXT_POLL_JS,
     SKY_WEB_DBLCLICK_POLL_JS,
+    SKY_WEB_OPACITY_POLL_JS,
     sky_web_fov_script,
     sky_web_live_script,
     sky_web_pane_script,
@@ -1967,6 +1968,10 @@ class AppBackend(QObject):
     @Property(str, constant=True)
     def skyWebDblclickPollScript(self) -> str:
         return SKY_WEB_DBLCLICK_POLL_JS
+
+    @Property(str, constant=True)
+    def skyWebOpacityPollScript(self) -> str:
+        return SKY_WEB_OPACITY_POLL_JS
 
     @Slot(str, bool, float, int, result=str)
     def skyWebLiveScript(self, data_url: str, enabled: bool, opacity: float = 0.65, live_pane: int = 0) -> str:

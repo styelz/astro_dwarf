@@ -7,6 +7,8 @@ HudMenu {
     popupType: Popup.Window
     implicitWidth: 280
     property bool overlayEnabled: false
+    property real overlayOpacity: 0.65
+    readonly property int overlayOpacityPct: Math.round(Math.max(0, Math.min(1, overlayOpacity)) * 100)
     property bool dblclickTrack: false
     property bool trackEnabled: false
     property bool hasTarget: false
@@ -19,8 +21,9 @@ HudMenu {
     HudMenuItem {
         text: skyMenu.overlayEnabled ? "Hide live stream on FOV" : "Overlay live stream on FOV"
         glyph: "\uE8B9"
-        trailingText: "65%"
-        accessibleDescription: "Paint the live camera stream inside the sky-map field of view at 65 percent opacity"
+        trailingText: skyMenu.overlayOpacityPct + "%"
+        accessibleDescription: "Paint the live camera stream inside the sky-map field of view. Hold Ctrl and scroll to change opacity, currently "
+                               + skyMenu.overlayOpacityPct + " percent"
         onTriggered: skyMenu.overlayToggled()
     }
     HudMenuItem {
