@@ -10,6 +10,8 @@ Item {
     property bool initialLoadDone: false
     property bool initialLoadFailed: false
     property bool hasSelectedTarget: false
+    property var selectedTarget: ({})
+    property string selectedKey: ""
     property int mosaicColumns: 1
     property int mosaicRows: 1
     property real mosaicOverlap: 0.2
@@ -27,26 +29,35 @@ Item {
     readonly property var engineItem: engineLoader.item
 
     function harvestLooksSelected(raw) {
+        return !!map.parseHarvest(raw)
+    }
+    function parseHarvest(raw) {
         if (raw === undefined || raw === null || raw === false)
-            return false
+            return null
         let data = raw
         if (typeof raw === "string") {
             const text = raw.trim()
             if (text === "" || text === "undefined" || text === "null")
-                return false
+                return null
             try {
                 data = JSON.parse(text)
             } catch (err) {
-                return false
+                return null
             }
         }
         if (typeof data !== "object" || data === null)
-            return false
+            return null
         if (data.error)
-            return false
+            return null
         const ra = Number(data.ra_hours)
         const dec = Number(data.dec_degrees)
-        return isFinite(ra) && isFinite(dec)
+        if (!isFinite(ra) || !isFinite(dec))
+            return null
+        return {
+            name: String(data.name || "").trim(),
+            ra_hours: ra,
+            dec_degrees: dec
+        }
     }
     function runJavaScript(script, callback) {
         const view = map.engineItem
@@ -56,7 +67,13 @@ Item {
     }
     function readSelectedTarget(callback) {
         map.runJavaScript(backend.skyWebHarvestScript, result => {
-            map.hasSelectedTarget = map.harvestLooksSelected(result)
+            const target = map.parseHarvest(result)
+            map.hasSelectedTarget = !!target
+            if (target) {
+                map.selectedTarget = target
+                map.selectedKey = target.name + "|" + Number(target.ra_hours).toFixed(5) + "|"
+                                  + Number(target.dec_degrees).toFixed(5)
+            }
             if (typeof callback === "function")
                 callback(result)
         })
@@ -192,6 +209,8 @@ Item {
             map.appliedSiteKey = ""
             map.overlayKey = ""
             map.hasSelectedTarget = false
+            map.selectedTarget = ({})
+            map.selectedKey = ""
             revealDelay.stop()
             return
         }
@@ -213,6 +232,8 @@ Item {
             map.pageReady = false
             map.documentReady = false
             map.hasSelectedTarget = false
+            map.selectedTarget = ({})
+            map.selectedKey = ""
             map.initialLoadFailed = true
         }
     }
@@ -225,6 +246,8 @@ Item {
     onPageReadyChanged: {
         if (!map.pageReady) {
             map.hasSelectedTarget = false
+            map.selectedTarget = ({})
+            map.selectedKey = ""
             return
         }
         if (map.liveOverlay)

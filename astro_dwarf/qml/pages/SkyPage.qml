@@ -80,7 +80,13 @@ Item {
                                        && !skyPage.mapInitialFailed
     readonly property string targetSubtitle: {
         const fov = backend.mosaicFovText
-        if (!skyPage.targetLocked) {
+        const live = (mapLoader.item && mapLoader.item.selectedKey)
+                     ? mapLoader.item.selectedTarget
+                     : null
+        const target = (live && isFinite(Number(live.ra_hours)) && isFinite(Number(live.dec_degrees)))
+                       ? live
+                       : (skyPage.targetLocked ? backend.skyTarget : null)
+        if (!target) {
             const clickHint = skyStore.dblclickTrack
                 ? "Select a target. Double-click to GOTO it and start tracking."
                 : (skyPage.mosaicGrid
@@ -88,9 +94,12 @@ Item {
                    : "Select a target in the sky map. Double-click to center it, then create a single session.")
             return clickHint + "  ·  " + fov
         }
-        const target = backend.skyTarget
-        return target.name + "  ·  RA " + Number(target.ra_hours).toFixed(3) + "h  DEC "
-               + Number(target.dec_degrees).toFixed(3) + "°  ·  " + fov
+        const name = String(target.name || "").trim()
+        const dec = Number(target.dec_degrees)
+        const decText = (dec >= 0 ? "+" : "") + dec.toFixed(3) + "°"
+        return (name ? name + "  ·  " : "")
+               + "RA " + Number(target.ra_hours).toFixed(3) + "h  DEC " + decText
+               + "  ·  " + fov
     }
     function sendHarvest(raw) {
         if (!skyPage.harvestBusy)

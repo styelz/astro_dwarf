@@ -820,29 +820,64 @@ SKY_WEB_FOV_JS = r"""
     if (!center) return "";
     var ra = Number(center.ra_hours), dec = Number(center.dec_degrees);
     if (!isFinite(ra) || !isFinite(dec)) return "";
-    return "RA " + ra.toFixed(3) + "h  DEC " + dec.toFixed(3) + "°";
+    return "RA " + ra.toFixed(3) + "h  DEC " + (dec >= 0 ? "+" : "") + dec.toFixed(3) + "°";
   }
-  function frameLabel(p, stel, pts, box) {
+  function payloadPointing(p) {
+    var ra = Number(p && p.target_ra_hours), dec = Number(p && p.target_dec_degrees);
+    if (isFinite(ra) && isFinite(dec))
+      return {ra_hours: ra, dec_degrees: dec};
+    var pane = p && p.panes && p.panes[0];
+    if (!pane) return null;
+    ra = Number(pane.ra_hours);
+    dec = Number(pane.dec_degrees);
+    return (isFinite(ra) && isFinite(dec)) ? {ra_hours: ra, dec_degrees: dec} : null;
+  }
+  function selectedPointing(stel) {
+    var obj = selectedSwe(stel);
+    if (!obj || !stel || !stel.observer) return null;
+    try {
+      var swe = obj;
+      if (typeof swe.getPosIcrf !== "function" && typeof obj.v === "number" && stel.SweObj) {
+        swe = new stel.SweObj(obj.v);
+        if (swe && swe.retain) swe.retain();
+      }
+      if (!swe || typeof swe.getPosIcrf !== "function")
+        return null;
+      return icrfToRaDec(stel, swe.getPosIcrf(stel.observer));
+    } catch (err) {
+      return null;
+    }
+  }
+  function currentPointing(p, stel) {
+    return payloadPointing(p) || selectedPointing(stel) || framePointing(stel);
+  }
+  function frameCaption(p, stel) {
     var head = String(p.label || "").replace(/\s*PA\s+[-+]?\d+(?:\.\d+)?°/i, "").replace(/\s+/g, " ").trim();
     var pa = Number(p && p.position_angle);
     if (!isFinite(pa)) pa = p && p.south_up ? 180 : 0;
-    var bits = [];
-    if (head) bits.push(head);
-    bits.push("PA " + (((pa % 360) + 360) % 360).toFixed(0) + "°");
-    var pos = formatSkyPos(framePointing(stel));
-    if (pos) bits.push(pos);
-    return bits.join("  ");
+    var spec = [];
+    if (head) spec.push(head);
+    spec.push("PA " + (((pa % 360) + 360) % 360).toFixed(0) + "°");
+    return {spec: spec.join("  "), pos: formatSkyPos(currentPointing(p, stel))};
   }
   function labelFontSize(span) {
     if (!(span > 0)) return 11;
     return Math.max(10, Math.min(12, span * 0.035));
   }
   function labelOnFrame(p, pts, stel, box) {
-    var label = frameLabel(p, stel, pts, box);
+    var cap = frameCaption(p, stel);
     var color = String(p.color || "#7ee0d0");
-    if (!label || !pts || !pts.length) return "";
+    if ((!cap.spec && !cap.pos) || !pts || !pts.length) return "";
     var size = labelFontSize(paneSpan(pts));
     var extra = outlineText(size);
+    function stacked(x, y, ang, ox, oy) {
+      var svg = "";
+      if (cap.pos)
+        svg += textAt(x + ox * 13, y + oy * 13, ang, cap.pos, color, extra, size);
+      if (cap.spec)
+        svg += textAt(x, y, ang, cap.spec, color, extra, size);
+      return svg;
+    }
     if (pts.length === 4 && pts[0] && pts[1] && pts[2] && pts[3]) {
       var top = edgeSpec(pts[0], pts[1]);
       var edge = invertedAngle(top.ang) ? edgeSpec(pts[2], pts[3]) : top;
@@ -850,8 +885,8 @@ SKY_WEB_FOV_JS = r"""
       var cy = (pts[0].y + pts[1].y + pts[2].y + pts[3].y) / 4;
       var dx = edge.mx - cx, dy = edge.my - cy;
       var len = Math.hypot(dx, dy) || 1;
-      return textAt(edge.mx + dx / len * 12, edge.my + dy / len * 12, uprightAngle(edge.ang),
-        label, color, extra, size);
+      var ox = dx / len, oy = dy / len;
+      return stacked(edge.mx + ox * 12, edge.my + oy * 12, uprightAngle(edge.ang), ox, oy);
     }
     var minX = Infinity, minY = Infinity;
     for (var i = 0; i < pts.length; i++) {
@@ -860,7 +895,7 @@ SKY_WEB_FOV_JS = r"""
       if (pts[i].y < minY) minY = pts[i].y;
     }
     if (!isFinite(minX) || !isFinite(minY)) return "";
-    return textAt(minX, minY - 4, 0, label, color, extra, size);
+    return stacked(minX, minY - 4, 0, 0, -1);
   }
   function mosaicOuterQuad(drawn) {
     var quads = [];
