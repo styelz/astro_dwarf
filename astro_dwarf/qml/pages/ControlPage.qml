@@ -582,7 +582,7 @@ Item {
                     accessibleName: "Live camera"
                     tooltip: (cameraPanel.miniBody
                         ? "Dwarf Mini has a single telephoto camera."
-                        : "Camera for live preview and capture.\nWide is fixed-focus; focus controls apply to Tele only.")
+                        : "Camera for capture and settings.\nSWAP only rearranges the live panes; it does not change this.\nWide is fixed-focus; focus controls apply to Tele only.")
                         + "\nSKY and mosaic frames use " + backend.mosaicFovText + "."
                     model: cameraPanel.miniBody ? ["Tele"] : ["Tele", "Wide"]
                     function syncFromDevice() {
@@ -938,6 +938,7 @@ Item {
                     Layout.fillHeight: true
                     Layout.preferredHeight: 0
                     property string previewDeviceId: backend.selectedDeviceId
+                    property string previewCamera: String((backend.selectedDevice && backend.selectedDevice.camera) || "tele")
                     property bool previewEnhance: true
                     property bool previewDeep: false
                     function syncPreviewEnhanceFromTheme() {
@@ -969,11 +970,11 @@ Item {
                             return backend.videoUrl || "Telescope connected — start the stream"
                         return "Connect a telescope to start the stream"
                     }
-                    readonly property bool preferredWide: backend.selectedDevice.camera === "wide"
+                    property bool mainWide: String((backend.selectedDevice && backend.selectedDevice.camera) || "tele") === "wide"
                     property bool pipEnabled: true
                     readonly property bool pipAvailable: backend.previewTelePlaying && backend.previewWidePlaying && !backend.previewStacking
-                    readonly property bool mainIsWide: backend.previewStacking ? false : preferredWide
-                    readonly property bool displayWide: backend.previewStacking ? false : (pipAvailable ? preferredWide : backend.previewWidePlaying)
+                    readonly property bool mainIsWide: backend.previewStacking ? false : mainWide
+                    readonly property bool displayWide: backend.previewStacking ? false : (pipAvailable ? mainWide : backend.previewWidePlaying)
                     readonly property bool mainPlaying: backend.previewResult || (displayWide ? backend.previewWidePlaying : backend.previewTelePlaying)
                     readonly property int stackCount: {
                         const n = Number(root.scopeTelemetry.capture_stacked)
@@ -1023,10 +1024,15 @@ Item {
                     function liveCamera(wide) {
                         return wide ? "wide" : "tele"
                     }
+                    function applyDeviceCamera(camera) {
+                        const choice = camera === "wide" ? "wide" : "tele"
+                        previewCamera = choice
+                        mainWide = choice === "wide"
+                    }
                     function swapViews() {
                         if (!pipAvailable)
                             return
-                        backend.setLiveCamera(backend.selectedDeviceId, preferredWide ? "tele" : "wide")
+                        mainWide = !mainWide
                     }
                     readonly property bool previewFailed: root.previewFailed
                     readonly property bool previewStartEnabled: backend.selectedDevice.connected && !root.scopeLinking && !root.scopeStopping && (!backend.previewActive || backend.previewPlaying || previewFailed)
@@ -1147,10 +1153,15 @@ Item {
                         target: backend
                         function onSelectedDeviceChanged() {
                             const deviceId = backend.selectedDeviceId
-                            if (deviceId === previewHost.previewDeviceId)
+                            const camera = String((backend.selectedDevice && backend.selectedDevice.camera) || "tele")
+                            if (deviceId !== previewHost.previewDeviceId) {
+                                previewHost.previewDeviceId = deviceId
+                                previewHost.applyDeviceCamera(camera)
+                                previewHost.stopPreview()
                                 return
-                            previewHost.previewDeviceId = deviceId
-                            previewHost.stopPreview()
+                            }
+                            if (camera !== previewHost.previewCamera)
+                                previewHost.applyDeviceCamera(camera)
                         }
                         function onPreviewPlayingChanged() {
                             previewHost.controlHovered = false
@@ -1312,7 +1323,7 @@ Item {
                                 rightPadding: 6
                                 buttonColor: Theme.fillActive
                                 foregroundColor: Theme.accent
-                                tooltip: "Swap main and picture-in-picture cameras"
+                                tooltip: "Swap main and picture-in-picture cameras.\nDoes not change capture, focus, or command availability."
                                 onClicked: previewHost.swapViews()
                             }
                             HudButton {
@@ -1579,7 +1590,7 @@ Item {
                                 model: [
                                     {key: "DOUBLE-CLICK WIDE", detail: "Slew TELE onto the target"},
                                     {key: "TRACK THEN STACK", detail: "Sidereal tracking, then capture"},
-                                    {key: "HOVER FOR CONTROLS", detail: "STOP, PIP, and SWAP — SWAP puts WIDE on the main view", extra: true}
+                                    {key: "HOVER FOR CONTROLS", detail: "STOP, PIP, and SWAP — SWAP only rearranges the live panes", extra: true}
                                 ]
                                 delegate: Column {
                                     required property string key
