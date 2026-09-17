@@ -7858,6 +7858,13 @@ class AppBackend(QObject):
         if session.device_id in self._active_sessions or worker.busy:
             self._toast("Another session is running on this telescope", "warning")
             return
+        recovered = (
+            session.id in self._recovered_sessions
+            or str(session.current_step or "") == "Recovered after restart"
+        )
+        if self._telemetry_capturing(session.device_id) and not recovered:
+            self._toast("Telescope is already stacking", "warning")
+            return
         if session.device_id != self._selected_device_id:
             self._toast(f"Starting on {device.name}", "info")
         # Keep the planned slot on the calendar. Actual start/end live on
@@ -8727,8 +8734,9 @@ class AppBackend(QObject):
             if session is not None:
                 tz = self._zone_for(device)
                 due = parse_in_zone(session.scheduled_start, tz) <= datetime.now(tz)
-            capturing = self._telemetry_capturing(device.id)
-            if capturing and live:
+            firmware_capturing = self._telemetry_capturing(device.id)
+            mosaic_capturing = firmware_capturing
+            if firmware_capturing and live:
                 telemetry = self._device_telemetry.get(device.id) or {}
                 target = str(
                     telemetry.get("capture_target") or telemetry.get("tracking_target") or ""
@@ -8738,11 +8746,11 @@ class AppBackend(QObject):
                     str(live.get("group") or ""),
                     target,
                 ):
-                    capturing = False
+                    mosaic_capturing = False
             action = live_mosaic_scheduler_action(
                 str((live or {}).get("phase") or ""),
                 bool(live and live.get("worker_running")),
-                capturing,
+                mosaic_capturing,
                 due,
             )
             if action == "wait":
@@ -8752,6 +8760,8 @@ class AppBackend(QObject):
                 continue
             if action == "yield":
                 self._discard_live_mosaic(device.id)
+            if firmware_capturing:
+                continue
             if session is None or not due:
                 continue
             if session.id in self._recovered_sessions:

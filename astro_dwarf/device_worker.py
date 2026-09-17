@@ -1857,7 +1857,6 @@ def _goto_wait_complete(
     tracking_at_start: bool,
     elapsed_s: float,
     seen_tracking_drop: bool = False,
-    goto_finished: bool = False,
 ) -> bool:
     """True when THIS goto has handed off to sidereal tracking.
 
@@ -1865,16 +1864,15 @@ def _goto_wait_complete(
     Mosaic stacks keep sidereal tracking latched, so a new 11002 can report
     goto_state=running while that old tracking is still on. That is the slew
     starting, not a handoff — every later pane would stack the same field.
-    Require tracking to have dropped, or this GOTO itself to go idle/stopped.
+    Require tracking to have dropped. A finished GOTO while leftover
+    sidereal tracking never dropped is the previous pointing, not a handoff.
     """
     if not tracking:
         return False
-    if seen_goto_busy:
-        if tracking_at_start and not seen_tracking_drop and not goto_finished:
-            return False
-        return True
-    if tracking_at_start:
+    if tracking_at_start and not seen_tracking_drop:
         return False
+    if seen_goto_busy:
+        return True
     return elapsed_s > 5.0
 
 
@@ -1943,14 +1941,12 @@ def _await_operation(
         if goto and not tracking:
             seen_tracking_drop = True
         elapsed = time.monotonic() - since
-        goto_finished = bool(goto and seen_running and state in ("idle", "stopped"))
         if goto and _goto_wait_complete(
             seen_goto_busy=seen_running,
             tracking=tracking,
             tracking_at_start=tracking_at_start,
             elapsed_s=elapsed,
             seen_tracking_drop=seen_tracking_drop,
-            goto_finished=goto_finished,
         ):
             return
         if goto and seen_running and state in ("idle", "stopped") and not logged_tracking_wait:
@@ -2560,8 +2556,7 @@ def _stop_tracking_for_goto(label: str = "Stopping leftover tracking before GOTO
             if sdk_call("stop_goto") is False:
                 log("Stop tracking still did not confirm; waiting for leftover tracking to drop", "warning")
     except Exception as exc:
-        log(f"Stop tracking skipped: {exc}", "debug")
-        return
+        log(f"Stop tracking skipped: {exc}", "warning")
     deadline = time.monotonic() + 40.0
     while time.monotonic() < deadline:
         if _stop.is_set():
@@ -2573,7 +2568,10 @@ def _stop_tracking_for_goto(label: str = "Stopping leftover tracking before GOTO
             _wait_seconds(_CAPTURE_BUSY_RETRY_S, "Waiting after stop GOTO")
             return
         time.sleep(0.25)
-    log("Previous GOTO/tracking is still winding down; sending the next slew anyway", "warning")
+    raise RuntimeError(
+        "Could not stop leftover tracking before the next slew. "
+        "Retry this pane so later panes do not stack the same field."
+    )
 
 
 def _release_stack_for_goto() -> None:

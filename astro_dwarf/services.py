@@ -2340,12 +2340,12 @@ def live_mosaic_scheduler_action(
     worker that still owns the telescope, or a stack the firmware is still
     exposing, blocks the next due session.
     """
-    if not str(phase or "").strip():
-        return "idle"
     if worker_running:
         return "wait"
     if capturing:
-        return "resume"
+        return "resume" if str(phase or "").strip() else "wait"
+    if not str(phase or "").strip():
+        return "idle"
     if session_due:
         return "yield"
     return "idle"
