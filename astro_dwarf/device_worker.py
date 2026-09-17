@@ -1827,6 +1827,9 @@ _V3_OPERATION_WAITS: dict[str, tuple[int, str | None, bool, float]] = {
     "goto": (11002, "goto_state", False, 300.0),
     "goto_solar": (11003, "goto_state", False, 300.0),
 }
+# Polar / sparse fields can sit in ASTRO_STATE_PLATE_SOLVING past the 5 min
+# GOTO budget. Keep waiting while telemetry still shows running/solving.
+_GOTO_SOLVE_TIMEOUT_S = 600.0
 _NON_FATAL_REPLIES = {
     11000: {-11500},  # plate solving retry during calibration
     11002: {-11500},
@@ -1840,6 +1843,11 @@ _GOTO_STARTED = {"running", "solving"}
 
 def _goto_started(state: Any) -> bool:
     return str(state or "") in _GOTO_STARTED
+
+
+def _goto_keep_waiting_for_solve(state: Any, elapsed_s: float, timeout_s: float) -> bool:
+    """True when the slew is still working past the normal GOTO budget."""
+    return bool(_goto_started(state) and elapsed_s > timeout_s and elapsed_s < _GOTO_SOLVE_TIMEOUT_S)
 
 
 def _goto_wait_complete(
@@ -1864,7 +1872,13 @@ def _goto_wait_complete(
     return elapsed_s > 5.0
 
 
-def _await_operation(name: str, operation: str, since: float) -> None:
+def _await_operation(
+    name: str,
+    operation: str,
+    since: float,
+    *,
+    ignore_codes: set[int] | frozenset[int] | None = None,
+) -> None:
     """Block until a fire-and-forget V3 operation finishes, fails or times out.
 
     Dwarf 3 / Mini start calibration, autofocus, polar alignment and GOTO
@@ -1873,26 +1887,42 @@ def _await_operation(name: str, operation: str, since: float) -> None:
     is acknowledged up front, and state notifications report
     running → solving → idle/stopped. GOTO then has to hand off to
     tracking (same as astro_dwarf_session) before capture can start.
+
+    ``ignore_codes`` is for joining a slew that is already running: a later
+    11002 FUNCTION_BUSY must not abort the wait for the first GOTO.
     """
     if _tap is None:
         return
     reply_cmd, state_key, done_on_reply, timeout = _V3_OPERATION_WAITS[operation]
+    extra_ok = ignore_codes or set()
     goto = operation in ("goto", "goto_solar")
     snapshot = _tap.snapshot()
     state = snapshot.get(state_key) if state_key else None
     seen_running = _goto_started(state) if goto else state in _BUSY_ASTRO
     tracking_at_start = snapshot.get("tracking_state") == "running"
     code = _tap.response_after(reply_cmd, since)
-    if code is not None and code != 0 and code not in _NON_FATAL_REPLIES.get(reply_cmd, set()):
+    if (
+        code is not None
+        and code != 0
+        and code not in _NON_FATAL_REPLIES.get(reply_cmd, set())
+        and code not in extra_ok
+    ):
         raise RuntimeError(f"{name} failed: {_error_name(code)}")
     log(f"{name} started; waiting for the telescope to finish…")
     logged_tracking_wait = False
+    logged_solve_extend = False
+    last_heartbeat = 0.0
     while True:
         if _stop.is_set():
             raise InterruptedError("Session stopped")
         snapshot = _tap.snapshot()
         code = _tap.response_after(reply_cmd, since)
-        if code is not None and code != 0 and code not in _NON_FATAL_REPLIES.get(reply_cmd, set()):
+        if (
+            code is not None
+            and code != 0
+            and code not in _NON_FATAL_REPLIES.get(reply_cmd, set())
+            and code not in extra_ok
+        ):
             raise RuntimeError(f"{name} failed: {_error_name(code)}")
         if code == 0 and done_on_reply:
             return
@@ -1916,7 +1946,24 @@ def _await_operation(name: str, operation: str, since: float) -> None:
             logged_tracking_wait = True
         if seen_running and state in ("idle", "stopped") and not goto:
             return
+        if goto and seen_running and elapsed - last_heartbeat >= _CAPTURE_HEARTBEAT_S:
+            label = "plate-solving" if state == "solving" else (str(state or "slewing"))
+            log(f"Still slewing · {label} · {int(elapsed)}s")
+            last_heartbeat = elapsed
         if elapsed > timeout:
+            if _goto_keep_waiting_for_solve(state, elapsed, timeout):
+                if not logged_solve_extend:
+                    log(
+                        f"{name} still plate-solving after {int(timeout)} s; continuing to wait…",
+                        "notice",
+                    )
+                    logged_solve_extend = True
+                time.sleep(0.5)
+                continue
+            if goto and _goto_started(state):
+                raise RuntimeError(
+                    f"{name} timed out after {int(elapsed)} s while plate-solving"
+                )
             if goto and not tracking:
                 raise RuntimeError(
                     f"{name} finished but tracking did not start. "
@@ -2550,13 +2597,27 @@ def _camera_closed_error(exc: BaseException) -> bool:
     return "TELE_CLOSED" in text or str(CODE_CAMERA_TELE_CLOSED) in text
 
 
+def _goto_never_started_error(exc: BaseException) -> bool:
+    """True only for the 30s idle-after-11002 case, not tracking timeouts.
+
+    'GOTO pane N finished but tracking did not start' also contains those
+    words. Treating that as a closed camera reopens tele and sends another
+    11002 while plate-solving is still running.
+    """
+    return str(exc).strip().lower().endswith("did not start")
+
+
+def _goto_solve_timeout_error(exc: BaseException) -> bool:
+    return "while plate-solving" in str(exc).lower()
+
+
 def _goto_needs_camera_reopen(exc: BaseException) -> bool:
     """True when the next pane slew failed because tele is still closed.
 
     A finished stack often accepts 11002 with code 0, then never leaves
     idle. That surfaces as 'did not start', not TELE_CLOSED.
     """
-    return _camera_closed_error(exc) or "did not start" in str(exc).lower()
+    return _camera_closed_error(exc) or _goto_never_started_error(exc)
 
 
 def _reopen_astro_camera() -> None:
@@ -3761,6 +3822,7 @@ def _goto_target(
         _stop_tracking_for_goto(f"Stopping tracking before {name}")
     deadline = time.monotonic() + _GOTO_BUSY_TIMEOUT_S
     camera_retried = False
+    solve_retried = False
     while True:
         started = time.monotonic()
         try:
@@ -3774,9 +3836,10 @@ def _goto_target(
                 raise
             if _goto_needs_camera_reopen(exc) and not camera_retried:
                 camera_retried = True
+                deadline = time.monotonic() + _GOTO_BUSY_TIMEOUT_S
                 log(f"{name}: tele camera was closed or the slew never started; opening it and retrying", "warning")
                 _reopen_astro_camera()
-                if "did not start" in str(exc).lower():
+                if _goto_never_started_error(exc):
                     unwind = time.monotonic() + 15.0
                     while time.monotonic() < unwind:
                         if _stop.is_set():
@@ -3786,9 +3849,26 @@ def _goto_target(
                             break
                         time.sleep(0.25)
                 continue
+            if _goto_solve_timeout_error(exc) and not solve_retried:
+                solve_retried = True
+                deadline = time.monotonic() + _GOTO_BUSY_TIMEOUT_S
+                log(f"{name}: plate-solving stalled; stopping and retrying", "warning")
+                _stop_tracking_for_goto(f"Stopping stalled slew before retrying {name}")
+                continue
             if _engine_busy_error(exc):
+                snapshot = _tap.snapshot() if _tap is not None else {}
+                if v3_model and _goto_started(snapshot.get("goto_state")):
+                    log(f"{name}: a slew is already running; waiting for it to finish", "notice")
+                    _await_operation(
+                        name,
+                        "goto",
+                        started,
+                        ignore_codes=_CAPTURE_BUSY_CODES,
+                    )
+                    return
                 if not released:
                     released = True
+                    deadline = time.monotonic() + _GOTO_BUSY_TIMEOUT_S
                     log(f"{name}: astro engine still busy; closing leftover capture and retrying", "warning")
                     _release_stack_for_goto()
                     continue

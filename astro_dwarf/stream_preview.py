@@ -344,6 +344,7 @@ class MosaicFrames(QObject):
         super().__init__(parent)
         self._lock = threading.Lock()
         self._images: dict[int, QImage] = {}
+        self._frozen: set[int] = set()
         self._columns = 1
         self._rows = 1
         self._current = 0
@@ -385,9 +386,6 @@ class MosaicFrames(QObject):
                 or active != self._active
                 or group != self._group
             )
-            if group and group != self._group:
-                self._images = {}
-                changed = True
             self._columns = columns
             self._rows = rows
             self._current = current
@@ -396,7 +394,21 @@ class MosaicFrames(QObject):
         if changed:
             self.changed.emit()
 
-    def put(self, index: int, image: QImage) -> None:
+    def frozen(self, index: int) -> bool:
+        with self._lock:
+            return int(index or 0) in self._frozen
+
+    def freeze(self, index: int) -> None:
+        try:
+            pane = int(index)
+        except (TypeError, ValueError):
+            return
+        if pane < 1:
+            return
+        with self._lock:
+            self._frozen.add(pane)
+
+    def put(self, index: int, image: QImage, *, replace_frozen: bool = False) -> None:
         try:
             pane = int(index)
         except (TypeError, ValueError):
@@ -405,6 +417,8 @@ class MosaicFrames(QObject):
             return
         shown = image.copy()
         with self._lock:
+            if pane in self._frozen and not replace_frozen:
+                return
             current = self._images.get(pane)
             if current is not None and not current.isNull() and current.cacheKey() == shown.cacheKey():
                 return
@@ -421,9 +435,10 @@ class MosaicFrames(QObject):
 
     def clear(self) -> None:
         with self._lock:
-            if not self._images and not self._active and self._current == 0:
+            if not self._images and not self._frozen and not self._active and self._current == 0:
                 return
             self._images = {}
+            self._frozen = set()
             self._current = 0
             self._active = False
             self._group = ""
@@ -435,6 +450,7 @@ class MosaicLiveItem(QQuickPaintedItem):
 
     playingChanged = Signal()
     liveActiveChanged = Signal()
+    livePaneChanged = Signal()
     cameraChanged = Signal()
     accentChanged = Signal()
     southUpChanged = Signal()
@@ -448,6 +464,7 @@ class MosaicLiveItem(QQuickPaintedItem):
         self.setAntialiasing(False)
         self._playing = False
         self._live_active = False
+        self._live_pane = 0
         self._camera = "tele"
         self._accent = QColor(126, 224, 208)
         self._south_up = False
@@ -484,6 +501,24 @@ class MosaicLiveItem(QQuickPaintedItem):
         self.update()
 
     liveActive = Property(bool, getLiveActive, setLiveActive, notify=liveActiveChanged)
+
+    def getLivePane(self) -> int:
+        return self._live_pane
+
+    def setLivePane(self, value: int) -> None:
+        try:
+            pane = int(value or 0)
+        except (TypeError, ValueError):
+            pane = 0
+        if pane < 0:
+            pane = 0
+        if pane == self._live_pane:
+            return
+        self._live_pane = pane
+        self.livePaneChanged.emit()
+        self.update()
+
+    livePane = Property(int, getLivePane, setLivePane, notify=livePaneChanged)
 
     def getCamera(self) -> str:
         return self._camera
@@ -618,7 +653,7 @@ class MosaicLiveItem(QQuickPaintedItem):
                 continue
             painter.fillRect(cell, QColor(0, 0, 0, 160))
             image = images.get(index) or QImage()
-            if index == current and self._live_active and not live_image.isNull():
+            if index == self._live_pane and self._live_active and not live_image.isNull():
                 image = live_image
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
             else:
@@ -630,7 +665,8 @@ class MosaicLiveItem(QQuickPaintedItem):
                 painter.setPen(self._accent)
                 painter.drawText(cell.toRect(), Qt.AlignmentFlag.AlignCenter, str(index))
             border = QPen(self._accent)
-            border.setWidth(2 if index == current else 1)
+            highlight = self._live_pane if self._live_pane >= 1 else current
+            border.setWidth(2 if index == highlight else 1)
             painter.setPen(border)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(cell.adjusted(0.5, 0.5, -0.5, -0.5))

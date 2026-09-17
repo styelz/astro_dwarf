@@ -1246,7 +1246,7 @@ Item {
                         id: mosaicFrame
                         anchors.fill: parent
                         visible: previewHost.mosaicPreview
-                        playing: previewHost.mosaicPreview && (previewHost.mainPlaying || previewHost.awaitingFirstStack || backend.previewResult)
+                        playing: previewHost.mosaicPreview
                         camera: "tele"
                         accent: Theme.accent
                     }
