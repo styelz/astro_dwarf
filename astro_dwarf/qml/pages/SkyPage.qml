@@ -345,7 +345,7 @@ Item {
                 readonly property bool nativeMapOverlay: Qt.platform.os === "windows"
                                                            || Qt.platform.os === "osx"
                 readonly property bool nativeMapVisible: !mapLoader.nativeMapOverlay
-                    || (skyPage.mapLive && skyPage.mapInitialReady)
+                    || (skyPage.mapLive && skyPage.mapInitialReady && !root.appModalOpen)
                 width: parent.width - 2
                 height: parent.height - 2
                 x: mapLoader.nativeMapVisible ? 1 : -4096

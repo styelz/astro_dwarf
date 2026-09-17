@@ -52,6 +52,12 @@ ApplicationWindow {
     readonly property int skyPageIndex: 5
     readonly property int settingsPageIndex: 6
     readonly property alias skyToolsEnabled: layoutSettings.skyToolsEnabled
+    // Native sky map paints above QML. Park it while these dialogs are open.
+    readonly property bool appModalOpen: locationDialog.visible
+        || settingsLeaveDialog.visible
+        || confirmDialog.visible
+        || scheduleTemplateDialog.visible
+        || sessionDialog.visible
     property real joySpeed: 1
     readonly property real joyMin: 0.004
     readonly property real mappedJoySpeed: {
