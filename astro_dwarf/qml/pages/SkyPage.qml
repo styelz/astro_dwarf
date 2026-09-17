@@ -16,14 +16,14 @@ Item {
     property var pendingLockTarget: null
     property string pendingAction: ""
     property bool applyingPa: false
-    readonly property int defaultPa: backend.mosaicSouthUp ? 180 : 0
+    readonly property int defaultPa: 0
     Settings {
         id: skyStore
         category: "sky"
         property int mosaicColumns: 1
         property int mosaicRows: 1
         property int mosaicOverlap: 20
-        property int mosaicPa: 180
+        property int mosaicPa: 0
         property bool mosaicPaSet: false
         property bool liveFovOverlay: false
         property real liveFovOpacity: 0.65
@@ -237,11 +237,19 @@ Item {
         }
     }
 
+    function requestMapWarmup() {
+        if (!root.skyToolsEnabled || !skyPage.webReady)
+            return
+        skyPage.mapKeepAlive = true
+    }
+
     Connections {
         target: root
         function onSkyToolsEnabledChanged() {
             if (!root.skyToolsEnabled)
                 skyPage.mapKeepAlive = false
+            else
+                Qt.callLater(skyPage.requestMapWarmup)
             backend.setStellariumRcWatch(root.skyToolsEnabled)
         }
     }
@@ -249,6 +257,7 @@ Item {
     Component.onCompleted: {
         skyPage.restoreSkySettings()
         backend.setStellariumRcWatch(root.skyToolsEnabled)
+        Qt.callLater(skyPage.requestMapWarmup)
     }
     Component.onDestruction: backend.setStellariumRcWatch(false)
 
@@ -261,10 +270,7 @@ Item {
 
     readonly property string mosaicHint: "Pane preview is a Telescopius-style camera frame for "
                                          + backend.mosaicFovText
-                                         + " (PA east of north; default "
-                                         + skyPage.defaultPa + "° "
-                                         + (backend.mosaicSouthUp ? "S-up" : "N-up")
-                                         + " from this telescope, or its stored camera offset)."
+                                         + " (PA east of north; default 0° N-up, or this telescope's stored camera offset)."
 
     ColumnLayout {
         anchors.fill: parent
@@ -342,12 +348,12 @@ Item {
                     from: 0
                     to: 359
                     wrap: true
-                    value: 180
+                    value: 0
                     implicitHeight: Theme.compactControlHeight
                     implicitWidth: 78
                     Layout.preferredWidth: 78
                     accessibleName: "Camera position angle east of north"
-                    tooltip: "Camera position angle, east of north, stored on this telescope. 0° is N-up, 180° is S-up. Use a measured offset such as 184° if the cameras are not square south-up."
+                    tooltip: "Camera position angle, east of north, stored on this telescope. 0° is N-up. Use 180° only if the stacked image is south-up on the sky chart."
                     textFromValue: (value, locale) => String(value) + "°"
                     valueFromText: (text, locale) => {
                         const n = parseInt(String(text).replace("°", "").trim(), 10)
@@ -422,20 +428,41 @@ Item {
             border.color: Theme.outline
             clip: true
 
+            Item {
+                id: mapSlot
+                anchors.fill: parent
+                anchors.margins: 1
+            }
+
             Loader {
                 id: mapLoader
                 // Native WebView2 / WKWebView paint above QML and ignore overlay z-order.
-                // Keep the native view full-size so it can load, but park it outside the
-                // window until Stellarium JS is ready. Linux uses Qt WebEngine in the
-                // scene graph, so the boot overlay can cover it without parking.
+                // The Sky page is 0×0 while another tab is current, so this view lives
+                // on the window and keeps a real size while parked. Creating WebView2
+                // at 0×0 is what previously left a black atlas after opening SKY.
+                parent: root.contentItem
                 readonly property bool nativeMapOverlay: Qt.platform.os === "windows"
                                                            || Qt.platform.os === "osx"
-                readonly property bool nativeMapVisible: !mapLoader.nativeMapOverlay
-                    || (skyPage.mapLive && skyPage.mapInitialReady && !root.appModalOpen)
-                width: parent.width - 2
-                height: parent.height - 2
-                x: mapLoader.nativeMapVisible ? 1 : -4096
-                y: 1
+                readonly property bool nativeMapVisible: skyPage.mapLive
+                    && !root.appModalOpen
+                    && mapSlot.width > 1
+                    && (!mapLoader.nativeMapOverlay || skyPage.mapInitialReady)
+                readonly property real layoutTick: root.width + root.height + root.currentPage
+                    + mapSlot.width + mapSlot.height
+                width: mapSlot.width > 1 ? mapSlot.width : Math.max(320, root.width - 24)
+                height: mapSlot.height > 1 ? mapSlot.height : Math.max(220, root.height - 180)
+                x: {
+                    void mapLoader.layoutTick
+                    if (!mapLoader.nativeMapVisible)
+                        return -4096
+                    return mapSlot.mapToItem(root.contentItem, 0, 0).x
+                }
+                y: {
+                    void mapLoader.layoutTick
+                    if (!mapLoader.nativeMapVisible)
+                        return 1
+                    return mapSlot.mapToItem(root.contentItem, 0, 0).y
+                }
                 active: skyPage.webReady && root.skyToolsEnabled && (skyPage.mapLive || skyPage.mapKeepAlive)
                 source: Qt.resolvedUrl("SkyWebView.qml")
                 onLoaded: {

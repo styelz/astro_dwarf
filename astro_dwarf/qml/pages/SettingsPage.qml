@@ -739,9 +739,9 @@ Item {
                                 id: mosaicPaField
                                 Layout.preferredWidth: settingsPage.numberWidth
                                 accessibleName: "Camera position angle east of north"
-                                placeholderText: backend.mosaicSouthUp ? "180" : "0"
+                                placeholderText: "0"
                             }
-                            FieldHint { text: "Camera rotation east of north for SKY mosaics on this telescope. Blank uses 180° south-up or 0° north-up from latitude. Store a measured offset such as 184° if the cameras are not square." }
+                            FieldHint { text: "Camera rotation east of north for SKY mosaics on this telescope. Blank is 0° north-up in both hemispheres. Set 180° only if the stacked image is south-up on the sky chart." }
                         }
                     }
 
