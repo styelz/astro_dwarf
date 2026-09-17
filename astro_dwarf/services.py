@@ -924,6 +924,28 @@ SKY_WEB_FOV_JS = r"""
     }
     return [at(minU, minV), at(maxU, minV), at(maxU, maxV), at(minU, maxV)];
   }
+  function mosaicCenterFovQuad(drawn) {
+    var quads = [];
+    (drawn || []).forEach(function(item) {
+      if (item && item.quad && item.quad.length === 4)
+        quads.push(item.quad);
+    });
+    if (!quads.length) return [];
+    if (quads.length === 1) return quads[0];
+    var q0 = quads[0];
+    var ux = (q0[1].x - q0[0].x) / 2, uy = (q0[1].y - q0[0].y) / 2;
+    var vx = (q0[3].x - q0[0].x) / 2, vy = (q0[3].y - q0[0].y) / 2;
+    var outer = mosaicOuterQuad(drawn);
+    if (outer.length !== 4) return q0;
+    var cx = (outer[0].x + outer[1].x + outer[2].x + outer[3].x) / 4;
+    var cy = (outer[0].y + outer[1].y + outer[2].y + outer[3].y) / 4;
+    return [
+      {x: cx - ux - vx, y: cy - uy - vy},
+      {x: cx + ux - vx, y: cy + uy - vy},
+      {x: cx + ux + vx, y: cy + uy + vy},
+      {x: cx - ux + vx, y: cy - uy + vy}
+    ];
+  }
   function paneSpan(quad) {
     if (!quad || quad.length < 4) return 0;
     var w = Math.hypot(quad[1].x - quad[0].x, quad[1].y - quad[0].y);
@@ -1026,7 +1048,7 @@ SKY_WEB_FOV_JS = r"""
         + '" height="' + totalH.toFixed(1) + '" ' + outerStroke(color) + '/>';
     }
     if (!mosaicUsesPaneImages())
-      svg += liveImageRect(originX, originY, totalW, totalH);
+      svg += liveImageRect((box.width - size.w) / 2, (box.height - size.h) / 2, size.w, size.h);
     svg += upTick(box.width / 2, originY, color);
     paintSvg(el, box, rotateGroup(box, p, svg)
       + labels
@@ -1072,7 +1094,7 @@ SKY_WEB_FOV_JS = r"""
         svg += paneFillQuad(item.quad, item.index);
       });
     } else if (mosaic) {
-      svg += liveImageQuad(mosaicOuterQuad(drawn));
+      svg += liveImageQuad(mosaicCenterFovQuad(drawn));
     } else if (drawn[0] && drawn[0].quad) {
       svg += liveImageQuad(drawn[0].quad);
     }
@@ -1403,6 +1425,107 @@ SKY_WEB_OPACITY_POLL_JS = r"""
   return payload;
 })()
 """
+
+
+SKY_WEB_VIEW_POLL_JS = r"""
+(function(){
+  try {
+    var stel = window._stel;
+    if (!stel || !stel.core || !stel.observer) return "";
+    var o = stel.observer;
+    var fov = Number(stel.core.fov);
+    var ra = null, dec = null;
+    var ctl = window.__astroDwarfFovCtl;
+    var pos = ctl && ctl.heldPos;
+    if (pos) {
+      ra = Number(pos.ra_hours);
+      dec = Number(pos.dec_degrees);
+    }
+    if (!(isFinite(ra) && isFinite(dec)) && typeof stel.convertFrame === "function") {
+      var dirs = [[0, 0, -1, 0], [0, 0, 1, 0], [0, 0, -1], [0, 0, 1]];
+      var frames = ["ICRF", "CIRS", "JNOW"];
+      for (var f = 0; f < frames.length && !(isFinite(ra) && isFinite(dec)); f++) {
+        for (var i = 0; i < dirs.length && !(isFinite(ra) && isFinite(dec)); i++) {
+          try {
+            var icrf = stel.convertFrame(stel.observer, "VIEW", frames[f], dirs[i]);
+            if (!icrf) continue;
+            var x = Number(icrf[0]), y = Number(icrf[1]), z = Number(icrf[2]);
+            if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
+            var n = Math.hypot(x, y, z) || 1;
+            ra = ((Math.atan2(y / n, x / n) * 12 / Math.PI) % 24 + 24) % 24;
+            dec = Math.asin(Math.max(-1, Math.min(1, z / n))) * 180 / Math.PI;
+          } catch (err) {}
+        }
+      }
+    }
+    if (!(isFinite(ra) && isFinite(dec))) return "";
+    return JSON.stringify({
+      ra_hours: ra,
+      dec_degrees: dec,
+      fov: fov,
+      yaw: Number(o.yaw),
+      pitch: Number(o.pitch),
+      roll: Number(o.roll)
+    });
+  } catch (err) {
+    return "";
+  }
+})()
+"""
+
+
+SKY_WEB_VIEW_APPLY_JS = r"""
+(function(p) {
+  try {
+    var stel = window._stel;
+    if (!stel || !stel.core || !stel.observer) return "loading";
+    var fov = Number(p && p.fov);
+    if (fov > 0 && isFinite(fov))
+      stel.core.fov = fov;
+    var pointed = false;
+    var raHours = Number(p && p.ra_hours);
+    var decDeg = Number(p && p.dec_degrees);
+    if (isFinite(raHours) && isFinite(decDeg)) {
+      var ra = ((raHours % 24) + 24) % 24 * Math.PI / 12;
+      var dec = decDeg * Math.PI / 180;
+      var c = Math.cos(dec);
+      var xyz = [c * Math.cos(ra), c * Math.sin(ra), Math.sin(dec), 0];
+      if (typeof stel.lookAt === "function") {
+        try { stel.lookAt(ra, dec); pointed = true; } catch (err) {}
+      }
+      var frames = ["OBSERVED", "CIRS", "JNOW"];
+      for (var i = 0; i < frames.length && !pointed; i++) {
+        try {
+          if (typeof stel.convertFrame !== "function") break;
+          var obs = stel.convertFrame(stel.observer, "ICRF", frames[i], xyz);
+          if (!obs) continue;
+          var x = Number(obs[0]), y = Number(obs[1]), z = Number(obs[2]);
+          if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
+          stel.observer.yaw = Math.atan2(x, y);
+          stel.observer.pitch = Math.asin(Math.max(-1, Math.min(1, z)));
+          pointed = true;
+        } catch (err) {}
+      }
+    }
+    if (!pointed) {
+      var yaw = Number(p && p.yaw), pitch = Number(p && p.pitch), roll = Number(p && p.roll);
+      if (isFinite(yaw) && isFinite(pitch)) {
+        stel.observer.yaw = yaw;
+        stel.observer.pitch = pitch;
+        if (isFinite(roll)) stel.observer.roll = roll;
+        pointed = true;
+      }
+    }
+    return pointed ? "ok" : "pending";
+  } catch (err) {
+    return "error";
+  }
+})
+"""
+
+
+def sky_web_view_script(payload: dict[str, Any]) -> str:
+    return f"{SKY_WEB_VIEW_APPLY_JS}({json.dumps(payload)})"
 
 
 def _sky_web_payload(raw: Any) -> dict[str, Any]:

@@ -591,6 +591,260 @@ def next_device_color(existing: Any = None) -> str:
     return DEVICE_COLORS[count % len(DEVICE_COLORS)]
 
 
+WB_PRESET_NAMES: tuple[str, ...] = (
+    "Incandescent",
+    "Warm Fluorescent",
+    "Fluorescent",
+    "Sunlight",
+    "Cloudy",
+    "Shadow",
+    "Twilight",
+)
+IR_FILTER_NAMES: tuple[str, ...] = ("VIS Filter", "Astro Filter", "Duo-Band Filter")
+
+
+def normalize_ir_filter(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    key = text.lower().replace(" filter", "").replace("_", "-").replace(" ", "")
+    aliases = {
+        "vis": "VIS Filter",
+        "0": "VIS Filter",
+        "astro": "Astro Filter",
+        "1": "Astro Filter",
+        "duo": "Duo-Band Filter",
+        "duoband": "Duo-Band Filter",
+        "duo-band": "Duo-Band Filter",
+        "2": "Duo-Band Filter",
+    }
+    return aliases.get(key, next((name for name in IR_FILTER_NAMES if name.lower() == text.lower()), text))
+
+
+def wb_preset_name(value: Any) -> str:
+    if isinstance(value, str) and value.strip() and not value.strip().isdigit():
+        text = value.strip()
+        for name in WB_PRESET_NAMES:
+            if name.lower() == text.lower():
+                return name
+        return text
+    try:
+        index = int(float(value))
+    except (TypeError, ValueError):
+        return ""
+    if 0 <= index < len(WB_PRESET_NAMES):
+        return WB_PRESET_NAMES[index]
+    return ""
+
+
+@dataclass(slots=True)
+class ControlSettings:
+    """Last live camera / shooting values for one telescope."""
+
+    shooting_mode: int = 0
+    exposure: str = ""
+    wide_exposure: str = ""
+    gain: str = ""
+    wide_gain: str = ""
+    stack_count: str = ""
+    stack_format: str = ""
+    ir_filter: str = ""
+    burst_count: str = ""
+    burst_interval: str = ""
+    timelapse_interval: str = ""
+    timelapse_duration: str = ""
+    auto_calibration: str = ""
+    wb_scene: str = ""
+    wb_value: str = ""
+    brightness: str = ""
+    contrast: str = ""
+    saturation: str = ""
+    hue: str = ""
+    sharpness: str = ""
+    wide_wb_scene: str = ""
+    wide_wb_value: str = ""
+    wide_brightness: str = ""
+    wide_contrast: str = ""
+    wide_saturation: str = ""
+    wide_hue: str = ""
+    wide_sharpness: str = ""
+
+
+def _control_text(value: Any) -> str:
+    if value is None or value is False:
+        return ""
+    if value is True:
+        return "true"
+    text = str(value).strip()
+    if not text or text == "—":
+        return ""
+    return text
+
+
+def control_settings_from_dict(data: Any) -> ControlSettings:
+    raw = dict(data) if isinstance(data, dict) else {}
+    mode = 0
+    try:
+        parsed = int(raw.get("shooting_mode") or 0)
+        if parsed in {1, 2}:
+            mode = parsed
+    except (TypeError, ValueError):
+        mode = 0
+    return ControlSettings(
+        shooting_mode=mode,
+        exposure=_control_text(raw.get("exposure")),
+        wide_exposure=_control_text(raw.get("wide_exposure")),
+        gain=_control_text(raw.get("gain")),
+        wide_gain=_control_text(raw.get("wide_gain")),
+        stack_count=_control_text(raw.get("stack_count")),
+        stack_format=_control_text(raw.get("stack_format")),
+        ir_filter=normalize_ir_filter(raw.get("ir_filter")),
+        burst_count=_control_text(raw.get("burst_count")),
+        burst_interval=_control_text(raw.get("burst_interval")),
+        timelapse_interval=_control_text(raw.get("timelapse_interval")),
+        timelapse_duration=_control_text(raw.get("timelapse_duration")),
+        auto_calibration=_control_text(raw.get("auto_calibration")).lower(),
+        wb_scene=_control_text(raw.get("wb_scene")),
+        wb_value=_control_text(raw.get("wb_value")),
+        brightness=_control_text(raw.get("brightness")),
+        contrast=_control_text(raw.get("contrast")),
+        saturation=_control_text(raw.get("saturation")),
+        hue=_control_text(raw.get("hue")),
+        sharpness=_control_text(raw.get("sharpness")),
+        wide_wb_scene=_control_text(raw.get("wide_wb_scene")),
+        wide_wb_value=_control_text(raw.get("wide_wb_value")),
+        wide_brightness=_control_text(raw.get("wide_brightness")),
+        wide_contrast=_control_text(raw.get("wide_contrast")),
+        wide_saturation=_control_text(raw.get("wide_saturation")),
+        wide_hue=_control_text(raw.get("wide_hue")),
+        wide_sharpness=_control_text(raw.get("wide_sharpness")),
+    )
+
+
+def control_settings_from_telemetry(
+    telemetry: dict[str, Any] | None,
+    previous: ControlSettings | None = None,
+    *,
+    persist_mode: bool = True,
+) -> ControlSettings:
+    data = to_dict(previous or ControlSettings())
+    tel = telemetry or {}
+
+    def take(source: str, dest: str) -> None:
+        text = _control_text(tel.get(source))
+        if text:
+            data[dest] = text
+
+    if persist_mode:
+        try:
+            mode = int(tel["shooting_mode"]) if tel.get("shooting_mode") is not None else 0
+        except (TypeError, ValueError, KeyError):
+            mode = 0
+        if mode in {1, 2}:
+            data["shooting_mode"] = mode
+    take("exposure_text", "exposure")
+    take("wide_exposure_text", "wide_exposure")
+    take("gain", "gain")
+    take("wide_gain", "wide_gain")
+    take("stack_count", "stack_count")
+    take("stack_format", "stack_format")
+    if tel.get("ir_filter") not in (None, "", "—"):
+        data["ir_filter"] = normalize_ir_filter(tel.get("ir_filter"))
+    take("burst_count", "burst_count")
+    take("burst_interval", "burst_interval")
+    take("timelapse_interval", "timelapse_interval")
+    take("timelapse_duration", "timelapse_duration")
+    if tel.get("auto_calibration") is True:
+        data["auto_calibration"] = "true"
+    elif tel.get("auto_calibration") is False:
+        data["auto_calibration"] = "false"
+    take("wb_scene", "wb_scene")
+    take("wb_value", "wb_value")
+    take("brightness", "brightness")
+    take("contrast", "contrast")
+    take("saturation", "saturation")
+    take("hue", "hue")
+    take("sharpness", "sharpness")
+    take("wide_wb_scene", "wide_wb_scene")
+    take("wide_wb_value", "wide_wb_value")
+    take("wide_brightness", "wide_brightness")
+    take("wide_contrast", "wide_contrast")
+    take("wide_saturation", "wide_saturation")
+    take("wide_hue", "wide_hue")
+    take("wide_sharpness", "wide_sharpness")
+    return control_settings_from_dict(data)
+
+
+def control_settings_to_telemetry(settings: ControlSettings | None) -> dict[str, Any]:
+    item = settings or ControlSettings()
+    out: dict[str, Any] = {}
+    if item.shooting_mode in {1, 2}:
+        out["shooting_mode"] = item.shooting_mode
+    if item.exposure:
+        out["exposure_text"] = item.exposure
+    if item.wide_exposure:
+        out["wide_exposure_text"] = item.wide_exposure
+
+    def put_int(name: str, text: str) -> None:
+        if not text:
+            return
+        try:
+            out[name] = int(float(text))
+        except (TypeError, ValueError):
+            out[name] = text
+
+    put_int("gain", item.gain)
+    put_int("wide_gain", item.wide_gain)
+    put_int("stack_count", item.stack_count)
+    put_int("stack_format", item.stack_format)
+    if item.ir_filter:
+        out["ir_filter"] = item.ir_filter
+    put_int("burst_count", item.burst_count)
+    if item.burst_interval:
+        out["burst_interval"] = item.burst_interval
+    if item.timelapse_interval:
+        out["timelapse_interval"] = item.timelapse_interval
+    if item.timelapse_duration:
+        out["timelapse_duration"] = item.timelapse_duration
+    if item.auto_calibration in {"true", "false", "1", "0"}:
+        out["auto_calibration"] = item.auto_calibration in {"true", "1"}
+    put_int("wb_scene", item.wb_scene)
+    put_int("wb_value", item.wb_value)
+    put_int("brightness", item.brightness)
+    put_int("contrast", item.contrast)
+    put_int("saturation", item.saturation)
+    put_int("hue", item.hue)
+    put_int("sharpness", item.sharpness)
+    put_int("wide_wb_scene", item.wide_wb_scene)
+    put_int("wide_wb_value", item.wide_wb_value)
+    put_int("wide_brightness", item.wide_brightness)
+    put_int("wide_contrast", item.wide_contrast)
+    put_int("wide_saturation", item.wide_saturation)
+    put_int("wide_hue", item.wide_hue)
+    put_int("wide_sharpness", item.wide_sharpness)
+    return out
+
+
+def control_settings_patch(previous: ControlSettings | None, **changes: Any) -> ControlSettings:
+    data = to_dict(previous or ControlSettings())
+    for key, value in changes.items():
+        if key == "ir_filter":
+            data[key] = normalize_ir_filter(value)
+        elif key == "shooting_mode":
+            try:
+                mode = int(value)
+            except (TypeError, ValueError):
+                continue
+            if mode in {1, 2}:
+                data[key] = mode
+        elif key in data:
+            if isinstance(value, bool):
+                data[key] = "true" if value else "false"
+            else:
+                data[key] = _control_text(value)
+    return control_settings_from_dict(data)
+
+
 @dataclass(slots=True)
 class Device:
     name: str
@@ -601,6 +855,7 @@ class Device:
     color: str = "#6C8CFF"
     hardware: HardwareProfile = field(default_factory=HardwareProfile)
     capture_defaults: CaptureDefaults = field(default_factory=CaptureDefaults)
+    control_settings: ControlSettings = field(default_factory=ControlSettings)
     ble_enabled: bool = True
     auto_start_preview: bool = False
     ble_password: str = "DWARF_12345678"
@@ -844,6 +1099,7 @@ def device_from_dict(data: dict[str, Any]) -> Device:
         data["wifi_mode"] = WifiMode.AUTO
     data["hardware"] = hardware_from_dict(data.get("hardware", {}))
     data["capture_defaults"] = capture_defaults_from_dict(data.get("capture_defaults", {}))
+    data["control_settings"] = control_settings_from_dict(data.get("control_settings", {}))
     data["auto_start_preview"] = bool(data.get("auto_start_preview", False))
     data["color"] = normalize_device_color(data.get("color"), Device.__dataclass_fields__["color"].default)
     data["location_configured"] = has_site_coordinates(data.get("latitude"), data.get("longitude"))

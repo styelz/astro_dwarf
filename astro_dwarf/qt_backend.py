@@ -59,11 +59,15 @@ from .domain import (
     camera_settings_from_capture,
     capture_defaults_from_dict,
     clamp_cutoff_hour,
+    control_settings_from_telemetry,
+    control_settings_patch,
+    control_settings_to_telemetry,
+    firmware_exposure_name,
     DEVICE_COLORS,
     default_device_name,
     device_from_dict,
-    firmware_exposure_name,
     is_first_device_setup,
+    wb_preset_name,
     next_device_color,
     normalize_device_color,
     parse_mosaic_pa,
@@ -96,7 +100,9 @@ from .services import (
     SKY_WEB_CONTEXT_POLL_JS,
     SKY_WEB_DBLCLICK_POLL_JS,
     SKY_WEB_OPACITY_POLL_JS,
+    SKY_WEB_VIEW_POLL_JS,
     sky_web_fov_script,
+    sky_web_view_script,
     sky_web_live_script,
     sky_web_pane_script,
     sky_web_site_script,
@@ -141,7 +147,13 @@ from .stream_preview import (
     set_mosaic_frames,
     stream_port,
 )
-from .telemetry_view import AlertEngine, camera_params_to_telemetry, derive_activity, format_telemetry
+from .telemetry_view import (
+    AlertEngine,
+    camera_params_to_telemetry,
+    derive_activity,
+    exposure_seconds_from_text,
+    format_telemetry,
+)
 
 
 def _sky_web_blocked_by_gpu() -> bool:
@@ -847,6 +859,12 @@ class AppBackend(QObject):
         self._last_toast: tuple[str, str, float] = ("", "", 0.0)
         self._device_lights: dict[str, bool] = {}
         self._device_indicators: dict[str, bool] = {}
+        self._control_dirty: set[str] = set()
+        self._control_restoring: set[str] = set()
+        self._control_persist_timer = QTimer(self)
+        self._control_persist_timer.setSingleShot(True)
+        self._control_persist_timer.setInterval(400)
+        self._control_persist_timer.timeout.connect(self._flush_control_settings)
         self._album_items: list[dict[str, Any]] = []
         self._album_path = ""
         self._album_busy = ""
@@ -1159,7 +1177,9 @@ class AppBackend(QObject):
             else:
                 status = "Offline"
             connected = bool(worker and worker.connected)
-            raw_view = dict(self._device_telemetry.get(device.id, {}) if connected else {})
+            raw_view = dict(control_settings_to_telemetry(device.control_settings))
+            if connected:
+                raw_view.update(self._device_telemetry.get(device.id, {}))
             apply_camera_fov_defaults(raw_view, device.model)
             telemetry = format_telemetry(
                 raw_view,
@@ -1297,6 +1317,7 @@ class AppBackend(QObject):
         self._track_session_capture(device_id, current)
         self._maybe_resume_held_preview(device_id)
         self._maybe_resume_interrupted_session(device_id)
+        self._remember_control_settings(device_id, current)
         self._sync_preview_for_capture(device_id, previous, current)
         self._sync_mosaic_preview(device_id, previous)
         self._notify_devices(immediate=False)
@@ -1972,6 +1993,14 @@ class AppBackend(QObject):
     @Property(str, constant=True)
     def skyWebOpacityPollScript(self) -> str:
         return SKY_WEB_OPACITY_POLL_JS
+
+    @Property(str, constant=True)
+    def skyWebViewPollScript(self) -> str:
+        return SKY_WEB_VIEW_POLL_JS
+
+    @Slot("QVariantMap", result=str)
+    def skyWebViewScript(self, payload: Any = None) -> str:
+        return sky_web_view_script(payload if isinstance(payload, dict) else {})
 
     @Slot(str, bool, float, int, result=str)
     def skyWebLiveScript(self, data_url: str, enabled: bool, opacity: float = 0.65, live_pane: int = 0) -> str:
@@ -3680,6 +3709,7 @@ class AppBackend(QObject):
             QTimer.singleShot(8000, lambda did=device_id: self._release_recovered_if_idle(did))
             delay_ms = 8000 if device and device.model == DeviceModel.DWARF_3 else 2500
             QTimer.singleShot(delay_ms, lambda did=device_id: self.refreshCameraParams(did))
+            self._schedule_control_restore(device_id, delay_ms + 400)
         else:
             self._toast("Connection failed", "error", fail_text)
             self._disarm_scheduler_if_offline()
@@ -3795,6 +3825,10 @@ class AppBackend(QObject):
             if sky is None or sky.ra_hours is None or sky.dec_degrees is None:
                 self._toast("Select a sky-map target first", "warning")
                 return
+        if operation == "photo_mode":
+            self._patch_control_settings(device_id, shooting_mode=1)
+        elif operation == "astro_mode":
+            self._patch_control_settings(device_id, shooting_mode=2)
         photo_focus = operation == "autofocus" and shooting_mode == 1
         self._begin_activity(device_id, operation)
 
@@ -4299,6 +4333,197 @@ class AppBackend(QObject):
         self._sequence_mosaic_group(saved, notify=True)
         self._toast("Session reset", "success")
 
+    def _remember_control_settings(self, device_id: str, telemetry: dict[str, Any] | None = None) -> None:
+        if device_id in self._control_restoring:
+            return
+        device = self._device_by_id(device_id)
+        if device is None:
+            return
+        persist_mode = (
+            not (self._preview_active and device_id == self._selected_device_id)
+            and device_id not in self._active_sessions
+        )
+        updated = control_settings_from_telemetry(
+            telemetry if telemetry is not None else self._device_telemetry.get(device_id, {}),
+            device.control_settings,
+            persist_mode=persist_mode,
+        )
+        if updated == device.control_settings:
+            return
+        self._devices = [
+            replace(item, control_settings=updated) if item.id == device_id else item
+            for item in self._devices
+        ]
+        self._control_dirty.add(device_id)
+        if not self._control_persist_timer.isActive():
+            self._control_persist_timer.start()
+
+    def _patch_control_settings(self, device_id: str, **changes: Any) -> None:
+        device = self._device_by_id(device_id)
+        if device is None or not changes:
+            return
+        updated = control_settings_patch(device.control_settings, **changes)
+        if updated == device.control_settings:
+            return
+        self._devices = [
+            replace(item, control_settings=updated) if item.id == device_id else item
+            for item in self._devices
+        ]
+        self._control_dirty.add(device_id)
+        if not self._control_persist_timer.isActive():
+            self._control_persist_timer.start()
+
+    def _capture_defaults_from_control(self, device: Device) -> CaptureDefaults:
+        settings = device.control_settings
+        wide = device.camera == Camera.WIDE
+        exposure = exposure_seconds_from_text(settings.wide_exposure if wide else settings.exposure)
+        try:
+            gain = int(float(settings.wide_gain if wide else settings.gain))
+        except (TypeError, ValueError):
+            gain = device.capture_defaults.gain
+        try:
+            frames = int(float(settings.stack_count))
+        except (TypeError, ValueError):
+            frames = device.capture_defaults.frame_count
+        return replace(
+            device.capture_defaults,
+            exposure_seconds=float(exposure) if exposure else device.capture_defaults.exposure_seconds,
+            gain=gain if gain >= 0 else device.capture_defaults.gain,
+            frame_count=frames if frames >= 1 else device.capture_defaults.frame_count,
+        )
+
+    def _flush_control_settings(self) -> None:
+        dirty = set(self._control_dirty)
+        self._control_dirty.clear()
+        for device_id in dirty:
+            current = self._device_by_id(device_id)
+            if current is None:
+                continue
+            stored = self.store.devices.get(device_id)
+            capture = self._capture_defaults_from_control(current)
+            if (
+                stored is not None
+                and stored.control_settings == current.control_settings
+                and stored.capture_defaults == capture
+            ):
+                continue
+            updated = replace(current, capture_defaults=capture)
+            self.store.devices.save(updated)
+            self._devices = [updated if item.id == updated.id else item for item in self._devices]
+            worker = self._workers.get(updated.id)
+            if worker:
+                worker.device = updated
+        if dirty:
+            self._notify_devices(immediate=False)
+
+    def _schedule_control_restore(self, device_id: str, delay_ms: int) -> None:
+        QTimer.singleShot(max(0, int(delay_ms)), lambda did=device_id: self._restore_control_settings(did))
+
+    def _control_restore_steps(self, device: Device, telemetry: dict[str, Any]) -> list[tuple[str, str]]:
+        settings = device.control_settings
+        wide = device.camera == Camera.WIDE
+        prefix = "wide_" if wide else ""
+        steps: list[tuple[str, str]] = []
+
+        def add(name: str, wanted: str, current: Any) -> None:
+            text = str(wanted or "").strip()
+            if not text:
+                return
+            have = "" if current in (None, "", "—") else str(current).strip()
+            if have and have == text:
+                return
+            if name in {"gain", "count", "burst_count", "stack_format", "brightness", "contrast", "saturation", "hue", "sharpness", "wb"}:
+                try:
+                    if have and int(float(have)) == int(float(text)):
+                        return
+                except (TypeError, ValueError):
+                    pass
+            steps.append((name, text))
+
+        add("exposure", settings.wide_exposure if wide else settings.exposure, telemetry.get(f"{prefix}exposure_text") if wide else telemetry.get("exposure_text"))
+        add("gain", settings.wide_gain if wide else settings.gain, telemetry.get(f"{prefix}gain") if wide else telemetry.get("gain"))
+        add("count", settings.stack_count, telemetry.get("stack_count"))
+        add("stack_format", settings.stack_format, telemetry.get("stack_format"))
+        if not wide:
+            add("ir", settings.ir_filter, telemetry.get("ir_filter"))
+        add("burst_count", settings.burst_count, telemetry.get("burst_count"))
+        add("burst_interval", settings.burst_interval, telemetry.get("burst_interval"))
+        add("timelapse_interval", settings.timelapse_interval, telemetry.get("timelapse_interval"))
+        add("timelapse_duration", settings.timelapse_duration, telemetry.get("timelapse_duration"))
+        if settings.auto_calibration in {"true", "false"}:
+            have = telemetry.get("auto_calibration")
+            if have != (settings.auto_calibration == "true"):
+                add("auto_calibration", settings.auto_calibration, "true" if have is True else ("false" if have is False else ""))
+        preset = wb_preset_name(settings.wide_wb_scene if wide else settings.wb_scene)
+        have_preset = wb_preset_name(telemetry.get(f"{prefix}wb_scene") if wide else telemetry.get("wb_scene"))
+        if preset and preset != have_preset:
+            steps.append(("wb_preset", preset))
+        add("wb", settings.wide_wb_value if wide else settings.wb_value, telemetry.get(f"{prefix}wb_value") if wide else telemetry.get("wb_value"))
+        add("brightness", settings.wide_brightness if wide else settings.brightness, telemetry.get(f"{prefix}brightness") if wide else telemetry.get("brightness"))
+        add("contrast", settings.wide_contrast if wide else settings.contrast, telemetry.get(f"{prefix}contrast") if wide else telemetry.get("contrast"))
+        add("saturation", settings.wide_saturation if wide else settings.saturation, telemetry.get(f"{prefix}saturation") if wide else telemetry.get("saturation"))
+        add("hue", settings.wide_hue if wide else settings.hue, telemetry.get(f"{prefix}hue") if wide else telemetry.get("hue"))
+        add("sharpness", settings.wide_sharpness if wide else settings.sharpness, telemetry.get(f"{prefix}sharpness") if wide else telemetry.get("sharpness"))
+        return steps
+
+    def _restore_control_settings(self, device_id: str) -> None:
+        if self._shut_down:
+            return
+        device = self._device_by_id(device_id)
+        worker = self._workers.get(device_id)
+        if device is None or not worker or not worker.connected:
+            return
+        if self._active_sessions.get(device_id) or self._device_is_stopping(device_id):
+            return
+        if device_id in self._control_restoring:
+            return
+        telemetry = dict(self._device_telemetry.get(device_id) or {})
+        wanted_mode = device.control_settings.shooting_mode
+        skip_mode = self._preview_active or self._preview_playing
+        try:
+            current_mode = int(telemetry["shooting_mode"]) if telemetry.get("shooting_mode") is not None else 0
+        except (TypeError, ValueError):
+            current_mode = 0
+        steps = self._control_restore_steps(device, telemetry)
+        need_mode = (not skip_mode) and wanted_mode in {1, 2} and wanted_mode != current_mode
+        if not need_mode and not steps:
+            return
+        self._control_restoring.add(device_id)
+
+        def finish() -> None:
+            self._control_restoring.discard(device_id)
+            self._schedule_camera_param_refresh(device_id, 200)
+
+        def apply_params() -> None:
+            queue = list(steps)
+
+            def next_param(ok: bool = True, result: Any = None) -> None:
+                if self._shut_down or device_id not in self._workers:
+                    finish()
+                    return
+                if not queue:
+                    finish()
+                    return
+                name, value = queue.pop(0)
+                self._send_camera_param(device_id, name, value, notify=False, callback=next_param)
+
+            next_param()
+
+        if need_mode:
+            operation = "photo_mode" if wanted_mode == 1 else "astro_mode"
+
+            def after_mode(ok: bool, result: Any) -> None:
+                if ok:
+                    self._on_telemetry(
+                        device_id,
+                        {"shooting_mode": wanted_mode, "shooting_tech": 1 if wanted_mode == 1 else 0},
+                    )
+                apply_params()
+
+            worker.send(operation, callback=after_mode)
+            return
+        apply_params()
+
     @Slot(str, str)
     def setLiveCamera(self, device_id: str, camera: str) -> None:
         current = self._device_by_id(device_id)
@@ -4324,76 +4549,145 @@ class AppBackend(QObject):
             return
         worker.send("set_camera", {"args": [choice]})
 
-    @Slot(str, str, str)
-    def setCameraParam(self, device_id: str, name: str, value: str) -> None:
+    def _send_camera_param(
+        self,
+        device_id: str,
+        name: str,
+        value: str,
+        *,
+        notify: bool = True,
+        callback: Callable[[bool, Any], None] | None = None,
+    ) -> bool:
         device = self._device_by_id(device_id)
         worker = self._workers.get(device_id)
-        if not worker or not worker.connected:
-            return
+        if device is None or not worker or not worker.connected:
+            if callback:
+                callback(False, "Telescope is not connected")
+            return False
         camera = device.camera.value if hasattr(device.camera, "value") else str(device.camera)
         if name == "focus" and camera == Camera.WIDE.value:
-            self._toast("Focus is only available on the tele camera", "warning")
-            return
+            if notify:
+                self._toast("Focus is only available on the tele camera", "warning")
+            if callback:
+                callback(False, "Focus is only available on the tele camera")
+            return False
         shooting_mode = self._device_telemetry.get(device_id, {}).get("shooting_mode")
         if name in {"exposure", "gain", "count", "stack_format"} and shooting_mode not in {1, 2}:
-            self._toast("Select PHOTO or DSO mode before changing camera settings", "warning")
-            return
+            if notify:
+                self._toast("Select PHOTO or DSO mode before changing camera settings", "warning")
+            if callback:
+                callback(False, "Select PHOTO or DSO mode first")
+            return False
         if name in {"burst_count", "burst_interval", "timelapse_interval", "timelapse_duration"} and shooting_mode != 1:
-            self._toast("Select PHOTO mode before changing burst or timelapse settings", "warning")
-            return
+            if notify:
+                self._toast("Select PHOTO mode before changing burst or timelapse settings", "warning")
+            if callback:
+                callback(False, "Select PHOTO mode first")
+            return False
         model_id = {DeviceModel.DWARF_II: "2", DeviceModel.DWARF_3: "3", DeviceModel.DWARF_MINI: "5"}.get(device.model, "3")
-        if name == "exposure":
-            operation = "set_photo_exposure" if shooting_mode == 1 else "set_exposure"
-            args = [firmware_exposure_name(value), model_id, camera]
-        elif name == "focus":
-            try:
+        try:
+            if name == "exposure":
+                operation = "set_photo_exposure" if shooting_mode == 1 else "set_exposure"
+                args = [firmware_exposure_name(value), model_id, camera]
+            elif name == "focus":
                 operation, args = "set_focus", [int(round(float(value)))]
-            except (TypeError, ValueError):
-                self._toast("Focus must be a number", "error")
-                return
-        elif name == "gain":
-            operation = "set_photo_gain" if shooting_mode == 1 else "set_gain"
-            args = [int(value), model_id, camera] if shooting_mode == 1 else [int(value), camera]
-        elif name == "ir":
-            if camera == Camera.WIDE.value:
-                return
-            operation, args = "set_ir", [value]
-        elif name == "wb_preset":
-            operation, args = "set_wb_preset", [value]
-        elif name == "wb":
-            operation, args = "set_wb", [int(value), 0]
-        elif name in {"brightness", "contrast", "saturation", "hue", "sharpness"}:
-            operation, args = f"set_{name}", [int(value)]
-        elif name == "burst_count":
-            operation, args = "set_burst_count", [int(value)]
-        elif name == "burst_interval":
-            operation, args = "set_burst_interval", [value]
-        elif name == "timelapse_interval":
-            operation, args = "set_timelapse_interval", [value]
-        elif name == "timelapse_duration":
-            operation, args = "set_timelapse_duration", [value]
-        elif name == "stack_format":
-            operation, args = "set_stack_format", [int(value)]
-        elif name == "count":
-            operation, args = "set_count", [int(value), camera]
-        elif name == "auto_calibration":
-            operation, args = "set_auto_calibration", [value.strip().lower() in {"1", "true", "yes", "on"}]
-        else:
-            return
+            elif name == "gain":
+                operation = "set_photo_gain" if shooting_mode == 1 else "set_gain"
+                args = [int(value), model_id, camera] if shooting_mode == 1 else [int(value), camera]
+            elif name == "ir":
+                if camera == Camera.WIDE.value:
+                    if callback:
+                        callback(True, None)
+                    return False
+                operation, args = "set_ir", [value]
+            elif name == "wb_preset":
+                operation, args = "set_wb_preset", [value]
+            elif name == "wb":
+                operation, args = "set_wb", [int(value), 0]
+            elif name in {"brightness", "contrast", "saturation", "hue", "sharpness"}:
+                operation, args = f"set_{name}", [int(value)]
+            elif name == "burst_count":
+                operation, args = "set_burst_count", [int(value)]
+            elif name == "burst_interval":
+                operation, args = "set_burst_interval", [value]
+            elif name == "timelapse_interval":
+                operation, args = "set_timelapse_interval", [value]
+            elif name == "timelapse_duration":
+                operation, args = "set_timelapse_duration", [value]
+            elif name == "stack_format":
+                operation, args = "set_stack_format", [int(value)]
+            elif name == "count":
+                operation, args = "set_count", [int(value), camera]
+            elif name == "auto_calibration":
+                operation, args = "set_auto_calibration", [value.strip().lower() in {"1", "true", "yes", "on"}]
+            else:
+                if callback:
+                    callback(False, "")
+                return False
+        except (TypeError, ValueError):
+            if notify:
+                self._toast(f"{name.replace('_', ' ').title()} must be a number" if name == "focus" else f"Could not set {name}", "error")
+            if callback:
+                callback(False, "Invalid value")
+            return False
 
         def done(ok: bool, result: Any) -> None:
-            self._toast(
-                f"{name.replace('_', ' ').title()} set" if ok else str(result),
-                "success" if ok else "error",
-            )
-            if ok:
+            if notify:
+                self._toast(
+                    f"{name.replace('_', ' ').title()} set" if ok else str(result),
+                    "success" if ok else "error",
+                )
+            if ok and notify:
                 QTimer.singleShot(150, lambda did=device_id: self.refreshCameraParams(did))
+            if callback:
+                callback(ok, result)
 
         worker.send(
             operation,
             {"args": args},
             self._with_pending(device_id, "set_focus", done) if name == "focus" else done,
         )
+        return True
+
+    @Slot(str, str, str)
+    def setCameraParam(self, device_id: str, name: str, value: str) -> None:
+        wide = False
+        device = self._device_by_id(device_id)
+        if device is not None:
+            wide = device.camera == Camera.WIDE
+        if name == "exposure":
+            self._patch_control_settings(device_id, **({"wide_exposure" if wide else "exposure": value}))
+        elif name == "gain":
+            self._patch_control_settings(device_id, **({"wide_gain" if wide else "gain": value}))
+        elif name == "count":
+            self._patch_control_settings(device_id, stack_count=value)
+        elif name == "stack_format":
+            self._patch_control_settings(device_id, stack_format=value)
+        elif name == "ir":
+            self._patch_control_settings(device_id, ir_filter=value)
+            self._on_telemetry(device_id, {"ir_filter": value})
+        elif name == "burst_count":
+            self._patch_control_settings(device_id, burst_count=value)
+        elif name == "burst_interval":
+            self._patch_control_settings(device_id, burst_interval=value)
+        elif name == "timelapse_interval":
+            self._patch_control_settings(device_id, timelapse_interval=value)
+        elif name == "timelapse_duration":
+            self._patch_control_settings(device_id, timelapse_duration=value)
+        elif name == "auto_calibration":
+            self._patch_control_settings(device_id, auto_calibration=value)
+        elif name == "wb_preset":
+            self._patch_control_settings(device_id, **({"wide_wb_scene" if wide else "wb_scene": value}))
+        elif name == "wb":
+            self._patch_control_settings(device_id, **({"wide_wb_value" if wide else "wb_value": value}))
+        elif name in {"brightness", "contrast", "saturation", "hue", "sharpness"}:
+            self._patch_control_settings(device_id, **({f"wide_{name}" if wide else name: value}))
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            self._flush_control_settings()
+            self._notify_devices()
+            return
+        self._send_camera_param(device_id, name, value)
 
     def _album_dir(self) -> Path:
         folder = self.store.root / "album"
@@ -6989,6 +7283,8 @@ class AppBackend(QObject):
         self._retarget_timer.stop()
         self._stack_result_timer.stop()
         self._stellarium_rc_timer.stop()
+        self._control_persist_timer.stop()
+        self._flush_control_settings()
         self.stopPreview()
         self._enhance_pool.waitForDone(1500)
         self._enhance_cache_pool.waitForDone(1500)

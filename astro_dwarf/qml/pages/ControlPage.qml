@@ -661,6 +661,20 @@ Item {
                     tooltip: "Telephoto IR filter.\nVIS for daytime, Astro for broadband night, Duo-Band for Ha/OIII."
                     model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
                     property string appliedValue: ""
+                    readonly property int liveIndex: {
+                        const raw = String(root.scopeTelemetry.ir_filter || "").trim().toLowerCase().replace(" filter", "")
+                        if (raw === "vis" || raw === "0")
+                            return 0
+                        if (raw === "astro" || raw === "1")
+                            return 1
+                        if (raw === "duo" || raw === "duo-band" || raw === "duoband" || raw === "2")
+                            return 2
+                        return cameraPanel.comboIndex(model, root.scopeTelemetry.ir_filter)
+                    }
+                    onLiveIndexChanged: if (liveIndex >= 0) {
+                        currentIndex = liveIndex
+                        appliedValue = currentText
+                    }
                     onActivated: {
                         backend.setCameraParam(backend.selectedDeviceId, "ir", currentText)
                         appliedValue = currentText

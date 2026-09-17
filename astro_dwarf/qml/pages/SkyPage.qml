@@ -27,6 +27,13 @@ Item {
         property bool liveFovOverlay: false
         property real liveFovOpacity: 0.65
         property bool dblclickTrack: false
+        property bool viewSaved: false
+        property real viewRaHours: 0
+        property real viewDecDegrees: 0
+        property real viewFov: 0
+        property real viewYaw: 0
+        property real viewPitch: 0
+        property real viewRoll: 0
     }
     function clampInt(value, lo, hi, fallback) {
         const n = Number(value)
@@ -69,6 +76,22 @@ Item {
         if (skyPage.applyingPa)
             return
         backend.setMosaicPa(paBox.value)
+    }
+    function saveSkyView(data) {
+        if (!data)
+            return
+        const ra = Number(data.ra_hours)
+        const dec = Number(data.dec_degrees)
+        const fov = Number(data.fov)
+        if (!isFinite(ra) || !isFinite(dec))
+            return
+        skyStore.viewRaHours = ra
+        skyStore.viewDecDegrees = dec
+        skyStore.viewFov = isFinite(fov) ? fov : 0
+        skyStore.viewYaw = Number(data.yaw) || 0
+        skyStore.viewPitch = Number(data.pitch) || 0
+        skyStore.viewRoll = Number(data.roll) || 0
+        skyStore.viewSaved = true
     }
     readonly property bool mosaicGrid: columnsBox.value > 1 || rowsBox.value > 1
     readonly property bool mapHasTarget: !!(mapLoader.item && mapLoader.item.hasSelectedTarget)
@@ -363,6 +386,14 @@ Item {
                     map.mosaicPa = Qt.binding(() => paBox.value)
                     map.liveOverlay = Qt.binding(() => skyStore.liveFovOverlay)
                     map.liveOpacity = Qt.binding(() => skyPage.clampOpacity(skyStore.liveFovOpacity))
+                    map.savedView = Qt.binding(() => skyStore.viewSaved ? ({
+                        ra_hours: skyStore.viewRaHours,
+                        dec_degrees: skyStore.viewDecDegrees,
+                        fov: skyStore.viewFov,
+                        yaw: skyStore.viewYaw,
+                        pitch: skyStore.viewPitch,
+                        roll: skyStore.viewRoll
+                    }) : ({}))
                 }
                 onStatusChanged: {
                     if (status === Loader.Error)
@@ -401,6 +432,9 @@ Item {
                 }
                 function onLiveOpacityNudged(opacity) {
                     skyStore.liveFovOpacity = skyPage.clampOpacity(opacity)
+                }
+                function onViewChanged(data) {
+                    skyPage.saveSkyView(data)
                 }
             }
 

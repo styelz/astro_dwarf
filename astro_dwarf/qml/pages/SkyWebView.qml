@@ -18,7 +18,10 @@ Item {
     property real mosaicPa: 0
     property bool liveOverlay: false
     property real liveOpacity: 0.65
+    property var savedView: ({})
+    property bool viewRestored: false
     signal liveOpacityNudged(real opacity)
+    signal viewChanged(var data)
     readonly property string liveCamera: (backend.previewStacking || backend.previewResult)
         ? "tele"
         : (backend.selectedDevice.camera === "wide" ? "wide" : "tele")
@@ -160,6 +163,38 @@ Item {
             map.trackRequested()
         })
     }
+    function hasSavedView() {
+        const view = map.savedView || {}
+        return isFinite(Number(view.ra_hours)) && isFinite(Number(view.dec_degrees))
+    }
+    function restoreSavedView() {
+        if (!map.pageReady || map.viewRestored)
+            return
+        if (!map.hasSavedView()) {
+            map.viewRestored = true
+            return
+        }
+        map.runJavaScript(backend.skyWebViewScript(map.savedView), result => {
+            if (String(result) === "ok")
+                map.viewRestored = true
+        })
+    }
+    function pollView() {
+        if (!map.pageReady || !map.viewRestored)
+            return
+        map.runJavaScript(backend.skyWebViewPollScript, result => {
+            const text = String(result || "").trim()
+            if (!text || text === "undefined" || text === "null")
+                return
+            try {
+                const data = JSON.parse(text)
+                if (!isFinite(Number(data.ra_hours)) || !isFinite(Number(data.dec_degrees)))
+                    return
+                map.viewChanged(data)
+            } catch (err) {
+            }
+        })
+    }
     function pollLiveOpacity() {
         map.runJavaScript(backend.skyWebOpacityPollScript, result => {
             const text = String(result || "").trim()
@@ -185,6 +220,7 @@ Item {
         map.initialLoadFailed = false
         map.applyObservingSite()
         map.applyFovOverlay()
+        map.restoreSavedView()
         if (!map.initialLoadDone && !revealDelay.running)
             revealDelay.start()
     }
@@ -211,6 +247,7 @@ Item {
             map.hasSelectedTarget = false
             map.selectedTarget = ({})
             map.selectedKey = ""
+            map.viewRestored = false
             revealDelay.stop()
             return
         }
@@ -252,6 +289,7 @@ Item {
         }
         if (map.liveOverlay)
             map.applyLiveOverlay()
+        map.restoreSavedView()
     }
 
     Connections {
@@ -261,6 +299,8 @@ Item {
                 return
             map.applyObservingSite()
             map.applyFovOverlay()
+            if (!map.viewRestored)
+                map.restoreSavedView()
         }
         function onPreviewStackingChanged() {
             if (map.pageReady && map.liveOverlay)
@@ -304,6 +344,7 @@ Item {
         onTriggered: {
             map.initialLoadDone = true
             map.applyFovOverlay()
+            map.restoreSavedView()
         }
     }
 
@@ -360,5 +401,19 @@ Item {
             map.pollTrackRequest()
             map.pollLiveOpacity()
         }
+    }
+
+    Timer {
+        interval: 400
+        repeat: true
+        running: map.pageReady && !map.viewRestored && map.hasSavedView()
+        onTriggered: map.restoreSavedView()
+    }
+
+    Timer {
+        interval: 1500
+        repeat: true
+        running: map.pageReady && map.viewRestored
+        onTriggered: map.pollView()
     }
 }
