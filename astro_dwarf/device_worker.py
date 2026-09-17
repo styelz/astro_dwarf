@@ -1856,16 +1856,22 @@ def _goto_wait_complete(
     tracking: bool,
     tracking_at_start: bool,
     elapsed_s: float,
+    seen_tracking_drop: bool = False,
+    goto_finished: bool = False,
 ) -> bool:
     """True when THIS goto has handed off to sidereal tracking.
 
     Leftover tracking from the previous pane must not count as completion.
-    A fresh slew is done once goto has been seen busy and tracking is
-    running again, or tracking started after it was off (fast handoff).
+    Mosaic stacks keep sidereal tracking latched, so a new 11002 can report
+    goto_state=running while that old tracking is still on. That is the slew
+    starting, not a handoff — every later pane would stack the same field.
+    Require tracking to have dropped, or this GOTO itself to go idle/stopped.
     """
     if not tracking:
         return False
     if seen_goto_busy:
+        if tracking_at_start and not seen_tracking_drop and not goto_finished:
+            return False
         return True
     if tracking_at_start:
         return False
@@ -1900,6 +1906,7 @@ def _await_operation(
     state = snapshot.get(state_key) if state_key else None
     seen_running = _goto_started(state) if goto else state in _BUSY_ASTRO
     tracking_at_start = snapshot.get("tracking_state") == "running"
+    seen_tracking_drop = not tracking_at_start
     code = _tap.response_after(reply_cmd, since)
     if (
         code is not None
@@ -1933,12 +1940,17 @@ def _await_operation(
         elif state in _BUSY_ASTRO:
             seen_running = True
         tracking = snapshot.get("tracking_state") == "running"
+        if goto and not tracking:
+            seen_tracking_drop = True
         elapsed = time.monotonic() - since
+        goto_finished = bool(goto and seen_running and state in ("idle", "stopped"))
         if goto and _goto_wait_complete(
             seen_goto_busy=seen_running,
             tracking=tracking,
             tracking_at_start=tracking_at_start,
             elapsed_s=elapsed,
+            seen_tracking_drop=seen_tracking_drop,
+            goto_finished=goto_finished,
         ):
             return
         if goto and seen_running and state in ("idle", "stopped") and not logged_tracking_wait:
@@ -2543,7 +2555,10 @@ def _stop_tracking_for_goto(label: str = "Stopping leftover tracking before GOTO
         return
     log(label)
     try:
-        sdk_call("stop_goto")
+        if sdk_call("stop_goto") is False:
+            log("Stop tracking did not confirm; retrying", "warning")
+            if sdk_call("stop_goto") is False:
+                log("Stop tracking still did not confirm; waiting for leftover tracking to drop", "warning")
     except Exception as exc:
         log(f"Stop tracking skipped: {exc}", "debug")
         return
@@ -2566,7 +2581,9 @@ def _release_stack_for_goto() -> None:
 
     ASTRO CAPTURE ENDING leaves the capture function latched. stop_goto then
     11002 stay FUNCTION_BUSY until GoLive releases it. GoLive also closes
-    the tele camera, so reopen before the slew.
+    the tele camera, so reopen before the slew. Mosaic stacks keep sidereal
+    tracking on; clear that leftover tracking after GoLive or the next GOTO
+    wait treats the previous pointing as already complete.
     """
     log("Closing the finished stack before the next pane")
     try:
@@ -2575,6 +2592,7 @@ def _release_stack_for_goto() -> None:
     except Exception as exc:
         log(f"GoLive after stack skipped: {exc}", "warning")
     _reopen_astro_camera()
+    _stop_tracking_for_goto("Stopping leftover tracking after closing the stack")
 
 
 def _clear_tracking(progress: Any = None) -> None:
@@ -3822,7 +3840,6 @@ def _goto_target(
         _stop_tracking_for_goto(f"Stopping tracking before {name}")
     deadline = time.monotonic() + _GOTO_BUSY_TIMEOUT_S
     camera_retried = False
-    solve_retried = False
     while True:
         started = time.monotonic()
         try:
@@ -3848,12 +3865,6 @@ def _goto_target(
                         if not _goto_busy(snapshot) and snapshot.get("tracking_state") != "running":
                             break
                         time.sleep(0.25)
-                continue
-            if _goto_solve_timeout_error(exc) and not solve_retried:
-                solve_retried = True
-                deadline = time.monotonic() + _GOTO_BUSY_TIMEOUT_S
-                log(f"{name}: plate-solving stalled; stopping and retrying", "warning")
-                _stop_tracking_for_goto(f"Stopping stalled slew before retrying {name}")
                 continue
             if _engine_busy_error(exc):
                 snapshot = _tap.snapshot() if _tap is not None else {}

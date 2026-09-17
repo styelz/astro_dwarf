@@ -5256,6 +5256,7 @@ class AppBackend(QObject):
             "stopping": False,
             "worker_running": True,
         }
+        self._resume_mosaic_attempted.discard(device_id)
         self._persist_live_mosaic(device_id)
         self._set_preview_coords(members[0].name, self._target_coords(members[0].target))
         if self._preview_result:
@@ -5340,17 +5341,25 @@ class AppBackend(QObject):
     def _finish_live_mosaic(self, device_id: str, ok: bool, result: Any) -> None:
         worker = self._workers.get(device_id)
         live = self._live_mosaic.get(device_id)
+        stopped = bool(live and live.get("stopping")) or "stopped" in str(result or "").lower()
         if live:
-            live["phase"] = ""
-            live["stopping"] = False
             live["worker_running"] = False
-        self.store.clear_live_mosaic(device_id)
+            live["stopping"] = False
+            if ok or stopped:
+                live["phase"] = ""
+                self.store.clear_live_mosaic(device_id)
+                if worker and worker.connected:
+                    self._schedule_control_restore(device_id, 500)
+            else:
+                self._resume_mosaic_attempted.add(device_id)
+                self._persist_live_mosaic(device_id)
+        else:
+            self.store.clear_live_mosaic(device_id)
         if worker and device_id not in self._active_sessions:
             worker.busy = False
             worker.availabilityChanged.emit()
         self._complete_activity(device_id, "stack", bool(ok))
         self._set_activity(device_id, "")
-        stopped = bool(live and live.get("stopping")) or "stopped" in str(result or "").lower()
         index = int((live or {}).get("current_index") or 0)
         total = int((live or {}).get("total") or 0)
         label = str((live or {}).get("label") or "mosaic")
@@ -5950,10 +5959,15 @@ class AppBackend(QObject):
     def _remember_control_settings(self, device_id: str, telemetry: dict[str, Any] | None = None) -> None:
         if device_id in self._control_restoring:
             return
+        live = self._live_mosaic.get(device_id)
+        if live and live.get("phase"):
+            return
         device = self._device_by_id(device_id)
         if device is None:
             return
-        persist_mode = device_id not in self._active_sessions
+        persist_mode = device_id not in self._active_sessions and not (
+            self._preview_active and device_id == self._selected_device_id
+        )
         updated = control_settings_from_telemetry(
             telemetry if telemetry is not None else self._device_telemetry.get(device_id, {}),
             device.control_settings,
@@ -6087,6 +6101,11 @@ class AppBackend(QObject):
         if device is None or not worker or not worker.connected:
             return
         if self._active_sessions.get(device_id) or self._device_is_stopping(device_id):
+            self._schedule_control_restore(device_id, 2000)
+            return
+        live = self._live_mosaic.get(device_id)
+        if worker.busy or (live and live.get("phase")):
+            self._schedule_control_restore(device_id, 2000)
             return
         if device_id in self._control_restoring:
             return

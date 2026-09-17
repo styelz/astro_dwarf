@@ -2274,7 +2274,9 @@ def live_mosaic_resume_plan(
 
     Returns ``(start_index, join_current)``, or ``None`` when every pane is done.
     A pane that was stacking when the app died is joined if the telescope is
-    still capturing; otherwise that pane is treated as finished.
+    still capturing. If capture has already stopped, that pane is retried
+    unless progress already recorded it as complete — otherwise a mid-stack
+    crash skips the pane and leaves a hole in the mosaic.
     """
     try:
         index = max(1, int(current_index or 1))
@@ -2289,7 +2291,7 @@ def live_mosaic_resume_plan(
         if panes and index > panes:
             return None
         return index, True
-    if label in {"complete", "stacking"}:
+    if label == "complete":
         start = index + 1
     else:
         start = index
