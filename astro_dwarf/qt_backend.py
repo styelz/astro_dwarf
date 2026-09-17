@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -20,6 +21,7 @@ from PySide6.QtCore import (
     QProcess,
     QProcessEnvironment,
     QObject,
+    QSettings,
     Qt,
     QThread,
     QThreadPool,
@@ -84,9 +86,13 @@ from .services import (
     StellariumClient,
     generate_mosaic_plan,
     import_telescopius,
+    MAX_MOSAIC_AXIS,
+    is_mosaic_pane_name,
+    live_mosaic_resume_plan,
     mosaic_group_title,
     mosaic_grid_size,
     mosaic_pane_footprints,
+    mosaic_pane_index,
     mosaic_pane_number,
     mosaic_pane_workflow,
     mosaic_session_footprints,
@@ -95,13 +101,17 @@ from .services import (
     observing_date,
     pane_sort_key,
     device_mosaic_pa,
+    sky_names_related,
     parse_sky_web_target,
+    resolve_sky_catalog_target,
     parse_in_zone,
     SKY_WEB_CONTEXT_POLL_JS,
     SKY_WEB_DBLCLICK_POLL_JS,
     SKY_WEB_OPACITY_POLL_JS,
     SKY_WEB_VIEW_POLL_JS,
     sky_web_fov_script,
+    sky_web_lock_target_script,
+    sky_web_view_pos_script,
     sky_web_view_script,
     sky_web_live_script,
     sky_web_pane_script,
@@ -183,6 +193,7 @@ def _webview_available() -> bool:
 class TelescopeProcess(QObject):
     logReceived = Signal(str, str)
     progressReceived = Signal(str, str, float)
+    mosaicProgressReceived = Signal(int, int, str)
     statusReceived = Signal(str, str)
     telemetryReceived = Signal(dict)
     availabilityChanged = Signal()
@@ -353,7 +364,20 @@ class TelescopeProcess(QObject):
                     wait_seconds = float(message.get("wait_seconds") or 0)
                 except (TypeError, ValueError):
                     wait_seconds = 0.0
-                self.progressReceived.emit(message["session_id"], message["step"], wait_seconds)
+                session_id = str(message.get("session_id") or "")
+                step = str(message.get("step") or "")
+                if session_id == "live-mosaic":
+                    try:
+                        pane = int(message.get("pane") or 0)
+                    except (TypeError, ValueError):
+                        pane = 0
+                    try:
+                        total = int(message.get("total") or 0)
+                    except (TypeError, ValueError):
+                        total = 0
+                    self.mosaicProgressReceived.emit(pane, total, step)
+                else:
+                    self.progressReceived.emit(session_id, step, wait_seconds)
             elif event == "status":
                 self.statusReceived.emit(str(message.get("kind") or ""), str(message.get("step") or ""))
             elif event == "connected":
@@ -564,6 +588,47 @@ _LOG_FILTERS = {
     "alerts": {"WARNING", "ERROR"},
     "debug": None,
 }
+_ASTRO_SHOOTING_MODES = {2, 8, 9, 10}
+
+
+def _shooting_mode_int(value: Any) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def preview_should_preserve_shooting_mode(
+    telemetry: dict[str, Any] | None,
+    persisted_mode: int = 0,
+) -> bool:
+    """True when live view must not force PHOTO just to open the cameras."""
+    snap = telemetry or {}
+    mode = _shooting_mode_int(snap.get("shooting_mode"))
+    if mode in _ASTRO_SHOOTING_MODES:
+        return True
+    if snap.get("tracking_state") == "running":
+        return True
+    return persisted_mode == 2 and mode != 1
+
+
+def control_restore_should_apply_mode(
+    wanted_mode: int,
+    current_mode: int,
+    *,
+    preview_active: bool,
+    tracking: bool,
+) -> bool:
+    """Decide whether reconnect should switch PHOTO/DSO to a persisted value."""
+    if wanted_mode not in {1, 2} or wanted_mode == current_mode:
+        return False
+    if current_mode in _ASTRO_SHOOTING_MODES or tracking:
+        return False
+    if wanted_mode == 2:
+        return True
+    return not preview_active
 
 
 class LogListModel(QAbstractListModel):
@@ -800,6 +865,7 @@ class AppBackend(QObject):
     previewStackingChanged = Signal()
     previewResultChanged = Signal()
     mosaicPreviewChanged = Signal()
+    skyMosaicGridChanged = Signal()
     enhanceImagesChanged = Signal()
     deepCleanImagesChanged = Signal()
     enhanceDenoiseChanged = Signal()
@@ -809,6 +875,8 @@ class AppBackend(QObject):
     mediaItemsChanged = Signal()
     appSettingsChanged = Signal()
     skyTargetChanged = Signal()
+    previewSkyCoordsChanged = Signal()
+    skyLockRequested = Signal("QVariantMap")
     stellariumRcChanged = Signal()
     _openTeleStream = Signal(str)
     _openWideStream = Signal(str)
@@ -854,6 +922,7 @@ class AppBackend(QObject):
         self.historyChanged.connect(self.durationSuggestionChanged)
         self._recovered_sessions: dict[str, str] = {}
         self._resume_attempted: set[str] = set()
+        self._resume_mosaic_attempted: set[str] = set()
         self._telemetry_updated: dict[str, float] = {}
         self._alerts = AlertEngine()
         self._last_toast: tuple[str, str, float] = ("", "", 0.0)
@@ -914,6 +983,17 @@ class AppBackend(QObject):
         self._center_tap_token: dict[str, int] = {}
         self._ui_busy = ""
         self._sky_target: Target | None = None
+        self._sky_lock_inflight = False
+        self._sky_catalog_cache: dict[str, dict[str, Any]] = {}
+        self._sky_named_coords: dict[str, dict[str, Any]] = {}
+        self._sky_mosaic_center: Target | None = None
+        self._catalog_resolve_key = ""
+        self._catalog_resolve_cooldown: dict[str, float] = {}
+        self._preview_coord_text = ""
+        self._preview_coord_name = ""
+        self._live_pointing: dict[str, tuple[float, float]] = {}
+        self._pointing_inflight = False
+        self._pointing_polled_at = 0.0
         self._web_view_available = _webview_available()
         self._sky_web_blocked_by_gpu = _sky_web_blocked_by_gpu()
         self._stellarium_rc_live = False
@@ -945,6 +1025,14 @@ class AppBackend(QObject):
         self._mosaic_pane_urls: dict[str, str] = {}
         self._mosaic_firmware_pane = 1
         self._mosaic_firmware_stacked = 0
+        self._sky_mosaic_columns = 1
+        self._sky_mosaic_rows = 1
+        self._sky_mosaic_overlap = 0.2
+        self._sky_preview_panes: list[dict[str, Any]] = []
+        self._sky_preview_key: tuple[int, int, float] | None = None
+        self._live_mosaic: dict[str, dict[str, Any]] = {}
+        self._load_sky_mosaic_grid()
+        self._restore_live_mosaics()
         self._preview_token = 0
         self._preview_active = False
         self._preview_playing = False
@@ -1008,6 +1096,9 @@ class AppBackend(QObject):
         worker.logReceived.connect(lambda level, message, did=device.id: self.add_log(level, message, did))
         worker.telemetryReceived.connect(lambda data, did=device.id: self._on_telemetry(did, data))
         worker.progressReceived.connect(self._session_progress)
+        worker.mosaicProgressReceived.connect(
+            lambda pane, total, step, did=device.id: self._on_live_mosaic_progress(did, pane, total, step)
+        )
         worker.statusReceived.connect(lambda kind, step, did=device.id: self._on_worker_status(did, kind, step))
         worker.availabilityChanged.connect(self._worker_status_changed)
         self._workers[device.id] = worker
@@ -1037,6 +1128,7 @@ class AppBackend(QObject):
             worker.logReceived,
             worker.telemetryReceived,
             worker.progressReceived,
+            worker.mosaicProgressReceived,
             worker.statusReceived,
             worker.availabilityChanged,
         ):
@@ -1079,6 +1171,9 @@ class AppBackend(QObject):
                 return
         if device_id == self._selected_device_id:
             self.stopPreview()
+        self._live_pointing.pop(device_id, None)
+        if device_id == self._selected_device_id:
+            self.skyTargetChanged.emit()
         self._disarm_scheduler_if_offline()
         self._notify_devices()
 
@@ -1317,9 +1412,26 @@ class AppBackend(QObject):
         self._track_session_capture(device_id, current)
         self._maybe_resume_held_preview(device_id)
         self._maybe_resume_interrupted_session(device_id)
+        self._maybe_resume_interrupted_mosaic(device_id)
         self._remember_control_settings(device_id, current)
         self._sync_preview_for_capture(device_id, previous, current)
         self._sync_mosaic_preview(device_id, previous)
+        if (
+            previous.get("tracking_target") != current.get("tracking_target")
+            or previous.get("capture_target") != current.get("capture_target")
+            or previous.get("tracking_state") != current.get("tracking_state")
+        ):
+            name = str(current.get("capture_target") or current.get("tracking_target") or "").strip()
+            if current.get("tracking_state") == "running" and name:
+                self._schedule_catalog_resolve(device_id, name)
+        self._refresh_tracked_catalog(device_id)
+        if device_id == self._selected_device_id and (
+            previous.get("tracking_state") != current.get("tracking_state")
+            or previous.get("tracking_target") != current.get("tracking_target")
+            or previous.get("capture_target") != current.get("capture_target")
+            or previous.get("shooting_mode") != current.get("shooting_mode")
+        ):
+            self.skyTargetChanged.emit()
         self._notify_devices(immediate=False)
         self._sync_media_lock()
 
@@ -1366,6 +1478,9 @@ class AppBackend(QObject):
             self._set_activity(device_id, "")
 
     def _hud_activity(self, device_id: str, telemetry_activity: str) -> str:
+        live = self._live_mosaic.get(device_id)
+        if live and live.get("phase"):
+            return "imaging"
         stored = self._device_activity.get(device_id, "")
         if telemetry_activity == "autofocus" and stored == "infinity":
             return "infinity"
@@ -1962,6 +2077,405 @@ class AppBackend(QObject):
             return
         self._notify_devices()
 
+    def _clamp_mosaic_axis(self, value: Any, fallback: int = 1) -> int:
+        try:
+            axis = int(value)
+        except (TypeError, ValueError):
+            axis = fallback
+        return max(1, min(MAX_MOSAIC_AXIS, axis))
+
+    def _clamp_mosaic_overlap(self, value: Any, fallback: float = 0.2) -> float:
+        try:
+            overlap = float(value)
+        except (TypeError, ValueError):
+            overlap = fallback
+        if overlap > 1.0:
+            overlap = overlap / 100.0
+        return max(0.0, min(0.8, overlap))
+
+    def _load_sky_mosaic_grid(self) -> None:
+        store = QSettings()
+        store.beginGroup("sky")
+        self._sky_mosaic_columns = self._clamp_mosaic_axis(store.value("mosaicColumns", 1), 1)
+        self._sky_mosaic_rows = self._clamp_mosaic_axis(store.value("mosaicRows", 1), 1)
+        self._sky_mosaic_overlap = self._clamp_mosaic_overlap(store.value("mosaicOverlap", 20), 0.2)
+        store.endGroup()
+
+    def _sky_mosaic_grid(self) -> tuple[int, int, float]:
+        return (
+            self._clamp_mosaic_axis(self._sky_mosaic_columns, 1),
+            self._clamp_mosaic_axis(self._sky_mosaic_rows, 1),
+            self._clamp_mosaic_overlap(self._sky_mosaic_overlap, 0.2),
+        )
+
+    @Property(int, notify=skyMosaicGridChanged)
+    def mosaicColumns(self) -> int:
+        return self._sky_mosaic_grid()[0]
+
+    @Property(int, notify=skyMosaicGridChanged)
+    def mosaicRows(self) -> int:
+        return self._sky_mosaic_grid()[1]
+
+    @Property(float, notify=skyMosaicGridChanged)
+    def mosaicOverlap(self) -> float:
+        return self._sky_mosaic_grid()[2]
+
+    @Property(bool, notify=skyMosaicGridChanged)
+    def mosaicGridActive(self) -> bool:
+        columns, rows, _overlap = self._sky_mosaic_grid()
+        return columns > 1 or rows > 1
+
+    @Slot(int, int, float)
+    def setSkyMosaicGrid(self, columns: int, rows: int, overlap: float) -> None:
+        next_columns = self._clamp_mosaic_axis(columns, 1)
+        next_rows = self._clamp_mosaic_axis(rows, 1)
+        next_overlap = self._clamp_mosaic_overlap(overlap, 0.2)
+        if (
+            next_columns == self._sky_mosaic_columns
+            and next_rows == self._sky_mosaic_rows
+            and abs(next_overlap - self._sky_mosaic_overlap) < 1e-6
+        ):
+            return
+        self._sky_mosaic_columns = next_columns
+        self._sky_mosaic_rows = next_rows
+        self._sky_mosaic_overlap = next_overlap
+        self.skyMosaicGridChanged.emit()
+
+    def _live_mosaic_center(self) -> Target | None:
+        center = self._sky_mosaic_center
+        coords = self._target_coords(center)
+        if coords is not None:
+            return Target(
+                name=str(getattr(center, "name", None) or "Sky target"),
+                ra_hours=coords[0],
+                dec_degrees=coords[1],
+            )
+        sky = self._sky_target
+        name = str(getattr(sky, "name", None) or "").strip()
+        coords = self._target_coords(sky)
+        if coords is not None and not is_mosaic_pane_name(name):
+            return Target(
+                name=name or "Sky target",
+                ra_hours=coords[0],
+                dec_degrees=coords[1],
+            )
+        tracked = self.trackedSkyTarget
+        tracked_name = str(tracked.get("name") or "").strip()
+        if tracked_name and not is_mosaic_pane_name(tracked_name):
+            coords = self._target_coords(tracked)
+            if coords is not None:
+                return Target(
+                    name=tracked_name or "Tracked target",
+                    ra_hours=coords[0],
+                    dec_degrees=coords[1],
+                )
+        parent = mosaic_group_title(tracked_name or name)
+        parent_coords = self._cached_catalog_coords(parent) if parent else None
+        if parent_coords is None and parent:
+            parent_coords = self._commanded_sky_coords(parent)
+        if parent_coords is not None:
+            return Target(name=parent, ra_hours=parent_coords[0], dec_degrees=parent_coords[1])
+        view = self._sky_view_center()
+        if view is not None:
+            return view
+        return None
+
+    def _sky_view_center(self) -> Target | None:
+        store = QSettings()
+        store.beginGroup("sky")
+        saved = store.value("viewSaved", False)
+        ra = store.value("viewRaHours")
+        dec = store.value("viewDecDegrees")
+        store.endGroup()
+        flagged = saved in {True, 1, "1"} or str(saved).strip().lower() in {"true", "yes"}
+        coords = self._target_coords({"ra_hours": ra, "dec_degrees": dec})
+        if coords is None or not flagged:
+            return None
+        return Target(name="FOV centre", ra_hours=coords[0], dec_degrees=coords[1])
+
+    def _preview_pane_payload(self, panes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        for pane in panes:
+            if not isinstance(pane, dict):
+                continue
+            try:
+                index = max(1, int(pane.get("index") or 0))
+                ra = float(pane["ra_hours"])
+                dec = float(pane["dec_degrees"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if ra != ra or dec != dec:
+                continue
+            try:
+                row = int(pane.get("row") or 0)
+                column = int(pane.get("column") or 0)
+            except (TypeError, ValueError):
+                row = column = 0
+            payload.append({
+                "index": index,
+                "ra_hours": ra,
+                "dec_degrees": dec,
+                "row": row,
+                "column": column,
+            })
+        return payload
+
+    def _cache_sky_preview_panes(
+        self, panes: list[dict[str, Any]], columns: int, rows: int, overlap: float
+    ) -> None:
+        payload = self._preview_pane_payload(panes)
+        if len(payload) < 2:
+            return
+        self._sky_preview_panes = payload
+        self._sky_preview_key = (int(columns), int(rows), round(float(overlap), 4))
+
+    def _cached_sky_preview_panes(
+        self, columns: int, rows: int, overlap: float
+    ) -> list[dict[str, Any]]:
+        key = (int(columns), int(rows), round(float(overlap), 4))
+        if self._sky_preview_key != key:
+            return []
+        panes = self._preview_pane_payload(self._sky_preview_panes)
+        if len(panes) < 2:
+            return []
+        points = {
+            (round(float(item["ra_hours"]), 5), round(float(item["dec_degrees"]), 5))
+            for item in panes
+        }
+        if len(points) < 2:
+            return []
+        return panes
+
+    def _live_mosaic_for(self, device_id: str = "") -> dict[str, Any] | None:
+        owner = str(device_id or self._selected_device_id or "")
+        return self._live_mosaic.get(owner)
+
+    def _live_mosaic_panes(self, live: dict[str, Any]) -> list[dict[str, Any]]:
+        panes = live.get("panes")
+        if isinstance(panes, list) and panes:
+            return [dict(item) for item in panes if isinstance(item, dict)]
+        payload: list[dict[str, Any]] = []
+        for index, member in enumerate(list(live.get("members") or []), start=1):
+            if not isinstance(member, Session):
+                continue
+            target = member.target
+            if target.ra_hours is None or target.dec_degrees is None:
+                continue
+            payload.append({
+                "index": index,
+                "ra_hours": float(target.ra_hours),
+                "dec_degrees": float(target.dec_degrees),
+                "name": member.name,
+                "row": int(member.mosaic.row or 0),
+                "column": int(member.mosaic.column or 0),
+            })
+        return payload
+
+    def _hydrate_live_mosaic(self, device_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+        panes = payload.get("panes")
+        if not isinstance(panes, list) or len(panes) < 2:
+            return None
+        try:
+            columns = max(1, int(payload.get("columns") or 1))
+            rows = max(1, int(payload.get("rows") or 1))
+            current_index = max(1, int(payload.get("current_index") or 1))
+        except (TypeError, ValueError):
+            return None
+        group_id = str(payload.get("group") or f"live-mosaic-{device_id[:8]}")
+        members: list[Session] = []
+        cleaned: list[dict[str, Any]] = []
+        for pane in panes:
+            if not isinstance(pane, dict):
+                continue
+            try:
+                index = max(1, int(pane.get("index") or 0))
+                ra = float(pane["ra_hours"])
+                dec = float(pane["dec_degrees"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if ra != ra or dec != dec:
+                continue
+            name = str(pane.get("name") or f"Pane {index}").strip() or f"Pane {index}"
+            try:
+                row = int(pane.get("row") or 0)
+                column = int(pane.get("column") or 0)
+            except (TypeError, ValueError):
+                row = column = 0
+            members.append(
+                Session(
+                    name=name,
+                    target=Target(
+                        name=mosaic_group_title(name, group_id),
+                        kind=TargetKind.EQUATORIAL,
+                        ra_hours=ra,
+                        dec_degrees=dec,
+                    ),
+                    device_id=device_id,
+                    scheduled_start=datetime.now(timezone.utc).isoformat(),
+                    mosaic=Mosaic(
+                        group_id=group_id,
+                        grid_rows=rows,
+                        grid_columns=columns,
+                        row=row,
+                        column=column,
+                    ),
+                    status=SessionStatus.RUNNING if index == current_index else SessionStatus.PLANNED,
+                    current_step=str(payload.get("phase") or "Recovered after restart"),
+                )
+            )
+            cleaned.append({
+                "index": index,
+                "ra_hours": ra,
+                "dec_degrees": dec,
+                "name": name,
+                "row": row,
+                "column": column,
+            })
+            self._remember_named_sky_coords(name, ra, dec)
+        if len(members) < 2:
+            return None
+        current = members[min(current_index, len(members)) - 1]
+        return {
+            "group": group_id,
+            "columns": columns,
+            "rows": rows,
+            "total": max(int(payload.get("total") or 0), len(members)),
+            "current_index": min(current_index, len(members)),
+            "phase": str(payload.get("phase") or "recovered") or "recovered",
+            "label": str(payload.get("label") or current.name),
+            "camera": str(payload.get("camera") or "tele"),
+            "members": members,
+            "current": current,
+            "panes": cleaned,
+            "stopping": False,
+        }
+
+    def _live_mosaic_persist_payload(self, device_id: str, live: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "device_id": device_id,
+            "group": live.get("group"),
+            "columns": live.get("columns"),
+            "rows": live.get("rows"),
+            "total": live.get("total"),
+            "current_index": live.get("current_index"),
+            "phase": live.get("phase"),
+            "label": live.get("label"),
+            "camera": live.get("camera") or "tele",
+            "panes": self._live_mosaic_panes(live),
+        }
+
+    def _persist_live_mosaic(self, device_id: str) -> None:
+        live = self._live_mosaic.get(device_id)
+        if not live or not live.get("phase"):
+            self.store.clear_live_mosaic(device_id)
+            return
+        self.store.save_live_mosaic(device_id, self._live_mosaic_persist_payload(device_id, live))
+
+    def _restore_live_mosaics(self) -> None:
+        recovered = 0
+        for device_id, payload in self.store.load_live_mosaics().items():
+            live = self._hydrate_live_mosaic(device_id, payload)
+            if not live:
+                self.store.clear_live_mosaic(device_id)
+                continue
+            self._live_mosaic[device_id] = live
+            recovered += 1
+            if device_id == self._selected_device_id:
+                self.mosaic_frames.set_layout(
+                    int(live.get("columns") or 1),
+                    int(live.get("rows") or 1),
+                    int(live.get("current_index") or 1),
+                    True,
+                    str(live.get("group") or ""),
+                )
+                self.mosaicPreviewChanged.emit()
+        if recovered:
+            self.add_log("warning", f"Recovered {recovered} interrupted mosaic(s)")
+
+    def _maybe_resume_interrupted_mosaic(self, device_id: str, *, allow_idle: bool = False) -> None:
+        if device_id in self._resume_mosaic_attempted or self._active_sessions.get(device_id):
+            return
+        live = self._live_mosaic.get(device_id)
+        if not live or not live.get("phase") or live.get("worker_running"):
+            return
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected or worker.busy:
+            return
+        capturing = self._telemetry_capturing(device_id)
+        if not capturing and not allow_idle:
+            return
+        plan = live_mosaic_resume_plan(
+            str(live.get("phase") or ""),
+            int(live.get("current_index") or 1),
+            int(live.get("total") or 0),
+            capturing,
+        )
+        if plan is None:
+            self._resume_mosaic_attempted.add(device_id)
+            live["phase"] = ""
+            self.store.clear_live_mosaic(device_id)
+            self.add_log("notice", "Interrupted mosaic already finished on the telescope", device_id)
+            self.mosaicPreviewChanged.emit()
+            self._notify_devices()
+            return
+        start_index, join_current = plan
+        self._resume_mosaic_attempted.add(device_id)
+        self._resume_live_mosaic(device_id, start_index, join_current)
+
+    def _resume_live_mosaic(self, device_id: str, start_index: int, join_current: bool) -> None:
+        worker = self._workers.get(device_id)
+        live = self._live_mosaic.get(device_id)
+        if not worker or not live:
+            return
+        panes = self._live_mosaic_panes(live)
+        if len(panes) < 2:
+            self.store.clear_live_mosaic(device_id)
+            return
+        live["panes"] = panes
+        live["worker_running"] = True
+        live["phase"] = "stacking" if join_current else "goto"
+        live["current_index"] = start_index
+        if 1 <= start_index <= len(list(live.get("members") or [])):
+            members = list(live["members"])
+            current = replace(members[start_index - 1], status=SessionStatus.RUNNING, current_step="Joining mosaic")
+            members[start_index - 1] = current
+            live["members"] = members
+            live["current"] = current
+            live["label"] = current.name
+        worker.busy = True
+        worker.availabilityChanged.emit()
+        self.mosaic_frames.set_layout(
+            int(live.get("columns") or 1),
+            int(live.get("rows") or 1),
+            start_index,
+            True,
+            str(live.get("group") or ""),
+        )
+        self.mosaicPreviewChanged.emit()
+        self._persist_live_mosaic(device_id)
+        grid = f"{int(live.get('columns') or 1)}×{int(live.get('rows') or 1)}"
+        self.add_log("notice", f"Mosaic resumed · {grid} from pane {start_index}", device_id)
+        self._toast(
+            "Mosaic resumed",
+            "info",
+            f"Joining pane {start_index} of {int(live.get('total') or start_index)}",
+        )
+
+        def done(ok: bool, result: Any) -> None:
+            self._finish_live_mosaic(device_id, ok, result)
+
+        worker.send(
+            "stack_mosaic",
+            {
+                "panes": panes,
+                "camera": str(live.get("camera") or "tele"),
+                "start_index": start_index,
+                "join_current": join_current,
+            },
+            callback=done,
+        )
+        self._notify_devices()
+
     @Property(bool, constant=True)
     def webViewAvailable(self) -> bool:
         return self._web_view_available
@@ -2001,6 +2515,14 @@ class AppBackend(QObject):
     @Slot("QVariantMap", result=str)
     def skyWebViewScript(self, payload: Any = None) -> str:
         return sky_web_view_script(payload if isinstance(payload, dict) else {})
+
+    @Slot("QVariantMap", result=str)
+    def skyWebLockTargetScript(self, payload: Any = None) -> str:
+        return sky_web_lock_target_script(payload if isinstance(payload, dict) else {})
+
+    @Slot(float, float, result=str)
+    def skyWebViewPosScript(self, ra_hours: float, dec_degrees: float) -> str:
+        return sky_web_view_pos_script(ra_hours, dec_degrees)
 
     @Slot(str, bool, float, int, result=str)
     def skyWebLiveScript(self, data_url: str, enabled: bool, opacity: float = 0.65, live_pane: int = 0) -> str:
@@ -2058,6 +2580,443 @@ class AppBackend(QObject):
         self._sky_target = target
         self.skyTargetChanged.emit()
 
+    def _target_coords(self, source: Any) -> tuple[float, float] | None:
+        if source is None:
+            return None
+        if isinstance(source, dict):
+            ra = source.get("ra_hours")
+            dec = source.get("dec_degrees")
+        else:
+            ra = getattr(source, "ra_hours", None)
+            dec = getattr(source, "dec_degrees", None)
+        try:
+            ra_h = float(ra)
+            dec_d = float(dec)
+        except (TypeError, ValueError):
+            return None
+        if ra_h != ra_h or dec_d != dec_d:
+            return None
+        return ((ra_h % 24.0) + 24.0) % 24.0, max(-90.0, min(90.0, dec_d))
+
+    def _remember_track_target(self, result: Any, fallback_name: str = "") -> None:
+        data = result if isinstance(result, dict) else {}
+        coords = self._target_coords(data)
+        name = str(data.get("name") or fallback_name or "").strip()
+        if coords is None and self._sky_target is not None:
+            coords = self._target_coords(self._sky_target)
+            name = name or str(self._sky_target.name or "")
+        if coords is None:
+            session = self._current_session_view or {}
+            coords = self._target_coords(session.get("target"))
+            name = name or str(session.get("target_name") or "")
+        if coords is None:
+            return
+        self._remember_named_sky_coords(name, coords[0], coords[1])
+        if is_mosaic_pane_name(name):
+            self._set_preview_coords(name, coords)
+            return
+        current = self._named_sky_coords(name)
+        if current is not None:
+            self._set_sky_target(Target(name=name or "Tracked target", ra_hours=current[0], dec_degrees=current[1]))
+            return
+        self._set_sky_target(Target(name=name or "Tracked target", ra_hours=coords[0], dec_degrees=coords[1]))
+
+    def _remember_named_sky_coords(self, name: str, ra_hours: Any, dec_degrees: Any) -> None:
+        label = str(name or "").strip()
+        coords = self._target_coords({"ra_hours": ra_hours, "dec_degrees": dec_degrees})
+        if not label or coords is None:
+            return
+        self._sky_named_coords[label.lower()] = {
+            "name": label,
+            "ra_hours": coords[0],
+            "dec_degrees": coords[1],
+            "source": "commanded",
+        }
+
+    def _commanded_sky_coords(self, name: str) -> tuple[float, float] | None:
+        text = str(name or "").strip()
+        if not text:
+            return None
+        coords = self._target_coords(self._sky_named_coords.get(text.lower()))
+        if coords is not None:
+            return coords
+        wanted = self._normalize_target_name(text)
+        if wanted:
+            for key, item in self._sky_named_coords.items():
+                if self._normalize_target_name(key) == wanted:
+                    coords = self._target_coords(item)
+                    if coords is not None:
+                        return coords
+        live = self._live_mosaic_for()
+        if not live:
+            return None
+        index = mosaic_pane_index(text) if is_mosaic_pane_name(text) else None
+        parent = mosaic_group_title(text)
+        for pane in self._live_mosaic_panes(live):
+            pane_name = str(pane.get("name") or "")
+            if wanted and self._normalize_target_name(pane_name) == wanted:
+                coords = self._target_coords(pane)
+                if coords is not None:
+                    return coords
+            if index is not None and int(pane.get("index") or 0) == index:
+                pane_parent = mosaic_group_title(pane_name)
+                if not parent or not pane_parent or parent.casefold() == pane_parent.casefold():
+                    coords = self._target_coords(pane)
+                    if coords is not None:
+                        return coords
+        return None
+
+    def _normalize_target_name(self, name: str) -> str:
+        text = str(name or "").lower().replace("γ", "gamma").replace("*", " ")
+        text = re.sub(r"\b(name|catalogue|catalog)\b", " ", text)
+        return re.sub(r"[^a-z0-9]+", "", text)
+
+    def _target_names_match(self, left: str, right: str) -> bool:
+        first = self._normalize_target_name(left)
+        second = self._normalize_target_name(right)
+        if not first or not second:
+            return False
+        if first == second:
+            return True
+        if is_mosaic_pane_name(left) or is_mosaic_pane_name(right):
+            return False
+        shorter, longer = (first, second) if len(first) <= len(second) else (second, first)
+        return len(shorter) >= 8 and shorter in longer
+
+    def _is_catalog_hit(self, hit: Any) -> bool:
+        return isinstance(hit, dict) and str(hit.get("source") or "") == "catalog" and self._target_coords(hit) is not None
+
+    def _catalog_hit_for(self, name: str) -> dict[str, Any] | None:
+        text = str(name or "").strip()
+        if not text:
+            return None
+        hit = self._sky_catalog_cache.get(text.lower())
+        if self._is_catalog_hit(hit):
+            return hit
+        if is_mosaic_pane_name(text):
+            return None
+        wanted = self._normalize_target_name(text)
+        for key, item in self._sky_catalog_cache.items():
+            if not self._is_catalog_hit(item):
+                continue
+            if self._normalize_target_name(key) == wanted or self._target_names_match(key, text):
+                return item
+            aliases = item.get("aliases") or []
+            if any(self._target_names_match(str(alias), text) for alias in aliases):
+                return item
+        return None
+
+    def _cached_catalog_coords(self, name: str) -> tuple[float, float] | None:
+        return self._target_coords(self._catalog_hit_for(name))
+
+    def _named_sky_coords(self, name: str) -> tuple[float, float] | None:
+        return self._commanded_sky_coords(name) or self._cached_catalog_coords(name)
+
+    @Property("QVariantMap", notify=skyTargetChanged)
+    def trackedSkyTarget(self) -> dict[str, Any]:
+        device_id = str(self._selected_device_id or "")
+        telemetry = self._device_telemetry.get(device_id) or {}
+        tracking = telemetry.get("tracking_state") == "running"
+        dso = telemetry.get("shooting_mode") == 2
+        name = str(telemetry.get("capture_target") or telemetry.get("tracking_target") or "").strip()
+        if not name and self._sky_target is not None:
+            name = str(self._sky_target.name or "").strip()
+        coords = self._named_sky_coords(name)
+        return {
+            "name": name,
+            "ra_hours": coords[0] if coords else None,
+            "dec_degrees": coords[1] if coords else None,
+            "tracking": tracking,
+            "dso": dso,
+            "available": bool(name or coords),
+        }
+
+    def _apply_catalog_hit(
+        self, device_id: str, hit: dict[str, Any], *, announce: bool, query_name: str = ""
+    ) -> None:
+        coords = self._target_coords(hit)
+        catalog_name = str(hit.get("name") or "").strip()
+        name = str(query_name or catalog_name).strip()
+        if coords is None or not name or is_mosaic_pane_name(name) or is_mosaic_pane_name(catalog_name):
+            return
+        stored = dict(hit)
+        stored["name"] = name
+        stored["source"] = "catalog"
+        keys = [catalog_name.lower()]
+        if not is_mosaic_pane_name(name):
+            keys.append(name.lower())
+        for alias in stored.get("aliases") or []:
+            alias_text = str(alias).strip()
+            if alias_text and not is_mosaic_pane_name(alias_text):
+                keys.append(alias_text.lower())
+        for key in keys:
+            if key:
+                self._sky_catalog_cache[key] = stored
+        if device_id == self._selected_device_id:
+            self._set_sky_target(Target(name=name, ra_hours=coords[0], dec_degrees=coords[1]))
+            self._set_preview_coords(name, coords)
+        if announce:
+            self.add_log(
+                "info",
+                f"Catalog position for {name}: {self._format_sky_coords(coords)} "
+                "(firmware reports the target name only, not RA/Dec)",
+                device_id,
+            )
+
+    def _schedule_catalog_resolve(self, device_id: str, name: str) -> None:
+        text = str(name or "").strip()
+        if not text:
+            return
+        commanded = self._commanded_sky_coords(text)
+        if commanded is not None:
+            self._set_preview_coords(text, commanded)
+            if self._catalog_resolve_key == f"{device_id}:{text.lower()}":
+                self._catalog_resolve_key = ""
+            return
+        if is_mosaic_pane_name(text):
+            return
+        cached = self._catalog_hit_for(text)
+        if cached:
+            self._apply_catalog_hit(device_id, cached, announce=False, query_name=text)
+            return
+        key = f"{device_id}:{text.lower()}"
+        if key == self._catalog_resolve_key:
+            return
+        retry_at = self._catalog_resolve_cooldown.get(key, 0.0)
+        if retry_at and time.monotonic() < retry_at:
+            return
+        self._catalog_resolve_key = key
+
+        def run() -> None:
+            try:
+                hit = resolve_sky_catalog_target(text)
+                self._asyncResult.emit(
+                    "skyCatalogResolve",
+                    (True, {"device_id": device_id, "name": text, "hit": hit}),
+                )
+            except Exception as exc:
+                self._asyncResult.emit(
+                    "skyCatalogResolve",
+                    (False, {"device_id": device_id, "name": text, "error": str(exc)}),
+                )
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _format_sky_coords(self, coords: tuple[float, float] | None) -> str:
+        if coords is None:
+            return ""
+        ra, dec = coords
+        return f"RA {ra:.3f}h DEC {dec:+.3f}°"
+
+    def _set_live_pointing(self, device_id: str, ra_hours: float, dec_degrees: float) -> None:
+        coords = self._target_coords({"ra_hours": ra_hours, "dec_degrees": dec_degrees})
+        if coords is None:
+            return
+        if self._live_pointing.get(device_id) == coords:
+            return
+        self._live_pointing[device_id] = coords
+
+    def _set_preview_coords(self, name: str, coords: tuple[float, float] | None) -> None:
+        text = self._format_sky_coords(coords) if coords is not None else ""
+        label = str(name or "").strip()
+        if text == self._preview_coord_text and label == self._preview_coord_name:
+            return
+        self._preview_coord_text = text
+        self._preview_coord_name = label
+        self.previewSkyCoordsChanged.emit()
+        self.skyTargetChanged.emit()
+
+    def _clear_preview_coords(self) -> None:
+        self._set_preview_coords("", None)
+
+    def _refresh_tracked_catalog(self, device_id: str) -> None:
+        telemetry = self._device_telemetry.get(device_id) or {}
+        name = str(telemetry.get("capture_target") or telemetry.get("tracking_target") or "").strip()
+        tracking = telemetry.get("tracking_state") == "running"
+        if device_id == self._selected_device_id and (not tracking or not name):
+            self._clear_preview_coords()
+            return
+        if tracking and name:
+            self._schedule_catalog_resolve(device_id, name)
+
+    def _selected_sky_coords(self) -> tuple[float, float] | None:
+        if not self._preview_coord_text:
+            return None
+        return self._cached_catalog_coords(self._preview_coord_name)
+
+    @Slot(str, float, float)
+    def setSkyMapTarget(self, name: str, ra_hours: float, dec_degrees: float) -> None:
+        coords = self._target_coords({"ra_hours": ra_hours, "dec_degrees": dec_degrees})
+        label = str(name or "").strip() or "Sky map target"
+        if coords is None:
+            return
+        current = str(
+            (self._device_telemetry.get(str(self._selected_device_id or "")) or {}).get("tracking_target")
+            or (self._device_telemetry.get(str(self._selected_device_id or "")) or {}).get("capture_target")
+            or ""
+        ).strip()
+        if (
+            not current
+            or self._target_names_match(current, label)
+            or sky_names_related(current, label)
+        ):
+            if is_mosaic_pane_name(label):
+                self._remember_named_sky_coords(label, coords[0], coords[1])
+                self._set_preview_coords(label, coords)
+                return
+            self._set_sky_target(Target(name=label, ra_hours=coords[0], dec_degrees=coords[1]))
+
+    @Property(str, notify=previewSkyCoordsChanged)
+    def previewSkyCoordText(self) -> str:
+        return self._preview_coord_text
+
+    @Property(bool, notify=previewSkyCoordsChanged)
+    def previewSkyCoordVisible(self) -> bool:
+        return bool(self._preview_coord_text)
+
+    @Property("QVariantMap", notify=previewSkyCoordsChanged)
+    def previewSkyCoords(self) -> dict[str, Any]:
+        coords = self._selected_sky_coords()
+        if coords is None or not self._preview_coord_text:
+            return {"visible": False, "text": "", "ra_hours": None, "dec_degrees": None}
+        return {
+            "visible": True,
+            "text": self._preview_coord_text,
+            "ra_hours": coords[0],
+            "dec_degrees": coords[1],
+        }
+
+    def _maybe_poll_sky_pointing(self) -> None:
+        if self._sky_lock_inflight or self._pointing_inflight:
+            return
+        device_id = str(self._selected_device_id or "")
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            return
+        if self._pending_actions.get(device_id):
+            return
+        now = time.monotonic()
+        if now - self._pointing_polled_at < 8.0:
+            return
+        self._pointing_polled_at = now
+        self._pointing_inflight = True
+
+        def done(ok: bool, result: Any) -> None:
+            self._pointing_inflight = False
+            if not ok or not isinstance(result, dict):
+                return
+            coords = self._target_coords(result)
+            if coords is None:
+                return
+            self._set_live_pointing(device_id, coords[0], coords[1])
+
+        worker.send("sky_pointing", {}, callback=done)
+
+    def _sky_lock_payload(self, name: str, coords: tuple[float, float], aliases: list[str] | None = None) -> dict[str, Any]:
+        label = str(name or "").strip() or "Tracked target"
+        extra = [str(item).strip() for item in (aliases or []) if str(item or "").strip()]
+        return {
+            "name": label,
+            "ra_hours": coords[0],
+            "dec_degrees": coords[1],
+            "aliases": extra,
+        }
+
+    def _emit_sky_lock(self, name: str, coords: tuple[float, float], aliases: list[str] | None = None) -> None:
+        payload = self._sky_lock_payload(name, coords, aliases)
+        self._set_sky_target(Target(name=payload["name"], ra_hours=coords[0], dec_degrees=coords[1]))
+        self.skyLockRequested.emit(payload)
+
+    def _request_sky_pointing(self, name: str) -> None:
+        device_id = str(self._selected_device_id or "")
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            self._sky_lock_inflight = False
+            self._toast("Connect a telescope before locking the sky map", "warning")
+            return
+
+        def done(ok: bool, result: Any) -> None:
+            self._sky_lock_inflight = False
+            data = result if isinstance(result, dict) else {}
+            coords = self._target_coords(data) if ok else None
+            if coords is None:
+                label = str(name or "").strip() or "the tracked target"
+                self._toast(
+                    "Could not lock that target on the sky map",
+                    "warning",
+                    f"No catalog match or mount pointing for {label}",
+                )
+                return
+            self._set_live_pointing(device_id, coords[0], coords[1])
+            label = str(data.get("name") or name or "Tracked target")
+            try:
+                az_text = f"{float(data.get('az')):.2f}"
+                alt_text = f"{float(data.get('alt')):.2f}"
+            except (TypeError, ValueError):
+                az_text = alt_text = "?"
+            self.add_log(
+                "warning",
+                f"Motor-derived pointing {self._format_sky_coords(coords)} "
+                f"(az {az_text}° alt {alt_text}°) for {label}. "
+                "Firmware does not publish tracked RA/Dec; this is only a mount estimate.",
+                device_id,
+            )
+            self._emit_sky_lock(label, coords)
+
+        worker.send("sky_pointing", {}, callback=done)
+
+    @Slot()
+    def lockSkyToTrackedTarget(self) -> None:
+        target = self.trackedSkyTarget
+        if not target.get("available"):
+            self._toast("No tracked DSO target to show on the sky map", "warning")
+            return
+        if self._sky_lock_inflight:
+            return
+        name = str(target.get("name") or "").strip() or "Tracked target"
+        commanded = self._commanded_sky_coords(name)
+        cached = None if is_mosaic_pane_name(name) else self._catalog_hit_for(name)
+        coords = commanded or self._target_coords(cached) or self._target_coords(target)
+        if coords is not None and commanded is not None:
+            self._emit_sky_lock(name, coords)
+            return
+        if coords is not None and self._is_catalog_hit(cached):
+            self._emit_sky_lock(name, coords, list(cached.get("aliases") or []))
+            return
+        if is_mosaic_pane_name(name):
+            self._toast(
+                "Could not lock that target on the sky map",
+                "warning",
+                f"No stored pane coordinates for {name}",
+            )
+            return
+        self._sky_lock_inflight = True
+
+        def work() -> dict[str, Any]:
+            resolved = resolve_sky_catalog_target(name)
+            return resolved or {"need_pointing": True, "name": name}
+
+        def run() -> None:
+            try:
+                self._asyncResult.emit("skyLockResolve", (True, work()))
+            except Exception as exc:
+                self._asyncResult.emit("skyLockResolve", (False, str(exc)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    @Slot(str, str)
+    def reportSkyLockResult(self, status: str, name: str = "") -> None:
+        state = str(status or "").strip().lower()
+        label = str(name or "").strip() or "the tracked target"
+        if state == "missing":
+            self._toast(
+                "Could not lock that target on the sky map",
+                "warning",
+                f"Stellarium Web does not recognize {label}",
+            )
+        elif state == "error":
+            self._toast("Could not lock that target on the sky map", "error")
+
     def _device_fov(
         self, device_id: str = "", camera: Camera | str | None = None
     ) -> tuple[float, float, str]:
@@ -2072,7 +3031,9 @@ class AppBackend(QObject):
             fov_v = float(telemetry.get(f"{prefix}_fov_v") or 0)
         except (TypeError, ValueError):
             fov_h = fov_v = 0.0
-        if fov_h <= 0 or fov_v <= 0:
+        # Firmware sometimes reports a near-zero stub. Treat that as missing so
+        # mosaic pane offsets use the published camera FOV instead of collapsing.
+        if fov_h < 0.2 or fov_v < 0.2:
             model = device.model if device is not None else DeviceModel.DWARF_3
             fov_h, fov_v = camera_fov(model, choice)
         return fov_h, fov_v, choice.value
@@ -2091,6 +3052,14 @@ class AppBackend(QObject):
 
     def _mosaic_context(self, device_id: str = "") -> tuple[Session | None, list[Session]]:
         owner = str(device_id or self._selected_device_id or "")
+        live = self._live_mosaic.get(owner)
+        if live:
+            members = list(live.get("members") or [])
+            current = live.get("current")
+            if isinstance(current, Session):
+                return current, members or [current]
+            if members:
+                return members[0], members
         session_id = self._active_sessions.get(owner)
         session = self.store.sessions.get(session_id) if session_id else None
         if session is None:
@@ -2122,6 +3091,12 @@ class AppBackend(QObject):
         return columns, rows, index, group
 
     def _mosaic_is_active(self, session: Session | None, members: list[Session]) -> bool:
+        if session is not None and any(
+            live.get("group") == (session.mosaic.group_id or "")
+            for live in self._live_mosaic.values()
+            if isinstance(live, dict)
+        ):
+            return True
         if session is None:
             return False
         columns, rows, _index, _group = self._mosaic_layout(session, members)
@@ -2225,12 +3200,29 @@ class AppBackend(QObject):
     @Property("QVariantMap", notify=mosaicPreviewChanged)
     def mosaicPreview(self) -> dict[str, Any]:
         active, columns, rows, current, images = self.mosaic_frames.snapshot()
+        live = self._live_mosaic_for()
+        current_session = live.get("current") if live else None
+        session, _members = (None, [])
+        if current_session is None:
+            session, _members = self._mosaic_context()
+            if session is not None:
+                current_session = session
+        target = current_session.target if isinstance(current_session, Session) else None
+        phase = str((live or {}).get("phase") or "")
+        if not phase and isinstance(session, Session) and session.status == SessionStatus.RUNNING:
+            if not session.mosaic.imported_plan and session.mosaic.panes > 1:
+                phase = "stacking"
         return {
-            "active": active and (columns > 1 or rows > 1),
-            "columns": columns,
-            "rows": rows,
-            "current_index": current,
-            "live_pane": current if active else 0,
+            "active": bool(live and live.get("phase")) or (active and (columns > 1 or rows > 1)),
+            "columns": int((live or {}).get("columns") or columns),
+            "rows": int((live or {}).get("rows") or rows),
+            "current_index": int((live or {}).get("current_index") or current or 0),
+            "live_pane": int((live or {}).get("current_index") or current or 0) if (live or active) else 0,
+            "total": int((live or {}).get("total") or (columns * rows) or 0),
+            "phase": phase,
+            "label": str((live or {}).get("label") or (current_session.name if isinstance(current_session, Session) else "")),
+            "ra_hours": getattr(target, "ra_hours", None) if target is not None else None,
+            "dec_degrees": getattr(target, "dec_degrees", None) if target is not None else None,
             "completed": sorted(images),
         }
 
@@ -2262,11 +3254,19 @@ class AppBackend(QObject):
             "panes": [],
             "mode": "center",
         }
+        snapshot = self._snapshot_web_raw(web_raw)
+        if isinstance(snapshot, str) and snapshot:
+            try:
+                parsed = json.loads(snapshot)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                snapshot = parsed
         target: Target | None
         try:
-            target = parse_sky_web_target(self._snapshot_web_raw(web_raw))
+            target = parse_sky_web_target(snapshot)
         except (TypeError, ValueError, json.JSONDecodeError):
-            target = self._sky_target
+            target = None
         grid_ok = True
         try:
             columns_n = int(columns)
@@ -2279,6 +3279,16 @@ class AppBackend(QObject):
             payload["columns"] = columns_n
             payload["rows"] = rows_n
             payload["overlap"] = max(0.0, min(0.8, overlap_n))
+        view_ra = view_dec = float("nan")
+        if isinstance(snapshot, dict):
+            try:
+                view_ra = float(snapshot.get("view_ra_hours"))
+                view_dec = float(snapshot.get("view_dec_degrees"))
+            except (TypeError, ValueError):
+                view_ra = view_dec = float("nan")
+            if view_ra == view_ra and view_dec == view_dec:
+                payload["view_ra_hours"] = view_ra
+                payload["view_dec_degrees"] = view_dec
         if target is not None and target.ra_hours is not None and target.dec_degrees is not None:
             payload["target_ra_hours"] = float(target.ra_hours)
             payload["target_dec_degrees"] = float(target.dec_degrees)
@@ -2314,10 +3324,16 @@ class AppBackend(QObject):
                     return sky_web_fov_script(payload)
                 except ValueError:
                     pass
-        if target is not None and target.ra_hours is not None and target.dec_degrees is not None and grid_ok:
+        center = target
+        if (
+            (center is None or center.ra_hours is None or center.dec_degrees is None)
+            and view_ra == view_ra
+        ):
+            center = Target(name="FOV centre", ra_hours=view_ra, dec_degrees=view_dec)
+        if center is not None and center.ra_hours is not None and center.dec_degrees is not None and grid_ok:
             try:
                 payload["panes"] = mosaic_pane_footprints(
-                    target,
+                    center,
                     columns_n,
                     rows_n,
                     fov_h,
@@ -2327,6 +3343,14 @@ class AppBackend(QObject):
                     position_angle=payload["position_angle"],
                 )
                 payload["mode"] = "panes"
+                self._sky_mosaic_center = Target(
+                    name=str(center.name or "Sky target"),
+                    ra_hours=float(center.ra_hours),
+                    dec_degrees=float(center.dec_degrees),
+                )
+                self._cache_sky_preview_panes(
+                    payload["panes"], columns_n, rows_n, payload["overlap"]
+                )
             except ValueError:
                 payload["mode"] = "center"
         return sky_web_fov_script(payload)
@@ -2372,6 +3396,10 @@ class AppBackend(QObject):
         if self._telemetry_tick % 15 == 0 and any(worker.connected for worker in self._workers.values()):
             # Refresh the derived "stale" markers even when the device is quiet.
             self._notify_devices()
+        if self._telemetry_tick % 20 == 0:
+            device_id = str(self._selected_device_id or "")
+            if device_id:
+                self._refresh_tracked_catalog(device_id)
         self._scheduler_tick()
 
     @Property(bool, notify=schedulerEnabledChanged)
@@ -2728,39 +3756,91 @@ class AppBackend(QObject):
                 # legacy tele open command can hang after wide was opened.
                 after_cameras(True, result)
                 return
-            primary_op = "open_wide_camera" if device.camera == Camera.WIDE else "open_camera"
-            secondary_op = "open_camera" if device.camera == Camera.WIDE else "open_wide_camera"
+            self._open_legacy_preview_cameras(worker, device, token, after_cameras)
 
-            def after_primary(primary_ok: bool, primary_result: Any) -> None:
-                if token != self._preview_token:
-                    return
-                if not primary_ok:
-                    after_cameras(False, primary_result)
-                    return
-
-                def after_secondary(secondary_ok: bool, secondary_result: Any) -> None:
-                    if token != self._preview_token:
-                        return
-                    if not secondary_ok:
-                        self.add_log(
-                            "warning",
-                            f"Second camera did not open for picture-in-picture: {secondary_result}",
-                            device_id,
-                        )
-                    after_cameras(True, primary_result)
-
-                worker.send(secondary_op, callback=after_secondary)
-
-            worker.send(primary_op, callback=after_primary)
+        preserve_mode = preview_should_preserve_shooting_mode(
+            self._device_telemetry.get(device_id),
+            device.control_settings.shooting_mode,
+        )
 
         def after_live(ok: bool, result: Any) -> None:
             if token != self._preview_token:
                 return
             if not ok:
                 self.add_log("warning", f"Could not close previous capture: {result}", device_id)
+            if preserve_mode:
+                self.add_log("info", "Opening live cameras without changing shooting mode", device_id)
+                self._open_preview_without_mode_switch(worker, device, token, after_cameras)
+                return
             worker.send("photo_mode", callback=after_photo)
 
         worker.send("go_live", callback=after_live)
+
+    def _open_legacy_preview_cameras(
+        self,
+        worker: Any,
+        device: Device,
+        token: int,
+        after_cameras: Callable[[bool, Any], None],
+    ) -> None:
+        primary_op = "open_wide_camera" if device.camera == Camera.WIDE else "open_camera"
+        secondary_op = "open_camera" if device.camera == Camera.WIDE else "open_wide_camera"
+
+        def after_primary(primary_ok: bool, primary_result: Any) -> None:
+            if token != self._preview_token:
+                return
+            if not primary_ok:
+                after_cameras(False, primary_result)
+                return
+
+            def after_secondary(secondary_ok: bool, secondary_result: Any) -> None:
+                if token != self._preview_token:
+                    return
+                if not secondary_ok:
+                    self.add_log(
+                        "warning",
+                        f"Second camera did not open for picture-in-picture: {secondary_result}",
+                        device.id,
+                    )
+                after_cameras(True, primary_result)
+
+            worker.send(secondary_op, callback=after_secondary)
+
+        worker.send(primary_op, callback=after_primary)
+
+    def _open_preview_without_mode_switch(
+        self,
+        worker: Any,
+        device: Device,
+        token: int,
+        after_cameras: Callable[[bool, Any], None],
+    ) -> None:
+        """Open RTSP cameras while leaving DSO / solar / tracking alone."""
+        if device.model not in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
+            self._open_legacy_preview_cameras(worker, device, token, after_cameras)
+            return
+
+        def after_enter(ok: bool, result: Any) -> None:
+            if token != self._preview_token:
+                return
+            if not ok:
+                after_cameras(False, result)
+                return
+
+            def after_wide(wide_ok: bool, wide_result: Any) -> None:
+                if token != self._preview_token:
+                    return
+                if not wide_ok:
+                    self.add_log(
+                        "warning",
+                        f"Wide camera did not open for picture-in-picture: {wide_result}",
+                        device.id,
+                    )
+                after_cameras(True, result)
+
+            worker.send("open_wide_camera", callback=after_wide)
+
+        worker.send("enter_camera", callback=after_enter)
 
     def _arm_preview_ui(self, status: str) -> int:
         self._clear_preview_result()
@@ -3208,6 +4288,18 @@ class AppBackend(QObject):
         if mode_changed or urls_changed:
             was_stacking = self._preview_stack_mode
             if not stacking and was_stacking:
+                live = self._live_mosaic.get(device_id)
+                remaining = False
+                if live:
+                    try:
+                        remaining = int(live.get("current_index") or 0) < int(live.get("total") or 0)
+                    except (TypeError, ValueError):
+                        remaining = False
+                    self._snapshot_mosaic_pane(int(live.get("current_index") or 0))
+                if remaining:
+                    if self._preview_result:
+                        self._clear_preview_result()
+                    return
                 self._freeze_stacking_preview_result(
                     device_id,
                     target=str(current.get("capture_target") or ""),
@@ -3495,6 +4587,10 @@ class AppBackend(QObject):
                 self._clear_media()
             self._rebuild_devices_view()
             self.selectedDeviceChanged.emit()
+            if previous != device_id:
+                self._clear_preview_coords()
+                self._refresh_tracked_catalog(device_id)
+                self.skyTargetChanged.emit()
             self.durationSuggestionChanged.emit()
             self._refresh_selected_session_views()
             self.clockChanged.emit()
@@ -3705,6 +4801,7 @@ class AppBackend(QObject):
             if isinstance(telemetry, dict) and telemetry:
                 self._on_telemetry(device_id, telemetry)
             self._maybe_resume_interrupted_session(device_id)
+            self._maybe_resume_interrupted_mosaic(device_id)
             self._maybe_auto_start_preview(device_id)
             QTimer.singleShot(8000, lambda did=device_id: self._release_recovered_if_idle(did))
             delay_ms = 8000 if device and device.model == DeviceModel.DWARF_3 else 2500
@@ -3748,8 +4845,15 @@ class AppBackend(QObject):
         itself once it receives the stop/disconnect command. The fleet scheduler
         stays armed so other telescopes can still start their queues.
         """
+        live = self._live_mosaic.get(device_id)
+        running_live = bool(live and live.get("phase"))
+        if running_live:
+            live["stopping"] = True
         session_id = self._active_sessions.get(device_id)
         if not session_id:
+            if running_live:
+                self.add_log("warning", f"Stopping mosaic ({reason})", device_id)
+                return True
             return False
         self._stop_requested.add(session_id)
         session = self.store.sessions.get(session_id)
@@ -3791,6 +4895,248 @@ class AppBackend(QObject):
             self._notify_devices()
 
         worker.disconnect_device(done)
+
+    def _start_live_mosaic_stack(self, device_id: str, camera: str) -> bool:
+        worker = self._workers.get(device_id)
+        device = self._device_by_id(device_id)
+        if not worker or not worker.connected or device is None:
+            self._toast("Connect a telescope before stacking a mosaic", "warning")
+            return False
+        if device_id in self._active_sessions or worker.busy:
+            self._toast("Another session is running on this telescope", "warning")
+            return False
+        existing = self._live_mosaic.get(device_id)
+        if existing and existing.get("phase"):
+            self._toast("A mosaic stack is already running", "warning")
+            return False
+        if self._telemetry_capturing(device_id):
+            self._toast("Telescope is already stacking", "warning")
+            return False
+        if not device.location_configured:
+            self._toast("Set an observing location before stacking a mosaic", "warning")
+            return False
+        columns, rows, overlap = self._sky_mosaic_grid()
+        if columns <= 1 and rows <= 1:
+            return False
+        target = self._live_mosaic_center()
+        if target is None or target.ra_hours is None or target.dec_degrees is None:
+            self._toast(
+                "Select the target on SKY first",
+                "warning",
+                "A 2×2 or larger grid needs RA/Dec so each pane can be computed.",
+            )
+            return False
+        fov_h, fov_v, _camera = self._mosaic_fov()
+        pa = self._mosaic_pa()
+        try:
+            panes = mosaic_pane_footprints(
+                target,
+                columns,
+                rows,
+                fov_h,
+                fov_v,
+                overlap,
+                south_up=self._mosaic_south_up(),
+                position_angle=pa,
+            )
+        except ValueError as exc:
+            self._toast("Could not compute mosaic panes", "error", str(exc))
+            return False
+        self._sky_mosaic_center = Target(
+            name=str(target.name or "Sky mosaic"),
+            ra_hours=float(target.ra_hours),
+            dec_degrees=float(target.dec_degrees),
+        )
+        if len(panes) < 2:
+            return False
+        points = {
+            (round(float(pane["ra_hours"]), 5), round(float(pane["dec_degrees"]), 5))
+            for pane in panes
+        }
+        if len(points) < 2:
+            self._toast(
+                "Mosaic panes share one pointing",
+                "error",
+                "The sky grid collapsed to the centre. Refresh the SKY mosaic and try again.",
+            )
+            return False
+        group_id = f"live-mosaic-{device_id[:8]}-{uuid4().hex[:8]}"
+        members: list[Session] = []
+        payload: list[dict[str, Any]] = []
+        base_name = mosaic_group_title(str(target.name or "")) or str(target.name or "Sky mosaic")
+        for pane in panes:
+            index = int(pane["index"])
+            name = f"{base_name} pane {index}"
+            session = Session(
+                name=name,
+                target=Target(
+                    name=base_name,
+                    kind=TargetKind.EQUATORIAL,
+                    ra_hours=float(pane["ra_hours"]),
+                    dec_degrees=float(pane["dec_degrees"]),
+                ),
+                device_id=device_id,
+                scheduled_start=datetime.now(timezone.utc).isoformat(),
+                mosaic=Mosaic(
+                    group_id=group_id,
+                    grid_rows=rows,
+                    grid_columns=columns,
+                    row=int(pane["row"]),
+                    column=int(pane["column"]),
+                ),
+                status=SessionStatus.RUNNING if index == 1 else SessionStatus.PLANNED,
+                current_step="Starting mosaic",
+            )
+            members.append(session)
+            payload.append({
+                "index": index,
+                "ra_hours": float(pane["ra_hours"]),
+                "dec_degrees": float(pane["dec_degrees"]),
+                "name": name,
+                "row": int(pane["row"]),
+                "column": int(pane["column"]),
+            })
+            self._remember_named_sky_coords(name, pane["ra_hours"], pane["dec_degrees"])
+        self._live_mosaic[device_id] = {
+            "group": group_id,
+            "columns": columns,
+            "rows": rows,
+            "total": len(members),
+            "current_index": 1,
+            "phase": "goto",
+            "label": members[0].name,
+            "camera": str(camera or "tele"),
+            "members": members,
+            "current": members[0],
+            "panes": payload,
+            "stopping": False,
+            "worker_running": True,
+        }
+        self._persist_live_mosaic(device_id)
+        self._set_preview_coords(members[0].name, self._target_coords(members[0].target))
+        if self._preview_result:
+            self._clear_preview_result()
+        self._clear_mosaic_preview()
+        self.mosaic_frames.set_layout(columns, rows, 1, True, group_id)
+        self.mosaicPreviewChanged.emit()
+        worker.busy = True
+        worker.availabilityChanged.emit()
+        grid = f"{columns}×{rows}"
+        coord_text = " · ".join(
+            f"{item['index']} {item['ra_hours']:.3f}h {item['dec_degrees']:+.2f}°"
+            for item in payload
+        )
+        self.add_log(
+            "notice",
+            f"Stack mosaic {grid} · {target.name} · {len(members)} panes · {coord_text}",
+            device_id,
+        )
+        self._toast(f"Stacking {grid} mosaic", "info", f"{len(members)} panes around {target.name}")
+
+        def done(ok: bool, result: Any) -> None:
+            self._finish_live_mosaic(device_id, ok, result)
+
+        worker.send(
+            "stack_mosaic",
+            {"panes": payload, "camera": str(camera or "tele")},
+            callback=done,
+        )
+        self._notify_devices()
+        return True
+
+    def _on_live_mosaic_progress(self, device_id: str, pane: int, total: int, step: str) -> None:
+        live = self._live_mosaic.get(device_id)
+        if not live:
+            return
+        members = list(live.get("members") or [])
+        index = max(1, int(pane or live.get("current_index") or 1))
+        if total:
+            live["total"] = max(int(live.get("total") or 0), int(total))
+        previous = int(live.get("current_index") or 0)
+        text = str(step or "")
+        lowered = text.lower()
+        if previous and index != previous:
+            self._snapshot_mosaic_pane(previous)
+            if previous <= len(members):
+                members[previous - 1] = replace(
+                    members[previous - 1],
+                    status=SessionStatus.DONE,
+                    current_step="Completed",
+                )
+        if "goto" in lowered:
+            live["phase"] = "goto"
+        elif "complete" in lowered:
+            live["phase"] = "complete"
+            self._snapshot_mosaic_pane(index)
+        else:
+            live["phase"] = "stacking"
+        if 1 <= index <= len(members):
+            current = replace(members[index - 1], status=SessionStatus.RUNNING, current_step=text or "Stacking")
+            members[index - 1] = current
+            live["current"] = current
+            live["label"] = current.name
+            self._remember_named_sky_coords(
+                current.name, current.target.ra_hours, current.target.dec_degrees
+            )
+            if device_id == self._selected_device_id:
+                self._set_preview_coords(current.name, self._target_coords(current.target))
+        live["current_index"] = index
+        live["members"] = members
+        self._persist_live_mosaic(device_id)
+        self.mosaic_frames.set_layout(
+            int(live.get("columns") or 1),
+            int(live.get("rows") or 1),
+            index,
+            True,
+            str(live.get("group") or ""),
+        )
+        self.mosaicPreviewChanged.emit()
+        if device_id == self._selected_device_id:
+            telemetry = dict(self._device_telemetry.get(device_id) or {})
+            self._sync_preview_for_capture(device_id, telemetry, telemetry)
+        self._notify_devices()
+
+    def _finish_live_mosaic(self, device_id: str, ok: bool, result: Any) -> None:
+        worker = self._workers.get(device_id)
+        live = self._live_mosaic.get(device_id)
+        if live:
+            live["phase"] = ""
+            live["stopping"] = False
+            live["worker_running"] = False
+        self.store.clear_live_mosaic(device_id)
+        if worker and device_id not in self._active_sessions:
+            worker.busy = False
+            worker.availabilityChanged.emit()
+        self._complete_activity(device_id, "stack", bool(ok))
+        self._set_activity(device_id, "")
+        stopped = bool(live and live.get("stopping")) or "stopped" in str(result or "").lower()
+        index = int((live or {}).get("current_index") or 0)
+        total = int((live or {}).get("total") or 0)
+        label = str((live or {}).get("label") or "mosaic")
+        if index:
+            self._snapshot_mosaic_pane(index)
+        self._sync_mosaic_preview(device_id)
+        self.mosaicPreviewChanged.emit()
+        self.commandFeedback.emit(device_id, "stack", bool(ok))
+        if ok:
+            self.add_log("success", f"Mosaic complete · {total} panes", device_id)
+            self._toast("Mosaic complete", "success", f"Stacked {total} panes")
+            if device_id == self._selected_device_id:
+                self._freeze_stacking_preview_result(
+                    device_id,
+                    title="MOSAIC COMPLETE",
+                    detail=f"Finished {total} panes.",
+                    target=label,
+                    camera=self._preview_camera_name(device_id),
+                    since=self._stack_result_since_for(device_id),
+                )
+        elif stopped:
+            self.add_log("warning", f"Mosaic stopped · pane {index}/{total or index}", device_id)
+            self._toast("Mosaic stopped", "warning", f"Stopped on pane {index}" if index else "")
+        else:
+            self.add_log("error", f"Mosaic failed · {result}", device_id)
+            self._toast("Mosaic failed", "error", str(result or "Stack mosaic failed"))
+        self._notify_devices()
 
     @Slot(str, str)
     def deviceAction(self, device_id: str, operation: str) -> None:
@@ -3864,6 +5210,16 @@ class AppBackend(QObject):
                 self._notify_devices()
             self.commandFeedback.emit(device_id, operation, bool(ok))
             if ok:
+                if operation == "sky_track":
+                    fallback = ""
+                    if isinstance(payload.get("args"), list) and payload["args"]:
+                        fallback = str(payload["args"][-1] or "")
+                    self._remember_track_target(result, fallback)
+                elif operation == "track":
+                    fallback = ""
+                    if isinstance(payload.get("args"), list) and payload["args"]:
+                        fallback = str(payload["args"][-1] or "")
+                    self._schedule_catalog_resolve(device_id, fallback)
                 self.add_log("success", f"{label} acknowledged", device_id)
                 self._toast(label, "success", _ACTION_DETAILS.get(operation, ""))
             else:
@@ -3887,7 +5243,21 @@ class AppBackend(QObject):
             }
         elif operation == "stack":
             camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
+            columns, rows, _overlap = self._sky_mosaic_grid()
+            if columns > 1 or rows > 1:
+                if self._start_live_mosaic_stack(device_id, str(camera)):
+                    return
+                self._complete_activity(device_id, operation, False)
+                return
+            leftover = self._live_mosaic.pop(device_id, None)
+            if leftover:
+                self.store.clear_live_mosaic(device_id)
+                self._clear_mosaic_preview()
             payload = {"args": [camera]}
+        if operation == "stop_astro":
+            live = self._live_mosaic.get(device_id)
+            if live and live.get("phase"):
+                live["stopping"] = True
         worker_operation = operation
         if photo_focus:
             worker_operation = "normal_autofocus"
@@ -4072,6 +5442,9 @@ class AppBackend(QObject):
         if not worker:
             return
         detail = self._initial_stop_detail(device_id)
+        live = self._live_mosaic.get(device_id)
+        if live and live.get("phase"):
+            live["stopping"] = True
         self._abort_active_session(device_id, reason)
         if not worker.connected:
             if device_id == self._selected_device_id:
@@ -4339,10 +5712,7 @@ class AppBackend(QObject):
         device = self._device_by_id(device_id)
         if device is None:
             return
-        persist_mode = (
-            not (self._preview_active and device_id == self._selected_device_id)
-            and device_id not in self._active_sessions
-        )
+        persist_mode = device_id not in self._active_sessions
         updated = control_settings_from_telemetry(
             telemetry if telemetry is not None else self._device_telemetry.get(device_id, {}),
             device.control_settings,
@@ -4479,13 +5849,14 @@ class AppBackend(QObject):
             return
         telemetry = dict(self._device_telemetry.get(device_id) or {})
         wanted_mode = device.control_settings.shooting_mode
-        skip_mode = self._preview_active or self._preview_playing
-        try:
-            current_mode = int(telemetry["shooting_mode"]) if telemetry.get("shooting_mode") is not None else 0
-        except (TypeError, ValueError):
-            current_mode = 0
+        current_mode = _shooting_mode_int(telemetry.get("shooting_mode"))
         steps = self._control_restore_steps(device, telemetry)
-        need_mode = (not skip_mode) and wanted_mode in {1, 2} and wanted_mode != current_mode
+        need_mode = control_restore_should_apply_mode(
+            wanted_mode,
+            current_mode,
+            preview_active=self._preview_active or self._preview_playing,
+            tracking=telemetry.get("tracking_state") == "running",
+        )
         if not need_mode and not steps:
             return
         self._control_restoring.add(device_id)
@@ -6878,6 +8249,49 @@ class AppBackend(QObject):
             self._stellarium_rc_inflight = False
             self._set_stellarium_rc_live(bool(value) if ok else False)
             return
+        if operation == "skyCatalogResolve":
+            payload = value if isinstance(value, dict) else {}
+            device_id = str(payload.get("device_id") or "")
+            name = str(payload.get("name") or "").strip()
+            resolve_key = f"{device_id}:{name.lower()}"
+            if self._catalog_resolve_key == resolve_key:
+                self._catalog_resolve_key = ""
+            if ok and isinstance(payload.get("hit"), dict) and not is_mosaic_pane_name(name):
+                self._catalog_resolve_cooldown.pop(resolve_key, None)
+                self._apply_catalog_hit(device_id, payload["hit"], announce=True, query_name=name)
+                return
+            self._catalog_resolve_cooldown[resolve_key] = time.monotonic() + 45.0
+            commanded = self._commanded_sky_coords(name)
+            if commanded is not None:
+                self._set_preview_coords(name, commanded)
+                return
+            if name and not is_mosaic_pane_name(name):
+                self.add_log(
+                    "warning",
+                    f"No catalog match for {name}. Firmware tracking packets include the name only, not RA/Dec.",
+                    device_id,
+                )
+            return
+        if operation == "skyLockResolve":
+            self._sky_lock_inflight = False
+            payload = value if isinstance(value, dict) else {}
+            name = str(payload.get("name") or "").strip()
+            commanded = self._commanded_sky_coords(name)
+            coords = commanded or (self._target_coords(payload) if ok else None)
+            if commanded is not None:
+                self._emit_sky_lock(name, commanded)
+                return
+            if coords is None or payload.get("need_pointing") or is_mosaic_pane_name(name):
+                label = name or "the tracked target"
+                self._toast(
+                    "Could not lock that target on the sky map",
+                    "warning",
+                    f"No catalog match for {label}",
+                )
+                return
+            self._apply_catalog_hit(str(self._selected_device_id or ""), payload, announce=True, query_name=name)
+            self._emit_sky_lock(name, coords, list(payload.get("aliases") or []))
+            return
         if operation == "locationLookup":
             self._set_location_lookup_busy(False)
             if not ok:
@@ -6992,6 +8406,10 @@ class AppBackend(QObject):
             worker = self._workers[device.id]
             if worker.busy or not worker.connected:
                 continue
+            live = self._live_mosaic.get(device.id)
+            if live and live.get("phase"):
+                self._maybe_resume_interrupted_mosaic(device.id)
+                continue
             sessions = self.store.upcoming(device.id)
             if not sessions:
                 continue
@@ -7033,6 +8451,9 @@ class AppBackend(QObject):
     def _maybe_resume_interrupted_session(self, device_id: str) -> None:
         if device_id in self._resume_attempted or self._active_sessions.get(device_id):
             return
+        live = self._live_mosaic.get(device_id)
+        if live and live.get("phase"):
+            return
         worker = self._workers.get(device_id)
         if not worker or not worker.connected or worker.busy:
             return
@@ -7052,7 +8473,9 @@ class AppBackend(QObject):
         telemetry = self._device_telemetry.get(device_id) or {}
         if telemetry.get("capture_active") or telemetry.get("capture_state") == "running":
             self._maybe_resume_interrupted_session(device_id)
+            self._maybe_resume_interrupted_mosaic(device_id)
             return
+        self._maybe_resume_interrupted_mosaic(device_id, allow_idle=True)
         stale = [session_id for session_id, owner in self._recovered_sessions.items() if owner == device_id]
         for session_id in stale:
             self._recovered_sessions.pop(session_id, None)
@@ -7104,6 +8527,13 @@ class AppBackend(QObject):
                 )
         self._set_activity(session.device_id, "")
         self._hold_preview_for_session(session.device_id, session.target.name)
+        if resuming and not session.mosaic.imported_plan and session.mosaic.panes > 1:
+            try:
+                pane = int((self._device_telemetry.get(session.device_id) or {}).get("mosaic_index") or 0)
+            except (TypeError, ValueError):
+                pane = 0
+            if pane >= 1:
+                self._mosaic_firmware_pane = pane
         self._sync_mosaic_preview(session.device_id)
         self._emit_sessions_changed()
         if not resuming:

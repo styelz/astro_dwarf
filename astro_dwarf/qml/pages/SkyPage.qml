@@ -13,6 +13,7 @@ Item {
     property bool webFailed: false
     property bool mapKeepAlive: false
     property bool harvestBusy: false
+    property var pendingLockTarget: null
     property string pendingAction: ""
     property bool applyingPa: false
     readonly property int defaultPa: backend.mosaicSouthUp ? 180 : 0
@@ -58,11 +59,13 @@ Item {
             skyStore.mosaicPaSet = false
         }
         skyPage.applyDevicePa()
+        backend.setSkyMosaicGrid(columnsBox.value, rowsBox.value, overlapBox.value / 100)
     }
     function saveSkyGrid() {
         skyStore.mosaicColumns = columnsBox.value
         skyStore.mosaicRows = rowsBox.value
         skyStore.mosaicOverlap = overlapBox.value
+        backend.setSkyMosaicGrid(columnsBox.value, rowsBox.value, overlapBox.value / 100)
     }
     function applyDevicePa() {
         const next = ((skyPage.clampInt(backend.mosaicPa, 0, 359, skyPage.defaultPa) % 360) + 360) % 360
@@ -88,10 +91,15 @@ Item {
         skyStore.viewRaHours = ra
         skyStore.viewDecDegrees = dec
         skyStore.viewFov = isFinite(fov) ? fov : 0
-        skyStore.viewYaw = Number(data.yaw) || 0
-        skyStore.viewPitch = Number(data.pitch) || 0
-        skyStore.viewRoll = Number(data.roll) || 0
+        const yaw = Number(data.yaw)
+        const pitch = Number(data.pitch)
+        const roll = Number(data.roll)
+        skyStore.viewYaw = isFinite(yaw) ? yaw : skyStore.viewYaw
+        skyStore.viewPitch = isFinite(pitch) ? pitch : skyStore.viewPitch
+        skyStore.viewRoll = isFinite(roll) ? roll : skyStore.viewRoll
         skyStore.viewSaved = true
+        if (typeof skyStore.sync === "function")
+            skyStore.sync()
     }
     readonly property bool mosaicGrid: columnsBox.value > 1 || rowsBox.value > 1
     readonly property bool mapHasTarget: !!(mapLoader.item && mapLoader.item.hasSelectedTarget)
@@ -110,10 +118,17 @@ Item {
                        ? live
                        : (skyPage.targetLocked ? backend.skyTarget : null)
         if (!target) {
+            const liveView = (mapLoader.item && mapLoader.item.liveView) || {}
+            const ra = Number(isFinite(Number(liveView.ra_hours)) ? liveView.ra_hours : skyStore.viewRaHours)
+            const dec = Number(isFinite(Number(liveView.dec_degrees)) ? liveView.dec_degrees : skyStore.viewDecDegrees)
+            if (isFinite(ra) && isFinite(dec) && (isFinite(Number(liveView.ra_hours)) || skyStore.viewSaved)) {
+                const decText = (dec >= 0 ? "+" : "") + dec.toFixed(3) + "°"
+                return "FOV centre  ·  RA " + ra.toFixed(3) + "h  DEC " + decText + "  ·  " + fov
+            }
             const clickHint = skyStore.dblclickTrack
                 ? "Select a target. Double-click to GOTO it and start tracking."
                 : (skyPage.mosaicGrid
-                   ? "Select a target in the sky map. Double-click to center it, then create a mosaic session from the grid."
+                   ? "Select a target in the sky map. Double-click to center it, then press STACK on Control to capture every pane."
                    : "Select a target in the sky map. Double-click to center it, then create a single session.")
             return clickHint + "  ·  " + fov
         }
@@ -151,6 +166,51 @@ Item {
         else
             skyMenu.popup(mapLoader, x, y)
     }
+    function lockToTrackedTarget() {
+        const tracked = backend.trackedSkyTarget || ({})
+        if (!tracked.available)
+            return
+        if (!root.skyToolsEnabled || !skyPage.webReady)
+            return
+        skyPage.mapKeepAlive = true
+        if (root.currentPage !== root.skyPageIndex)
+            root.goToPage(root.skyPageIndex)
+        backend.lockSkyToTrackedTarget()
+    }
+    function queueSkyLock(payload) {
+        if (!payload)
+            return
+        const ra = Number(payload.ra_hours)
+        const dec = Number(payload.dec_degrees)
+        skyPage.pendingLockTarget = {
+            name: String(payload.name || ""),
+            ra_hours: isFinite(ra) ? ra : undefined,
+            dec_degrees: isFinite(dec) ? dec : undefined,
+            aliases: payload.aliases || []
+        }
+        skyPage.applyPendingLock()
+    }
+    function applyPendingLock() {
+        const target = skyPage.pendingLockTarget
+        const map = mapLoader.item
+        if (!target || !map || !map.pageReady || typeof map.lockTarget !== "function")
+            return
+        map.lockTarget(target, result => {
+            let status = ""
+            try {
+                const data = JSON.parse(String(result || ""))
+                status = String((data && data.status) || "")
+            } catch (err) {
+            }
+            if (status === "loading")
+                return
+            skyPage.pendingLockTarget = null
+            if (status === "locked" || status === "view")
+                map.applyFovOverlay()
+            else if (status === "missing" || status === "error")
+                backend.reportSkyLockResult(status, String(target.name || ""))
+        })
+    }
     function withSkySources(action) {
         if (backend.uiBusy !== "" || skyPage.harvestBusy)
             return
@@ -171,6 +231,9 @@ Item {
         target: backend
         function onSelectedDeviceChanged() {
             skyPage.applyDevicePa()
+        }
+        function onSkyLockRequested(payload) {
+            skyPage.queueSkyLock(payload)
         }
     }
 
@@ -345,7 +408,7 @@ Item {
                 tooltip: !skyPage.mapHasTarget
                          ? "Select a target in the sky map first"
                          : skyPage.mosaicGrid
-                           ? "Create a mosaic session from the selected target. " + skyPage.mosaicHint
+                           ? "Create scheduled mosaic pane sessions from the selected target. Or press STACK on Control to capture the grid now. " + skyPage.mosaicHint
                            : "Create a single session from the selected target"
                 onClicked: skyPage.withSkySources(skyPage.mosaicGrid ? "mosaic" : "import")
             }
@@ -394,6 +457,8 @@ Item {
                         pitch: skyStore.viewPitch,
                         roll: skyStore.viewRoll
                     }) : ({}))
+                    map.savedViewReady = true
+                    skyPage.applyPendingLock()
                 }
                 onStatusChanged: {
                     if (status === Loader.Error)
@@ -435,6 +500,9 @@ Item {
                 }
                 function onViewChanged(data) {
                     skyPage.saveSkyView(data)
+                }
+                function onPageReadyChanged() {
+                    skyPage.applyPendingLock()
                 }
             }
 

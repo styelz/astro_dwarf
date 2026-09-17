@@ -19,6 +19,19 @@ Item {
         selectedUpcomingIds = result.map
         selectionAnchorId = result.anchor
     }
+    readonly property var mosaicPreview: backend.mosaicPreview || ({})
+    readonly property bool mosaicRunning: !!(mosaicPreview.active && mosaicPreview.phase)
+    readonly property bool mosaicGridArmed: !!(backend.mosaicGridActive && !mosaicRunning)
+    readonly property string mosaicGridText: backend.mosaicColumns + "×" + backend.mosaicRows
+    readonly property string mosaicPaneText: {
+        const pane = Number(mosaicPreview.current_index || 0)
+        const total = Number(mosaicPreview.total || 0)
+        if (pane >= 1 && total >= 1)
+            return "PANE " + pane + "/" + total
+        if (pane >= 1)
+            return "PANE " + pane
+        return mosaicGridText
+    }
     property var contextSession: ({})
     function openSessionMenu(session) {
         contextSession = session || ({})
@@ -332,9 +345,11 @@ Item {
                     spacing: 4
                     HudChip {
                         readonly property var t: root.scopeTelemetry
-                        visible: root.scopeOnline && !!t.capture_active
-                        label: "STACKING"
-                        value: String(t.capture_text || "")
+                        visible: root.scopeOnline && (!!t.capture_active || controlPage.mosaicRunning)
+                        label: controlPage.mosaicRunning ? "MOSAIC" : "STACKING"
+                        value: controlPage.mosaicRunning
+                               ? (controlPage.mosaicPaneText + (t.capture_text ? "  ·  " + t.capture_text : ""))
+                               : String(t.capture_text || "")
                         tone: Theme.danger
                         glow: true
                     }
@@ -358,6 +373,8 @@ Item {
                     text: {
                         const t = root.scopeTelemetry
                         const deviceTarget = String(t.capture_target || t.tracking_target || "")
+                        if (controlPage.mosaicRunning && mosaicPreview.label)
+                            return mosaicPreview.label
                         if (backend.currentSession.target_name)
                             return backend.currentSession.target_name
                         if (root.scopeOnline && deviceTarget)
@@ -371,16 +388,35 @@ Item {
                     Layout.fillWidth: true
                 }
                 Text {
-                    visible: !!(backend.currentSession.target && (backend.currentSession.target.ra_hours || backend.currentSession.target.ra_hours === 0))
-                    text: backend.currentSession.target
-                        ? "RA  " + Number(backend.currentSession.target.ra_hours).toFixed(3) + "h   DEC  " + Number(backend.currentSession.target.dec_degrees).toFixed(3) + "°"
-                        : ""
+                    visible: {
+                        if (controlPage.mosaicRunning && (mosaicPreview.ra_hours || mosaicPreview.ra_hours === 0))
+                            return true
+                        return !!(backend.currentSession.target && (backend.currentSession.target.ra_hours || backend.currentSession.target.ra_hours === 0))
+                    }
+                    text: {
+                        if (controlPage.mosaicRunning && (mosaicPreview.ra_hours || mosaicPreview.ra_hours === 0))
+                            return "RA  " + Number(mosaicPreview.ra_hours).toFixed(3) + "h   DEC  " + Number(mosaicPreview.dec_degrees).toFixed(3) + "°"
+                        return backend.currentSession.target
+                            ? "RA  " + Number(backend.currentSession.target.ra_hours).toFixed(3) + "h   DEC  " + Number(backend.currentSession.target.dec_degrees).toFixed(3) + "°"
+                            : ""
+                    }
                     color: Theme.textSecondary
                     font.pixelSize: 11
                 }
                 Text {
                     text: {
                         const t = root.scopeTelemetry
+                        if (controlPage.mosaicRunning) {
+                            const phase = String(mosaicPreview.phase || "")
+                            const pane = controlPage.mosaicPaneText
+                            if (phase === "goto")
+                                return "Slewing to " + pane.toLowerCase()
+                            if (t.capture_active && t.capture_text)
+                                return "Stacking " + pane.toLowerCase() + "  ·  " + t.capture_text + " frames"
+                            if (phase === "stacking")
+                                return "Stacking " + pane.toLowerCase()
+                            return pane + (t.capture_text ? "  ·  " + t.capture_text + " frames" : "")
+                        }
                         if (backend.currentSession.current_step) {
                             const step = Util.sessionStepLabel(backend.currentSession, backend.localNow.epoch_ms) || backend.currentSession.current_step
                             const frames = String(t.capture_text || "")
@@ -1430,6 +1466,18 @@ Item {
                             anchors.rightMargin: 10
                             spacing: 8
                             Text { text: readoutStrip.wide ? "WIDE" : "TELE"; color: Theme.accent; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1; Layout.fillWidth: false }
+                            Text {
+                                visible: root.scopeOnline && backend.previewSkyCoordVisible
+                                text: backend.previewSkyCoordText
+                                color: Theme.textPrimary
+                                font.pixelSize: 10
+                                font.family: Theme.fontMono
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 72
+                                Layout.preferredWidth: implicitWidth
+                                Layout.maximumWidth: implicitWidth
+                            }
                             Text { text: "EXP " + readoutStrip.exposure + "s"; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 36; Layout.preferredWidth: implicitWidth }
                             Text { text: "GAIN " + readoutStrip.gain; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 36; Layout.preferredWidth: implicitWidth }
                             Text { visible: !readoutStrip.wide; text: liveFilter.currentText.toUpperCase(); color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 24; Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
@@ -2005,6 +2053,22 @@ Item {
                             enabled: backend.selectedDevice.connected && backend.videoUrl !== ""
                             onTriggered: backend.copyText(backend.videoUrl)
                         }
+                        HudMenuItem {
+                            readonly property var tracked: backend.trackedSkyTarget
+                            readonly property string targetName: String((tracked && tracked.name) || "").trim()
+                            visible: root.scopeOnline && !!tracked.dso && !!tracked.tracking
+                            enabled: visible && !!tracked.available && root.skyToolsEnabled && skyPage.webReady
+                            text: targetName ? "Lock sky view to " + targetName : "Lock sky view to tracked target"
+                            glyph: "\uE1D2"
+                            accessibleDescription: !root.skyToolsEnabled
+                                ? "Turn on sky tools in interface settings first"
+                                : !skyPage.webReady
+                                  ? "Stellarium Web is not available in this window"
+                                  : !tracked.available
+                                    ? "The telescope is tracking, but no target name or coordinates are available"
+                                    : "Select the tracked DSO on the sky map and lock the view to it"
+                            onTriggered: skyPage.lockToTrackedTarget()
+                        }
                         HudMenuSeparator {}
                         LayoutResetMenuItem {}
                     }
@@ -2088,12 +2152,17 @@ Item {
                                 ? !!backend.selectedDevice.indicator_on
                                 : trackingPad
                                     ? (slewingNow || trackingNow)
-                                    : modelData.state !== "" && root.scopeActivity === modelData.state
+                                    : modelData.state === "imaging" && controlPage.mosaicRunning
+                                        ? true
+                                        : modelData.state !== "" && root.scopeActivity === modelData.state
                         readonly property string effectiveOperation: activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
-                        readonly property bool photoPrimed: modelData.start === "photo" && !!t.photo_primed && cameraPanel.photoMode
-                        readonly property bool stackPrimed: modelData.start === "stack" && cameraPanel.dsoMode && cameraPanel.stackParamsReady
+                        readonly property bool photoPrimed: modelData.start === "photo" && root.scopeOnline && !!t.photo_primed && cameraPanel.photoMode
+                        readonly property bool stackTracking: !!t.tracking_active && root.scopeActivity !== "goto"
+                        readonly property bool stackPrimed: modelData.start === "stack" && root.scopeOnline && cameraPanel.dsoMode && cameraPanel.stackParamsReady && stackTracking && !activeForState
                         readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop)
                         readonly property string padLabel: {
+                            if (modelData.start === "stack" && (controlPage.mosaicGridArmed || controlPage.mosaicRunning))
+                                return "MOSAIC STACK"
                             if (!trackingPad)
                                 return modelData.label
                             if (slewingNow)
@@ -2111,8 +2180,17 @@ Item {
                                 return previewHost.displayWide ? "DOUBLE-CLICK TARGET FIRST" : "USE WIDE VIEW FIRST"
                             if (trackingPad)
                                 return "CALIBRATE · CENTRE · TRACK"
-                            if (modelData.state === "imaging" && activeForState)
+                            if (modelData.state === "imaging" && activeForState) {
+                                if (controlPage.mosaicRunning)
+                                    return t.capture_text
+                                           ? controlPage.mosaicPaneText + " · " + t.capture_text
+                                           : controlPage.mosaicPaneText + " · TAP TO STOP"
                                 return t.capture_text ? "STACK · " + t.capture_text : "STACKING · TAP TO STOP"
+                            }
+                            if (modelData.start === "stack" && root.scopeOnline && cameraPanel.dsoMode && !stackTracking)
+                                return "TRACK FIRST"
+                            if (modelData.start === "stack" && controlPage.mosaicGridArmed)
+                                return controlPage.mosaicPaneText + " PANES"
                             if (photoPrimed || stackPrimed)
                                 return "PRIMED"
                             if (!cameraAllowed)
@@ -2169,7 +2247,13 @@ Item {
                         primed: photoPrimed || stackPrimed
                         destructive: !!modelData.destructive
                         enabled: cameraAllowed && modeAllowed && root.commandEnabled(effectiveOperation)
-                        Accessible.description: photoPrimed ? "Photo capture primed for a fast shot" : stackPrimed ? "Stack settings already match the telescope" : String(modelData.detail || modelData.label)
+                        Accessible.description: photoPrimed ? "Photo capture primed for a fast shot"
+                                                           : (modelData.start === "stack" && !stackTracking)
+                                                             ? "Track a target before starting the stack"
+                                                             : (modelData.start === "stack" && (controlPage.mosaicGridArmed || controlPage.mosaicRunning))
+                                                               ? ("Mosaic stack " + controlPage.mosaicGridText + " panes")
+                                                               : stackPrimed ? "Sidereal tracking is running and stack settings match the telescope"
+                                                                             : String(modelData.detail || modelData.label)
                         onClicked: {
                             if (effectiveOperation === "stack")
                                 cameraPanel.applyPendingStackParams()

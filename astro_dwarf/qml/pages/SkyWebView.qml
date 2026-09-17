@@ -19,7 +19,13 @@ Item {
     property bool liveOverlay: false
     property real liveOpacity: 0.65
     property var savedView: ({})
+    property bool savedViewReady: false
+    property var liveView: ({})
     property bool viewRestored: false
+    property bool persistView: false
+    property bool holdView: false
+    property double restoreStartedAt: 0
+    property var restoreHoldView: ({})
     signal liveOpacityNudged(real opacity)
     signal viewChanged(var data)
     readonly property string liveCamera: (backend.previewStacking || backend.previewResult)
@@ -68,6 +74,37 @@ Item {
             return
         view.runJavaScript(script, callback)
     }
+    function beginViewHold() {
+        map.holdView = true
+        map.viewRestored = true
+        map.persistView = false
+        viewHoldTimer.restart()
+    }
+    function endViewHold() {
+        map.holdView = false
+        map.persistView = true
+    }
+    function lockTarget(payload, callback) {
+        if (!map.pageReady) {
+            if (typeof callback === "function")
+                callback(JSON.stringify({status: "loading"}))
+            return
+        }
+        map.beginViewHold()
+        map.runJavaScript(backend.skyWebLockTargetScript(payload || ({})), result => {
+            const text = String(result || "").trim()
+            let status = ""
+            try {
+                const data = JSON.parse(text)
+                status = String((data && data.status) || "")
+            } catch (err) {
+            }
+            if (status === "locked" || status === "view")
+                map.readSelectedTarget()
+            if (typeof callback === "function")
+                callback(result)
+        })
+    }
     function readSelectedTarget(callback) {
         map.runJavaScript(backend.skyWebHarvestScript, result => {
             const target = map.parseHarvest(result)
@@ -76,6 +113,7 @@ Item {
                 map.selectedTarget = target
                 map.selectedKey = target.name + "|" + Number(target.ra_hours).toFixed(5) + "|"
                                   + Number(target.dec_degrees).toFixed(5)
+                backend.setSkyMapTarget(target.name, Number(target.ra_hours), Number(target.dec_degrees))
             }
             if (typeof callback === "function")
                 callback(result)
@@ -86,16 +124,51 @@ Item {
             return
         const script = backend.skyWebSiteScript
         map.runJavaScript(script, result => {
-            if (String(result) === "ok")
-                map.appliedSiteKey = script
+            if (String(result) !== "ok")
+                return
+            map.appliedSiteKey = script
+            if (!map.viewRestored)
+                map.restoreSavedView()
         })
+    }
+    function viewForOverlay() {
+        const live = map.liveView || {}
+        if (isFinite(Number(live.ra_hours)) && isFinite(Number(live.dec_degrees)))
+            return live
+        const saved = map.savedView || {}
+        if (isFinite(Number(saved.ra_hours)) && isFinite(Number(saved.dec_degrees)))
+            return saved
+        return ({})
+    }
+    function overlayPayload(raw) {
+        let data = {}
+        if (typeof raw === "string") {
+            const text = raw.trim()
+            if (text && text !== "undefined" && text !== "null") {
+                try { data = JSON.parse(text) || {} } catch (err) { data = {} }
+            }
+        } else if (raw && typeof raw === "object") {
+            data = raw
+        }
+        if (data.error)
+            data = {}
+        const view = map.viewForOverlay()
+        const ra = Number(view.ra_hours)
+        const dec = Number(view.dec_degrees)
+        if (isFinite(ra) && isFinite(dec)) {
+            data = Object.assign({}, data, {
+                view_ra_hours: ra,
+                view_dec_degrees: dec
+            })
+        }
+        return data
     }
     function applyFovOverlay() {
         if (!map.pageReady)
             return
         map.readSelectedTarget(raw => {
             const script = backend.skyWebFovScript(
-                raw,
+                map.overlayPayload(raw),
                 map.mosaicColumns,
                 map.mosaicRows,
                 map.mosaicOverlap,
@@ -167,20 +240,53 @@ Item {
         const view = map.savedView || {}
         return isFinite(Number(view.ra_hours)) && isFinite(Number(view.dec_degrees))
     }
+    function viewMatchesSaved(data) {
+        return map.viewsClose(data, map.savedView)
+    }
+    function viewsClose(a, b) {
+        const yaw = Number(a && a.yaw)
+        const pitch = Number(a && a.pitch)
+        const otherYaw = Number(b && b.yaw)
+        const otherPitch = Number(b && b.pitch)
+        if (isFinite(yaw) && isFinite(pitch) && isFinite(otherYaw) && isFinite(otherPitch)) {
+            const dYaw = Math.min(
+                Math.abs(yaw - otherYaw),
+                Math.abs(Math.abs(yaw - otherYaw) - 2 * Math.PI)
+            )
+            if (dYaw < 0.05 && Math.abs(pitch - otherPitch) < 0.05)
+                return true
+        }
+        const ra = Number(a && a.ra_hours)
+        const dec = Number(a && a.dec_degrees)
+        const otherRa = Number(b && b.ra_hours)
+        const otherDec = Number(b && b.dec_degrees)
+        if (!isFinite(ra) || !isFinite(dec) || !isFinite(otherRa) || !isFinite(otherDec))
+            return false
+        const d1 = dec * Math.PI / 180
+        const d2 = otherDec * Math.PI / 180
+        const r1 = ra * Math.PI / 12
+        const r2 = otherRa * Math.PI / 12
+        const sep = Math.acos(Math.max(-1, Math.min(1,
+            Math.sin(d1) * Math.sin(d2) + Math.cos(d1) * Math.cos(d2) * Math.cos(r1 - r2)
+        ))) * 180 / Math.PI
+        return sep < 2.5
+    }
     function restoreSavedView() {
-        if (!map.pageReady || map.viewRestored)
+        if (!map.pageReady || map.viewRestored || !map.savedViewReady)
             return
         if (!map.hasSavedView()) {
             map.viewRestored = true
+            map.persistView = true
             return
         }
-        map.runJavaScript(backend.skyWebViewScript(map.savedView), result => {
-            if (String(result) === "ok")
-                map.viewRestored = true
-        })
+        if (map.appliedSiteKey !== backend.skyWebSiteScript)
+            return
+        if (!map.restoreStartedAt)
+            map.restoreStartedAt = Date.now()
+        map.runJavaScript(backend.skyWebViewScript(map.savedView))
     }
     function pollView() {
-        if (!map.pageReady || !map.viewRestored)
+        if (!map.pageReady)
             return
         map.runJavaScript(backend.skyWebViewPollScript, result => {
             const text = String(result || "").trim()
@@ -190,7 +296,34 @@ Item {
                 const data = JSON.parse(text)
                 if (!isFinite(Number(data.ra_hours)) || !isFinite(Number(data.dec_degrees)))
                     return
-                map.viewChanged(data)
+                map.liveView = data
+                map.runJavaScript(backend.skyWebViewPosScript(Number(data.ra_hours), Number(data.dec_degrees)))
+                if (map.holdView)
+                    return
+                if (!map.savedViewReady)
+                    return
+                if (!map.hasSavedView()) {
+                    map.viewRestored = true
+                    map.persistView = true
+                    map.viewChanged(data)
+                    return
+                }
+                if (!map.viewRestored) {
+                    if (map.viewMatchesSaved(data)) {
+                        map.viewRestored = true
+                        map.persistView = true
+                    } else if (map.restoreStartedAt && Date.now() - map.restoreStartedAt > 12000) {
+                        map.viewRestored = true
+                        map.persistView = false
+                        map.restoreHoldView = data
+                    } else {
+                        map.restoreSavedView()
+                    }
+                }
+                if (map.viewRestored && !map.persistView && !map.viewsClose(data, map.restoreHoldView))
+                    map.persistView = true
+                if (map.persistView)
+                    map.viewChanged(data)
             } catch (err) {
             }
         })
@@ -219,8 +352,8 @@ Item {
         map.pageReady = true
         map.initialLoadFailed = false
         map.applyObservingSite()
+        map.pollView()
         map.applyFovOverlay()
-        map.restoreSavedView()
         if (!map.initialLoadDone && !revealDelay.running)
             revealDelay.start()
     }
@@ -248,6 +381,9 @@ Item {
             map.selectedTarget = ({})
             map.selectedKey = ""
             map.viewRestored = false
+            map.persistView = false
+            map.restoreStartedAt = 0
+            map.restoreHoldView = ({})
             revealDelay.stop()
             return
         }
@@ -289,7 +425,6 @@ Item {
         }
         if (map.liveOverlay)
             map.applyLiveOverlay()
-        map.restoreSavedView()
     }
 
     Connections {
@@ -404,16 +539,23 @@ Item {
     }
 
     Timer {
+        id: viewHoldTimer
+        interval: 2500
+        repeat: false
+        onTriggered: map.endViewHold()
+    }
+
+    Timer {
         interval: 400
         repeat: true
-        running: map.pageReady && !map.viewRestored && map.hasSavedView()
+        running: map.pageReady && map.savedViewReady && !map.viewRestored && map.hasSavedView() && !map.holdView
         onTriggered: map.restoreSavedView()
     }
 
     Timer {
-        interval: 1500
+        interval: 120
         repeat: true
-        running: map.pageReady && map.viewRestored
+        running: map.pageReady
         onTriggered: map.pollView()
     }
 }

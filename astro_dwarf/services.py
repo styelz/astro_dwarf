@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
+from .version import __version__
 from .domain import (
     Camera,
     DeviceModel,
@@ -481,8 +482,9 @@ SKY_WEB_FOV_JS = r"""
   }
   function offsetCamera(raHours, decDeg, rightDeg, upDeg, paDeg) {
     var pa = (Number(paDeg) || 0) * Math.PI / 180;
-    var east = rightDeg * Math.cos(pa) + upDeg * Math.sin(pa);
-    var north = -rightDeg * Math.sin(pa) + upDeg * Math.cos(pa);
+    // North-up sky chart: east is left, so camera-right is west at PA 0.
+    var east = -rightDeg * Math.cos(pa) + upDeg * Math.sin(pa);
+    var north = rightDeg * Math.sin(pa) + upDeg * Math.cos(pa);
     return offsetRaDec(raHours, decDeg, east, north);
   }
   function cameraCorners(raHours, decDeg, fovH, fovV, paDeg) {
@@ -530,11 +532,6 @@ SKY_WEB_FOV_JS = r"""
     var ctl = window[CTL];
     if (ctl && ctl.zSign) return ctl.zSign;
     var sign = -1;
-    try {
-      var icrf = asVec(stel.convertFrame(stel.observer, "VIEW", "ICRF", [0, 0, -1, 0]));
-      var back = icrf ? asVec(stel.convertFrame(stel.observer, "ICRF", "VIEW", [icrf[0], icrf[1], icrf[2], 0])) : null;
-      if (back && isFinite(back[2]) && back[2] > 0) sign = 1;
-    } catch (err) {}
     if (ctl) ctl.zSign = sign;
     return sign;
   }
@@ -596,41 +593,96 @@ SKY_WEB_FOV_JS = r"""
     var pos = xyzToRaDec(icrf);
     return isFinite(pos.ra_hours) && isFinite(pos.dec_degrees) ? pos : null;
   }
-  function viewCenter(stel) {
-    if (!stel || !stel.observer) return null;
-    var dirs = [[0, 0, zSign(stel), 0], [0, 0, -zSign(stel), 0], [0, 0, -1, 0], [0, 0, 1, 0], [0, 0, -1], [0, 0, 1]];
-    var frames = ["ICRF", "CIRS", "JNOW"];
-    if (typeof stel.convertFrame === "function") {
-      for (var f = 0; f < frames.length; f++) {
-        for (var i = 0; i < dirs.length; i++) {
-          try {
-            var pos = icrfToRaDec(stel, stel.convertFrame(stel.observer, "VIEW", frames[f], dirs[i]));
-            if (pos) return pos;
-          } catch (err) {}
+  function vecRaDec(raw) {
+    if (!raw) return null;
+    var x = Number(raw[0]), y = Number(raw[1]), z = Number(raw[2]);
+    if (!isFinite(x) || !isFinite(y) || !isFinite(z)) {
+      if (raw.x === undefined) return null;
+      x = Number(raw.x);
+      y = Number(raw.y);
+      z = Number(raw.z);
+    }
+    if (!isFinite(x) || !isFinite(y) || !isFinite(z)) return null;
+    if (Math.abs(x) + Math.abs(y) + Math.abs(z) < 1e-12) return null;
+    var pos = xyzToRaDec([x, y, z]);
+    return (isFinite(pos.ra_hours) && isFinite(pos.dec_degrees)) ? pos : null;
+  }
+  function flattenMat(mat) {
+    if (!mat) return null;
+    if (typeof mat.length === "number" && mat.length >= 9 && typeof mat[0] !== "object") {
+      var flat = [];
+      for (var i = 0; i < 9; i++) {
+        var n = Number(mat[i]);
+        if (!isFinite(n)) return null;
+        flat.push(n);
+      }
+      return flat;
+    }
+    if (mat.length >= 3 && mat[0] && mat[0].length >= 3) {
+      var out = [];
+      for (var r = 0; r < 3; r++) {
+        for (var c = 0; c < 3; c++) {
+          var v = Number(mat[r][c]);
+          if (!isFinite(v)) return null;
+          out.push(v);
         }
       }
+      return out;
     }
-    var o = stel.observer;
-    var mats = [o.rc2v, o.ri2v];
-    for (var m = 0; m < mats.length; m++) {
-      var mat = mats[m];
-      if (!mat || mat.length < 9) continue;
+    return null;
+  }
+  function coreAngles(stel) {
+    var c = stel && stel.core;
+    var yaw = Number(c && c.yaw), pitch = Number(c && c.pitch);
+    if (isFinite(yaw) && isFinite(pitch))
+      return {yaw: yaw, pitch: pitch};
+    try {
+      var tree = stel.getTree && stel.getTree();
+      c = tree && tree.core;
+      yaw = Number(c && c.yaw);
+      pitch = Number(c && c.pitch);
+      if (isFinite(yaw) && isFinite(pitch))
+        return {yaw: yaw, pitch: pitch};
+    } catch (err) {}
+    return null;
+  }
+  function observedToIcrf(stel, yaw, pitch) {
+    if (!stel || !stel.observer || !isFinite(yaw) || !isFinite(pitch))
+      return null;
+    if (typeof stel.convertFrame !== "function")
+      return null;
+    var xyz = sphericalToCart(stel, yaw, pitch);
+    if (!xyz) return null;
+    var frames = ["OBSERVED", "HORIZONTAL"];
+    for (var i = 0; i < frames.length; i++) {
       try {
-        var vx = Number(mat[2]), vy = Number(mat[5]), vz = Number(mat[8]);
-        if (isFinite(vx) && isFinite(vy) && isFinite(vz)) {
-          var fromCol = xyzToRaDec([-vx, -vy, -vz]);
-          if (isFinite(fromCol.ra_hours) && isFinite(fromCol.dec_degrees))
-            return fromCol;
-        }
+        var pos = icrfToRaDec(stel, stel.convertFrame(stel.observer, frames[i], "ICRF", xyz));
+        if (pos) return pos;
       } catch (err) {}
     }
     return null;
   }
+  function viewDirToIcrf(stel) {
+    if (!stel || !stel.observer || typeof stel.convertFrame !== "function")
+      return null;
+    var zs = [zSign(stel), -1, 1];
+    for (var i = 0; i < zs.length; i++) {
+      try {
+        var pos = icrfToRaDec(
+          stel, stel.convertFrame(stel.observer, "VIEW", "ICRF", [0, 0, -zs[i], 0])
+        );
+        if (pos) return pos;
+      } catch (err) {}
+    }
+    return null;
+  }
+  function viewCenter(stel) {
+    var a = coreAngles(stel);
+    var pos = a ? observedToIcrf(stel, a.yaw, a.pitch) : null;
+    return pos || viewDirToIcrf(stel) || selectedPointing(stel);
+  }
   function framePointing(stel) {
-    var ctl = window[CTL];
-    var live = viewCenter(stel);
-    if (live && ctl) ctl.heldPos = live;
-    return live || (ctl && ctl.heldPos) || null;
+    return viewCenter(stel);
   }
   function gridPanes(center, p) {
     var cols = Math.max(1, Number(p.columns) || 1);
@@ -776,11 +828,12 @@ SKY_WEB_FOV_JS = r"""
       a = wrapDeg(a + 180);
     return a > 180 ? a - 360 : a;
   }
-  function textAt(x, y, angle, text, color, extra, fontSize) {
+  function textAt(x, y, angle, text, color, extra, fontSize, cls) {
     extra = extra || "";
     var size = Number(fontSize);
     if (!(size > 0)) size = 11;
-    return '<text x="0" y="0" fill="' + color
+    var klass = cls ? ' class="' + cls + '"' : "";
+    return "<text" + klass + ' x="0" y="0" fill="' + color
       + '" font-size="' + size.toFixed(1) + '" font-family="monospace" text-anchor="middle" dominant-baseline="middle"'
       + extra + ' transform="translate(' + Number(x).toFixed(1) + " " + Number(y).toFixed(1)
       + ") rotate(" + Number(angle).toFixed(2) + ')">' + text + "</text>";
@@ -820,7 +873,11 @@ SKY_WEB_FOV_JS = r"""
     if (!center) return "";
     var ra = Number(center.ra_hours), dec = Number(center.dec_degrees);
     if (!isFinite(ra) || !isFinite(dec)) return "";
-    return "RA " + ra.toFixed(3) + "h  DEC " + (dec >= 0 ? "+" : "") + dec.toFixed(3) + "°";
+    return "RA " + ra.toFixed(3) + "h  DEC " + (dec >= 0 ? "+" : "") + dec.toFixed(3) + "\u00b0";
+  }
+  function payloadView(p) {
+    var ra = Number(p && p.view_ra_hours), dec = Number(p && p.view_dec_degrees);
+    return (isFinite(ra) && isFinite(dec)) ? {ra_hours: ra, dec_degrees: dec} : null;
   }
   function payloadPointing(p) {
     var ra = Number(p && p.target_ra_hours), dec = Number(p && p.target_dec_degrees);
@@ -848,8 +905,26 @@ SKY_WEB_FOV_JS = r"""
       return null;
     }
   }
+  function liveViewPos() {
+    var pos = window[CTL] && window[CTL].viewPos;
+    var ra = Number(pos && pos.ra_hours), dec = Number(pos && pos.dec_degrees);
+    return (isFinite(ra) && isFinite(dec)) ? {ra_hours: ra, dec_degrees: dec} : null;
+  }
   function currentPointing(p, stel) {
-    return payloadPointing(p) || selectedPointing(stel) || framePointing(stel);
+    var view = framePointing(stel) || liveViewPos() || payloadView(p);
+    if (p && String(p.mode || "") === "panes" && p.panes && p.panes.length)
+      return payloadPointing(p) || selectedPointing(stel) || view;
+    var locked = null;
+    try {
+      if (stel && stel.core && stel.core.lock)
+        locked = selectedPointing(stel);
+    } catch (err) {}
+    return locked || view || payloadPointing(p) || selectedPointing(stel);
+  }
+  function pointingKey(p, stel) {
+    var pos = currentPointing(p, stel);
+    if (!pos) return "";
+    return Number(pos.ra_hours).toFixed(4) + "," + Number(pos.dec_degrees).toFixed(3);
   }
   function frameCaption(p, stel) {
     var head = String(p.label || "").replace(/\s*PA\s+[-+]?\d+(?:\.\d+)?°/i, "").replace(/\s+/g, " ").trim();
@@ -873,7 +948,7 @@ SKY_WEB_FOV_JS = r"""
     function stacked(x, y, ang, ox, oy) {
       var svg = "";
       if (cap.pos)
-        svg += textAt(x + ox * 13, y + oy * 13, ang, cap.pos, color, extra, size);
+        svg += textAt(x + ox * 13, y + oy * 13, ang, cap.pos, color, extra, size, "astro-dwarf-pos");
       if (cap.spec)
         svg += textAt(x, y, ang, cap.spec, color, extra, size);
       return svg;
@@ -1031,6 +1106,7 @@ SKY_WEB_FOV_JS = r"""
     for (var row = 1; row <= rows; row++) {
       for (var col = 1; col <= cols; col++) {
         index += 1;
+        // Column 1 is camera-right. MosaicLiveItem uses the same mapping.
         var x = originX + (cols - col) * stepX;
         var y = originY + (row - 1) * stepY;
         svg += paneFillRect(x, y, size.w, size.h, index);
@@ -1127,14 +1203,30 @@ SKY_WEB_FOV_JS = r"""
     var panes = (p && p.panes) || [];
     if (panes.length)
       return panes;
+    if (String(p.mode || "") === "center")
+      return [];
     var center = viewCenter(stel);
     if (!center) return [];
     return gridPanes(center, p);
   }
   function viewKey(stel, box) {
+    var a = coreAngles(stel) || {};
     var o = stel.observer || {};
-    return [o.yaw, o.pitch, o.roll, stel.core && stel.core.fov, box && box.width, box && box.height,
-      nightModeOn() ? "N" : "D"].join("|");
+    return [
+      a.yaw, a.pitch, o.roll, stel.core && stel.core.fov,
+      box && box.width, box && box.height,
+      nightModeOn() ? "N" : "D"
+    ].join("|");
+  }
+  function writePosLabels(text) {
+    if (!text) return 0;
+    var el = document.getElementById(ID);
+    var nodes = el ? el.querySelectorAll("text.astro-dwarf-pos") : [];
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].textContent !== text)
+        nodes[i].textContent = text;
+    }
+    return nodes.length;
   }
   function draw(force) {
     var stel = window._stel;
@@ -1147,19 +1239,29 @@ SKY_WEB_FOV_JS = r"""
       return "loading";
     if (String(p.mode || "") === "hidden")
       return hideOverlay();
-    var key = viewKey(stel, box) + "|" + ctl.payloadKey + "|" + (ctl.liveEnabled ? "L" : "n")
+    var posText = "";
+    try { posText = formatSkyPos(currentPointing(p, stel)); } catch (err) {}
+    var base = viewKey(stel, box) + "|" + ctl.payloadKey + "|" + (ctl.liveEnabled ? "L" : "n")
       + "|" + livePaneIndex() + "|" + paneUrlKey();
-    if (!force && key === ctl.lastKey)
-      return ctl.lastStatus || "panes";
+    if (!force && base === ctl.lastBase && writePosLabels(posText))
+      return ctl.lastStatus || "center";
+    var key = base + "|" + posText;
+    if (!force && key === ctl.lastKey && writePosLabels(posText))
+      return ctl.lastStatus || "center";
+    ctl.lastBase = base;
+    ctl.lastPosKey = posText;
     ctl.lastKey = key;
     var el = overlayFor(box);
-    var panes = resolvePanes(stel, p);
+    var panes = [];
+    try { panes = resolvePanes(stel, p); } catch (err) { panes = []; }
     if (panes.length) {
-      var projected = drawPanes(el, box, p, stel, panes);
-      if (projected) {
-        ctl.lastStatus = projected;
-        return projected;
-      }
+      try {
+        var projected = drawPanes(el, box, p, stel, panes);
+        if (projected) {
+          ctl.lastStatus = projected;
+          return projected;
+        }
+      } catch (err) {}
     }
     ctl.lastStatus = drawScreenGrid(el, box, p, stel);
     return ctl.lastStatus;
@@ -1276,7 +1378,7 @@ SKY_WEB_FOV_JS = r"""
       cancelAnimationFrame(ctl.raf);
     if (!ctl) {
       ctl = window[CTL] = {
-        payload: p, payloadKey: "", lastKey: "", lastStatus: "", zSign: 0, raf: 0,
+        payload: p, payloadKey: "", lastKey: "", lastBase: "", lastPosKey: "", lastStatus: "", zSign: 0, raf: 0,
         liveEnabled: false, liveUrl: "", liveOpacity: 0.65, livePane: 0, paneUrls: {},
         menuAt: 0, menuX: 0, menuY: 0,
         trackAt: 0
@@ -1301,7 +1403,8 @@ SKY_WEB_FOV_JS = r"""
       (p.panes || []).length,
       p.panes && p.panes[0] && p.panes[0].ra_hours,
       p.panes && p.panes[0] && p.panes[0].dec_degrees,
-      p.target_ra_hours, p.target_dec_degrees
+      p.target_ra_hours, p.target_dec_degrees,
+      p.view_ra_hours, p.view_dec_degrees
     ].join("|");
     tick();
     return draw(true);
@@ -1427,45 +1530,113 @@ SKY_WEB_OPACITY_POLL_JS = r"""
 """
 
 
+SKY_WEB_VIEW_POS_JS = r"""
+(function(ra, dec) {
+  var ctl = window.__astroDwarfFovCtl;
+  ra = Number(ra);
+  dec = Number(dec);
+  if (!ctl || !isFinite(ra) || !isFinite(dec)) return "skip";
+  ctl.viewPos = {ra_hours: ra, dec_degrees: dec};
+  var text = "RA " + ra.toFixed(3) + "h  DEC " + (dec >= 0 ? "+" : "") + dec.toFixed(3) + "\u00b0";
+  var el = document.getElementById("astro-dwarf-sky-overlay");
+  var nodes = el ? el.querySelectorAll("text.astro-dwarf-pos") : [];
+  for (var i = 0; i < nodes.length; i++) nodes[i].textContent = text;
+  return "ok";
+})
+"""
+
+
+def sky_web_view_pos_script(ra_hours: float, dec_degrees: float) -> str:
+    return f"{SKY_WEB_VIEW_POS_JS}({float(ra_hours)}, {float(dec_degrees)})"
+
+
 SKY_WEB_VIEW_POLL_JS = r"""
 (function(){
+  function asVec(value) {
+    if (!value) return null;
+    if (value.length >= 3) {
+      var x = Number(value[0]), y = Number(value[1]), z = Number(value[2]);
+      if (!isFinite(x) || !isFinite(y) || !isFinite(z)) return null;
+      return [x, y, z, value.length > 3 ? Number(value[3]) || 0 : 0];
+    }
+    if (value.x === undefined) return null;
+    var vx = Number(value.x), vy = Number(value.y), vz = Number(value.z);
+    if (!isFinite(vx) || !isFinite(vy) || !isFinite(vz)) return null;
+    return [vx, vy, vz, 0];
+  }
+  function icrfToRaDec(stel, raw) {
+    if (!raw) return null;
+    if (typeof stel.c2s === "function") {
+      try {
+        var sph = stel.c2s(raw);
+        var ra = Number(sph && sph[0]), dec = Number(sph && sph[1]);
+        if (isFinite(ra) && isFinite(dec))
+          return {
+            ra_hours: ((ra * 12 / Math.PI) % 24 + 24) % 24,
+            dec_degrees: dec * 180 / Math.PI
+          };
+      } catch (err) {}
+    }
+    var icrf = asVec(raw);
+    if (!icrf) return null;
+    var n = Math.hypot(icrf[0], icrf[1], icrf[2]) || 1;
+    var x = icrf[0] / n, y = icrf[1] / n, z = icrf[2] / n;
+    return {
+      ra_hours: ((Math.atan2(y, x) * 12 / Math.PI) % 24 + 24) % 24,
+      dec_degrees: Math.asin(Math.max(-1, Math.min(1, z))) * 180 / Math.PI
+    };
+  }
+  function observedToIcrf(stel, yaw, pitch) {
+    if (!stel || !stel.observer || typeof stel.convertFrame !== "function")
+      return null;
+    if (!isFinite(yaw) || !isFinite(pitch)) return null;
+    var xyz = null;
+    if (typeof stel.s2c === "function") {
+      try { xyz = asVec(stel.s2c(yaw, pitch)); } catch (err) {}
+    }
+    if (!xyz) {
+      var c = Math.cos(pitch);
+      xyz = [c * Math.cos(yaw), c * Math.sin(yaw), Math.sin(pitch), 0];
+    }
+    var frames = ["OBSERVED", "HORIZONTAL"];
+    for (var i = 0; i < frames.length; i++) {
+      try {
+        var pos = icrfToRaDec(stel, stel.convertFrame(stel.observer, frames[i], "ICRF", xyz));
+        if (pos) return pos;
+      } catch (err) {}
+    }
+    return null;
+  }
+  function viewCenter(stel) {
+    var c = stel && stel.core;
+    var yaw = Number(c && c.yaw), pitch = Number(c && c.pitch);
+    if (!isFinite(yaw) || !isFinite(pitch)) {
+      try {
+        var tree = stel.getTree && stel.getTree();
+        c = tree && tree.core;
+        yaw = Number(c && c.yaw);
+        pitch = Number(c && c.pitch);
+      } catch (err) {}
+    }
+    if (!isFinite(yaw) || !isFinite(pitch)) return null;
+    var pos = observedToIcrf(stel, yaw, pitch);
+    if (!pos) return null;
+    pos.yaw = yaw;
+    pos.pitch = pitch;
+    return pos;
+  }
   try {
     var stel = window._stel;
     if (!stel || !stel.core || !stel.observer) return "";
-    var o = stel.observer;
-    var fov = Number(stel.core.fov);
-    var ra = null, dec = null;
-    var ctl = window.__astroDwarfFovCtl;
-    var pos = ctl && ctl.heldPos;
-    if (pos) {
-      ra = Number(pos.ra_hours);
-      dec = Number(pos.dec_degrees);
-    }
-    if (!(isFinite(ra) && isFinite(dec)) && typeof stel.convertFrame === "function") {
-      var dirs = [[0, 0, -1, 0], [0, 0, 1, 0], [0, 0, -1], [0, 0, 1]];
-      var frames = ["ICRF", "CIRS", "JNOW"];
-      for (var f = 0; f < frames.length && !(isFinite(ra) && isFinite(dec)); f++) {
-        for (var i = 0; i < dirs.length && !(isFinite(ra) && isFinite(dec)); i++) {
-          try {
-            var icrf = stel.convertFrame(stel.observer, "VIEW", frames[f], dirs[i]);
-            if (!icrf) continue;
-            var x = Number(icrf[0]), y = Number(icrf[1]), z = Number(icrf[2]);
-            if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
-            var n = Math.hypot(x, y, z) || 1;
-            ra = ((Math.atan2(y / n, x / n) * 12 / Math.PI) % 24 + 24) % 24;
-            dec = Math.asin(Math.max(-1, Math.min(1, z / n))) * 180 / Math.PI;
-          } catch (err) {}
-        }
-      }
-    }
-    if (!(isFinite(ra) && isFinite(dec))) return "";
+    var pos = viewCenter(stel);
+    if (!pos) return "";
     return JSON.stringify({
-      ra_hours: ra,
-      dec_degrees: dec,
-      fov: fov,
-      yaw: Number(o.yaw),
-      pitch: Number(o.pitch),
-      roll: Number(o.roll)
+      ra_hours: pos.ra_hours,
+      dec_degrees: pos.dec_degrees,
+      fov: Number(stel.core.fov),
+      yaw: pos.yaw,
+      pitch: pos.pitch,
+      roll: Number(stel.core.roll)
     });
   } catch (err) {
     return "";
@@ -1476,47 +1647,52 @@ SKY_WEB_VIEW_POLL_JS = r"""
 
 SKY_WEB_VIEW_APPLY_JS = r"""
 (function(p) {
+  function setAngle(obj, key, value) {
+    if (!obj || !isFinite(value)) return;
+    try { obj[key] = value; } catch (err) {}
+  }
   try {
     var stel = window._stel;
     if (!stel || !stel.core || !stel.observer) return "loading";
     var fov = Number(p && p.fov);
     if (fov > 0 && isFinite(fov))
       stel.core.fov = fov;
-    var pointed = false;
+    try { stel.core.lock = null; } catch (err) {}
     var raHours = Number(p && p.ra_hours);
     var decDeg = Number(p && p.dec_degrees);
-    if (isFinite(raHours) && isFinite(decDeg)) {
-      var ra = ((raHours % 24) + 24) % 24 * Math.PI / 12;
+    var yaw = Number(p && p.yaw);
+    var pitch = Number(p && p.pitch);
+    var roll = Number(p && p.roll);
+    if (isFinite(raHours) && isFinite(decDeg) && (!isFinite(yaw) || !isFinite(pitch))) {
+      var ra = (((raHours % 24) + 24) % 24) * Math.PI / 12;
       var dec = decDeg * Math.PI / 180;
-      var c = Math.cos(dec);
-      var xyz = [c * Math.cos(ra), c * Math.sin(ra), Math.sin(dec), 0];
-      if (typeof stel.lookAt === "function") {
-        try { stel.lookAt(ra, dec); pointed = true; } catch (err) {}
-      }
-      var frames = ["OBSERVED", "CIRS", "JNOW"];
-      for (var i = 0; i < frames.length && !pointed; i++) {
-        try {
-          if (typeof stel.convertFrame !== "function") break;
-          var obs = stel.convertFrame(stel.observer, "ICRF", frames[i], xyz);
-          if (!obs) continue;
-          var x = Number(obs[0]), y = Number(obs[1]), z = Number(obs[2]);
-          if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
-          stel.observer.yaw = Math.atan2(x, y);
-          stel.observer.pitch = Math.asin(Math.max(-1, Math.min(1, z)));
-          pointed = true;
-        } catch (err) {}
+      var xyz = [Math.cos(dec) * Math.cos(ra), Math.cos(dec) * Math.sin(ra), Math.sin(dec), 0];
+      var frames = ["OBSERVED", "HORIZONTAL"];
+      if (typeof stel.convertFrame === "function" && typeof stel.c2s === "function") {
+        for (var i = 0; i < frames.length; i++) {
+          try {
+            var sph = stel.c2s(stel.convertFrame(stel.observer, "ICRF", frames[i], xyz));
+            var nextYaw = Number(sph && sph[0]), nextPitch = Number(sph && sph[1]);
+            if (isFinite(nextYaw) && isFinite(nextPitch)) {
+              yaw = nextYaw;
+              pitch = nextPitch;
+              break;
+            }
+          } catch (err) {}
+        }
       }
     }
-    if (!pointed) {
-      var yaw = Number(p && p.yaw), pitch = Number(p && p.pitch), roll = Number(p && p.roll);
-      if (isFinite(yaw) && isFinite(pitch)) {
-        stel.observer.yaw = yaw;
-        stel.observer.pitch = pitch;
-        if (isFinite(roll)) stel.observer.roll = roll;
-        pointed = true;
-      }
+    if (!isFinite(yaw) || !isFinite(pitch))
+      return "pending";
+    setAngle(stel.core, "yaw", yaw);
+    setAngle(stel.core, "pitch", pitch);
+    setAngle(stel.observer, "yaw", yaw);
+    setAngle(stel.observer, "pitch", pitch);
+    if (isFinite(roll)) {
+      setAngle(stel.core, "roll", roll);
+      setAngle(stel.observer, "roll", roll);
     }
-    return pointed ? "ok" : "pending";
+    return "ok";
   } catch (err) {
     return "error";
   }
@@ -1526,6 +1702,378 @@ SKY_WEB_VIEW_APPLY_JS = r"""
 
 def sky_web_view_script(payload: dict[str, Any]) -> str:
     return f"{SKY_WEB_VIEW_APPLY_JS}({json.dumps(payload)})"
+
+
+SKY_WEB_LOCK_TARGET_JS = r"""
+(function(p) {
+  function asSwe(stel, obj) {
+    if (!obj) return null;
+    if (typeof obj.getPosIcrf === "function") return obj;
+    if (typeof obj.v === "number" && stel && stel.SweObj) {
+      try {
+        var wrapped = new stel.SweObj(obj.v);
+        if (wrapped.retain) wrapped.retain();
+        return wrapped;
+      } catch (err) {
+        return null;
+      }
+    }
+    return null;
+  }
+  function vueBits() {
+    try {
+      var app = document.getElementById("app");
+      var vue = app && app.__vue_app__;
+      var gp = vue && vue.config && vue.config.globalProperties;
+      return {gp: gp, store: gp && gp.$store, stel: gp && gp.$stel};
+    } catch (err) {
+      return {gp: null, store: null, stel: null};
+    }
+  }
+    function nameCandidates(raw, aliases) {
+    var name = String(raw || "").replace(/\s+/g, " ").trim();
+    var out = [];
+    function add(value) {
+      value = String(value || "").replace(/\s+/g, " ").trim();
+      if (value && out.indexOf(value) < 0) out.push(value);
+    }
+    (aliases || []).forEach(add);
+    if (!name) return out;
+    add(name);
+    add(name.replace(/[_-]+/g, " "));
+    var gaia = name.match(/gaia\s*(e?dr[123])?\s*(\d{15,19})/i);
+    if (gaia) {
+      var rel = (gaia[1] || "DR3").toUpperCase();
+      add("Gaia " + rel + " " + gaia[2]);
+      add("GaiaDR3 " + gaia[2]);
+      add("Gaia DR3 " + gaia[2]);
+    }
+    var match = name.match(/^(M|NGC|IC|PGC|UGC|HD|HIP|SAO|HR|SH2|LBN|LDN)\s*[-_]?(\d+[a-zA-Z]?)$/i);
+    if (match) {
+      var cat = match[1].toUpperCase();
+      var num = match[2];
+      add(cat + " " + num);
+      add(cat + num);
+      if (cat === "M") add("Messier " + num);
+    }
+    add("NAME " + name);
+    return out;
+  }
+  function tryGet(stel, id) {
+    if (!stel || !id) return null;
+    var names = ["getObj", "lookupObj", "getObject"];
+    for (var i = 0; i < names.length; i++) {
+      if (typeof stel[names[i]] !== "function") continue;
+      try {
+        var obj = asSwe(stel, stel[names[i]](id));
+        if (obj) return obj;
+      } catch (err) {}
+    }
+    return null;
+  }
+  function findObject(stel, extra, name, aliases) {
+    var ids = nameCandidates(name, aliases);
+    var sources = [stel, extra].filter(Boolean);
+    for (var s = 0; s < sources.length; s++) {
+      for (var i = 0; i < ids.length; i++) {
+        var obj = tryGet(sources[s], ids[i]);
+        if (obj) return obj;
+      }
+    }
+    return null;
+  }
+  function selectObject(stel, store, obj) {
+    if (!obj) return;
+    try { if (stel && stel.core) stel.core.selection = obj; } catch (err) {}
+    if (!store) return;
+    try { store.commit("setSelectedObject", obj); return; } catch (err) {}
+    try { store.state.selectedObject = obj; } catch (err) {}
+  }
+  function lockObject(stel, obj) {
+    if (!stel || !obj) return false;
+    try {
+      if (typeof stel.pointAndLock === "function" && typeof obj.v === "number") {
+        stel.pointAndLock(obj, 1.0);
+        return true;
+      }
+    } catch (err) {}
+    try {
+      if (stel.core) {
+        stel.core.lock = obj;
+        return true;
+      }
+    } catch (err) {}
+    return false;
+  }
+  function lookAtIcrf(stel, raHours, decDeg) {
+    if (!stel || !stel.core || !stel.observer) return false;
+    raHours = Number(raHours);
+    decDeg = Number(decDeg);
+    if (!isFinite(raHours) || !isFinite(decDeg)) return false;
+    var ra = (((raHours % 24) + 24) % 24) * Math.PI / 12;
+    var dec = decDeg * Math.PI / 180;
+    var cdec = Math.cos(dec);
+    var xyz = [cdec * Math.cos(ra), cdec * Math.sin(ra), Math.sin(dec), 0];
+    var frames = ["OBSERVED", "HORIZONTAL", "CIRS", "JNOW"];
+    if (typeof stel.convertFrame !== "function" || typeof stel.c2s !== "function")
+      return false;
+    for (var i = 0; i < frames.length; i++) {
+      try {
+        var observed = stel.convertFrame(stel.observer, "ICRF", frames[i], xyz);
+        var sph = stel.c2s(observed);
+        var yaw = Number(sph && sph[0]), pitch = Number(sph && sph[1]);
+        if (!isFinite(yaw) || !isFinite(pitch)) continue;
+        try { stel.core.lock = null; } catch (err) {}
+        stel.core.yaw = yaw;
+        stel.core.pitch = pitch;
+        stel.observer.yaw = yaw;
+        stel.observer.pitch = pitch;
+        return true;
+      } catch (err) {}
+    }
+    return false;
+  }
+  try {
+    var stel = window._stel;
+    var bits = vueBits();
+    if (bits.stel && !stel) stel = bits.stel;
+    if (!stel || !stel.core) return JSON.stringify({status: "loading"});
+    var name = String((p && p.name) || "").trim();
+    var aliases = (p && p.aliases) || [];
+    var obj = findObject(stel, bits.stel, name, aliases);
+    if (obj) {
+      selectObject(stel, bits.store, obj);
+      lockObject(stel, obj);
+      return JSON.stringify({status: "locked", name: name});
+    }
+    if (lookAtIcrf(stel, p && p.ra_hours, p && p.dec_degrees))
+      return JSON.stringify({status: "view", name: name});
+    return JSON.stringify({status: "missing", name: name});
+  } catch (err) {
+    return JSON.stringify({status: "error"});
+  }
+})
+"""
+
+
+def sky_web_lock_target_script(payload: dict[str, Any] | None = None) -> str:
+    data = payload if isinstance(payload, dict) else {}
+    name = str(data.get("name") or "").strip()
+    aliases = [
+        str(item).strip()
+        for item in (data.get("aliases") or [])
+        if str(item or "").strip()
+    ]
+    body: dict[str, Any] = {"name": name, "aliases": aliases[:16]}
+    try:
+        ra = float(data.get("ra_hours"))
+        dec = float(data.get("dec_degrees"))
+    except (TypeError, ValueError):
+        ra = dec = float("nan")
+    if ra == ra and dec == dec:
+        body["ra_hours"] = ra
+        body["dec_degrees"] = dec
+    return f"{SKY_WEB_LOCK_TARGET_JS}({json.dumps(body)})"
+
+
+_GAIA_SOURCE_RE = re.compile(r"(?:gaia\s*(?:e?dr[123])?\s*)(\d{15,19})", re.IGNORECASE)
+_SIMBAD_TAP_URL = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync"
+_GAIA_TAP_URL = "https://gea.esac.esa.int/tap-server/tap/sync"
+
+
+def _sky_catalog_headers() -> dict[str, str]:
+    return {"User-Agent": f"AstroDwarf/{__version__}"}
+
+
+def gaia_source_id(name: str) -> int | None:
+    candidates = gaia_source_candidates(name)
+    return candidates[0] if candidates else None
+
+
+def gaia_source_candidates(name: str) -> list[int]:
+    """Possible Gaia source ids encoded in a firmware target name."""
+    text = str(name or "").strip()
+    found: list[int] = []
+    seen: set[int] = set()
+
+    def add(value: int) -> None:
+        if value <= 0 or value in seen or value > 2**63 - 1:
+            return
+        seen.add(value)
+        found.append(value)
+
+    for match in re.finditer(r"\d+", text):
+        run = match.group(0)
+        if 15 <= len(run) <= 19:
+            add(int(run))
+            continue
+        if len(run) < 15:
+            continue
+        for width in (19, 18, 17, 16):
+            if len(run) < width:
+                continue
+            add(int(run[:width]))
+            add(int(run[-width:]))
+            for index in range(1, len(run) - width):
+                add(int(run[index:index + width]))
+    if not found:
+        match = _GAIA_SOURCE_RE.search(text)
+        if match:
+            add(int(match.group(1)))
+    return found
+
+
+def _tap_rows(url: str, query: str, *, simbad: bool = False) -> list[list[Any]]:
+    if simbad:
+        payload = {"request": "doQuery", "lang": "ADQL", "format": "json", "query": query}
+    else:
+        payload = {"REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "json", "QUERY": query}
+    response = requests.post(url, data=payload, headers=_sky_catalog_headers(), timeout=12)
+    response.raise_for_status()
+    data = response.json()
+    rows = data.get("data") if isinstance(data, dict) else None
+    return rows if isinstance(rows, list) else []
+
+
+def _catalog_hit(name: str, ra_deg: float, dec_deg: float, aliases: list[str] | None = None) -> dict[str, Any]:
+    ra_hours = ((float(ra_deg) / 15.0) % 24.0 + 24.0) % 24.0
+    dec = max(-90.0, min(90.0, float(dec_deg)))
+    label = str(name or "").strip() or "Catalog target"
+    seen = {label.lower()}
+    extra: list[str] = []
+    for item in aliases or []:
+        text = str(item or "").strip()
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        extra.append(text)
+    return {
+        "name": label,
+        "ra_hours": round(ra_hours, 6),
+        "dec_degrees": round(dec, 6),
+        "aliases": extra[:16],
+        "source": "catalog",
+    }
+
+
+def _gaia_lookup(source_id: int) -> dict[str, Any] | None:
+    return _gaia_lookup_many([source_id])
+
+
+def _gaia_lookup_many(source_ids: list[int]) -> dict[str, Any] | None:
+    ordered: list[int] = []
+    seen: set[int] = set()
+    for item in source_ids:
+        sid = int(item)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        ordered.append(sid)
+    for start in range(0, len(ordered), 8):
+        chunk = ordered[start:start + 8]
+        joined = ",".join(str(item) for item in chunk)
+        rows = _tap_rows(
+            _GAIA_TAP_URL,
+            f"SELECT source_id, ra, dec FROM gaiadr3.gaia_source WHERE source_id IN ({joined})",
+        )
+        if not rows:
+            rows = _tap_rows(
+                _GAIA_TAP_URL,
+                f"SELECT source_id, ra, dec FROM gaiadr2.gaia_source WHERE source_id IN ({joined})",
+            )
+        by_id: dict[int, list[Any]] = {}
+        for row in rows:
+            if not isinstance(row, list) or len(row) < 3:
+                continue
+            try:
+                by_id[int(row[0])] = row
+            except (TypeError, ValueError):
+                continue
+        for sid in chunk:
+            row = by_id.get(sid)
+            if row is None:
+                continue
+            return _catalog_hit(f"Gaia DR3 {sid}", float(row[1]), float(row[2]))
+    return None
+
+
+def _simbad_aliases(ids_text: str) -> list[str]:
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"[|]+", str(ids_text or "")):
+        ident = re.sub(r"\s+", " ", part).strip()
+        if not ident:
+            continue
+        keep = bool(re.match(r"^(HIP|HD|HR|SAO|TYC|NAME)\s+\S+", ident, re.IGNORECASE))
+        keep = keep or ident.startswith("*")
+        if not keep:
+            continue
+        key = ident.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        aliases.append(ident)
+        if ident.startswith("*"):
+            bare = ident.lstrip("*").strip()
+            if bare and bare.lower() not in seen:
+                seen.add(bare.lower())
+                aliases.append(bare)
+    return aliases[:16]
+
+
+def _simbad_lookup(name: str) -> dict[str, Any] | None:
+    candidates = [name]
+    compact = re.sub(r"\s+", " ", name).strip()
+    if compact not in candidates:
+        candidates.append(compact)
+    match = re.match(r"^(M|NGC|IC|HIP|HD|HR|SAO)\s*(\d+)$", compact, re.IGNORECASE)
+    if match:
+        candidates.append(f"{match.group(1).upper()} {match.group(2)}")
+    for ident in candidates:
+        escaped = ident.replace("'", "''")
+        query = (
+            "SELECT TOP 1 basic.ra, basic.dec, basic.main_id, ids.ids "
+            "FROM basic JOIN ident ON ident.oidref = basic.oid "
+            "JOIN ids ON ids.oidref = basic.oid "
+            f"WHERE ident.id = '{escaped}'"
+        )
+        rows = _tap_rows(_SIMBAD_TAP_URL, query, simbad=True)
+        if not rows:
+            query = (
+                "SELECT TOP 1 ra, dec, main_id FROM basic JOIN ident "
+                f"ON ident.oidref = basic.oid WHERE id = '{escaped}'"
+            )
+            rows = _tap_rows(_SIMBAD_TAP_URL, query, simbad=True)
+        if not rows:
+            continue
+        row = rows[0]
+        if not isinstance(row, list) or len(row) < 3:
+            continue
+        main = str(row[2] or ident).strip() or ident
+        extras = [ident, name]
+        if len(row) > 3:
+            extras.extend(_simbad_aliases(str(row[3] or "")))
+        return _catalog_hit(main, float(row[0]), float(row[1]), extras)
+    return None
+
+
+def resolve_sky_catalog_target(name: str) -> dict[str, Any] | None:
+    """Resolve a firmware/catalog name to ICRS RA/Dec when Stellarium cannot."""
+    text = str(name or "").strip()
+    if not text:
+        return None
+    source_ids = gaia_source_candidates(text)
+    if source_ids:
+        try:
+            hit = _gaia_lookup_many(source_ids)
+        except (TypeError, ValueError, requests.RequestException):
+            hit = None
+        if hit:
+            return hit
+    try:
+        return _simbad_lookup(text)
+    except (TypeError, ValueError, requests.RequestException):
+        return None
 
 
 def _sky_web_payload(raw: Any) -> dict[str, Any]:
@@ -1609,6 +2157,34 @@ PANE_INDEX_RE = re.compile(r"pane\s+(\d+)(?:\s+of\s+(\d+))?", re.I)
 PANE_TITLE_RE = re.compile(r"\s*[-–:]?\s*pane\s+\d+(?:\s+of\s+\d+)?\s*$", re.I)
 
 
+def is_mosaic_pane_name(name: str) -> bool:
+    """True for commanded mosaic labels such as 'I 212 pane 1'."""
+    return bool(PANE_TITLE_RE.search(str(name or "")))
+
+
+def mosaic_pane_index(name: str) -> int | None:
+    match = PANE_INDEX_RE.search(str(name or ""))
+    if not match:
+        return None
+    try:
+        return max(1, int(match.group(1)))
+    except (TypeError, ValueError):
+        return None
+
+
+def sky_names_related(left: str, right: str) -> bool:
+    """True when one label is a mosaic pane of the other object."""
+    first = str(left or "").strip()
+    second = str(right or "").strip()
+    if not first or not second:
+        return False
+    parent_a = mosaic_group_title(first)
+    parent_b = mosaic_group_title(second)
+    if not parent_a or not parent_b or parent_a.casefold() != parent_b.casefold():
+        return False
+    return is_mosaic_pane_name(first) or is_mosaic_pane_name(second)
+
+
 def pane_sort_key(name: str) -> tuple[int, str]:
     match = PANE_INDEX_RE.search(name or "")
     return (int(match.group(1)) if match else 10**6, name or "")
@@ -1684,6 +2260,40 @@ def mosaic_session_footprints(
         )
     panes.sort(key=lambda item: int(item.get("index") or 0))
     return panes
+
+
+def live_mosaic_resume_plan(
+    phase: str,
+    current_index: int,
+    total: int,
+    capturing: bool,
+) -> tuple[int, bool] | None:
+    """Where to resume a persisted live mosaic after the app restarts.
+
+    Returns ``(start_index, join_current)``, or ``None`` when every pane is done.
+    A pane that was stacking when the app died is joined if the telescope is
+    still capturing; otherwise that pane is treated as finished.
+    """
+    try:
+        index = max(1, int(current_index or 1))
+    except (TypeError, ValueError):
+        index = 1
+    try:
+        panes = max(0, int(total or 0))
+    except (TypeError, ValueError):
+        panes = 0
+    label = str(phase or "").strip().lower()
+    if capturing:
+        if panes and index > panes:
+            return None
+        return index, True
+    if label in {"complete", "stacking"}:
+        start = index + 1
+    else:
+        start = index
+    if panes and start > panes:
+        return None
+    return start, False
 
 
 def mosaic_group_title(name: str, group_id: str = "") -> str:
@@ -1823,10 +2433,15 @@ def _offset_camera(
     up_deg: float,
     position_angle: float,
 ) -> tuple[float, float]:
-    """Offset in the camera plane. PA is east of north, same as Telescopius."""
+    """Offset in the camera plane. PA is east of north for camera-up.
+
+    At PA 0° the frame is north-up. A sky chart has east on the left, so
+    camera-right is west. The previous east=right mapping mirrored the
+    mosaic: pane 1 was drawn on the right and the GOTO went left.
+    """
     pa = radians(float(position_angle) % 360.0)
-    east = right_deg * cos(pa) + up_deg * sin(pa)
-    north = -right_deg * sin(pa) + up_deg * cos(pa)
+    east = -right_deg * cos(pa) + up_deg * sin(pa)
+    north = right_deg * sin(pa) + up_deg * cos(pa)
     return _offset_radec(ra_deg, dec_deg, east, north)
 
 

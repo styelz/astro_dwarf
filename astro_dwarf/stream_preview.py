@@ -513,7 +513,9 @@ class MosaicLiveItem(QQuickPaintedItem):
         cell_h = (height - gap * (rows + 1)) / rows
         if cell_w <= 2 or cell_h <= 2:
             return None
-        col = (index - 1) % columns
+        # Camera-frame sheet: column 1 sits on the right, same as the SKY HUD
+        # (drawScreenGrid uses originX + (cols - col) * stepX). A 2×2 reads 2 1 / 4 3.
+        col = (columns - 1) - ((index - 1) % columns)
         row = (index - 1) // columns
         if row >= rows:
             return None

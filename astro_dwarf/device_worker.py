@@ -255,18 +255,47 @@ def _telemetry_loop() -> None:
             request_state_refresh()
 
 
-def send_without_response(message: Any, command: int, module_id: int) -> bool:
+_SEND_TIMEOUT_S = 5.0
+_call_timeout_s: float | None = None
+
+
+def send_without_response(
+    message: Any,
+    command: int,
+    module_id: int,
+    timeout: float | None = None,
+) -> bool:
     """Send a V3 command without waiting for the SDK's blocking reply."""
-    socket_globals = _api.connect_socket.__globals__
-    client = socket_globals.get("client_instance")
-    if not client:
+    if _api is None:
+        return False
+    seconds = float(_SEND_TIMEOUT_S if timeout is None else timeout)
+    if _call_timeout_s is not None and timeout is None:
+        seconds = min(seconds, max(0.25, float(_call_timeout_s)))
+    client, loop = _sdk_socket()
+    send = None
+    try:
+        socket_globals = _api.connect_socket.__globals__
+        send = socket_globals.get("send_socket")
+        if client is None:
+            client = socket_globals.get("client_instance")
+        if loop is None and client is not None:
+            task = getattr(client, "task", None)
+            loop = task.get_loop() if task is not None else None
+    except Exception:
+        return False
+    if client is None or send is None or loop is None or getattr(loop, "is_closed", lambda: False)():
         return False
     future = asyncio.run_coroutine_threadsafe(
-        socket_globals["send_socket"](message, command, 0, module_id),
-        client.task.get_loop(),
+        asyncio.wait_for(send(message, command, 0, module_id), timeout=seconds),
+        loop,
     )
-    future.result(timeout=5)
-    return True
+    try:
+        return bool(future.result(timeout=seconds + 0.5))
+    except (TimeoutError, asyncio.TimeoutError):
+        future.cancel()
+        _interrupt_sdk_wait("send timed out")
+        log(f"Command {command} send timed out after {seconds:.0f}s", "warning")
+        return False
 
 
 FUNCTIONS = {
@@ -286,6 +315,7 @@ FUNCTIONS = {
     "go_live": "perform_GoLive",
     "photo_mode": "perform_enter_photo_mode",
     "astro_mode": "perform_enter_astro_mode",
+    "enter_camera": "perform_enter_camera",
     "shooting_mode": "perform_enter_shooting_mode",
     "open_camera": "perform_open_camera",
     "open_wide_camera": "perform_open_widecamera",
@@ -1774,6 +1804,28 @@ _NON_FATAL_REPLIES = {
 _BUSY_ASTRO = {"running", "solving", "stopping"}
 
 
+def _goto_wait_complete(
+    *,
+    seen_goto_busy: bool,
+    tracking: bool,
+    tracking_at_start: bool,
+    elapsed_s: float,
+) -> bool:
+    """True when THIS goto has handed off to sidereal tracking.
+
+    Leftover tracking from the previous pane must not count as completion.
+    A fresh slew is done once goto has been seen busy and tracking is
+    running again, or tracking started after it was off (fast handoff).
+    """
+    if not tracking:
+        return False
+    if seen_goto_busy:
+        return True
+    if tracking_at_start:
+        return False
+    return elapsed_s > 5.0
+
+
 def _await_operation(name: str, operation: str, since: float) -> None:
     """Block until a fire-and-forget V3 operation finishes, fails or times out.
 
@@ -1788,14 +1840,10 @@ def _await_operation(name: str, operation: str, since: float) -> None:
         return
     reply_cmd, state_key, done_on_reply, timeout = _V3_OPERATION_WAITS[operation]
     goto = operation in ("goto", "goto_solar")
-    seen_running = False
     snapshot = _tap.snapshot()
     state = snapshot.get(state_key) if state_key else None
-    if state in _BUSY_ASTRO:
-        seen_running = True
-    elif goto and snapshot.get("tracking_state") == "running" and (time.monotonic() - since) > 5:
-        # GOTO already handed off to tracking before we started waiting.
-        return
+    seen_running = state in _BUSY_ASTRO
+    tracking_at_start = snapshot.get("tracking_state") == "running"
     log(f"{name} started; waiting for the telescope to finish…")
     logged_tracking_wait = False
     while True:
@@ -1811,14 +1859,19 @@ def _await_operation(name: str, operation: str, since: float) -> None:
         if state in _BUSY_ASTRO:
             seen_running = True
         tracking = snapshot.get("tracking_state") == "running"
-        if goto and tracking:
+        elapsed = time.monotonic() - since
+        if goto and _goto_wait_complete(
+            seen_goto_busy=seen_running,
+            tracking=tracking,
+            tracking_at_start=tracking_at_start,
+            elapsed_s=elapsed,
+        ):
             return
         if goto and seen_running and state in ("idle", "stopped") and not logged_tracking_wait:
             log("GOTO finished; waiting for tracking to start…")
             logged_tracking_wait = True
         if seen_running and state in ("idle", "stopped") and not goto:
             return
-        elapsed = time.monotonic() - since
         if elapsed > timeout:
             if goto and not tracking:
                 raise RuntimeError(
@@ -1884,6 +1937,11 @@ _CONTINUE_SHOOTING_TIMEOUT_S = 30.0
 _CAPTURE_CONTINUE_AFTER_S = 10.0
 _CAPTURE_START_TIMEOUT_S = 45.0
 _CAPTURE_HEARTBEAT_S = 60.0
+# Firmware mosaic slews between panes with capture idle. Wait long enough
+# for the next pane to start, but finish quickly once the last pane ends.
+_MOSAIC_PANE_GAP_S = 90.0
+_MOSAIC_LAST_PANE_IDLE_S = 8.0
+_RECOVERED_CAPTURE_WAIT_S = 6.0
 
 
 def _ir_index(name: Any) -> int:
@@ -1926,6 +1984,42 @@ def _capture_request(operation: str, args: list[Any], force_start: bool) -> Any:
 
 def _capture_running(snapshot: dict[str, Any]) -> bool:
     return bool(snapshot.get("capture_active")) or snapshot.get("capture_state") == "running"
+
+
+def _firmware_mosaic(session: dict[str, Any] | None) -> bool:
+    mosaic = (session or {}).get("mosaic") or {}
+    try:
+        imported = int(mosaic.get("grid_rows") or 0) >= 1 and int(mosaic.get("grid_columns") or 0) >= 1
+        panes = max(1, int(mosaic.get("rows") or 1) * int(mosaic.get("columns") or 1))
+    except (TypeError, ValueError):
+        return False
+    return (not imported) and panes > 1
+
+
+def _mosaic_pane_count(session: dict[str, Any] | None) -> int:
+    mosaic = (session or {}).get("mosaic") or {}
+    try:
+        return max(1, int(mosaic.get("rows") or 1) * int(mosaic.get("columns") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _goto_busy(snapshot: dict[str, Any]) -> bool:
+    return str(snapshot.get("goto_state") or "") in _BUSY_ASTRO
+
+
+def _mosaic_busy(snapshot: dict[str, Any]) -> bool:
+    return _capture_running(snapshot) or bool(snapshot.get("mosaic_active")) or _goto_busy(snapshot)
+
+
+def _mosaic_idle_timeout_s(snapshot: dict[str, Any], panes: int) -> float:
+    try:
+        index = int(snapshot.get("mosaic_index") or 0)
+    except (TypeError, ValueError):
+        index = 0
+    if panes >= 1 and index >= panes and not _capture_running(snapshot) and not _goto_busy(snapshot):
+        return _MOSAIC_LAST_PANE_IDLE_S
+    return _MOSAIC_PANE_GAP_S
 
 
 def _reset_session_capture(session: dict[str, Any] | None = None) -> None:
@@ -2015,12 +2109,20 @@ def _capture_wait_label(name: str, snapshot: dict[str, Any]) -> str:
     return name
 
 
-def _wait_for_capture_end(on_progress: Any = None, name: str = "Waiting for capture") -> None:
+def _wait_for_capture_end(
+    on_progress: Any = None,
+    name: str = "Waiting for capture",
+    mosaic: bool = False,
+    mosaic_panes: int = 1,
+) -> None:
     """Watch telemetry until stacking stops.
 
     The SDK ``wait_astro`` call parks on an empty socket wait with no HUD
     updates, and it never sends CONTINUE SHOOTING when firmware accepts
     START_CAPTURE (code 0) then raises a missing-darks warning.
+
+    Firmware mosaics go idle between panes. Keep watching through those gaps
+    until the last pane finishes or no next pane starts.
     """
     seen = False
     continued = False
@@ -2034,19 +2136,38 @@ def _wait_for_capture_end(on_progress: Any = None, name: str = "Waiting for capt
             raise InterruptedError("Session stopped")
         snapshot = _tap.snapshot() if _tap is not None else {}
         elapsed = time.monotonic() - started
-        if _capture_running(snapshot):
-            if not seen:
+        capturing = _capture_running(snapshot)
+        slewing = mosaic and _goto_busy(snapshot)
+        if capturing or slewing:
+            if capturing and not seen:
                 frames, total = _capture_counts(snapshot)
                 detail = f"{frames}/{total}" if total else "stacking started"
                 log(f"Capture running · {detail}")
             seen = True
             quiet_since = None
-        elif seen:
-            state = str(snapshot.get("capture_state") or "")
-            if state in ("stopped", "idle"):
+        elif mosaic and snapshot.get("mosaic_active"):
+            if not seen:
+                seen = True
+                log(f"{name}: mosaic still active; waiting for the next pane")
+            if quiet_since is None:
+                quiet_since = time.monotonic()
+            elif time.monotonic() - quiet_since >= _mosaic_idle_timeout_s(snapshot, mosaic_panes):
                 log(f"{name} finished after {_format_duration(elapsed)}")
                 return
-            if quiet_since is None:
+        elif seen:
+            state = str(snapshot.get("capture_state") or "")
+            if mosaic:
+                if quiet_since is None:
+                    quiet_since = time.monotonic()
+                    if mosaic_panes > 1:
+                        log(f"{name}: pane gap; waiting for the next mosaic pane")
+                elif time.monotonic() - quiet_since >= _mosaic_idle_timeout_s(snapshot, mosaic_panes):
+                    log(f"{name} finished after {_format_duration(elapsed)}")
+                    return
+            elif state in ("stopped", "idle"):
+                log(f"{name} finished after {_format_duration(elapsed)}")
+                return
+            elif quiet_since is None:
                 quiet_since = time.monotonic()
             elif time.monotonic() - quiet_since >= 20.0:
                 log(f"{name} finished after {_format_duration(elapsed)}")
@@ -2078,13 +2199,18 @@ def _join_existing_capture(session: dict[str, Any], step: Any) -> bool:
     if _tap is None:
         return False
     snapshot = _tap.snapshot()
-    if not _capture_running(snapshot):
+    firmware_mosaic = _firmware_mosaic(session)
+    if not _capture_running(snapshot) and not (firmware_mosaic and _mosaic_busy(snapshot)):
         return False
-    if not _same_capture_target(session, snapshot):
+    if _capture_running(snapshot) and not _same_capture_target(session, snapshot):
         live = snapshot.get("capture_target") or snapshot.get("tracking_target") or "another target"
         log(f"Telescope is stacking {live}; not joining this session", "warning")
         return False
     wide = snapshot.get("capture_camera") == "wide" or str((session.get("camera") or {}).get("camera") or "") == "wide"
+    if firmware_mosaic:
+        log("Telescope is already running a mosaic; joining the in-progress run", "notice")
+        step("Waiting for mosaic", "wait_astro_resume")
+        return True
     log("Telescope is already stacking; joining the in-progress capture", "notice")
     step(
         "Waiting for wide capture" if wide else "Waiting for capture",
@@ -2234,6 +2360,7 @@ def run_session(session: dict[str, Any]) -> bool:
             return
         if operation in ("wait_astro", "wait_astro_resume", "wait_wide", "wait_wide_resume"):
             wide = operation in ("wait_wide", "wait_wide_resume")
+            firmware_mosaic = _firmware_mosaic(session)
             if _tap is None:
                 sdk_op = "wait_wide_resume" if operation == "wait_wide_resume" else (
                     "wait_astro_resume" if operation == "wait_astro_resume" else (
@@ -2247,7 +2374,12 @@ def run_session(session: dict[str, Any]) -> bool:
                 return
             if operation.endswith("_resume"):
                 _arm_sdk_capture_rejoin(wide=wide)
-            _wait_for_capture_end(on_progress=lambda text: step(text), name=name.split(" · ")[0])
+            _wait_for_capture_end(
+                on_progress=lambda text: step(text),
+                name=name.split(" · ")[0],
+                mosaic=firmware_mosaic and not wide,
+                mosaic_panes=_mosaic_pane_count(session),
+            )
             return
         if sdk_call(operation, *args) is False:
             if _stop.is_set():
@@ -2270,7 +2402,7 @@ def run_session(session: dict[str, Any]) -> bool:
                 log("Stopping leftover telescope activity after session ended", "warning")
                 stop_all()
             except Exception as exc:
-                log(f"Could not stop leftover activity: {exc}", "debug")
+                log(f"Could not stop leftover activity: {exc}", "warning")
         elif completed:
             _exit_tracking_if_needed("Stopping tracking after session completed")
 
@@ -2298,6 +2430,33 @@ def _exit_tracking_if_needed(reason: str) -> None:
         sdk_call("stop_goto")
     except Exception as exc:
         log(f"Stop tracking skipped: {exc}", "debug")
+
+
+def _stop_tracking_for_goto(label: str = "Stopping leftover tracking before GOTO") -> None:
+    """Clear tracking/GOTO so the next pane slew is a fresh command.
+
+    Mosaic stacks keep sidereal tracking on after each pane. Issuing the
+    next GOTO while that tracking is still latched makes the wait treat
+    the previous pointing as already complete, so every pane stacks the
+    same field.
+    """
+    snapshot = _tap.snapshot() if _tap is not None else {}
+    if snapshot.get("tracking_state") != "running" and not _goto_busy(snapshot):
+        return
+    log(label)
+    try:
+        sdk_call("stop_goto")
+    except Exception as exc:
+        log(f"Stop tracking skipped: {exc}", "debug")
+        return
+    deadline = time.monotonic() + 12.0
+    while time.monotonic() < deadline:
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        snapshot = _tap.snapshot() if _tap is not None else {}
+        if snapshot.get("tracking_state") != "running" and not _goto_busy(snapshot):
+            return
+        time.sleep(0.25)
 
 
 def _clear_tracking(progress: Any = None) -> None:
@@ -2373,15 +2532,21 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         raise RuntimeError(
             "Telescope location is lat=0, long=0. Set your observing site before running a session."
         )
-    if str(session.get("current_step") or "") in {"Joining capture", "Recovered after restart"}:
-        deadline = time.monotonic() + 6.0
+    recovered = str(session.get("current_step") or "") in {"Joining capture", "Recovered after restart"}
+    firmware_mosaic = _firmware_mosaic(session)
+    if recovered:
+        deadline = time.monotonic() + (_MOSAIC_PANE_GAP_S if firmware_mosaic else _RECOVERED_CAPTURE_WAIT_S)
         while time.monotonic() < deadline:
             if _stop.is_set():
                 raise InterruptedError("Session stopped")
-            if _tap is not None and _capture_running(_tap.snapshot()):
+            snapshot = _tap.snapshot() if _tap is not None else {}
+            if _capture_running(snapshot) or (firmware_mosaic and _mosaic_busy(snapshot)):
                 break
             time.sleep(0.25)
     if _join_existing_capture(session, step):
+        return True
+    if recovered and firmware_mosaic:
+        log("Recovered mosaic is no longer running on the telescope", "notice")
         return True
     _reset_session_capture(session)
     step("Closing previous capture", "go_live")
@@ -2417,7 +2582,9 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         _clear_tracking(step)
         _run_v3_until_ready("Calibration", "calibrate", step)
     if workflow.get("goto") and target.get("ra_hours") is not None:
-        _run_session_op("GOTO target", "goto", step, target["ra_hours"], target["dec_degrees"], target["name"], False)
+        session_name = str(session.get("name") or "").strip()
+        goto_name = session_name if " pane " in session_name.lower() else str(target.get("name") or "")
+        _run_session_op("GOTO target", "goto", step, target["ra_hours"], target["dec_degrees"], goto_name, False)
     elif workflow.get("goto") and target.get("kind") == "solar":
         ids = {"mercury": 1, "venus": 2, "mars": 3, "jupiter": 4, "saturn": 5, "uranus": 6, "neptune": 7, "moon": 8, "sun": 9}
         name = (target.get("solar_name") or target["name"]).lower()
@@ -2454,6 +2621,9 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
 # active, which stalls the SDK for its full 150 s timeout.
 _FALLBACK_STOPS = ("stop_astro", "stop_goto", "stop_calibrate", "stop_autofocus", "stop_polar")
 _STOP_COMMAND_TIMEOUT = 6.0
+# Wall clock for the whole stop sequence. Fire-and-forget motor/GOTO stops
+# do not set _in_flight, so a hung send used to wedge the command thread.
+_STOP_ALL_BUDGET_S = 20.0
 # START_CAPTURE can be accepted before the firmware is actually stacking.
 # A stop sent in that gap is a no-op, then stacking starts and keeps going.
 _CAPTURE_STOP_GRACE_S = 8.0
@@ -2523,7 +2693,7 @@ def _retry_stop_capture(snapshot: dict[str, Any]) -> None:
         log(f"{label} retry skipped: {exc}", "debug")
 
 
-def _wait_for_stop_idle() -> None:
+def _wait_for_stop_idle(max_seconds: float | None = None) -> None:
     """Stay on the stop until stacking actually ends, and catch a late start.
 
     Firmware often accepts START_CAPTURE, then begins stacking a few seconds
@@ -2532,10 +2702,16 @@ def _wait_for_stop_idle() -> None:
     """
     if _tap is None:
         return
+    limit = _CAPTURE_STOP_WAIT_S if max_seconds is None else min(
+        _CAPTURE_STOP_WAIT_S, max(0.0, float(max_seconds))
+    )
+    if limit <= 0:
+        return
+    deadline = time.monotonic() + limit
     snapshot = _tap.snapshot()
     if not _activity_still_running(snapshot):
         report_status("stop", "Waiting to confirm the telescope stopped")
-        grace = time.monotonic() + _CAPTURE_STOP_GRACE_S
+        grace = min(deadline, time.monotonic() + _CAPTURE_STOP_GRACE_S)
         while time.monotonic() < grace:
             snapshot = _tap.snapshot()
             if _activity_still_running(snapshot):
@@ -2544,7 +2720,6 @@ def _wait_for_stop_idle() -> None:
         else:
             return
     report_status("stop", "Waiting for the telescope to stop")
-    deadline = time.monotonic() + _CAPTURE_STOP_WAIT_S
     retried = False
     while time.monotonic() < deadline:
         snapshot = _tap.snapshot()
@@ -2588,17 +2763,26 @@ def _stop_targets() -> list[str]:
 
 
 def _sdk_call_bounded(operation: str, seconds: float) -> Any:
-    """Run one SDK command but wake it up if the device never answers."""
-    timer = threading.Timer(
-        seconds,
-        lambda: _in_flight == operation and _interrupt_sdk_wait(f"{operation} timed out"),
-    )
+    """Run one SDK command but give up if the device never answers.
+
+    Fire-and-forget V3 stops never set ``_in_flight``, so the old timer
+    only helped ``_invoke_sdk`` waits. Always poke the result queue and
+    cap ``send_without_response`` with the same deadline.
+    """
+    global _in_flight, _call_timeout_s
+    timer = threading.Timer(seconds, lambda: _interrupt_sdk_wait(f"{operation} timed out"))
     timer.daemon = True
+    previous_flight = _in_flight
+    previous_timeout = _call_timeout_s
+    _in_flight = operation
+    _call_timeout_s = seconds
     timer.start()
     try:
         return sdk_call(operation)
     finally:
         timer.cancel()
+        _in_flight = previous_flight
+        _call_timeout_s = previous_timeout
 
 
 def stop_all() -> bool:
@@ -2612,15 +2796,24 @@ def stop_all() -> bool:
         report_status("stop", "Telescope is not connected")
         return True
     report_status("stop", "Sending stop commands")
+    started = time.monotonic()
     for operation in operations:
+        remaining = _STOP_ALL_BUDGET_S - (time.monotonic() - started)
+        if remaining <= 0.25:
+            log("Stop timed out; skipping remaining commands", "warning")
+            break
         label = _stop_step_label(operation)
         report_status("stop", label)
         log(f"{label}…")
         try:
-            _sdk_call_bounded(operation, _STOP_COMMAND_TIMEOUT)
+            _sdk_call_bounded(operation, min(_STOP_COMMAND_TIMEOUT, remaining))
         except Exception as exc:
-            log(f"{label} skipped: {exc}", "debug")
-    _wait_for_stop_idle()
+            log(f"{label} skipped: {exc}", "warning")
+    remaining = _STOP_ALL_BUDGET_S - (time.monotonic() - started)
+    if remaining > 0.25:
+        _wait_for_stop_idle(max_seconds=remaining)
+    elif _tap is not None and _activity_still_running(_tap.snapshot()):
+        log("Telescope is still busy after stop commands", "warning")
     report_status("stop", "Stop complete")
     if _connected.is_set():
         request_state_refresh()
@@ -3342,6 +3535,28 @@ def _altaz_to_radec(
     return ra_hours, math.degrees(dec)
 
 
+def _current_sky_pointing() -> dict[str, Any]:
+    """Read the mount's current az/alt and convert to RA/Dec."""
+    latitude, longitude = _site_coordinates()
+    if abs(latitude) < 1e-9 and abs(longitude) < 1e-9:
+        raise RuntimeError("Set your observing site before reading pointing")
+    az = _motor_position(1)
+    alt = _motor_position(2) if az is not None else None
+    if az is None or alt is None:
+        raise RuntimeError("Mount position is unavailable")
+    ra_hours, dec_degrees = _altaz_to_radec(az, alt, latitude, longitude)
+    snapshot = _tap.snapshot() if _tap is not None else {}
+    name = str(snapshot.get("tracking_target") or snapshot.get("goto_target") or "").strip()
+    return {
+        "ok": True,
+        "ra_hours": round(ra_hours, 6),
+        "dec_degrees": round(dec_degrees, 6),
+        "name": name,
+        "az": az,
+        "alt": alt,
+    }
+
+
 def _start_sky_track(ra_hours: float, dec_degrees: float, target_name: str = "") -> dict[str, Any]:
     """Slew to a sky-map RA/Dec and start sidereal tracking (goto_only=False)."""
     if _ensure_astro_mode() is False:
@@ -3402,8 +3617,8 @@ def _start_tracking(target_name: str = "") -> dict[str, Any]:
     }
 
 
-def _start_manual_stack(camera: str = "") -> bool:
-    """Start live stacking without waiting for the run to finish."""
+def _prepare_manual_stack(camera: str = "") -> tuple[str, list[Any]]:
+    """Enter astro mode and resolve the camera/count used for a live stack."""
     if _ensure_astro_mode(enter_camera=False) is False:
         raise RuntimeError("Could not enter astro mode")
     choice = str(camera or _device.get("camera") or "tele").strip().lower()
@@ -3422,8 +3637,119 @@ def _start_manual_stack(camera: str = "") -> bool:
     operation = "wide_astro" if choice == "wide" else "astro"
     ir_index = _ir_index(_device.get("ir_filter"))
     args = [ir_index] if operation == "astro" else []
+    return operation, args
+
+
+def _start_manual_stack(camera: str = "") -> bool:
+    """Start live stacking without waiting for the run to finish."""
+    operation, args = _prepare_manual_stack(camera)
     _start_capture("Stack", operation, args)
     return True
+
+
+def _stack_mosaic(
+    panes: list[Any],
+    camera: str = "",
+    start_index: int = 1,
+    join_current: bool = False,
+) -> bool:
+    """GOTO each planned pane and stack it. Stoppable like a session."""
+    global _session_phase, _stop_phase
+    if not isinstance(panes, list) or not panes:
+        raise RuntimeError("Mosaic has no panes")
+    operation, args = _prepare_manual_stack(camera)
+    _stop.clear()
+    _session_active.set()
+    _session_phase = None
+    v3_model = _device.get("model") in ("Dwarf 3", "Dwarf Mini")
+    completed = False
+    total = len(panes)
+    try:
+        resume_from = max(1, int(start_index or 1))
+    except (TypeError, ValueError):
+        resume_from = 1
+    join_first = bool(join_current)
+
+    def report(pane: int, step: str, wait_seconds: float = 0) -> None:
+        emit({
+            "event": "progress",
+            "session_id": "live-mosaic",
+            "step": step,
+            "pane": pane,
+            "total": total,
+            "wait_seconds": wait_seconds,
+        })
+
+    try:
+        for item in panes:
+            if _stop.is_set():
+                raise InterruptedError("Session stopped")
+            if not isinstance(item, dict):
+                raise RuntimeError("Mosaic pane is missing coordinates")
+            try:
+                index = max(1, int(item.get("index") or 0))
+                ra = float(item["ra_hours"])
+                dec = float(item["dec_degrees"])
+            except (TypeError, ValueError, KeyError) as exc:
+                raise RuntimeError("Mosaic pane is missing coordinates") from exc
+            if ra != ra or dec != dec:
+                raise RuntimeError("Mosaic pane is missing coordinates")
+            if index < resume_from:
+                continue
+            name = str(item.get("name") or f"Pane {index}").strip() or f"Pane {index}"
+            if join_first and index == resume_from:
+                join_first = False
+                snapshot = _tap.snapshot() if _tap is not None else {}
+                if _capture_running(snapshot):
+                    log(f"Joining in-progress mosaic pane {index}/{total}", "notice")
+                    report(index, f"Stacking pane {index}/{total}")
+                    _session_phase = operation
+                    _wait_for_capture_end(
+                        on_progress=lambda text, pane=index: report(pane, text),
+                        name=f"Waiting for pane {index}",
+                    )
+                    report(index, f"Pane {index}/{total} complete")
+                    continue
+                log(f"Mosaic pane {index}/{total} already finished; continuing", "notice")
+                report(index, f"Pane {index}/{total} complete")
+                continue
+            report(index, f"GOTO pane {index}/{total}")
+            log(f"Mosaic pane {index}/{total} → RA {ra:.4f}h Dec {dec:+.3f}° ({name})")
+            _session_phase = "goto"
+            _stop_tracking_for_goto(f"Stopping tracking before mosaic pane {index}")
+            started = time.monotonic()
+            if sdk_call("goto", ra, dec, name, False) is False:
+                raise RuntimeError(f"GOTO pane {index} failed")
+            if v3_model:
+                _await_operation(f"GOTO pane {index}", "goto", started)
+            _wait_for_capture_slot(lambda text, pane=index, **_k: report(pane, text))
+            _reset_session_capture({
+                "camera": {"frame_count": _device.get("frame_count")},
+                "target": {"name": name},
+            })
+            _wait_seconds(2, "Settling before stack", lambda text, pane=index, **_k: report(pane, text))
+            report(index, f"Stacking pane {index}/{total}")
+            _session_phase = operation
+            _start_capture(f"Stack pane {index}", operation, args)
+            _wait_for_capture_end(
+                on_progress=lambda text, pane=index: report(pane, text),
+                name=f"Waiting for pane {index}",
+            )
+            report(index, f"Pane {index}/{total} complete")
+        completed = True
+        return True
+    finally:
+        leftover = not completed and not _stop.is_set()
+        phase = _session_phase
+        _session_active.clear()
+        _session_phase = None
+        if leftover:
+            _stop_phase = phase
+            try:
+                log("Stopping leftover telescope activity after mosaic ended", "warning")
+                stop_all()
+            except Exception as exc:
+                log(f"Could not stop leftover activity: {exc}", "warning")
 
 
 def polar_position() -> bool:
@@ -3510,6 +3836,8 @@ def dispatch(message: dict[str, Any]) -> Any:
         )
     if command == "polar_position":
         return polar_position()
+    if command == "sky_pointing":
+        return _current_sky_pointing()
     if command == "track":
         args = list(message.get("args") or [])
         return _start_tracking(str(args[0]) if args else "")
@@ -3523,6 +3851,22 @@ def dispatch(message: dict[str, Any]) -> Any:
     if command == "stack":
         args = list(message.get("args") or [])
         return _start_manual_stack(str(args[0]) if args else "")
+    if command == "stack_mosaic":
+        args = list(message.get("args") or [])
+        panes = message.get("panes")
+        if panes is None and args:
+            panes = args[0]
+        camera = str(message.get("camera") or (args[1] if len(args) > 1 else "") or "")
+        try:
+            start_index = int(message.get("start_index") or 1)
+        except (TypeError, ValueError):
+            start_index = 1
+        return _stack_mosaic(
+            panes if isinstance(panes, list) else [],
+            camera,
+            start_index=start_index,
+            join_current=bool(message.get("join_current")),
+        )
     if command == "read_camera":
         args = list(message.get("args") or [])
         mode_id = int(args[0]) if args else 1
@@ -3546,6 +3890,8 @@ def dispatch(message: dict[str, Any]) -> Any:
         if result is not False:
             request_state_refresh()
         return result
+    if command == "enter_camera":
+        return _enter_astro_camera()
     if command == "autofocus":
         # Astro AF mode 0. Mode 1 is infinity (the INFINITY pad).
         result = sdk_call("autofocus", False)
@@ -3616,6 +3962,7 @@ def enqueue_command(message: dict[str, Any], priority: int = _PRIORITY_NORMAL) -
 
 
 _URGENT_COMMANDS = {"stop_all", "disconnect", "reboot", "power_down"}
+_SESSION_STOP_COMMANDS = {"stop_astro", "stop_wide"}
 
 
 def main() -> None:
@@ -3637,7 +3984,9 @@ def main() -> None:
                 _connecting.set()
                 _connect_cancel.clear()
                 enqueue_command(message)
-            elif command in _URGENT_COMMANDS:
+            elif command in _URGENT_COMMANDS or (
+                command in _SESSION_STOP_COMMANDS and _session_active.is_set()
+            ):
                 # The SDK is not thread-safe, so stop/disconnect never run alongside
                 # another SDK call. Instead they wake the blocked call (which then
                 # fails fast) and jump ahead of everything else in the queue.
@@ -3647,11 +3996,16 @@ def main() -> None:
                         _connect_cancel.set()
                 if (
                     command == "stop_all"
+                    or command in _SESSION_STOP_COMMANDS
                     or _session_active.is_set()
                     or _in_flight is not None
                     or _connecting.is_set()
                 ):
-                    request_stop("Session stopped" if command == "stop_all" else "Telescope disconnected")
+                    request_stop(
+                        "Session stopped"
+                        if command in {"stop_all", *_SESSION_STOP_COMMANDS}
+                        else "Telescope disconnected"
+                    )
                 enqueue_command(message, _PRIORITY_URGENT)
             else:
                 enqueue_command(message)

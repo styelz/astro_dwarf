@@ -191,6 +191,60 @@ class SessionStore:
                 )
         return recovered
 
+    def _live_mosaic_dir(self) -> Path:
+        folder = self.root / "live-mosaics"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def _live_mosaic_path(self, device_id: str) -> Path:
+        return self._live_mosaic_dir() / f"{device_id}.json"
+
+    def save_live_mosaic(self, device_id: str, payload: dict) -> None:
+        owner = str(device_id or "").strip()
+        if not owner or not isinstance(payload, dict):
+            return
+        path = self._live_mosaic_path(owner)
+        data = dict(payload)
+        data["device_id"] = owner
+        temporary = path.with_suffix(f".{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        for attempt in range(8):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == 7:
+                    temporary.unlink(missing_ok=True)
+                    raise
+                time.sleep(0.01 * (attempt + 1))
+
+    def load_live_mosaics(self) -> dict[str, dict]:
+        folder = self.root / "live-mosaics"
+        if not folder.exists():
+            return {}
+        recovered: dict[str, dict] = {}
+        for path in folder.glob("*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            device_id = str(payload.get("device_id") or path.stem).strip()
+            if device_id:
+                recovered[device_id] = payload
+        return recovered
+
+    def clear_live_mosaic(self, device_id: str) -> None:
+        owner = str(device_id or "").strip()
+        if not owner:
+            return
+        path = self._live_mosaic_path(owner)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
     def clone_template(self, template: SessionTemplate, device_id: str, start: datetime) -> Session:
         return Session(
             name=template.name,
