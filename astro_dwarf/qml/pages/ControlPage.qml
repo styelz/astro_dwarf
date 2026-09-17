@@ -2309,11 +2309,12 @@ Item {
                 panelId: "motion"
                 title: motionPanel.stacking ? "STACK" : "MOTION"
                 hot: motionPanel.stacking
-                readonly property bool stacking: root.scopeOnline && !!root.scopeTelemetry.capture_active
+                readonly property bool captureArmed: root.scopeOnline && !!root.scopeTelemetry.capture_active
+                readonly property bool stacking: captureArmed && !!root.scopeTelemetry.exposure_running
                 SplitView.preferredHeight: 188
                 SplitView.minimumHeight: 136
-                onStackingChanged: {
-                    if (stacking) {
+                onCaptureArmedChanged: {
+                    if (captureArmed) {
                         analogPad.clearKeys()
                         if (analogPad.moving)
                             analogPad.releaseStick()
@@ -2338,7 +2339,7 @@ Item {
                     Item {
                         anchors.fill: parent
                         visible: !motionPanel.stacking
-                        opacity: root.motionEnabled ? 1 : 0.38
+                        opacity: root.motionEnabled && !motionPanel.captureArmed ? 1 : 0.38
                         Item {
                             id: analogPad
                             anchors.centerIn: parent
@@ -2357,13 +2358,13 @@ Item {
                             property bool keyDown: false
                             readonly property real maxThrow: Math.max(8, width / 2 - knobSize / 2 - 1)
                             readonly property real deadzone: 0.15
-                        readonly property bool nudgesEnabled: root.motionEnabled && !motionPanel.stacking && !stickArea.pressed && !moving
-                        activeFocusOnTab: root.motionEnabled && !motionPanel.stacking
+                        readonly property bool nudgesEnabled: root.motionEnabled && !motionPanel.captureArmed && !stickArea.pressed && !moving
+                        activeFocusOnTab: root.motionEnabled && !motionPanel.captureArmed
                         Accessible.name: "Mount joystick"
                         Accessible.role: Accessible.Dial
                         Accessible.description: "Arrow keys slew the mount. Ring arrows nudge a preset step. Release to stop."
                         Keys.onPressed: (event) => {
-                            if (!root.motionEnabled || motionPanel.stacking || event.isAutoRepeat)
+                            if (!root.motionEnabled || motionPanel.captureArmed || event.isAutoRepeat)
                                 return
                             if (event.key === Qt.Key_Left)
                                 analogPad.keyLeft = true
@@ -2423,7 +2424,7 @@ Item {
                         }
 
                         function applyKeySlew() {
-                            if (stickArea.pressed || !root.motionEnabled || motionPanel.stacking)
+                            if (stickArea.pressed || !root.motionEnabled || motionPanel.captureArmed)
                                 return
                             const dx = (analogPad.keyRight ? 1 : 0) - (analogPad.keyLeft ? 1 : 0)
                             const dy = (analogPad.keyDown ? 1 : 0) - (analogPad.keyUp ? 1 : 0)
@@ -2528,9 +2529,9 @@ Item {
                             id: stickArea
                             anchors.fill: parent
                             acceptedButtons: Qt.LeftButton
-                            enabled: root.motionEnabled && !motionPanel.stacking
+                            enabled: root.motionEnabled && !motionPanel.captureArmed
                             preventStealing: true
-                            cursorShape: root.motionEnabled && !motionPanel.stacking ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
+                            cursorShape: root.motionEnabled && !motionPanel.captureArmed ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
                             onPressed: mouse => {
                                 analogPad.forceActiveFocus()
                                 analogPad.updateStick(mouse.x, mouse.y)
@@ -2638,12 +2639,12 @@ Item {
                 RowLayout {
                     visible: !motionPanel.stacking
                     Layout.fillWidth: true
-                    opacity: root.motionEnabled ? 1 : 0.42
+                    opacity: root.motionEnabled && !motionPanel.captureArmed ? 1 : 0.42
                     Text { text: "SPEED"; color: Theme.textSecondary; font.pixelSize: 10 }
                     Slider {
                         id: speedSlider
                         Layout.fillWidth: true
-                        enabled: root.motionEnabled
+                        enabled: root.motionEnabled && !motionPanel.captureArmed
                         Accessible.name: "Slew speed"
                         from: 0
                         to: 1

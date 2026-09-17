@@ -404,6 +404,16 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     view["exposure_elapsed_s"] = round(elapsed_s, 2)
     view["exposure_total_s"] = round(exposure_s, 3)
     view["exposure_progress"] = min(1.0, elapsed_s / exposure_s) if capturing and exposure_s > 0 else 0.0
+    # START_CAPTURE can report running before the first exposure. The HUD
+    # countdown waits for firmware long-exp progress or a taken/stacked frame.
+    view["exposure_running"] = bool(
+        capturing
+        and (
+            elapsed_s > 0.05
+            or view["capture_current"] > 0
+            or view["capture_stacked"] > 0
+        )
+    )
     view["capture_target"] = raw.get("capture_target") or ""
     view["tracking_active"] = raw.get("tracking_state") == "running"
     view["tracking_target"] = raw.get("tracking_target") or raw.get("goto_target") or ""

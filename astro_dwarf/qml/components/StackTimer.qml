@@ -5,6 +5,8 @@ import ".."
 // and crosshair. Firmware long-exp progress is interpolated between packets;
 // if those packets never arrive, the ring still counts from the configured
 // exposure and resets when the stacked/taken count advances.
+// START_CAPTURE can report running before the first exposure; hold at idle
+// until firmware elapsed or a taken/stacked frame proves stacking started.
 Item {
     id: timer
     property bool active: false
@@ -22,6 +24,8 @@ Item {
         ? Math.min(1, timer.displayedElapsed / timer.exposureSeconds)
         : 0
     readonly property string secondsText: {
+        if (timer.active && !timer.exposing)
+            return "—"
         const value = timer.displayedElapsed
         if (timer.exposureSeconds > 0 && timer.exposureSeconds < 1)
             return value.toFixed(2)
@@ -46,6 +50,8 @@ Item {
             return String(timer.current)
         return "—"
     }
+
+    readonly property bool exposing: timer.active && (timer.haveFirmware || timer.frameKey > 0)
 
     property real displayedElapsed: 0
     property real anchorElapsed: 0
@@ -77,7 +83,17 @@ Item {
     onActiveChanged: {
         timer.haveFirmware = false
         timer.lastFrame = -1
-        timer.reanchor(timer.active ? Math.max(0, timer.firmwareElapsed) : 0)
+        if (timer.active && timer.firmwareElapsed > 0.05)
+            timer.haveFirmware = true
+        timer.reanchor(timer.active && timer.exposing ? Math.max(0, timer.firmwareElapsed) : 0)
+    }
+    onExposingChanged: {
+        if (!timer.active)
+            return
+        if (timer.exposing)
+            timer.reanchor(timer.haveFirmware ? timer.firmwareElapsed : 0)
+        else
+            timer.reanchor(0)
     }
     onFirmwareElapsedChanged: {
         if (!timer.active)
@@ -112,7 +128,7 @@ Item {
 
     Timer {
         interval: 50
-        running: timer.active && timer.visible
+        running: timer.active && timer.visible && timer.exposing
         repeat: true
         onTriggered: timer.tick()
     }
