@@ -1802,6 +1802,13 @@ _NON_FATAL_REPLIES = {
     11003: {-11500},
 }
 _BUSY_ASTRO = {"running", "solving", "stopping"}
+# A new GOTO is running/solving. "stopping" is leftover unwind from stop_goto
+# after the previous pane, and must not count as this slew having started.
+_GOTO_STARTED = {"running", "solving"}
+
+
+def _goto_started(state: Any) -> bool:
+    return str(state or "") in _GOTO_STARTED
 
 
 def _goto_wait_complete(
@@ -1842,7 +1849,7 @@ def _await_operation(name: str, operation: str, since: float) -> None:
     goto = operation in ("goto", "goto_solar")
     snapshot = _tap.snapshot()
     state = snapshot.get(state_key) if state_key else None
-    seen_running = state in _BUSY_ASTRO
+    seen_running = _goto_started(state) if goto else state in _BUSY_ASTRO
     tracking_at_start = snapshot.get("tracking_state") == "running"
     log(f"{name} started; waiting for the telescope to finish…")
     logged_tracking_wait = False
@@ -1856,7 +1863,10 @@ def _await_operation(name: str, operation: str, since: float) -> None:
         if code == 0 and done_on_reply:
             return
         state = snapshot.get(state_key) if state_key else None
-        if state in _BUSY_ASTRO:
+        if goto:
+            if _goto_started(state):
+                seen_running = True
+        elif state in _BUSY_ASTRO:
             seen_running = True
         tracking = snapshot.get("tracking_state") == "running"
         elapsed = time.monotonic() - since
@@ -2400,7 +2410,7 @@ def run_session(session: dict[str, Any]) -> bool:
             _stop_phase = phase
             try:
                 log("Stopping leftover telescope activity after session ended", "warning")
-                stop_all()
+                stop_all(include_motors=False)
             except Exception as exc:
                 log(f"Could not stop leftover activity: {exc}", "warning")
         elif completed:
@@ -2439,6 +2449,10 @@ def _stop_tracking_for_goto(label: str = "Stopping leftover tracking before GOTO
     next GOTO while that tracking is still latched makes the wait treat
     the previous pointing as already complete, so every pane stacks the
     same field.
+
+    ReqStopGoto (11004) is the official stop-tracking command. Do not send
+    joystick stop (14008) here: that unhomes the steppers and the next
+    calibrate/GOTO then sits in CALIBRATION_FAILED / motor-need-reset.
     """
     snapshot = _tap.snapshot() if _tap is not None else {}
     if snapshot.get("tracking_state") != "running" and not _goto_busy(snapshot):
@@ -2449,7 +2463,7 @@ def _stop_tracking_for_goto(label: str = "Stopping leftover tracking before GOTO
     except Exception as exc:
         log(f"Stop tracking skipped: {exc}", "debug")
         return
-    deadline = time.monotonic() + 12.0
+    deadline = time.monotonic() + 20.0
     while time.monotonic() < deadline:
         if _stop.is_set():
             raise InterruptedError("Session stopped")
@@ -2457,6 +2471,7 @@ def _stop_tracking_for_goto(label: str = "Stopping leftover tracking before GOTO
         if snapshot.get("tracking_state") != "running" and not _goto_busy(snapshot):
             return
         time.sleep(0.25)
+    log("Previous GOTO/tracking is still winding down; sending the next slew anyway", "warning")
 
 
 def _clear_tracking(progress: Any = None) -> None:
@@ -2733,7 +2748,7 @@ def _wait_for_stop_idle(max_seconds: float | None = None) -> None:
         log("Telescope is still busy after stop commands", "warning")
 
 
-def _stop_targets() -> list[str]:
+def _stop_targets(*, include_motors: bool = True) -> list[str]:
     """Pick the stop commands that match what the telescope is actually doing."""
     phase = _stop_phase or _session_phase
     snapshot = _tap.snapshot() if _tap is not None else {}
@@ -2758,7 +2773,10 @@ def _stop_targets() -> list[str]:
         operations.append("stop_polar")
     if not operations and phase is None:
         operations.extend(_FALLBACK_STOPS)
-    operations.append("stop_motors")
+    # Joystick stop (14008) is only for a held pad. After a stack/GOTO it
+    # unhomes the steppers; the next calibrate then stalls or fails.
+    if include_motors:
+        operations.append("stop_motors")
     return operations
 
 
@@ -2785,11 +2803,11 @@ def _sdk_call_bounded(operation: str, seconds: float) -> Any:
         _call_timeout_s = previous_timeout
 
 
-def stop_all() -> bool:
+def stop_all(*, include_motors: bool = True) -> bool:
     """Send the stop commands. Runs on the command thread after the interrupted step unwinds."""
     global _stop_phase
     _stop.set()
-    operations = _stop_targets()
+    operations = _stop_targets(include_motors=include_motors)
     _stop_phase = None
     if not _connected.is_set() or (_tap is not None and _tap.snapshot().get("power_off")):
         log("Stop skipped; telescope is not connected", "debug")
@@ -3559,7 +3577,7 @@ def _current_sky_pointing() -> dict[str, Any]:
 
 def _start_sky_track(ra_hours: float, dec_degrees: float, target_name: str = "") -> dict[str, Any]:
     """Slew to a sky-map RA/Dec and start sidereal tracking (goto_only=False)."""
-    if _ensure_astro_mode() is False:
+    if _ensure_astro_mode(enter_camera=False) is False:
         raise RuntimeError("Could not enter astro mode")
     latitude, longitude = _site_coordinates()
     if abs(latitude) < 1e-9 and abs(longitude) < 1e-9:
@@ -3585,7 +3603,7 @@ def _start_sky_track(ra_hours: float, dec_degrees: float, target_name: str = "")
 
 def _start_tracking(target_name: str = "") -> dict[str, Any]:
     """GOTO the current pointing with tracking enabled (goto_only=False)."""
-    if _ensure_astro_mode() is False:
+    if _ensure_astro_mode(enter_camera=False) is False:
         raise RuntimeError("Could not enter astro mode")
     snapshot = _tap.snapshot() if _tap is not None else {}
     if snapshot.get("tracking_state") == "running":
@@ -3645,6 +3663,52 @@ def _start_manual_stack(camera: str = "") -> bool:
     operation, args = _prepare_manual_stack(camera)
     _start_capture("Stack", operation, args)
     return True
+
+
+def _goto_target(name: str, ra: float, dec: float, target_name: str, *, v3_model: bool) -> None:
+    """GOTO one mosaic pane. Reopen the tele camera and retry if needed.
+
+    A finished stack leaves DSO mode on with the tele camera closed, so the
+    next 11002 often comes back TELE_CLOSED. Leftover stop_goto can also
+    keep goto_state=stopping; that must not be treated as this slew.
+    """
+    last_error: BaseException | None = None
+    for attempt in range(3):
+        _stop_tracking_for_goto(f"Stopping tracking before {name}")
+        started = time.monotonic()
+        try:
+            if sdk_call("goto", ra, dec, target_name, False) is False:
+                raise RuntimeError(f"{name} failed")
+            if v3_model:
+                _await_operation(name, "goto", started)
+            return
+        except RuntimeError as exc:
+            last_error = exc
+            if _stop.is_set():
+                raise
+            if _camera_closed_error(exc):
+                log(f"{name}: tele camera was closed; opening it and retrying", "warning")
+                _reopen_astro_camera()
+                continue
+            if "did not start" in str(exc).lower():
+                log(f"{name}: slew did not start; waiting for leftover GOTO to finish", "warning")
+                deadline = time.monotonic() + 15.0
+                while time.monotonic() < deadline:
+                    if _stop.is_set():
+                        raise InterruptedError("Session stopped")
+                    snapshot = _tap.snapshot() if _tap is not None else {}
+                    if not _goto_busy(snapshot) and snapshot.get("tracking_state") != "running":
+                        break
+                    time.sleep(0.25)
+                continue
+            if _engine_busy_error(exc):
+                log(f"{name}: astro engine still busy; retrying", "warning")
+                _wait_seconds(3, "Waiting for the astro engine")
+                continue
+            raise
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"{name} failed")
 
 
 def _stack_mosaic(
@@ -3716,12 +3780,7 @@ def _stack_mosaic(
             report(index, f"GOTO pane {index}/{total}")
             log(f"Mosaic pane {index}/{total} → RA {ra:.4f}h Dec {dec:+.3f}° ({name})")
             _session_phase = "goto"
-            _stop_tracking_for_goto(f"Stopping tracking before mosaic pane {index}")
-            started = time.monotonic()
-            if sdk_call("goto", ra, dec, name, False) is False:
-                raise RuntimeError(f"GOTO pane {index} failed")
-            if v3_model:
-                _await_operation(f"GOTO pane {index}", "goto", started)
+            _goto_target(f"GOTO pane {index}", ra, dec, name, v3_model=v3_model)
             _wait_for_capture_slot(lambda text, pane=index, **_k: report(pane, text))
             _reset_session_capture({
                 "camera": {"frame_count": _device.get("frame_count")},
@@ -3747,7 +3806,7 @@ def _stack_mosaic(
             _stop_phase = phase
             try:
                 log("Stopping leftover telescope activity after mosaic ended", "warning")
-                stop_all()
+                stop_all(include_motors=False)
             except Exception as exc:
                 log(f"Could not stop leftover activity: {exc}", "warning")
 
@@ -3883,7 +3942,9 @@ def dispatch(message: dict[str, Any]) -> Any:
         _mark_disconnected()
         return sdk_call(command)
     if command in {"calibrate", "autofocus", "infinity", "polar", "track", "stack"}:
-        if _ensure_astro_mode() is False:
+        # Already in DSO after connect: ENTER_CAMERA / SWITCH_SHOOTING_MODE(2)
+        # can sit on the SDK's 150 s reply wait. Reopen only on TELE_CLOSED.
+        if _ensure_astro_mode(enter_camera=False) is False:
             return False
     if command == "astro_mode":
         result = _ensure_astro_mode()
