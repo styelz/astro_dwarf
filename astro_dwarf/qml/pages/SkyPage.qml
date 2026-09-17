@@ -344,9 +344,11 @@ Item {
                 // scene graph, so the boot overlay can cover it without parking.
                 readonly property bool nativeMapOverlay: Qt.platform.os === "windows"
                                                            || Qt.platform.os === "osx"
+                readonly property bool nativeMapVisible: !mapLoader.nativeMapOverlay
+                    || (skyPage.mapLive && skyPage.mapInitialReady)
                 width: parent.width - 2
                 height: parent.height - 2
-                x: (!mapLoader.nativeMapOverlay || skyPage.mapInitialReady) ? 1 : -4096
+                x: mapLoader.nativeMapVisible ? 1 : -4096
                 y: 1
                 active: skyPage.webReady && root.skyToolsEnabled && (skyPage.mapLive || skyPage.mapKeepAlive)
                 source: Qt.resolvedUrl("SkyWebView.qml")

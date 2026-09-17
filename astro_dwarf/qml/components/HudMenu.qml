@@ -5,7 +5,9 @@ import ".."
 
 Menu {
     id: hudMenu
-    popupType: Popup.Item
+    // Native WebView2 / WKWebView paint above QML items. Window popups
+    // stay above the sky map so device and page menus remain usable.
+    popupType: Popup.Window
     delegate: HudMenuItem {}
     implicitWidth: 232
     padding: 6
