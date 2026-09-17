@@ -261,6 +261,10 @@ def run() -> int:
             pass
 
     backend.bindPreviewWindow(window)
+    if os.getenv("ASTRO_DWARF_TEST_HARNESS") == "1" and not is_frozen():
+        from .test_harness import start_test_harness
+
+        start_test_harness(application, window, backend)
 
     def _apply_frame(caption: str, border: str, text: str) -> None:
         _apply_windows_frame(window, caption, border, text)

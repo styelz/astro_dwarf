@@ -295,6 +295,7 @@ Item {
                     }
                     delegate: Item {
                         id: tile
+                        objectName: "media-" + modelData.id
                         required property var modelData
                         required property int index
                         width: mediaGrid.cellWidth

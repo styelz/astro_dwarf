@@ -10,6 +10,7 @@ import "../components"
 
 Item {
     id: historyPage
+    objectName: "historyRoot"
     property string query: ""
     property int outcomeFilter: 0
     property string expandedId: ""
@@ -365,6 +366,7 @@ Item {
                     model: historyPage.filteredHistory
                     delegate: Rectangle {
                         id: historyRow
+                        objectName: "history-" + modelData.id
                         required property var modelData
                         required property int index
                         readonly property bool expanded: historyPage.expandedId !== "" && historyPage.expandedId === String(modelData.id || "")

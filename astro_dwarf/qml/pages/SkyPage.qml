@@ -211,6 +211,27 @@ Item {
                 backend.reportSkyLockResult(status, String(target.name || ""))
         })
     }
+    function harnessSetView(raHours, decDegrees) {
+        const map = mapLoader.item
+        if (!map || typeof map.runJavaScript !== "function")
+            return "no-map"
+        map.runJavaScript(backend.skyWebViewPosScript(Number(raHours), Number(decDegrees)))
+        return "ok"
+    }
+    function harnessMenu(action) {
+        const key = String(action || "")
+        if (key === "overlay")
+            skyMenu.overlayToggled()
+        else if (key === "preview")
+            skyMenu.previewToggled()
+        else if (key === "dblclick")
+            skyMenu.dblclickTrackToggled()
+        else if (key === "track")
+            skyMenu.trackSelected()
+        else
+            return "unknown"
+        return key
+    }
     function withSkySources(action) {
         if (backend.uiBusy !== "" || skyPage.harvestBusy)
             return
@@ -291,6 +312,7 @@ Item {
                 }
                 HudSpinBox {
                     id: columnsBox
+                    objectName: "skyColumns"
                     from: 1
                     to: 10
                     value: 1
@@ -307,6 +329,7 @@ Item {
                 }
                 HudSpinBox {
                     id: rowsBox
+                    objectName: "skyRows"
                     from: 1
                     to: 10
                     value: 1
@@ -323,6 +346,7 @@ Item {
                 }
                 HudSpinBox {
                     id: overlapBox
+                    objectName: "skyOverlap"
                     from: 0
                     to: 80
                     stepSize: 5
@@ -345,6 +369,7 @@ Item {
                 }
                 HudSpinBox {
                     id: paBox
+                    objectName: "skyPa"
                     from: 0
                     to: 359
                     wrap: true

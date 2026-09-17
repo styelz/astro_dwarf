@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import QtQuick.Dialogs
 import QtQuick.Shapes
 import QtQuick.Window
+import QtQml
 import QtCore
 import "."
 import "components"
@@ -267,6 +268,208 @@ ApplicationWindow {
             settingsPage.load()
     }
 
+    QtObject {
+        id: testHarness
+        objectName: "testHarness"
+
+        function _byId(items, id) {
+            const key = String(id || "")
+            const list = items || []
+            for (let i = 0; i < list.length; i++) {
+                if (String(list[i].id || "") === key)
+                    return list[i]
+            }
+            return null
+        }
+
+        function goToNamedPage(name) {
+            const key = String(name || "").toLowerCase()
+            const index = key === "control" ? 0
+                        : key === "calendar" ? 1
+                        : key === "sessions" ? 2
+                        : key === "history" ? 3
+                        : key === "media" ? 4
+                        : key === "sky" ? 5
+                        : -1
+            if (index < 0)
+                return "blocked"
+            root.goToPage(index)
+            return key
+        }
+
+        function selectById(deviceId) {
+            const id = String(deviceId || "")
+            if (!id)
+                return "missing"
+            backend.selectDevice(id)
+            return id
+        }
+
+        function disconnectSelected() {
+            backend.disconnectDevice(backend.selectedDeviceId)
+            return backend.selectedDeviceId
+        }
+
+        function cancelConnectSelected() {
+            backend.cancelConnect(backend.selectedDeviceId)
+            return backend.selectedDeviceId
+        }
+
+        function centerPreview(nx, ny) {
+            backend.centerOnTap(backend.selectedDeviceId, Number(nx), Number(ny), "harness")
+            return "ok"
+        }
+
+        function joystickNudge(angle) {
+            return controlPage.harnessJoystickNudge(Number(angle))
+        }
+
+        function clickPad(start) {
+            return controlPage.harnessClickPad(String(start || ""))
+        }
+
+        function padList() {
+            return controlPage.harnessPadList()
+        }
+
+        function openItem(kind, id, action) {
+            const key = String(kind || "")
+            const op = String(action || "edit")
+            if (key === "sessions" || key === "calendar" || key === "upcoming") {
+                const item = testHarness._byId(backend.sessions, id)
+                if (!item)
+                    return "missing"
+                if (op === "reset") {
+                    backend.resetSession(item.id)
+                    return "ok"
+                }
+                sessionDialog.openExisting(item)
+                return "ok"
+            }
+            if (key === "templates") {
+                const item = testHarness._byId(backend.templates, id)
+                if (!item)
+                    return "missing"
+                if (op === "schedule") {
+                    scheduleTemplateDialog.openFor(item)
+                    return "ok"
+                }
+                sessionDialog.openTemplate(item)
+                return "ok"
+            }
+            if (key === "history") {
+                historyPage.toggleExpanded(id)
+                return "ok"
+            }
+            if (key === "media") {
+                backend.selectMedia(String(id || ""))
+                if (op === "source") {
+                    mediaPage.showSource(String(id || "astro"))
+                    return "ok"
+                }
+                mediaPage.openSelected()
+                return "ok"
+            }
+            if (key === "night") {
+                root.goToPage(1)
+                calendarPage.openNight(calendarPage.dateFromKey(String(id || "")))
+                return "ok"
+            }
+            return "unknown"
+        }
+
+        function deleteItem(kind, id) {
+            const key = String(kind || "")
+            if (key === "sessions" || key === "upcoming" || key === "calendar") {
+                root.confirmBulkDelete("deleteSessions", id, "session")
+                return "ok"
+            }
+            if (key === "templates") {
+                root.confirmBulkDelete("deleteTemplates", id, "template")
+                return "ok"
+            }
+            if (key === "history") {
+                root.confirmBulkDelete("deleteHistory", id, "run")
+                return "ok"
+            }
+            if (key === "media") {
+                mediaPage.confirmDelete([String(id || "")])
+                return "ok"
+            }
+            return "unknown"
+        }
+
+        function runItem(kind, id) {
+            const key = String(kind || "")
+            if (key === "sessions" || key === "upcoming" || key === "calendar") {
+                const item = testHarness._byId(backend.sessions, id)
+                if (!item)
+                    return "missing"
+                if (item.status === "running")
+                    backend.stopSession(item.id)
+                else
+                    backend.runNow(item.id)
+                return "ok"
+            }
+            if (key === "history") {
+                const item = testHarness._byId(backend.history, id)
+                if (!item || !item.session_id)
+                    return "missing"
+                backend.runNow(item.session_id)
+                return "ok"
+            }
+            if (key === "media") {
+                mediaPage.downloadItems([String(id || "")])
+                return "ok"
+            }
+            return "unknown"
+        }
+
+        function skyHarvest(action) {
+            skyPage.withSkySources(String(action || "import"))
+            return String(action || "import")
+        }
+
+        function skyView(raHours, decDegrees) {
+            return skyPage.harnessSetView(Number(raHours), Number(decDegrees))
+        }
+
+        function skyLock(name, raHours, decDegrees) {
+            skyPage.queueSkyLock({
+                name: String(name || ""),
+                ra_hours: Number(raHours),
+                dec_degrees: Number(decDegrees)
+            })
+            return "ok"
+        }
+
+        function skyMenu(action) {
+            return skyPage.harnessMenu(String(action || ""))
+        }
+
+        function confirmAction(action) {
+            return confirmDialog.harnessConfirm(String(action || "accept"))
+        }
+
+        function requestAction(operation, label) {
+            const op = String(operation || "")
+            const name = String(label || op)
+            if ((op === "power_down" || op === "reboot") && root.scopeOnline && !root.scopeLinking) {
+                confirmDialog.kind = "device"
+                confirmDialog.headingText = "CONFIRM COMMAND"
+                confirmDialog.confirmLabel = "CONFIRM"
+                confirmDialog.operation = op
+                confirmDialog.summary = "Run " + name + " on " + (backend.selectedDevice.name || "this telescope") + "?"
+                confirmDialog.open()
+                return "confirm"
+            }
+            if (!root.commandEnabled(op))
+                return "blocked"
+            root.requestDeviceAction(op, name)
+            return "ok"
+        }
+    }
+
     function harvestStellarium(action) {
         skyPage.withSkySources(action)
     }
@@ -452,6 +655,7 @@ ApplicationWindow {
                     accessibleDescription: "Choose which telescope this window controls"
                 }
                 HudButton {
+                    objectName: "titleConnect"
                     text: backend.selectedDevice.connected ? "DISCONNECT" : "CONNECT"
                     busy: backend.selectedDevice.connecting || backend.selectedDevice.cancelling || backend.selectedDevice.disconnecting
                     busyText: backend.selectedDevice.disconnecting ? "DISCONNECTING…"
@@ -841,10 +1045,10 @@ ApplicationWindow {
             Layout.minimumHeight: 360
             Layout.margins: 10
 
-            ControlPage { id: controlPage }
-            CalendarPage { id: calendarPage }
-            SessionsPage { id: sessionsPage }
-            HistoryPage { id: historyPage }
+            ControlPage { id: controlPage; objectName: "controlPage" }
+            CalendarPage { id: calendarPage; objectName: "calendarPage" }
+            SessionsPage { id: sessionsPage; objectName: "sessionsPage" }
+            HistoryPage { id: historyPage; objectName: "historyPage" }
             MediaPage { id: mediaPage }
             SkyPage { id: skyPage }
             SettingsPage { id: settingsPage }

@@ -2300,6 +2300,30 @@ def live_mosaic_resume_plan(
     return start, False
 
 
+def live_mosaic_scheduler_action(
+    phase: str,
+    worker_running: bool,
+    capturing: bool,
+    session_due: bool,
+) -> str:
+    """How the fleet scheduler should treat a persisted live mosaic.
+
+    Recovery state stays on disk after a failure so reconnect can retry. A
+    leftover that is not running must not hold the overnight queue: only a
+    worker that still owns the telescope, or a stack the firmware is still
+    exposing, blocks the next due session.
+    """
+    if not str(phase or "").strip():
+        return "idle"
+    if worker_running:
+        return "wait"
+    if capturing:
+        return "resume"
+    if session_due:
+        return "yield"
+    return "idle"
+
+
 def mosaic_group_title(name: str, group_id: str = "") -> str:
     stripped = PANE_TITLE_RE.sub("", name or "").strip()
     if stripped:

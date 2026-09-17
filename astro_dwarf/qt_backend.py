@@ -89,6 +89,7 @@ from .services import (
     MAX_MOSAIC_AXIS,
     is_mosaic_pane_name,
     live_mosaic_resume_plan,
+    live_mosaic_scheduler_action,
     mosaic_group_title,
     mosaic_grid_size,
     mosaic_pane_footprints,
@@ -1592,7 +1593,7 @@ class AppBackend(QObject):
 
     def _hud_activity(self, device_id: str, telemetry_activity: str) -> str:
         live = self._live_mosaic.get(device_id)
-        if live and live.get("phase"):
+        if self._live_mosaic_running(device_id, live):
             return "imaging"
         stored = self._device_activity.get(device_id, "")
         if telemetry_activity == "autofocus" and stored == "infinity":
@@ -2496,6 +2497,22 @@ class AppBackend(QObject):
             self.store.clear_live_mosaic(device_id)
             return
         self.store.save_live_mosaic(device_id, self._live_mosaic_persist_payload(device_id, live))
+
+    def _live_mosaic_running(self, device_id: str, live: dict[str, Any] | None = None) -> bool:
+        item = live if live is not None else self._live_mosaic.get(device_id)
+        return bool(item and item.get("phase") and item.get("worker_running"))
+
+    def _discard_live_mosaic(self, device_id: str, *, notify: bool = True) -> bool:
+        live = self._live_mosaic.pop(device_id, None)
+        self.store.clear_live_mosaic(device_id)
+        self._resume_mosaic_attempted.discard(device_id)
+        if not live:
+            return False
+        if notify:
+            self._clear_mosaic_preview()
+            self.mosaicPreviewChanged.emit()
+            self._notify_devices()
+        return True
 
     def _restore_live_mosaics(self) -> None:
         recovered = 0
@@ -5090,7 +5107,7 @@ class AppBackend(QObject):
         stays armed so other telescopes can still start their queues.
         """
         live = self._live_mosaic.get(device_id)
-        running_live = bool(live and live.get("phase"))
+        running_live = self._live_mosaic_running(device_id, live)
         if running_live:
             live["stopping"] = True
         session_id = self._active_sessions.get(device_id)
@@ -5150,9 +5167,11 @@ class AppBackend(QObject):
             self._toast("Another session is running on this telescope", "warning")
             return False
         existing = self._live_mosaic.get(device_id)
-        if existing and existing.get("phase"):
+        if self._live_mosaic_running(device_id, existing):
             self._toast("A mosaic stack is already running", "warning")
             return False
+        if existing and existing.get("phase"):
+            self._discard_live_mosaic(device_id, notify=False)
         if self._telemetry_capturing(device_id):
             self._toast("Telescope is already stacking", "warning")
             return False
@@ -5351,8 +5370,9 @@ class AppBackend(QObject):
                 if worker and worker.connected:
                     self._schedule_control_restore(device_id, 500)
             else:
-                self._resume_mosaic_attempted.add(device_id)
                 self._persist_live_mosaic(device_id)
+                if worker and worker.connected:
+                    self._schedule_control_restore(device_id, 500)
         else:
             self.store.clear_live_mosaic(device_id)
         if worker and device_id not in self._active_sessions:
@@ -5506,8 +5526,10 @@ class AppBackend(QObject):
             payload = {"args": [camera]}
         if operation == "stop_astro":
             live = self._live_mosaic.get(device_id)
-            if live and live.get("phase"):
+            if self._live_mosaic_running(device_id, live):
                 live["stopping"] = True
+            elif live and live.get("phase"):
+                self._discard_live_mosaic(device_id)
         worker_operation = operation
         if photo_focus:
             worker_operation = "normal_autofocus"
@@ -5693,8 +5715,10 @@ class AppBackend(QObject):
             return
         detail = self._initial_stop_detail(device_id)
         live = self._live_mosaic.get(device_id)
-        if live and live.get("phase"):
+        if self._live_mosaic_running(device_id, live):
             live["stopping"] = True
+        elif live and live.get("phase"):
+            self._discard_live_mosaic(device_id)
         self._abort_active_session(device_id, reason)
         if not worker.connected:
             if device_id == self._selected_device_id:
@@ -6104,7 +6128,7 @@ class AppBackend(QObject):
             self._schedule_control_restore(device_id, 2000)
             return
         live = self._live_mosaic.get(device_id)
-        if worker.busy or (live and live.get("phase")):
+        if worker.busy or self._live_mosaic_running(device_id, live):
             self._schedule_control_restore(device_id, 2000)
             return
         if device_id in self._control_restoring:
@@ -8685,16 +8709,26 @@ class AppBackend(QObject):
             if worker.busy or not worker.connected:
                 continue
             live = self._live_mosaic.get(device.id)
-            if live and live.get("phase"):
+            sessions = self.store.upcoming(device.id)
+            session = sessions[0] if sessions else None
+            due = False
+            if session is not None:
+                tz = self._zone_for(device)
+                due = parse_in_zone(session.scheduled_start, tz) <= datetime.now(tz)
+            action = live_mosaic_scheduler_action(
+                str((live or {}).get("phase") or ""),
+                bool(live and live.get("worker_running")),
+                self._telemetry_capturing(device.id),
+                due,
+            )
+            if action == "wait":
+                continue
+            if action == "resume":
                 self._maybe_resume_interrupted_mosaic(device.id)
                 continue
-            sessions = self.store.upcoming(device.id)
-            if not sessions:
-                continue
-            session = sessions[0]
-            tz = self._zone_for(device)
-            due = parse_in_zone(session.scheduled_start, tz)
-            if due > datetime.now(tz):
+            if action == "yield":
+                self._discard_live_mosaic(device.id)
+            if session is None or not due:
                 continue
             if session.id in self._recovered_sessions:
                 self._maybe_resume_interrupted_session(device.id)
@@ -8730,7 +8764,7 @@ class AppBackend(QObject):
         if device_id in self._resume_attempted or self._active_sessions.get(device_id):
             return
         live = self._live_mosaic.get(device_id)
-        if live and live.get("phase"):
+        if self._live_mosaic_running(device_id, live):
             return
         worker = self._workers.get(device_id)
         if not worker or not worker.connected or worker.busy:
@@ -8759,6 +8793,9 @@ class AppBackend(QObject):
             self._recovered_sessions.pop(session_id, None)
 
     def _start_session(self, worker: TelescopeProcess, session: Session) -> None:
+        leftover = self._live_mosaic.get(session.device_id)
+        if leftover and leftover.get("phase") and not leftover.get("worker_running"):
+            self._discard_live_mosaic(session.device_id, notify=False)
         resuming = (
             session.id in self._recovered_sessions
             or str(session.current_step or "") == "Recovered after restart"

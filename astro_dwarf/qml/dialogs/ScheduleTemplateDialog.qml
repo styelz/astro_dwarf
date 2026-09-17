@@ -10,6 +10,7 @@ import "../components"
 
 Dialog {
     id: scheduleDialog
+    objectName: "scheduleDialog"
     property string templateId: ""
     property string templateName: ""
     property string deviceId: ""
@@ -206,8 +207,9 @@ Dialog {
         }
         RowLayout {
             Layout.alignment: Qt.AlignRight
-            HudButton { text: "CANCEL"; onClicked: scheduleDialog.close() }
+            HudButton { objectName: "scheduleCancel"; text: "CANCEL"; onClicked: scheduleDialog.close() }
             HudButton {
+                objectName: "scheduleConfirm"
                 text: "SCHEDULE"
                 enabled: scheduleDialog.canSchedule
                 busyText: "SCHEDULING…"

@@ -10,6 +10,48 @@ import "../components"
 
 Item {
     id: controlPage
+    function harnessJoystickNudge(angle) {
+        analogPad.nudge(Number(angle))
+        return analogPad.nudgesEnabled ? "ok" : "disabled"
+    }
+    function harnessPadList() {
+        const rows = []
+        if (!commandPads)
+            return rows
+        for (let i = 0; i < commandPads.count; i++) {
+            const item = commandPads.itemAt(i)
+            if (!item)
+                continue
+            rows.push({
+                objectName: String(item.objectName || ""),
+                name: String(item.text || ""),
+                type: "button",
+                enabled: !!item.enabled,
+                visible: !!item.visible,
+                value: String(item.text || ""),
+                path: "controlPage/" + String(item.objectName || item.text || "")
+            })
+        }
+        return rows
+    }
+    function harnessClickPad(start) {
+        const raw = String(start || "")
+        const key = raw.indexOf("pad-") === 0 ? raw.slice(4) : raw
+        const name = "pad-" + key
+        if (!commandPads)
+            return "missing"
+        for (let i = 0; i < commandPads.count; i++) {
+            const item = commandPads.itemAt(i)
+            if (!item)
+                continue
+            const startId = item.modelData && item.modelData.start ? String(item.modelData.start) : ""
+            if (item.objectName === name || startId === key) {
+                item.clicked()
+                return item.objectName || name
+            }
+        }
+        return "missing"
+    }
     property var selectedUpcomingIds: ({})
     property string selectionAnchorId: ""
     readonly property int selectedUpcomingCount: Util.idSetCount(selectedUpcomingIds)
@@ -984,6 +1026,7 @@ Item {
                 fill: Theme.popupBg
                 Item {
                     id: previewHost
+                    objectName: "previewHost"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.preferredHeight: 0
@@ -1226,6 +1269,7 @@ Item {
 
                     LiveViewPane {
                         id: liveFrame
+                        objectName: "livePane"
                         anchors.fill: parent
                         visible: !previewHost.mosaicPreview
                         playing: previewHost.mainPlaying && !previewHost.mosaicPreview
@@ -2113,6 +2157,7 @@ Item {
                     columnSpacing: 8
                     rowSpacing: 8
                     Repeater {
+                    id: commandPads
                     model: [
                         {label: "CALIBRATE", glyph: "◎", start: "calibrate", stop: "stop_calibrate", state: "calibrate", detail: "ALIGN", mode: "dso"},
                         {label: "AUTO FOCUS", glyph: "◉", start: "autofocus", stop: "stop_autofocus", state: "autofocus", detail: "OPTICS", mode: "both", camera: "tele"},
@@ -2133,6 +2178,7 @@ Item {
                     delegate: HudCommandPad {
                         id: pad
                         required property var modelData
+                        objectName: "pad-" + String(modelData.start || "")
                         readonly property var t: root.scopeTelemetry
                         readonly property bool trackingPad: modelData.start === "track"
                         readonly property bool trackingNow: trackingPad && !!t.tracking_active
@@ -2342,6 +2388,7 @@ Item {
                         opacity: root.motionEnabled && !motionPanel.captureArmed ? 1 : 0.38
                         Item {
                             id: analogPad
+                            objectName: "analogPad"
                             anchors.centerIn: parent
                             width: padHost.padSize
                             height: width
@@ -2810,6 +2857,7 @@ Item {
                                 }
                                 Rectangle {
                                 id: upcomingRow
+                                objectName: "upcoming-" + upcomingWrap.modelData.id
                                 readonly property var modelData: upcomingWrap.modelData
                                 width: parent.width
                                 height: 44

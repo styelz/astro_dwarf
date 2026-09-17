@@ -10,6 +10,7 @@ import "../components"
 
 Dialog {
     id: sessionDialog
+    objectName: "sessionDialog"
     modal: true
     anchors.centerIn: Overlay.overlay
     width: Math.min(root.width - 80, 900)
@@ -746,11 +747,13 @@ Dialog {
             columnSpacing: 10
             rowSpacing: 8
             FieldLabel { text: "SESSION NAME"; visible: sessionDialog.uniqueVisible }
-            HudField { id: sessionName; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible }
+            HudField { id: sessionName; objectName: "session-name"; accessibleName: "Session name"; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible }
             FieldLabel { text: "TARGET TYPE"; visible: sessionDialog.uniqueVisible }
-            HudCombo { id: targetType; model: ["equatorial", "solar", "none"]; Layout.fillWidth: true; visible: sessionDialog.uniqueVisible }
+            HudCombo { id: targetType; objectName: "session-target-type"; accessibleName: "Target type"; model: ["equatorial", "solar", "none"]; Layout.fillWidth: true; visible: sessionDialog.uniqueVisible }
             HudField {
                 id: targetName
+                objectName: "session-target-name"
+                accessibleName: "Target name"
                 placeholderText: targetType.currentIndex === 1 ? "Sun, moon, planet…" : "Target name"
                 Layout.fillWidth: true
                 visible: sessionDialog.uniqueVisible
@@ -761,20 +764,22 @@ Dialog {
                 spacing: 2
                 Layout.fillWidth: true
                 FieldCaption { text: "RA HOURS" }
-                HudField { id: ra; Layout.fillWidth: true }
+                HudField { id: ra; objectName: "session-ra"; accessibleName: "Session RA hours"; Layout.fillWidth: true }
             }
             ColumnLayout {
                 visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget
                 spacing: 2
                 Layout.fillWidth: true
                 FieldCaption { text: "DEC °" }
-                HudField { id: dec; Layout.fillWidth: true }
+                HudField { id: dec; objectName: "session-dec"; accessibleName: "Session DEC"; Layout.fillWidth: true }
             }
             FieldLabel { text: "START"; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
-            HudTimeField { id: startTime; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
+            HudTimeField { id: startTime; objectName: "session-start"; accessibleName: "Session start"; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
             FieldLabel { text: "DEVICE"; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
             HudCombo {
                 id: sessionDevice
+                objectName: "session-device"
+                accessibleName: "Session device"
                 visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate
                 Layout.fillWidth: true
                 Layout.columnSpan: 2
@@ -792,6 +797,8 @@ Dialog {
             FieldLabel { text: "CAMERA" }
             HudCombo {
                 id: camera
+                objectName: "session-camera"
+                accessibleName: "Session camera"
                 model: ["Tele", "Wide"]
                 emptyText: "Mixed"
                 Layout.fillWidth: true
@@ -813,6 +820,8 @@ Dialog {
                 FieldCaption { text: "SECONDS" }
                 HudField {
                     id: exposure
+                    objectName: "session-exposure"
+                    accessibleName: "Session exposure"
                     Layout.fillWidth: true
                     onTextEdited: sessionDialog.markDirty("exposure")
                 }
@@ -823,6 +832,8 @@ Dialog {
                 FieldCaption { text: "GAIN" }
                 HudField {
                     id: gain
+                    objectName: "session-gain"
+                    accessibleName: "Session gain"
                     Layout.fillWidth: true
                     onTextEdited: sessionDialog.markDirty("gain")
                 }
@@ -1021,8 +1032,9 @@ Dialog {
         Item { Layout.fillHeight: true }
         RowLayout {
             Layout.alignment: Qt.AlignRight
-            HudButton { text: "CANCEL"; onClicked: sessionDialog.close() }
+            HudButton { objectName: "sessionCancel"; text: "CANCEL"; onClicked: sessionDialog.close() }
             HudButton {
+                objectName: "sessionSave"
                 text: sessionDialog.bulkMode ? "UPDATE SELECTED" : (sessionDialog.editingTemplate ? "SAVE TEMPLATE" : "SAVE SESSION")
                 busyText: sessionDialog.bulkMode ? "UPDATING…" : "SAVING…"
                 enabled: !sessionDialog.bulkMode || sessionDialog.dirty

@@ -604,6 +604,7 @@ Item {
                         model: 42
                         delegate: Rectangle {
                             id: dayCell
+                            objectName: "calendar-day-" + dayCell.key
                             required property int index
                             property date cellDate: {
                                 calendarPage.shownMonth
@@ -705,6 +706,7 @@ Item {
                                     model: dayCell.daySessions.slice(0, dayCell.chipLimit)
                                     delegate: Rectangle {
                                         id: sessionChip
+                                        objectName: "calendar-session-" + modelData.id
                                         required property var modelData
                                         property string sessionId: modelData.id
                                         readonly property color deviceTone: Util.sessionTone(modelData)

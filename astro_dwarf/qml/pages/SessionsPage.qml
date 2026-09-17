@@ -9,6 +9,7 @@ import ".."
 import "../components"
 
 Item {
+    objectName: "sessionsRoot"
     function revealTemplates(ids) {
         const created = []
         if (Array.isArray(ids)) {
@@ -209,6 +210,7 @@ Item {
                                 }
                                 HudPanel {
                                     id: scheduledRow
+                                    objectName: "session-" + scheduledWrap.modelData.id
                                     readonly property var modelData: scheduledWrap.modelData
                                     width: parent.width
                                     height: 76
@@ -495,6 +497,7 @@ Item {
                     model: backend.templates
                     delegate: HudPanel {
                         id: templateCard
+                        objectName: "template-" + modelData.id
                         required property var modelData
                         width: 344
                         height: 212
