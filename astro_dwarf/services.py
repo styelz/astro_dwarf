@@ -2264,6 +2264,21 @@ def mosaic_session_footprints(
     return panes
 
 
+def live_mosaic_owns_target(live_label: str, group: str, target: str) -> bool:
+    """True when firmware's capture/tracking name belongs to this live mosaic."""
+    name = str(target or "").strip()
+    if not name:
+        return False
+    label = str(live_label or "").strip()
+    parent = mosaic_group_title(label, group)
+    other = mosaic_group_title(name)
+    if parent and other and parent.casefold() == other.casefold():
+        return True
+    return bool(label) and (
+        label.casefold() == name.casefold() or sky_names_related(label, name)
+    )
+
+
 def live_mosaic_resume_plan(
     phase: str,
     current_index: int,
@@ -2277,6 +2292,11 @@ def live_mosaic_resume_plan(
     still capturing. If capture has already stopped, that pane is retried
     unless progress already recorded it as complete — otherwise a mid-stack
     crash skips the pane and leaves a hole in the mosaic.
+
+    GOTO progress is persisted before GoLive releases the previous pane, so
+    ``capture_active`` during phase ``goto`` or ``complete`` is leftover from
+    the prior pane. Joining that leftover would mark the next pane complete
+    without slewing.
     """
     try:
         index = max(1, int(current_index or 1))
@@ -2290,6 +2310,13 @@ def live_mosaic_resume_plan(
     if capturing:
         if panes and index > panes:
             return None
+        if label == "complete":
+            start = index + 1
+            if panes and start > panes:
+                return None
+            return start, False
+        if label == "goto":
+            return index, False
         return index, True
     if label == "complete":
         start = index + 1

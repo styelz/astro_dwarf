@@ -88,6 +88,7 @@ from .services import (
     import_telescopius,
     MAX_MOSAIC_AXIS,
     is_mosaic_pane_name,
+    live_mosaic_owns_target,
     live_mosaic_resume_plan,
     live_mosaic_scheduler_action,
     mosaic_group_title,
@@ -2545,6 +2546,17 @@ class AppBackend(QObject):
         if not worker or not worker.connected or worker.busy:
             return
         capturing = self._telemetry_capturing(device_id)
+        if capturing:
+            telemetry = self._device_telemetry.get(device_id) or {}
+            target = str(
+                telemetry.get("capture_target") or telemetry.get("tracking_target") or ""
+            ).strip()
+            if target and not live_mosaic_owns_target(
+                str(live.get("label") or ""),
+                str(live.get("group") or ""),
+                target,
+            ):
+                capturing = False
         if not capturing and not allow_idle:
             return
         plan = live_mosaic_resume_plan(
@@ -8715,10 +8727,22 @@ class AppBackend(QObject):
             if session is not None:
                 tz = self._zone_for(device)
                 due = parse_in_zone(session.scheduled_start, tz) <= datetime.now(tz)
+            capturing = self._telemetry_capturing(device.id)
+            if capturing and live:
+                telemetry = self._device_telemetry.get(device.id) or {}
+                target = str(
+                    telemetry.get("capture_target") or telemetry.get("tracking_target") or ""
+                ).strip()
+                if target and not live_mosaic_owns_target(
+                    str(live.get("label") or ""),
+                    str(live.get("group") or ""),
+                    target,
+                ):
+                    capturing = False
             action = live_mosaic_scheduler_action(
                 str((live or {}).get("phase") or ""),
                 bool(live and live.get("worker_running")),
-                self._telemetry_capturing(device.id),
+                capturing,
                 due,
             )
             if action == "wait":
@@ -8771,6 +8795,16 @@ class AppBackend(QObject):
             return
         telemetry = self._device_telemetry.get(device_id) or {}
         if not (telemetry.get("capture_active") or telemetry.get("capture_state") == "running"):
+            return
+        target = str(telemetry.get("capture_target") or telemetry.get("tracking_target") or "").strip()
+        if live and live.get("phase") and (
+            not target
+            or live_mosaic_owns_target(
+                str(live.get("label") or ""),
+                str(live.get("group") or ""),
+                target,
+            )
+        ):
             return
         session = self._recovered_session_for(device_id, telemetry)
         if not session:

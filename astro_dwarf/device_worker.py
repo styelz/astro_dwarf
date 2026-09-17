@@ -3959,10 +3959,11 @@ def _stack_mosaic(
                     report(index, f"Pane {index}/{total} complete")
                     stacked_previous = True
                     continue
-                log(f"Mosaic pane {index}/{total} already finished; continuing", "notice")
-                report(index, f"Pane {index}/{total} complete")
+                log(
+                    f"Mosaic pane {index}/{total} capture already stopped; retrying the pane",
+                    "notice",
+                )
                 stacked_previous = True
-                continue
             report(index, f"GOTO pane {index}/{total}")
             log(f"Mosaic pane {index}/{total} → RA {ra:.4f}h Dec {dec:+.3f}° ({name})")
             _session_phase = "goto"
