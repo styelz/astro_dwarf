@@ -26,7 +26,7 @@ Item {
         { key: "calendar", title: "CALENDAR", hint: "Night cutoff · Stellarium", glyph: "◑", device: false, group: "APP" }
     ]
     readonly property var categoryKeys: ({
-        device: ["name", "model", "color", "camera", "timezone_name", "latitude", "longitude"],
+        device: ["name", "model", "color", "camera", "timezone_name", "latitude", "longitude", "mosaic_pa"],
         connect: ["ip_address", "ble_enabled", "wifi_mode", "wifi_ssid", "wifi_password", "ble_password", "auto_start_preview"],
         capture: ["capture_defaults"],
         timing: ["slew_seconds", "settle_seconds", "calibration_seconds", "autofocus_seconds", "infinite_focus_seconds", "polar_seconds", "readout_seconds", "pane_slew_seconds", "startup_seconds"],
@@ -46,6 +46,38 @@ Item {
         const n = Number(t)
         return isFinite(n) ? n : null
     }
+    function mosaicPaNumber(text) {
+        const t = String(text).trim()
+        if (t === "")
+            return null
+        const n = Number(t)
+        if (!isFinite(n))
+            return null
+        return ((n % 360) + 360) % 360
+    }
+    function mosaicPaTextFromDevice(device) {
+        const stored = device && device.mosaic_pa
+        if (stored === undefined || stored === null || stored === "")
+            return ""
+        const n = Number(stored)
+        if (!isFinite(n))
+            return ""
+        return String(Math.round(((n % 360) + 360) % 360))
+    }
+    function applyMosaicPaFromDevice() {
+        if (mosaicPaField.activeFocus)
+            return
+        const next = settingsPage.mosaicPaTextFromDevice(backend.selectedDevice)
+        if (mosaicPaField.text === next)
+            return
+        mosaicPaField.text = next
+        try {
+            const snap = JSON.parse(settingsPage.loadedSnapshot || "{}")
+            snap.mosaic_pa = settingsPage.mosaicPaNumber(next)
+            settingsPage.loadedSnapshot = JSON.stringify(snap)
+        } catch (exc) {
+        }
+    }
     function currentPayload() {
         return {
             id: settingsPage.loadedDeviceId || backend.selectedDeviceId, name: nameField.text, model: modelField.currentText,
@@ -54,6 +86,7 @@ Item {
             ble_enabled: bleField.checked,
             auto_start_preview: autoPreviewField.checked,
             latitude: settingsPage.coordNumber(latField.text), longitude: settingsPage.coordNumber(lonField.text),
+            mosaic_pa: settingsPage.mosaicPaNumber(mosaicPaField.text),
             timezone_name: timezoneField.selectedName || timezoneField.editText,
             wifi_mode: ["auto", "ap", "sta"][wifiModeField.currentIndex],
             wifi_ssid: ssidField.text, wifi_password: wifiField.text,
@@ -171,6 +204,7 @@ Item {
         autoPreviewField.checked = !!d.auto_start_preview
         latField.text = d.latitude
         lonField.text = d.longitude
+        mosaicPaField.text = settingsPage.mosaicPaTextFromDevice(d)
         timezoneField.setFromName(d.timezone_name || "")
         stellariumField.text = backend.stellariumUrl || "http://localhost:8090"
         wifiModeField.currentIndex = Math.max(0, ["auto", "ap", "sta"].indexOf(d.wifi_mode || "auto"))
@@ -202,6 +236,7 @@ Item {
             if (settingsPage.loadedDeviceId === backend.selectedDeviceId) {
                 if (settingsPage.dirty && !ipField.text && backend.selectedDevice.ip_address)
                     ipField.text = backend.selectedDevice.ip_address
+                settingsPage.applyMosaicPaFromDevice()
                 return
             }
             if (!settingsPage.dirty) {
@@ -661,7 +696,7 @@ Item {
                                         cameraField.currentIndex = 0
                                 }
                             }
-                            FieldHint { text: "Selects the firmware profile and lens set. Dwarf 3 exposes a fixed-focus wide camera alongside the telephoto." }
+                            FieldHint { text: "Selects the firmware profile, lens set, and sky-map FOV. Dwarf 3 and Dwarf II expose a fixed-focus wide camera alongside the telephoto." }
                             FieldLabel { text: "CAMERA"; visible: settingsPage.cameraWideAvailable }
                             HudCombo {
                                 id: cameraField
@@ -672,7 +707,7 @@ Item {
                             }
                             FieldHint {
                                 visible: settingsPage.cameraWideAvailable
-                                text: "Default lens for new sessions on this telescope. Focus controls act on Tele only; Wide has no focus motor."
+                                text: "Default lens for new sessions, live preview, and the SKY FOV overlay on this telescope. Focus controls act on Tele only; Wide has no focus motor."
                             }
                         }
                         SettingGroup {
@@ -699,6 +734,14 @@ Item {
                             FieldLabel { text: "LONGITUDE" }
                             HudField { id: lonField; Layout.preferredWidth: settingsPage.controlWidth; accessibleName: "Site longitude"; placeholderText: "144.96" }
                             FieldHint { text: "Decimal degrees; west is negative." }
+                            FieldLabel { text: "MOSAIC PA" }
+                            HudField {
+                                id: mosaicPaField
+                                Layout.preferredWidth: settingsPage.numberWidth
+                                accessibleName: "Camera position angle east of north"
+                                placeholderText: backend.mosaicSouthUp ? "180" : "0"
+                            }
+                            FieldHint { text: "Camera rotation east of north for SKY mosaics on this telescope. Blank uses 180° south-up or 0° north-up from latitude. Store a measured offset such as 184° if the cameras are not square." }
                         }
                     }
 

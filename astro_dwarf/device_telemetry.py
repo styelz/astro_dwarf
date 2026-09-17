@@ -247,6 +247,16 @@ def _stacking_progress_changes(message: Any, mosaic: bool = False) -> dict[str, 
     }
     if mosaic:
         changes["mosaic_active"] = True
+        for attr in ("index", "mosaic_index", "cur_index", "mosaic_num"):
+            if not hasattr(message, attr):
+                continue
+            try:
+                pane = int(getattr(message, attr))
+            except (TypeError, ValueError):
+                continue
+            if pane >= 1:
+                changes["mosaic_index"] = pane
+                break
     try:
         current = int(message.current_count)
     except (TypeError, ValueError):
@@ -300,6 +310,10 @@ class TelemetryTap:
         self._stale_capture_peak = 0
         self._battery_source = ""
         self._hold_photo_autofocus = False
+        # SDK InitHostReceived starts False on every websocket init. Hold
+        # host/slave until the handshake claims master so a default False
+        # cannot toast "another client" while this app is connecting.
+        self._publish_host_mode = False
 
     # ------------------------------------------------------------------ setup
     def install(self, websockets_utils: Any) -> bool:
@@ -389,6 +403,30 @@ class TelemetryTap:
             self._accept_sdk_capture_counts = True
             self._stale_capture_peak = 0
             self._battery_source = ""
+            self._publish_host_mode = False
+
+    def publish_host_mode(self) -> None:
+        """Release held host/slave fields after the connect handshake settles."""
+        payload: dict[str, Any] = {}
+        with self._lock:
+            self._publish_host_mode = True
+            for key in ("host_mode", "host_locked"):
+                if key in self._pending:
+                    payload[key] = self._pending.pop(key)
+                elif key in self._state:
+                    payload[key] = self._state[key]
+            if not payload:
+                return
+            self._state.update(payload)
+            self._last_flush = time.monotonic()
+        self._emit({"event": "telemetry", "data": payload})
+
+    def _hold_unpublished_host(self) -> None:
+        if self._publish_host_mode:
+            return
+        for key in ("host_mode", "host_locked"):
+            if key in self._pending:
+                self._state[key] = self._pending.pop(key)
 
     def _capture_count_peak(self, data: dict[str, Any] | None = None) -> int:
         source = data if data is not None else self._state
@@ -413,6 +451,7 @@ class TelemetryTap:
             "capture_active": False,
             "capture_state": "idle",
             "mosaic_active": False,
+            "mosaic_index": 0,
             "capture_target": target or "",
             "capture_shooting_s": 0,
             "capture_stacked_s": 0,
@@ -464,6 +503,7 @@ class TelemetryTap:
                     continue
                 if self._state.get(key) != value or key not in self._state:
                     self._pending[key] = value
+            self._hold_unpublished_host()
             if not self._pending:
                 return
             due = force or now - self._last_flush >= self._flush_interval
@@ -477,6 +517,7 @@ class TelemetryTap:
 
     def flush(self) -> None:
         with self._lock:
+            self._hold_unpublished_host()
             if not self._pending:
                 return
             payload = self._pending
@@ -991,8 +1032,10 @@ def normalize_client_status(full: dict[str, Any], model_id: str = "3") -> dict[s
         put("indicator_on", int(full["PowerIndicatorDwarf"]) == 1)
     if full.get("RgbIndicatorDwarf") is not None:
         put("lights_on", int(full["RgbIndicatorDwarf"]) == 1)
-    if full.get("HostMode") is not None:
-        put("host_mode", bool(full["HostMode"]))
+    # Do not map SDK HostMode. That flag is InitHostReceived: it starts
+    # False on every websocket init and only becomes True after a host
+    # notify. Polling it as slave overwrites a real host reading and
+    # raises a false "controlled by another client" warning.
     capturing = bool(full.get("AstroCapture")) or bool(full.get("AstroWideCapture"))
     if capturing:
         # The SDK sets AstroCapture as soon as START_CAPTURE is *sent*, even when

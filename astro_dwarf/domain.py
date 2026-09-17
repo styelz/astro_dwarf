@@ -437,6 +437,62 @@ class Camera(StrEnum):
     WIDE = "wide"
 
 
+# Published H×V degrees. Live firmware h_fov/v_fov overrides these when present.
+_CAMERA_FOV: dict[DeviceModel, dict[Camera, tuple[float, float]]] = {
+    DeviceModel.DWARF_II: {
+        Camera.TELE: (3.20, 1.80),
+        Camera.WIDE: (43.58, 24.51),
+    },
+    DeviceModel.DWARF_3: {
+        Camera.TELE: (2.95, 1.66),
+        Camera.WIDE: (45.06, 25.93),
+    },
+    DeviceModel.DWARF_MINI: {
+        Camera.TELE: (2.14, 1.20),
+        Camera.WIDE: (45.06, 25.93),
+    },
+}
+
+
+def _as_device_model(model: DeviceModel | str | None) -> DeviceModel:
+    if isinstance(model, DeviceModel):
+        return model
+    try:
+        return DeviceModel(str(model or DeviceModel.DWARF_3))
+    except ValueError:
+        return DeviceModel.DWARF_3
+
+
+def _as_camera(camera: Camera | str | None) -> Camera:
+    value = camera.value if isinstance(camera, Camera) else str(camera or Camera.TELE)
+    return Camera.WIDE if value == Camera.WIDE.value else Camera.TELE
+
+
+def camera_fov(model: DeviceModel | str | None = None, camera: Camera | str | None = Camera.TELE) -> tuple[float, float]:
+    """Return the default horizontal × vertical FOV for a telescope model and lens."""
+    table = _CAMERA_FOV.get(_as_device_model(model), _CAMERA_FOV[DeviceModel.DWARF_3])
+    return table[_as_camera(camera)]
+
+
+def apply_camera_fov_defaults(telemetry: dict[str, Any], model: DeviceModel | str | None = None) -> dict[str, Any]:
+    """Fill missing FOV fields from the model. Does not replace firmware values."""
+    for camera, prefix in ((Camera.TELE, "tele"), (Camera.WIDE, "wide")):
+        h_key = f"{prefix}_fov_h"
+        v_key = f"{prefix}_fov_v"
+        try:
+            fov_h = float(telemetry.get(h_key) or 0)
+            fov_v = float(telemetry.get(v_key) or 0)
+        except (TypeError, ValueError):
+            fov_h = fov_v = 0.0
+        if fov_h <= 0 or fov_v <= 0:
+            fov_h, fov_v = camera_fov(model, camera)
+            telemetry[h_key] = fov_h
+            telemetry[v_key] = fov_v
+        if not telemetry.get(f"{prefix}_fov"):
+            telemetry[f"{prefix}_fov"] = f"{fov_h:.2f}° × {fov_v:.2f}°"
+    return telemetry
+
+
 class WifiMode(StrEnum):
     AUTO = "auto"
     AP = "ap"
@@ -554,6 +610,7 @@ class Device:
     latitude: float = 0
     longitude: float = 0
     timezone_name: str = "UTC"
+    mosaic_pa: float | None = None
     location_configured: bool = False
     stellarium_url: str = DEFAULT_STELLARIUM_URL
     observing_day_cutoff_hour: int = DEFAULT_OBSERVING_DAY_CUTOFF_HOUR
@@ -763,10 +820,20 @@ def resolved_frame_count(value: Any, defaults: CaptureDefaults | None = None) ->
     return _int_at_least(value, int(capture.frame_count), 1)
 
 
+def parse_mosaic_pa(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value) % 360.0
+    except (TypeError, ValueError):
+        return None
+
+
 def device_from_dict(data: dict[str, Any]) -> Device:
     data = dict(data)
     data.pop("demo_mode", None)
     data.pop("location_configured", None)
+    data["mosaic_pa"] = parse_mosaic_pa(data.get("mosaic_pa"))
     data["model"] = DeviceModel(data.get("model", DeviceModel.DWARF_3))
     data["camera"] = Camera(data.get("camera", Camera.TELE))
     if data["model"] == DeviceModel.DWARF_MINI:

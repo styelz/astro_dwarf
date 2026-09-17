@@ -14,7 +14,14 @@ Item {
     property int mosaicRows: 1
     property real mosaicOverlap: 0.2
     property real mosaicPa: 0
+    property bool liveOverlay: false
+    readonly property real liveOpacity: 0.65
+    readonly property string liveCamera: (backend.previewStacking || backend.previewResult)
+        ? "tele"
+        : (backend.selectedDevice.camera === "wide" ? "wide" : "tele")
     property string overlayKey: ""
+    signal contextMenuRequested(real x, real y)
+    signal trackRequested()
     readonly property string appReadyScript: "(function(){try{var stel=window._stel;if(!stel||!stel.core||!stel.observer)return\"loading\";var app=document.getElementById(\"app\");if(!app||!app.__vue_app__)return\"loading\";return\"ok\"}catch(e){return\"loading\"}})()"
     readonly property var engineItem: engineLoader.item
 
@@ -85,9 +92,54 @@ Item {
                         backend.mosaicFovText,
                         backend.mosaicSouthUp ? "S" : "N",
                         String(Theme.accent),
+                        map.liveOverlay ? "live" : "off",
+                        Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0),
+                        Object.keys(backend.skyMosaicPaneUrls || {}).join(","),
                         status
                     ].join("|")
+                if (map.liveOverlay)
+                    map.applyLiveOverlay()
+                map.applyMosaicPaneImages()
             })
+        })
+    }
+    function applyLiveOverlay() {
+        if (!map.pageReady)
+            return
+        if (!map.liveOverlay) {
+            map.runJavaScript(backend.skyWebLiveScript("", false, map.liveOpacity, 0))
+            return
+        }
+        map.runJavaScript(backend.skyWebLiveScript(
+            backend.skyLiveFrameDataUrl(map.liveCamera),
+            true,
+            map.liveOpacity,
+            Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0)
+        ))
+    }
+    function applyMosaicPaneImages() {
+        if (!map.pageReady)
+            return
+        map.runJavaScript(backend.skyWebPaneScript(backend.skyMosaicPaneUrls))
+    }
+    function pollContextMenu() {
+        map.runJavaScript(backend.skyWebContextPollScript, result => {
+            const text = String(result || "").trim()
+            if (!text || text === "undefined" || text === "null")
+                return
+            try {
+                const data = JSON.parse(text)
+                map.contextMenuRequested(Number(data.x) || 0, Number(data.y) || 0)
+            } catch (err) {
+            }
+        })
+    }
+    function pollTrackRequest() {
+        map.runJavaScript(backend.skyWebDblclickPollScript, result => {
+            const text = String(result || "").trim()
+            if (!text || text === "undefined" || text === "null")
+                return
+            map.trackRequested()
         })
     }
     function markInitialReady() {
@@ -152,7 +204,41 @@ Item {
     onMosaicRowsChanged: if (map.pageReady) map.applyFovOverlay()
     onMosaicOverlapChanged: if (map.pageReady) map.applyFovOverlay()
     onMosaicPaChanged: if (map.pageReady) map.applyFovOverlay()
-    onPageReadyChanged: if (!map.pageReady) map.hasSelectedTarget = false
+    onLiveOverlayChanged: if (map.pageReady) map.applyLiveOverlay()
+    onPageReadyChanged: {
+        if (!map.pageReady) {
+            map.hasSelectedTarget = false
+            return
+        }
+        if (map.liveOverlay)
+            map.applyLiveOverlay()
+    }
+
+    Connections {
+        target: backend
+        function onSelectedDeviceChanged() {
+            if (!map.pageReady)
+                return
+            map.applyObservingSite()
+            map.applyFovOverlay()
+        }
+        function onPreviewStackingChanged() {
+            if (map.pageReady && map.liveOverlay)
+                map.applyLiveOverlay()
+        }
+        function onPreviewResultChanged() {
+            if (map.pageReady && map.liveOverlay)
+                map.applyLiveOverlay()
+        }
+        function onMosaicPreviewChanged() {
+            if (!map.pageReady)
+                return
+            map.applyFovOverlay()
+            if (map.liveOverlay)
+                map.applyLiveOverlay()
+            map.applyMosaicPaneImages()
+        }
+    }
 
     Loader {
         id: engineLoader
@@ -216,5 +302,22 @@ Item {
         repeat: true
         running: map.pageReady
         onTriggered: map.applyFovOverlay()
+    }
+
+    Timer {
+        interval: 120
+        repeat: true
+        running: map.pageReady && map.liveOverlay
+        onTriggered: map.applyLiveOverlay()
+    }
+
+    Timer {
+        interval: 80
+        repeat: true
+        running: map.pageReady
+        onTriggered: {
+            map.pollContextMenu()
+            map.pollTrackRequest()
+        }
     }
 }

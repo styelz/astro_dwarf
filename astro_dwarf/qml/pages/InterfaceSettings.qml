@@ -52,6 +52,7 @@ ColumnLayout {
         return Theme.colorToHex(Theme.colorFor(iface.tintRole))
     }
     readonly property string tintRoleName: Theme.roleName(iface.tintRole)
+    readonly property string tintRoleHint: Theme.roleHint(iface.tintRole)
     readonly property string tintParentKey: Theme.parentOf(iface.tintRole)
     readonly property bool tintLinked: Theme.roleLinked(iface.tintRole)
     readonly property string themeStatus: {
@@ -355,6 +356,8 @@ ColumnLayout {
         ThemePreview {
             Layout.columnSpan: 3
             Layout.fillWidth: true
+            highlightRole: iface.tintRole
+            onRolePicked: function (key) { iface.tintRole = key }
         }
     }
 
@@ -406,7 +409,7 @@ ColumnLayout {
                                 model: groupBlock.modelData.keys
                                 delegate: PaletteSwatch {
                                     required property var modelData
-                                    width: 56
+                                    width: 76
                                     roleKey: modelData.key
                                     roleName: modelData.name
                                     selected: iface.tintRole === modelData.key
@@ -418,7 +421,9 @@ ColumnLayout {
                     }
                 }
                 FieldHint {
-                    text: "Click a swatch to edit it. BASE tints unedited colours. Double-click restores one colour."
+                    text: iface.tintRoleHint
+                        ? iface.tintRoleName + " — " + iface.tintRoleHint + " Click the preview or a swatch. WINDOW tints unedited colours. Double-click restores one colour."
+                        : "Click a swatch or the preview to edit that colour. WINDOW tints unedited colours. Double-click restores one colour."
                 }
             }
 
@@ -499,7 +504,7 @@ ColumnLayout {
                     accessibleName: iface.tintRoleName + " hue"
                     tooltip: iface.seedRole
                         ? "Seed hue. Unedited swatches, washes and the title bar follow this. The tick is stock cyan."
-                        : "Hue of the selected swatch. The tick is its stock position. Locked swatches stay put when BASE moves."
+                        : "Hue of the selected swatch. The tick is its stock position. Locked swatches stay put when WINDOW moves."
                     trackGradient: Gradient {
                         orientation: Gradient.Horizontal
                         GradientStop { position: 0.000; color: Qt.hsla(0.000, 0.9, 0.55, 1) }

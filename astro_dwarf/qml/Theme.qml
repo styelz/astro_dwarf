@@ -4,8 +4,8 @@ import QtCore
 
 // Single source of truth for the HUD look. Named palette roles can be tinted
 // independently; relatives (fills, outlines, glows) follow their parent swatch.
-// BASE is the seed (Theme.hue / brightness): unedited swatches, Theme.hsl()
-// one-offs, and the background wash follow it. Other swatches store overrides.
+// WINDOW (windowBase) is the seed (Theme.hue / brightness): unedited swatches,
+// Theme.hsl() one-offs, and the background wash follow it. Other swatches store overrides.
 // Saturation and lightness start from per-token recipes; a role can lock them.
 // Named themes (built-in + saved) snapshot the seed and every override.
 QtObject {
@@ -46,34 +46,34 @@ QtObject {
 
     readonly property var swatchGroups: [
         { title: "SEED", keys: [
-            { key: "windowBase", name: "BASE" }
+            { key: "windowBase", name: "WINDOW", hint: "Page behind every panel. Unedited colours and the title bar follow this." }
         ]},
         { title: "SURFACES", keys: [
-            { key: "surface", name: "PANEL" },
-            { key: "surfaceHigh", name: "RAISED" },
-            { key: "panelFill", name: "FILL" },
-            { key: "inputBg", name: "INPUT" },
-            { key: "popupBg", name: "POPUP" },
-            { key: "disabledBg", name: "OFF BG" },
-            { key: "scrim", name: "SCRIM" }
+            { key: "surface", name: "CARD", hint: "Solid cards: dialogs, media tiles, idle command pads." },
+            { key: "surfaceHigh", name: "BUTTON", hint: "Raised controls: default buttons, hover fills, and menu bars." },
+            { key: "panelFill", name: "PANEL", hint: "Translucent wash on setting groups, calendar cells, and Control overlays." },
+            { key: "inputBg", name: "FIELD", hint: "Text fields, dropdowns, checkboxes, and inactive tab pills." },
+            { key: "popupBg", name: "MENU", hint: "Popup menus, combo lists, and tooltips." },
+            { key: "disabledBg", name: "DISABLED", hint: "Fill of greyed-out buttons and fields." },
+            { key: "scrim", name: "DIMMER", hint: "Dark overlay that sits over the page behind a dialog." }
         ]},
         { title: "LINES", keys: [
-            { key: "outline", name: "LINE" },
-            { key: "outlineSoft", name: "SOFT" },
-            { key: "outlineStrong", name: "STRONG" },
-            { key: "disabledOutline", name: "OFF LN" }
+            { key: "outline", name: "BORDER", hint: "Default outlines around panels and controls." },
+            { key: "outlineSoft", name: "SOFT LINE", hint: "Quieter edges on media tiles and inactive pills." },
+            { key: "outlineStrong", name: "HARD LINE", hint: "Stronger edges on hover, focus, and pad ticks." },
+            { key: "disabledOutline", name: "OFF LINE", hint: "Outline of greyed-out controls." }
         ]},
         { title: "TYPE", keys: [
-            { key: "textPrimary", name: "TEXT" },
-            { key: "textSecondary", name: "DIM" },
-            { key: "muted", name: "MUTED" }
+            { key: "textPrimary", name: "TEXT", hint: "Primary labels and typed values." },
+            { key: "textSecondary", name: "DIM TEXT", hint: "Secondary labels, column headers, and helper lines." },
+            { key: "muted", name: "HINT", hint: "The quietest type: empty states and captions." }
         ]},
         { title: "SIGNAL", keys: [
-            { key: "accent", name: "ACCENT" },
-            { key: "accentSoft", name: "LIGHT" },
-            { key: "glowAccent", name: "GLOW" },
-            { key: "fillActive", name: "ACTIVE" },
-            { key: "fillChecked", name: "CHECK" }
+            { key: "accent", name: "ACCENT", hint: "Highlights: selected items, titles, focus rings, live status." },
+            { key: "accentSoft", name: "ACCENT HI", hint: "Brighter accent on the joystick, primed marks, and light ticks." },
+            { key: "glowAccent", name: "GLOW", hint: "Soft halo behind accent elements." },
+            { key: "fillActive", name: "LIVE FILL", hint: "Fill of a live or selected action button." },
+            { key: "fillChecked", name: "CHECKED", hint: "Fill of a ticked box, selected menu row, or on toggle." }
         ]}
     ]
 
@@ -193,7 +193,7 @@ QtObject {
     // How far the seed hue is from stock (0 … 0.5). The original palette leans its
     // surfaces and outlines ~35° toward blue; the same lean turns a red accent orange,
     // so the offsets shrink as the hue moves away from cyan. At the default hue
-    // nothing changes. BASE edits the seed; other swatches keep their own overrides.
+    // nothing changes. WINDOW edits the seed; other swatches keep their own overrides.
     readonly property real hueDistance: {
         const d = Math.abs(theme.hue - theme.defaultHue)
         return Math.min(d, 1 - d)
@@ -228,6 +228,15 @@ QtObject {
                 return list[i].name
         }
         return String(key || "").toUpperCase()
+    }
+
+    function roleHint(key) {
+        const list = theme.swatches
+        for (let i = 0; i < list.length; i++) {
+            if (list[i].key === key)
+                return list[i].hint || ""
+        }
+        return ""
     }
 
     function parentOf(key) {

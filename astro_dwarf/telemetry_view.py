@@ -357,6 +357,7 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     view["gain_text"] = str(int(gain)) if gain is not None else "—"
     view["tele_resolution"] = raw.get("tele_resolution") or ""
     view["tele_fov"] = raw.get("tele_fov") or ""
+    view["wide_fov"] = raw.get("wide_fov") or ""
     current = _capture_frame_count(raw)
     total_frames = raw.get("capture_total")
     stacked = raw.get("capture_stacked")

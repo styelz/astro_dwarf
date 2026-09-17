@@ -8,13 +8,14 @@ import time
 from typing import Optional
 from urllib.parse import urlparse
 
-from PySide6.QtCore import Property, QObject, QProcess, QRectF, QSize, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QWindow
+from PySide6.QtCore import Property, QBuffer, QIODevice, QObject, QProcess, QRectF, QSize, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPen, QWindow
 from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
 
 from .runtime import PROCESS_CREATION_FLAGS, ffmpeg_mjpeg_command, ffmpeg_path, kill_pid_tree
 
 _live_frames: LiveFrames | None = None
+_mosaic_frames: MosaicFrames | None = None
 
 
 def port_is_open(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -38,6 +39,38 @@ def live_frames() -> LiveFrames | None:
 def set_live_frames(hub: LiveFrames | None) -> None:
     global _live_frames
     _live_frames = hub
+
+
+def mosaic_frames() -> MosaicFrames | None:
+    return _mosaic_frames
+
+
+def set_mosaic_frames(hub: MosaicFrames | None) -> None:
+    global _mosaic_frames
+    _mosaic_frames = hub
+
+
+def live_frame_data_url(image: QImage, max_edge: int = 480, quality: int = 55) -> str:
+    """JPEG data URL for injecting a live frame into Stellarium Web's FOV overlay."""
+    if image is None or image.isNull():
+        return ""
+    frame = image
+    widest = max(int(image.width()), int(image.height()))
+    if widest > max_edge:
+        frame = image.scaled(
+            max_edge,
+            max_edge,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    if not frame.save(buffer, "JPEG", int(quality)):
+        return ""
+    encoded = bytes(buffer.data().toBase64()).decode("ascii")
+    if not encoded:
+        return ""
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 class LiveFrames(QObject):
@@ -299,6 +332,254 @@ class LiveFrameItem(QQuickPaintedItem):
             return
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         painter.drawImage(rect, image)
+
+
+class MosaicFrames(QObject):
+    """Completed mosaic-pane stills plus the current-pane index."""
+
+    changed = Signal()
+
+    def __init__(self, parent: Optional[QObject] = None):
+        super().__init__(parent)
+        self._lock = threading.Lock()
+        self._images: dict[int, QImage] = {}
+        self._columns = 1
+        self._rows = 1
+        self._current = 0
+        self._active = False
+        self._group = ""
+
+    def snapshot(self) -> tuple[bool, int, int, int, dict[int, QImage]]:
+        with self._lock:
+            return (
+                self._active,
+                self._columns,
+                self._rows,
+                self._current,
+                dict(self._images),
+            )
+
+    def group(self) -> str:
+        with self._lock:
+            return self._group
+
+    def set_layout(
+        self,
+        columns: int,
+        rows: int,
+        current: int,
+        active: bool,
+        group: str = "",
+    ) -> None:
+        columns = max(1, int(columns or 1))
+        rows = max(1, int(rows or 1))
+        current = max(0, int(current or 0))
+        active = bool(active)
+        group = str(group or "")
+        with self._lock:
+            changed = (
+                columns != self._columns
+                or rows != self._rows
+                or current != self._current
+                or active != self._active
+                or group != self._group
+            )
+            if group and group != self._group:
+                self._images = {}
+                changed = True
+            self._columns = columns
+            self._rows = rows
+            self._current = current
+            self._active = active
+            self._group = group
+        if changed:
+            self.changed.emit()
+
+    def put(self, index: int, image: QImage) -> None:
+        try:
+            pane = int(index)
+        except (TypeError, ValueError):
+            return
+        if pane < 1 or image is None or image.isNull():
+            return
+        shown = image.copy()
+        with self._lock:
+            current = self._images.get(pane)
+            if current is not None and not current.isNull() and current.cacheKey() == shown.cacheKey():
+                return
+            self._images[pane] = shown
+        self.changed.emit()
+
+    def peek(self, index: int) -> QImage:
+        with self._lock:
+            return self._images.get(int(index or 0)) or QImage()
+
+    def indexes(self) -> list[int]:
+        with self._lock:
+            return sorted(self._images)
+
+    def clear(self) -> None:
+        with self._lock:
+            if not self._images and not self._active and self._current == 0:
+                return
+            self._images = {}
+            self._current = 0
+            self._active = False
+            self._group = ""
+        self.changed.emit()
+
+
+class MosaicLiveItem(QQuickPaintedItem):
+    """Contact-sheet live preview while a mosaic is capturing."""
+
+    playingChanged = Signal()
+    cameraChanged = Signal()
+    accentChanged = Signal()
+
+    def __init__(self, parent: Optional[QQuickItem] = None):
+        super().__init__(parent)
+        self.setRenderTarget(QQuickPaintedItem.RenderTarget.Image)
+        self.setFillColor(QColor(0, 0, 0, 0))
+        self.setOpaquePainting(False)
+        self.setAntialiasing(False)
+        self._playing = False
+        self._camera = "tele"
+        self._accent = QColor(126, 224, 208)
+        hub = live_frames()
+        if hub is not None:
+            hub.frameChanged.connect(self._on_live_frame)
+        frames = mosaic_frames()
+        if frames is not None:
+            frames.changed.connect(self.update)
+
+    def getPlaying(self) -> bool:
+        return self._playing
+
+    def setPlaying(self, value: bool) -> None:
+        playing = bool(value)
+        if playing == self._playing:
+            return
+        self._playing = playing
+        self.playingChanged.emit()
+        self.update()
+
+    playing = Property(bool, getPlaying, setPlaying, notify=playingChanged)
+
+    def getCamera(self) -> str:
+        return self._camera
+
+    def setCamera(self, value: str) -> None:
+        key = (value or "tele").strip().lower()
+        if key not in ("tele", "wide"):
+            key = "tele"
+        if key == self._camera:
+            return
+        self._camera = key
+        self.cameraChanged.emit()
+        self.update()
+
+    camera = Property(str, getCamera, setCamera, notify=cameraChanged)
+
+    def getAccent(self) -> QColor:
+        return self._accent
+
+    def setAccent(self, value: QColor) -> None:
+        color = QColor(value) if value is not None else QColor(126, 224, 208)
+        if color == self._accent:
+            return
+        self._accent = color
+        self.accentChanged.emit()
+        self.update()
+
+    accent = Property(QColor, getAccent, setAccent, notify=accentChanged)
+
+    @Slot(str)
+    def _on_live_frame(self, key: str) -> None:
+        if not self._playing:
+            return
+        if key not in ("*", self._camera):
+            return
+        self.update()
+
+    def _cell_rect(self, columns: int, rows: int, index: int) -> QRectF | None:
+        if columns < 1 or rows < 1 or index < 1:
+            return None
+        width = float(self.width())
+        height = float(self.height())
+        if width <= 2 or height <= 2:
+            return None
+        gap = 2.0
+        cell_w = (width - gap * (columns + 1)) / columns
+        cell_h = (height - gap * (rows + 1)) / rows
+        if cell_w <= 2 or cell_h <= 2:
+            return None
+        col = (index - 1) % columns
+        row = (index - 1) // columns
+        if row >= rows:
+            return None
+        return QRectF(
+            gap + col * (cell_w + gap),
+            gap + row * (cell_h + gap),
+            cell_w,
+            cell_h,
+        )
+
+    def _fit_in(self, image: QImage, cell: QRectF) -> QRectF | None:
+        if image.isNull() or cell.width() <= 0 or cell.height() <= 0:
+            return None
+        image_w = float(image.width())
+        image_h = float(image.height())
+        if image_w <= 0 or image_h <= 0:
+            return None
+        scale = min(cell.width() / image_w, cell.height() / image_h)
+        draw_w = image_w * scale
+        draw_h = image_h * scale
+        return QRectF(
+            cell.x() + (cell.width() - draw_w) / 2.0,
+            cell.y() + (cell.height() - draw_h) / 2.0,
+            draw_w,
+            draw_h,
+        )
+
+    def paint(self, painter: QPainter) -> None:
+        if not self._playing:
+            return
+        frames = mosaic_frames()
+        if frames is None:
+            return
+        active, columns, rows, current, images = frames.snapshot()
+        if not active or columns < 1 or rows < 1:
+            return
+        live = live_frames()
+        live_image = live.peek(self._camera) if live is not None else QImage()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        font = QFont()
+        font.setPixelSize(11)
+        font.setBold(True)
+        painter.setFont(font)
+        count = columns * rows
+        for index in range(1, count + 1):
+            cell = self._cell_rect(columns, rows, index)
+            if cell is None:
+                continue
+            painter.fillRect(cell, QColor(0, 0, 0, 160))
+            image = images.get(index) or QImage()
+            if index == current and not live_image.isNull():
+                image = live_image
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+            else:
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            fitted = self._fit_in(image, cell)
+            if fitted is not None:
+                painter.drawImage(fitted, image)
+            elif index != current:
+                painter.setPen(self._accent)
+                painter.drawText(cell.toRect(), Qt.AlignmentFlag.AlignCenter, str(index))
+            border = QPen(self._accent)
+            border.setWidth(2 if index == current else 1)
+            painter.setPen(border)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(cell.adjusted(0.5, 0.5, -0.5, -0.5))
 
 
 def preview_window_is_live(window) -> bool:

@@ -44,6 +44,7 @@ from .domain import (
     album_stack_result_path,
     album_stack_session_camera,
     album_stack_session_target,
+    camera_fov,
     capture_defaults_from_dict,
     choose_latest_astro_stack,
     device_name_model,
@@ -830,7 +831,7 @@ def sdk_call(operation: str, *args: Any) -> Any:
             except (TypeError, ValueError):
                 fov_h = fov_v = 0.0
         if fov_h <= 0 or fov_v <= 0:
-            fov_h, fov_v = 45.06, 25.93
+            fov_h, fov_v = camera_fov(_device.get("model"), "wide")
         return _center_wide_view(nx, ny, fov_h, fov_v)
     if operation == "manual_focus":
         return _nudge_focus(int(args[0]) if args else _FOCUS_FAR)
@@ -1568,8 +1569,8 @@ def _cancel_queued_connects() -> bool:
     return True
 
 
-def _handshake() -> dict[str, Any] | None:
-    _check_connect_cancelled()
+def _claim_host() -> None:
+    """Ask firmware for master lock. V3 often ACKs with no payload."""
     try:
         if sdk_call("host_master") is False:
             log("MASTER LOCK: no response (expected on V3). Continuing.", "warning")
@@ -1577,6 +1578,11 @@ def _handshake() -> dict[str, Any] | None:
         log(str(exc), "warning")
     except Exception as exc:
         log(f"MASTER LOCK skipped: {exc}", "warning")
+
+
+def _handshake() -> dict[str, Any] | None:
+    _check_connect_cancelled()
+    _claim_host()
     _check_connect_cancelled()
     if sdk_call("time") is False:
         _check_connect_cancelled()
@@ -1589,6 +1595,17 @@ def _handshake() -> dict[str, Any] | None:
             log(str(exc), "warning")
         except Exception as exc:
             log(f"{operation} skipped: {exc}", "warning")
+    if _tap is not None and _tap.snapshot().get("host_mode") is False:
+        # A leftover websocket from this app, or the first lock arriving
+        # before we were assigned host, can report follower on connect.
+        log("Device reported follower mode; retrying master lock", "debug")
+        _claim_host()
+        try:
+            sdk_call("device_state")
+        except NotImplementedError as exc:
+            log(str(exc), "warning")
+        except Exception as exc:
+            log(f"device_state skipped: {exc}", "warning")
     _check_connect_cancelled()
     _connected.set()
     # Sessions connect on their own; tell the UI so STOP/DISCONNECT stay usable.
@@ -1598,6 +1615,7 @@ def _handshake() -> dict[str, Any] | None:
     status = _client_status()
     if status is not None:
         _tap.poll_client_status(status)
+    _tap.publish_host_mode()
     _tap.flush()
     return _tap.snapshot()
 
@@ -3324,6 +3342,32 @@ def _altaz_to_radec(
     return ra_hours, math.degrees(dec)
 
 
+def _start_sky_track(ra_hours: float, dec_degrees: float, target_name: str = "") -> dict[str, Any]:
+    """Slew to a sky-map RA/Dec and start sidereal tracking (goto_only=False)."""
+    if _ensure_astro_mode() is False:
+        raise RuntimeError("Could not enter astro mode")
+    latitude, longitude = _site_coordinates()
+    if abs(latitude) < 1e-9 and abs(longitude) < 1e-9:
+        raise RuntimeError("Set your observing site before starting tracking")
+    try:
+        ra = (float(ra_hours) % 24.0 + 24.0) % 24.0
+        dec = max(-90.0, min(90.0, float(dec_degrees)))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Sky map target is missing RA/Dec") from exc
+    if ra != ra or dec != dec:
+        raise RuntimeError("Sky map target is missing RA/Dec")
+    name = str(target_name or "").strip() or "Sky map target"
+    log(f"TRACK from sky map → RA {ra:.4f}h Dec {dec:+.3f}° ({name})")
+    if sdk_call("goto", ra, dec, name, False) is False:
+        raise RuntimeError("GOTO to start tracking failed")
+    return {
+        "ok": True,
+        "ra_hours": ra,
+        "dec_degrees": dec,
+        "name": name,
+    }
+
+
 def _start_tracking(target_name: str = "") -> dict[str, Any]:
     """GOTO the current pointing with tracking enabled (goto_only=False)."""
     if _ensure_astro_mode() is False:
@@ -3469,6 +3513,13 @@ def dispatch(message: dict[str, Any]) -> Any:
     if command == "track":
         args = list(message.get("args") or [])
         return _start_tracking(str(args[0]) if args else "")
+    if command == "sky_track":
+        args = list(message.get("args") or [])
+        return _start_sky_track(
+            args[0] if args else None,
+            args[1] if len(args) > 1 else None,
+            str(args[2]) if len(args) > 2 else "",
+        )
     if command == "stack":
         args = list(message.get("args") or [])
         return _start_manual_stack(str(args[0]) if args else "")

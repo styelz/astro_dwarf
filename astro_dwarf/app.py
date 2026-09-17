@@ -26,7 +26,7 @@ from .runtime import (
     kill_pid_tree,
     package_root,
 )
-from .stream_preview import LiveFrameItem
+from .stream_preview import LiveFrameItem, MosaicLiveItem
 from .version import __version__
 
 _DWMWA_USE_IMMERSIVE_DARK_MODE = 20
@@ -232,6 +232,7 @@ def run() -> int:
         application.setWindowIcon(icon)
     backend = AppBackend(data_root())
     qmlRegisterType(LiveFrameItem, "AstroDwarf", 1, 0, "LiveFrameItem")
+    qmlRegisterType(MosaicLiveItem, "AstroDwarf", 1, 0, "MosaicLiveItem")
     engine = QQmlApplicationEngine()
     engine.addImageProvider("enhance", EnhanceImageProvider())
     engine.warnings.connect(lambda warnings: [print(warning.toString(), file=sys.stderr) for warning in warnings])

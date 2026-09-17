@@ -14,7 +14,7 @@ Item {
     property bool mapKeepAlive: false
     property bool harvestBusy: false
     property string pendingAction: ""
-    property bool paTouched: false
+    property bool applyingPa: false
     readonly property int defaultPa: backend.mosaicSouthUp ? 180 : 0
     Settings {
         id: skyStore
@@ -24,6 +24,8 @@ Item {
         property int mosaicOverlap: 20
         property int mosaicPa: 180
         property bool mosaicPaSet: false
+        property bool liveFovOverlay: false
+        property bool dblclickTrack: false
     }
     function clampInt(value, lo, hi, fallback) {
         const n = Number(value)
@@ -35,22 +37,31 @@ Item {
         columnsBox.value = skyPage.clampInt(skyStore.mosaicColumns, 1, 10, 1)
         rowsBox.value = skyPage.clampInt(skyStore.mosaicRows, 1, 10, 1)
         overlapBox.value = skyPage.clampInt(skyStore.mosaicOverlap, 0, 80, 20)
-        if (skyStore.mosaicPaSet) {
-            paBox.value = ((skyPage.clampInt(skyStore.mosaicPa, 0, 359, skyPage.defaultPa) % 360) + 360) % 360
-            skyPage.paTouched = true
-        } else {
-            paBox.value = skyPage.defaultPa
+        const stored = backend.selectedDevice.mosaic_pa
+        const hasDevicePa = stored !== undefined && stored !== null && stored !== ""
+        if (!hasDevicePa && skyStore.mosaicPaSet) {
+            backend.setMosaicPa(((skyPage.clampInt(skyStore.mosaicPa, 0, 359, skyPage.defaultPa) % 360) + 360) % 360)
+            skyStore.mosaicPaSet = false
         }
+        skyPage.applyDevicePa()
     }
     function saveSkyGrid() {
         skyStore.mosaicColumns = columnsBox.value
         skyStore.mosaicRows = rowsBox.value
         skyStore.mosaicOverlap = overlapBox.value
     }
+    function applyDevicePa() {
+        const next = ((skyPage.clampInt(backend.mosaicPa, 0, 359, skyPage.defaultPa) % 360) + 360) % 360
+        if (paBox.value === next)
+            return
+        skyPage.applyingPa = true
+        paBox.value = next
+        skyPage.applyingPa = false
+    }
     function saveSkyPa() {
-        skyPage.paTouched = true
-        skyStore.mosaicPa = paBox.value
-        skyStore.mosaicPaSet = true
+        if (skyPage.applyingPa)
+            return
+        backend.setMosaicPa(paBox.value)
     }
     readonly property bool mosaicGrid: columnsBox.value > 1 || rowsBox.value > 1
     readonly property bool mapHasTarget: !!(mapLoader.item && mapLoader.item.hasSelectedTarget)
@@ -61,14 +72,18 @@ Item {
                                        && !skyPage.mapInitialReady
                                        && !skyPage.mapInitialFailed
     readonly property string targetSubtitle: {
+        const fov = backend.mosaicFovText
         if (!skyPage.targetLocked) {
-            return skyPage.mosaicGrid
+            const clickHint = skyStore.dblclickTrack
+                ? "Select a target. Double-click to GOTO it and start tracking."
+                : (skyPage.mosaicGrid
                    ? "Select a target in the sky map. Double-click to center it, then create a mosaic session from the grid."
-                   : "Select a target in the sky map. Double-click to center it, then create a single session."
+                   : "Select a target in the sky map. Double-click to center it, then create a single session.")
+            return clickHint + "  ·  " + fov
         }
         const target = backend.skyTarget
         return target.name + "  ·  RA " + Number(target.ra_hours).toFixed(3) + "h  DEC "
-               + Number(target.dec_degrees).toFixed(3) + "°"
+               + Number(target.dec_degrees).toFixed(3) + "°  ·  " + fov
     }
     function sendHarvest(raw) {
         if (!skyPage.harvestBusy)
@@ -83,6 +98,19 @@ Item {
             backend.importStellariumSmart(raw)
         else if (action === "push")
             backend.pushSkyToDesktop(raw)
+        else if (action === "track")
+            backend.trackSkyTarget(raw)
+    }
+    property double lastSkyMenuAt: 0
+    function openSkyMenu(x, y) {
+        const now = Date.now()
+        if (now - skyPage.lastSkyMenuAt < 250)
+            return
+        skyPage.lastSkyMenuAt = now
+        if (x === undefined || y === undefined)
+            skyMenu.popup()
+        else
+            skyMenu.popup(mapLoader, x, y)
     }
     function withSkySources(action) {
         if (backend.uiBusy !== "" || skyPage.harvestBusy)
@@ -103,8 +131,7 @@ Item {
     Connections {
         target: backend
         function onSelectedDeviceChanged() {
-            if (!skyPage.paTouched)
-                paBox.value = skyPage.defaultPa
+            skyPage.applyDevicePa()
         }
     }
 
@@ -130,9 +157,12 @@ Item {
         onTriggered: skyPage.sendHarvest("")
     }
 
-    readonly property string mosaicHint: "Pane preview is a Telescopius-style camera frame (PA east of north, "
+    readonly property string mosaicHint: "Pane preview is a Telescopius-style camera frame for "
+                                         + backend.mosaicFovText
+                                         + " (PA east of north; default "
+                                         + skyPage.defaultPa + "° "
                                          + (backend.mosaicSouthUp ? "S-up" : "N-up")
-                                         + " default from the selected telescope’s location)."
+                                         + " from this telescope, or its stored camera offset)."
 
     ColumnLayout {
         anchors.fill: parent
@@ -215,7 +245,7 @@ Item {
                     implicitWidth: 78
                     Layout.preferredWidth: 78
                     accessibleName: "Camera position angle east of north"
-                    tooltip: "Camera position angle, east of north. 0° is N-up, 180° is S-up. Match Telescopius PA."
+                    tooltip: "Camera position angle, east of north, stored on this telescope. 0° is N-up, 180° is S-up. Use a measured offset such as 184° if the cameras are not square south-up."
                     textFromValue: (value, locale) => String(value) + "°"
                     valueFromText: (text, locale) => {
                         const n = parseInt(String(text).replace("°", "").trim(), 10)
@@ -232,6 +262,12 @@ Item {
                 }
                 HudChip {
                     label: backend.mosaicSouthUp ? "S-UP" : "N-UP"
+                    tone: Theme.accent
+                    Layout.alignment: Qt.AlignVCenter
+                }
+                HudChip {
+                    visible: !skyHeader.tight
+                    label: backend.mosaicFovText
                     tone: Theme.accent
                     Layout.alignment: Qt.AlignVCenter
                 }
@@ -307,6 +343,7 @@ Item {
                     map.mosaicRows = Qt.binding(() => rowsBox.value)
                     map.mosaicOverlap = Qt.binding(() => overlapBox.value / 100)
                     map.mosaicPa = Qt.binding(() => paBox.value)
+                    map.liveOverlay = Qt.binding(() => skyStore.liveFovOverlay)
                 }
                 onStatusChanged: {
                     if (status === Loader.Error)
@@ -331,6 +368,53 @@ Item {
                 anchors.bottomMargin: 16
                 text: "OPEN STELLARIUM WEB"
                 onClicked: backend.openExternalUrl(backend.stellariumWebUrl)
+            }
+
+            Connections {
+                target: mapLoader.item
+                function onContextMenuRequested(x, y) {
+                    skyPage.openSkyMenu(x, y)
+                }
+                function onTrackRequested() {
+                    if (!skyStore.dblclickTrack)
+                        return
+                    skyPage.withSkySources("track")
+                }
+            }
+
+            TapHandler {
+                acceptedButtons: Qt.RightButton
+                grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
+                enabled: skyPage.mapInitialReady && !skyPage.mapBooting
+                onTapped: skyPage.openSkyMenu()
+            }
+
+            SkyContextMenu {
+                id: skyMenu
+                overlayEnabled: skyStore.liveFovOverlay
+                dblclickTrack: skyStore.dblclickTrack
+                hasTarget: skyPage.mapHasTarget
+                trackEnabled: !!(backend.selectedDevice && backend.selectedDevice.connected)
+                              && root.scopePending === ""
+                              && !root.scopeImaging
+                              && root.scopeTelemetry.goto_state !== "running"
+                              && root.scopeTelemetry.goto_state !== "solving"
+                              && root.scopeTelemetry.goto_state !== "stopping"
+                              && (root.scopeActivity === "" || root.scopeActivity === "goto"
+                                  || !!root.scopeTelemetry.tracking_active)
+                onOverlayToggled: {
+                    skyStore.liveFovOverlay = !skyStore.liveFovOverlay
+                    if (skyStore.liveFovOverlay && !backend.previewActive && backend.selectedDevice.connected)
+                        backend.startPreview(backend.selectedDeviceId)
+                }
+                onPreviewToggled: {
+                    if (backend.previewActive || backend.previewHeld || backend.previewResult)
+                        backend.stopPreview()
+                    else if (backend.selectedDevice.connected)
+                        backend.startPreview(backend.selectedDeviceId)
+                }
+                onDblclickTrackToggled: skyStore.dblclickTrack = !skyStore.dblclickTrack
+                onTrackSelected: skyPage.withSkySources("track")
             }
 
             Rectangle {

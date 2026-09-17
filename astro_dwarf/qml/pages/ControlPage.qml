@@ -580,9 +580,10 @@ Item {
                     Layout.fillWidth: true
                     enabled: !root.scopeOccupied && !root.scopeLinking
                     accessibleName: "Live camera"
-                    tooltip: cameraPanel.miniBody
+                    tooltip: (cameraPanel.miniBody
                         ? "Dwarf Mini has a single telephoto camera."
-                        : "Camera for live preview and capture.\nWide is fixed-focus; focus controls apply to Tele only."
+                        : "Camera for live preview and capture.\nWide is fixed-focus; focus controls apply to Tele only.")
+                        + "\nSKY and mosaic frames use " + backend.mosaicFovText + "."
                     model: cameraPanel.miniBody ? ["Tele"] : ["Tele", "Wide"]
                     function syncFromDevice() {
                         if (cameraPanel.miniBody && backend.selectedDevice.camera === "wide")
@@ -989,8 +990,10 @@ Item {
                             return false
                         return previewHost.stackCount < 1
                     }
+                    readonly property bool stackEnhanceAvailable: backend.previewStacking || backend.previewResult || previewHost.awaitingFirstStack
                     readonly property bool pipPlaying: pipAvailable && pipEnabled
-                    readonly property bool idlePreviewArt: !backend.previewPlaying && !backend.previewStacking && !backend.previewResult && !previewHost.awaitingFirstStack
+                    readonly property bool mosaicPreview: !!(backend.mosaicPreview && backend.mosaicPreview.active)
+                    readonly property bool idlePreviewArt: !backend.previewPlaying && !backend.previewStacking && !backend.previewResult && !previewHost.awaitingFirstStack && !previewHost.mosaicPreview
                     readonly property real teleFovH: {
                         const tele = Number(root.scopeTelemetry.tele_fov_h)
                         const wide = Number(root.scopeTelemetry.wide_fov_h)
@@ -1163,7 +1166,8 @@ Item {
                     LiveViewPane {
                         id: liveFrame
                         anchors.fill: parent
-                        playing: previewHost.mainPlaying
+                        visible: !previewHost.mosaicPreview
+                        playing: previewHost.mainPlaying && !previewHost.mosaicPreview
                         wideView: previewHost.displayWide
                         camera: previewHost.liveCamera(previewHost.displayWide)
                         centerEnabled: playing && root.motionEnabled && !backend.previewResult
@@ -1176,6 +1180,14 @@ Item {
                         footprintNw: previewHost.teleMatchNw
                         footprintNh: previewHost.teleMatchNh
                         onCenterRequested: (nx, ny, diag) => backend.centerOnTap(backend.selectedDeviceId, nx, ny, diag)
+                    }
+                    MosaicViewPane {
+                        id: mosaicFrame
+                        anchors.fill: parent
+                        visible: previewHost.mosaicPreview
+                        playing: previewHost.mosaicPreview && (previewHost.mainPlaying || previewHost.awaitingFirstStack || backend.previewResult)
+                        camera: "tele"
+                        accent: Theme.accent
                     }
 
                     Item {
@@ -1601,7 +1613,7 @@ Item {
                         id: stackWaitOverlay
                         z: 5
                         anchors.fill: parent
-                        visible: previewHost.awaitingFirstStack
+                        visible: previewHost.awaitingFirstStack && !previewHost.mosaicPreview
                         Rectangle {
                             anchors.fill: parent
                             color: Theme.scrim
@@ -1754,7 +1766,7 @@ Item {
                             }
                         }
                         Rectangle {
-                            visible: backend.previewStacking || previewHost.awaitingFirstStack
+                            visible: previewHost.stackEnhanceAvailable
                             width: enhanceLabel.implicitWidth + 16
                             height: 28
                             color: previewHost.previewEnhance ? Theme.fillActive : Theme.panelFill
@@ -1778,7 +1790,7 @@ Item {
                             }
                         }
                         Rectangle {
-                            visible: (backend.previewStacking || previewHost.awaitingFirstStack) && previewHost.previewEnhance
+                            visible: previewHost.stackEnhanceAvailable && previewHost.previewEnhance
                             width: deepLabel.implicitWidth + 16
                             height: 28
                             color: previewHost.previewDeep ? Theme.fillActive : Theme.panelFill
