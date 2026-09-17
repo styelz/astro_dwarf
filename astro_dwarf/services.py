@@ -1100,14 +1100,16 @@ SKY_WEB_FOV_JS = r"""
     var originY = (box.height - totalH) / 2;
     var color = String(p.color || "#7ee0d0");
     var pa = framePa(p);
+    // Pane 1 is camera-right. On a north-up chart that is the right edge;
+    // on a south-up chart it is only the right edge near PA 180°.
+    var col1OnRight = (pa > 90 && pa < 270) === !!p.south_up;
     var svg = "";
     var labels = "";
     var index = 0;
     for (var row = 1; row <= rows; row++) {
       for (var col = 1; col <= cols; col++) {
         index += 1;
-        // Column 1 is camera-right. MosaicLiveItem uses the same mapping.
-        var x = originX + (cols - col) * stepX;
+        var x = originX + (col1OnRight ? (cols - col) : (col - 1)) * stepX;
         var y = originY + (row - 1) * stepY;
         svg += paneFillRect(x, y, size.w, size.h, index);
         svg += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + size.w.toFixed(1)
@@ -2355,6 +2357,35 @@ def mosaic_south_up(latitude: Any) -> bool:
         return float(latitude or 0) < 0
     except (TypeError, ValueError):
         return False
+
+
+def mosaic_column_one_on_right(south_up: bool, position_angle: Any = None) -> bool:
+    """True when pane 1 belongs on the right of a sky-chart sheet.
+
+    Pane 1 is camera-right. A north-up chart has west on the right, so PA 0°
+    puts pane 1 there. A south-up chart has east on the right; that only
+    matches camera-right near PA 180°. Southern sites with a near-north PA
+    (for example Melbourne at 35°) must draw pane 1 on the left or the GOTO
+    lands under the pane 2 label.
+    """
+    if position_angle is None or position_angle == "":
+        pa = 180.0 if south_up else 0.0
+    else:
+        try:
+            pa = float(position_angle) % 360.0
+        except (TypeError, ValueError):
+            pa = 180.0 if south_up else 0.0
+    camera_right_is_east = 90.0 < pa < 270.0
+    return camera_right_is_east == bool(south_up)
+
+
+def mosaic_sheet_column(index: int, columns: int, *, south_up: bool = False, position_angle: Any = None) -> int:
+    """0-based contact-sheet column for a 1-based pane index."""
+    cols = max(1, int(columns or 1))
+    raw = (max(1, int(index or 1)) - 1) % cols
+    if mosaic_column_one_on_right(south_up, position_angle):
+        return (cols - 1) - raw
+    return raw
 
 
 def mosaic_position_angle(south_up: bool, position_angle: Any = None) -> float:

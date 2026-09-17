@@ -614,6 +614,22 @@ def preview_should_preserve_shooting_mode(
     return persisted_mode == 2 and mode != 1
 
 
+def preview_should_skip_go_live(
+    telemetry: dict[str, Any] | None,
+    persisted_mode: int = 0,
+) -> bool:
+    """True when GoLive would close the tele camera for no reason.
+
+    GoLive is for ending a capture. After GOTO/tracking the scope is already
+    in DSO with no stack running; GoLive then leaves DSO on and tele closed,
+    so wide comes back and tele stays dark until firmware recovers.
+    """
+    snap = telemetry or {}
+    if snap.get("capture_active") or snap.get("capture_state") == "running":
+        return False
+    return preview_should_preserve_shooting_mode(telemetry, persisted_mode)
+
+
 def control_restore_should_apply_mode(
     wanted_mode: int,
     current_mode: int,
@@ -3774,7 +3790,13 @@ class AppBackend(QObject):
                 return
             worker.send("photo_mode", callback=after_photo)
 
-        worker.send("go_live", callback=after_live)
+        if preview_should_skip_go_live(
+            self._device_telemetry.get(device_id),
+            device.control_settings.shooting_mode,
+        ):
+            after_live(True, None)
+        else:
+            worker.send("go_live", callback=after_live)
 
     def _open_legacy_preview_cameras(
         self,

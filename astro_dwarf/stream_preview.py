@@ -13,6 +13,7 @@ from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPen
 from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
 
 from .runtime import PROCESS_CREATION_FLAGS, ffmpeg_mjpeg_command, ffmpeg_path, kill_pid_tree
+from .services import mosaic_sheet_column
 
 _live_frames: LiveFrames | None = None
 _mosaic_frames: MosaicFrames | None = None
@@ -435,6 +436,8 @@ class MosaicLiveItem(QQuickPaintedItem):
     playingChanged = Signal()
     cameraChanged = Signal()
     accentChanged = Signal()
+    southUpChanged = Signal()
+    positionAngleChanged = Signal()
 
     def __init__(self, parent: Optional[QQuickItem] = None):
         super().__init__(parent)
@@ -445,6 +448,8 @@ class MosaicLiveItem(QQuickPaintedItem):
         self._playing = False
         self._camera = "tele"
         self._accent = QColor(126, 224, 208)
+        self._south_up = False
+        self._position_angle = 0.0
         hub = live_frames()
         if hub is not None:
             hub.frameChanged.connect(self._on_live_frame)
@@ -493,6 +498,35 @@ class MosaicLiveItem(QQuickPaintedItem):
 
     accent = Property(QColor, getAccent, setAccent, notify=accentChanged)
 
+    def getSouthUp(self) -> bool:
+        return self._south_up
+
+    def setSouthUp(self, value: bool) -> None:
+        on = bool(value)
+        if on == self._south_up:
+            return
+        self._south_up = on
+        self.southUpChanged.emit()
+        self.update()
+
+    southUp = Property(bool, getSouthUp, setSouthUp, notify=southUpChanged)
+
+    def getPositionAngle(self) -> float:
+        return self._position_angle
+
+    def setPositionAngle(self, value: float) -> None:
+        try:
+            angle = float(value) % 360.0
+        except (TypeError, ValueError):
+            angle = 0.0
+        if angle == self._position_angle:
+            return
+        self._position_angle = angle
+        self.positionAngleChanged.emit()
+        self.update()
+
+    positionAngle = Property(float, getPositionAngle, setPositionAngle, notify=positionAngleChanged)
+
     @Slot(str)
     def _on_live_frame(self, key: str) -> None:
         if not self._playing:
@@ -513,9 +547,12 @@ class MosaicLiveItem(QQuickPaintedItem):
         cell_h = (height - gap * (rows + 1)) / rows
         if cell_w <= 2 or cell_h <= 2:
             return None
-        # Camera-frame sheet: column 1 sits on the right, same as the SKY HUD
-        # (drawScreenGrid uses originX + (cols - col) * stepX). A 2×2 reads 2 1 / 4 3.
-        col = (columns - 1) - ((index - 1) % columns)
+        col = mosaic_sheet_column(
+            index,
+            columns,
+            south_up=self._south_up,
+            position_angle=self._position_angle,
+        )
         row = (index - 1) // columns
         if row >= rows:
             return None

@@ -15,5 +15,7 @@ Item {
         playing: pane.playing
         camera: pane.camera
         accent: pane.accent
+        southUp: backend.mosaicSouthUp
+        positionAngle: backend.mosaicPa
     }
 }
