@@ -630,6 +630,49 @@ def preview_should_skip_go_live(
     return preview_should_preserve_shooting_mode(telemetry, persisted_mode)
 
 
+def mosaic_result_pane(current_index: int, phase: str) -> int:
+    """Pane that owns a finished stack frame.
+
+    During GOTO the current index is the next pane. Storing the leftover live
+    frame there duplicates pane N into pane N+1.
+    """
+    try:
+        index = int(current_index or 0)
+    except (TypeError, ValueError):
+        index = 0
+    if index < 1:
+        return 0
+    if str(phase or "").strip().lower() == "goto" and index > 1:
+        return index - 1
+    return index
+
+
+def mosaic_live_pane(current_index: int, phase: str, active: bool = True) -> int:
+    """Only overlay live video on the pane that is actually stacking."""
+    if not active or str(phase or "").strip().lower() != "stacking":
+        return 0
+    try:
+        index = int(current_index or 0)
+    except (TypeError, ValueError):
+        return 0
+    return index if index >= 1 else 0
+
+
+def control_restore_should_set_auto_calibration(wanted: str, have: Any) -> bool:
+    """True only when firmware has reported a different auto-calibration flag.
+
+    A missing telemetry value must not force a set: after connect the Dwarf 3
+    often already has the saved value, and perform_set_astro_auto_calibration_v3
+    then sits on the SDK's 150 s reply wait.
+    """
+    text = str(wanted or "").strip().lower()
+    if text not in {"true", "false"}:
+        return False
+    if have is not True and have is not False:
+        return False
+    return have != (text == "true")
+
+
 def control_restore_should_apply_mode(
     wanted_mode: int,
     current_mode: int,
@@ -1588,6 +1631,18 @@ class AppBackend(QObject):
 
         return done
 
+    def _append_session_log(self, level: str, device: str, message: str) -> None:
+        try:
+            line = (
+                f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+                f"{str(level or 'INFO'):<7} {device} {message}\n"
+            )
+            path = Path.cwd() / "app-session.log"
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+        except OSError:
+            pass
+
     def add_log(self, level: str, message: str, device_id: str = "") -> None:
         text = str(message or "").strip()
         if not text:
@@ -1606,6 +1661,7 @@ class AppBackend(QObject):
             "message": text,
             "category": category,
         })
+        self._append_session_log(level_name, device, text)
 
     @Property(str, constant=True)
     def appVersion(self) -> str:
@@ -3130,6 +3186,21 @@ class AppBackend(QObject):
             return True
         return False
 
+    def _mosaic_result_pane_for(self, device_id: str = "") -> int:
+        owner = str(device_id or self._selected_device_id or "")
+        live = self._live_mosaic.get(owner) or {}
+        try:
+            index = int(live.get("current_index") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        pane = mosaic_result_pane(index, str(live.get("phase") or ""))
+        if pane >= 1:
+            return pane
+        try:
+            return int((self.mosaic_frames.snapshot()[3]) or 0)
+        except (TypeError, ValueError, IndexError):
+            return 0
+
     def _snapshot_mosaic_pane(self, index: int) -> None:
         if index < 1:
             return
@@ -3233,7 +3304,11 @@ class AppBackend(QObject):
             "columns": int((live or {}).get("columns") or columns),
             "rows": int((live or {}).get("rows") or rows),
             "current_index": int((live or {}).get("current_index") or current or 0),
-            "live_pane": int((live or {}).get("current_index") or current or 0) if (live or active) else 0,
+            "live_pane": mosaic_live_pane(
+                int((live or {}).get("current_index") or current or 0),
+                phase,
+                bool(live or active),
+            ),
             "total": int((live or {}).get("total") or (columns * rows) or 0),
             "phase": phase,
             "label": str((live or {}).get("label") or (current_session.name if isinstance(current_session, Session) else "")),
@@ -4182,7 +4257,7 @@ class AppBackend(QObject):
             return
         self.add_log("info", "Capture ended — loading the completed stack", device_id)
         self._sync_mosaic_preview(device_id)
-        self._snapshot_mosaic_pane(int((self.mosaicPreview or {}).get("current_index") or 0))
+        self._snapshot_mosaic_pane(self._mosaic_result_pane_for(device_id))
         self._start_stack_result_fetch(device_id, target, camera, since)
 
     def _start_stack_result_fetch(
@@ -4257,7 +4332,7 @@ class AppBackend(QObject):
         self._set_preview_status(self._preview_result_detail)
         self.previewResultChanged.emit()
         self._sync_mosaic_preview(device_id)
-        self._store_mosaic_pane_image(int((self.mosaicPreview or {}).get("current_index") or 0), shown)
+        self._store_mosaic_pane_image(self._mosaic_result_pane_for(device_id), shown)
         self.add_log("info", "Showing the completed stack in live preview", device_id)
         return True
 
@@ -4317,7 +4392,7 @@ class AppBackend(QObject):
                         remaining = int(live.get("current_index") or 0) < int(live.get("total") or 0)
                     except (TypeError, ValueError):
                         remaining = False
-                    self._snapshot_mosaic_pane(int(live.get("current_index") or 0))
+                    self._snapshot_mosaic_pane(self._mosaic_result_pane_for(device_id))
                 if remaining:
                     if self._preview_result:
                         self._clear_preview_result()
@@ -4495,7 +4570,7 @@ class AppBackend(QObject):
             return
         self.live_images.update(camera, image)
         if camera == "tele" and self._preview_result:
-            self._store_mosaic_pane_image(int((self.mosaicPreview or {}).get("current_index") or 0), image)
+            self._store_mosaic_pane_image(self._mosaic_result_pane_for(), image)
         if preview_window_is_live(self._preview_window):
             self.live_images.notify(camera)
 
@@ -5842,10 +5917,12 @@ class AppBackend(QObject):
         add("burst_interval", settings.burst_interval, telemetry.get("burst_interval"))
         add("timelapse_interval", settings.timelapse_interval, telemetry.get("timelapse_interval"))
         add("timelapse_duration", settings.timelapse_duration, telemetry.get("timelapse_duration"))
-        if settings.auto_calibration in {"true", "false"}:
+        if control_restore_should_set_auto_calibration(
+            settings.auto_calibration,
+            telemetry.get("auto_calibration"),
+        ):
             have = telemetry.get("auto_calibration")
-            if have != (settings.auto_calibration == "true"):
-                add("auto_calibration", settings.auto_calibration, "true" if have is True else ("false" if have is False else ""))
+            add("auto_calibration", settings.auto_calibration, "true" if have is True else "false")
         preset = wb_preset_name(settings.wide_wb_scene if wide else settings.wb_scene)
         have_preset = wb_preset_name(telemetry.get(f"{prefix}wb_scene") if wide else telemetry.get("wb_scene"))
         if preset and preset != have_preset:
@@ -5869,53 +5946,69 @@ class AppBackend(QObject):
             return
         if device_id in self._control_restoring:
             return
-        telemetry = dict(self._device_telemetry.get(device_id) or {})
-        wanted_mode = device.control_settings.shooting_mode
-        current_mode = _shooting_mode_int(telemetry.get("shooting_mode"))
-        steps = self._control_restore_steps(device, telemetry)
-        need_mode = control_restore_should_apply_mode(
-            wanted_mode,
-            current_mode,
-            preview_active=self._preview_active or self._preview_playing,
-            tracking=telemetry.get("tracking_state") == "running",
-        )
-        if not need_mode and not steps:
-            return
         self._control_restoring.add(device_id)
 
         def finish() -> None:
             self._control_restoring.discard(device_id)
             self._schedule_camera_param_refresh(device_id, 200)
 
-        def apply_params() -> None:
-            queue = list(steps)
+        def apply_from_telemetry() -> None:
+            current = self._device_by_id(device_id)
+            if current is None or not worker.connected:
+                finish()
+                return
+            telemetry = dict(self._device_telemetry.get(device_id) or {})
+            wanted_mode = current.control_settings.shooting_mode
+            current_mode = _shooting_mode_int(telemetry.get("shooting_mode"))
+            steps = self._control_restore_steps(current, telemetry)
+            need_mode = control_restore_should_apply_mode(
+                wanted_mode,
+                current_mode,
+                preview_active=self._preview_active or self._preview_playing,
+                tracking=telemetry.get("tracking_state") == "running",
+            )
+            if not need_mode and not steps:
+                finish()
+                return
 
-            def next_param(ok: bool = True, result: Any = None) -> None:
-                if self._shut_down or device_id not in self._workers:
-                    finish()
-                    return
-                if not queue:
-                    finish()
-                    return
-                name, value = queue.pop(0)
-                self._send_camera_param(device_id, name, value, notify=False, callback=next_param)
+            def apply_params() -> None:
+                queue = list(steps)
 
-            next_param()
+                def next_param(ok: bool = True, result: Any = None) -> None:
+                    if self._shut_down or device_id not in self._workers:
+                        finish()
+                        return
+                    if not queue:
+                        finish()
+                        return
+                    name, value = queue.pop(0)
+                    self._send_camera_param(device_id, name, value, notify=False, callback=next_param)
 
-        if need_mode:
-            operation = "photo_mode" if wanted_mode == 1 else "astro_mode"
+                next_param()
 
-            def after_mode(ok: bool, result: Any) -> None:
-                if ok:
-                    self._on_telemetry(
-                        device_id,
-                        {"shooting_mode": wanted_mode, "shooting_tech": 1 if wanted_mode == 1 else 0},
-                    )
-                apply_params()
+            if need_mode:
+                operation = "photo_mode" if wanted_mode == 1 else "astro_mode"
 
-            worker.send(operation, callback=after_mode)
-            return
-        apply_params()
+                def after_mode(ok: bool, result: Any) -> None:
+                    if ok:
+                        self._on_telemetry(
+                            device_id,
+                            {"shooting_mode": wanted_mode, "shooting_tech": 1 if wanted_mode == 1 else 0},
+                        )
+                    apply_params()
+
+                worker.send(operation, callback=after_mode)
+                return
+            apply_params()
+
+        def after_read(ok: bool, result: Any) -> None:
+            if ok:
+                changes = camera_params_to_telemetry(result, self._camera_model_id(device_id))
+                if changes:
+                    self._on_telemetry(device_id, changes)
+            apply_from_telemetry()
+
+        worker.send("read_camera", {"args": [self._camera_mode_id(device_id)]}, after_read)
 
     @Slot(str, str)
     def setLiveCamera(self, device_id: str, camera: str) -> None:

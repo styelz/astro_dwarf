@@ -434,6 +434,7 @@ class MosaicLiveItem(QQuickPaintedItem):
     """Contact-sheet live preview while a mosaic is capturing."""
 
     playingChanged = Signal()
+    liveActiveChanged = Signal()
     cameraChanged = Signal()
     accentChanged = Signal()
     southUpChanged = Signal()
@@ -446,6 +447,7 @@ class MosaicLiveItem(QQuickPaintedItem):
         self.setOpaquePainting(False)
         self.setAntialiasing(False)
         self._playing = False
+        self._live_active = False
         self._camera = "tele"
         self._accent = QColor(126, 224, 208)
         self._south_up = False
@@ -469,6 +471,19 @@ class MosaicLiveItem(QQuickPaintedItem):
         self.update()
 
     playing = Property(bool, getPlaying, setPlaying, notify=playingChanged)
+
+    def getLiveActive(self) -> bool:
+        return self._live_active
+
+    def setLiveActive(self, value: bool) -> None:
+        active = bool(value)
+        if active == self._live_active:
+            return
+        self._live_active = active
+        self.liveActiveChanged.emit()
+        self.update()
+
+    liveActive = Property(bool, getLiveActive, setLiveActive, notify=liveActiveChanged)
 
     def getCamera(self) -> str:
         return self._camera
@@ -529,7 +544,7 @@ class MosaicLiveItem(QQuickPaintedItem):
 
     @Slot(str)
     def _on_live_frame(self, key: str) -> None:
-        if not self._playing:
+        if not self._playing or not self._live_active:
             return
         if key not in ("*", self._camera):
             return
@@ -590,7 +605,7 @@ class MosaicLiveItem(QQuickPaintedItem):
         if not active or columns < 1 or rows < 1:
             return
         live = live_frames()
-        live_image = live.peek(self._camera) if live is not None else QImage()
+        live_image = live.peek(self._camera) if live is not None and self._live_active else QImage()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         font = QFont()
         font.setPixelSize(11)
@@ -603,7 +618,7 @@ class MosaicLiveItem(QQuickPaintedItem):
                 continue
             painter.fillRect(cell, QColor(0, 0, 0, 160))
             image = images.get(index) or QImage()
-            if index == current and not live_image.isNull():
+            if index == current and self._live_active and not live_image.isNull():
                 image = live_image
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
             else:
@@ -611,7 +626,7 @@ class MosaicLiveItem(QQuickPaintedItem):
             fitted = self._fit_in(image, cell)
             if fitted is not None:
                 painter.drawImage(fitted, image)
-            elif index != current:
+            else:
                 painter.setPen(self._accent)
                 painter.drawText(cell.toRect(), Qt.AlignmentFlag.AlignCenter, str(index))
             border = QPen(self._accent)

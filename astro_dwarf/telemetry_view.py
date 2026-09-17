@@ -149,6 +149,13 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
         stack_count = _as_int(values.get("count", values.get("stackCount", values.get("stack_count"))))
         if stack_count is not None:
             changes[f"{prefix}stack_count"] = stack_count
+        ir = values.get("filterType", values.get("filter_type", values.get("filter")))
+        if prefix == "" and ir not in (None, ""):
+            from .domain import normalize_ir_filter
+
+            name = normalize_ir_filter(ir)
+            if name:
+                changes["ir_filter"] = name
         burst = values.get("burst") if isinstance(values.get("burst"), dict) else {}
         burst_count = _as_int(burst.get("count", values.get("burst_count")))
         if burst_count is not None:
@@ -187,6 +194,14 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
         )
         if stack_format is not None:
             changes["stack_format"] = stack_format
+    techs = result.get("tech_settings") or {}
+    tech0 = techs.get(0) if isinstance(techs, dict) else None
+    if tech0 is None and isinstance(techs, dict):
+        tech0 = techs.get("0")
+    if isinstance(tech0, dict):
+        count = _as_int(tech0.get("stackCount", tech0.get("stack_count")))
+        if count is not None:
+            changes.setdefault("stack_count", count)
     return changes
 
 

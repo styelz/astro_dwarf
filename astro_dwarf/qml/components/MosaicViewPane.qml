@@ -9,10 +9,12 @@ Item {
     property bool playing: false
     property string camera: "tele"
     property color accent: Theme.accent
+    readonly property bool liveActive: String((backend.mosaicPreview && backend.mosaicPreview.phase) || "") === "stacking"
 
     MosaicLiveItem {
         anchors.fill: pane
         playing: pane.playing
+        liveActive: pane.liveActive
         camera: pane.camera
         accent: pane.accent
         southUp: backend.mosaicSouthUp

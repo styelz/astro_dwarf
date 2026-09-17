@@ -98,8 +98,36 @@ def emit(payload: dict[str, Any]) -> None:
         sys.__stdout__.flush()
 
 
+_SESSION_LOG: Path | None = None
+_session_log_lock = threading.Lock()
+
+
+def _session_log_path() -> Path:
+    global _SESSION_LOG
+    if _SESSION_LOG is None:
+        raw = str(os.environ.get("ASTRO_DWARF_LOG") or "").strip()
+        _SESSION_LOG = Path(raw) if raw else Path.cwd() / "app-session.log"
+    return _SESSION_LOG
+
+
+def _write_session_log(level: str, message: str) -> None:
+    text = str(message or "").strip()
+    if not text:
+        return
+    try:
+        line = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {str(level or 'info').upper():<7} {text}\n"
+        with _session_log_lock:
+            path = _session_log_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(line)
+    except OSError:
+        pass
+
+
 def log(message: str, level: str = "info") -> None:
     emit({"event": "log", "level": level, "message": message})
+    _write_session_log(level, message)
 
 
 def report_status(kind: str, step: str) -> None:
@@ -393,8 +421,10 @@ _CAPTURE_TECHNIQUES = {
 
 
 def configure(device: dict[str, Any]) -> bool:
-    global _api, _device
+    global _api, _device, _SESSION_LOG
     _device = device
+    raw = str(os.environ.get("ASTRO_DWARF_LOG") or "").strip()
+    _SESSION_LOG = Path(raw) if raw else Path.cwd() / "app-session.log"
     folder = Path(tempfile.mkdtemp(prefix=f"astro-dwarf-{device['id'][:8]}-"))
     actual_id = {"Dwarf II": 2, "Dwarf 3": 3, "Dwarf Mini": 5}.get(device.get("model"), 3)
     (folder / "config.py").write_text(
@@ -874,6 +904,7 @@ def sdk_call(operation: str, *args: Any) -> Any:
         "set_gain",
         "set_photo_exposure",
         "set_photo_gain",
+        "set_auto_calibration",
     } and camera_param_unchanged(
         operation,
         args,
@@ -1851,6 +1882,9 @@ def _await_operation(name: str, operation: str, since: float) -> None:
     state = snapshot.get(state_key) if state_key else None
     seen_running = _goto_started(state) if goto else state in _BUSY_ASTRO
     tracking_at_start = snapshot.get("tracking_state") == "running"
+    code = _tap.response_after(reply_cmd, since)
+    if code is not None and code != 0 and code not in _NON_FATAL_REPLIES.get(reply_cmd, set()):
+        raise RuntimeError(f"{name} failed: {_error_name(code)}")
     log(f"{name} started; waiting for the telescope to finish…")
     logged_tracking_wait = False
     while True:
@@ -1943,6 +1977,9 @@ _CAPTURE_DARK_WARNINGS = {
 }
 _CAPTURE_BUSY_TIMEOUT_S = 45.0
 _CAPTURE_BUSY_RETRY_S = 5.0
+# After a pane stack, 11002 can stay FUNCTION_BUSY until GoLive releases
+# the capture function. Give that recovery more room than a capture start.
+_GOTO_BUSY_TIMEOUT_S = 90.0
 _CONTINUE_SHOOTING_TIMEOUT_S = 30.0
 _CAPTURE_CONTINUE_AFTER_S = 10.0
 _CAPTURE_START_TIMEOUT_S = 45.0
@@ -2463,15 +2500,34 @@ def _stop_tracking_for_goto(label: str = "Stopping leftover tracking before GOTO
     except Exception as exc:
         log(f"Stop tracking skipped: {exc}", "debug")
         return
-    deadline = time.monotonic() + 20.0
+    deadline = time.monotonic() + 40.0
     while time.monotonic() < deadline:
         if _stop.is_set():
             raise InterruptedError("Session stopped")
         snapshot = _tap.snapshot() if _tap is not None else {}
         if snapshot.get("tracking_state") != "running" and not _goto_busy(snapshot):
+            # Telemetry goes idle before the astro engine will accept 11002.
+            # A pane stack plus stop_goto was still FUNCTION_BUSY 9s later.
+            _wait_seconds(_CAPTURE_BUSY_RETRY_S, "Waiting after stop GOTO")
             return
         time.sleep(0.25)
     log("Previous GOTO/tracking is still winding down; sending the next slew anyway", "warning")
+
+
+def _release_stack_for_goto() -> None:
+    """Close a finished stack so the next pane GOTO can own the astro engine.
+
+    ASTRO CAPTURE ENDING leaves the capture function latched. stop_goto then
+    11002 stay FUNCTION_BUSY until GoLive releases it. GoLive also closes
+    the tele camera, so reopen before the slew.
+    """
+    log("Closing the finished stack before the next pane")
+    try:
+        if sdk_call("go_live") is False:
+            log("GoLive after stack did not confirm; opening the tele camera anyway", "warning")
+    except Exception as exc:
+        log(f"GoLive after stack skipped: {exc}", "warning")
+    _reopen_astro_camera()
 
 
 def _clear_tracking(progress: Any = None) -> None:
@@ -2492,6 +2548,15 @@ def _engine_busy_error(exc: BaseException) -> bool:
 def _camera_closed_error(exc: BaseException) -> bool:
     text = str(exc)
     return "TELE_CLOSED" in text or str(CODE_CAMERA_TELE_CLOSED) in text
+
+
+def _goto_needs_camera_reopen(exc: BaseException) -> bool:
+    """True when the next pane slew failed because tele is still closed.
+
+    A finished stack often accepts 11002 with code 0, then never leaves
+    idle. That surfaces as 'did not start', not TELE_CLOSED.
+    """
+    return _camera_closed_error(exc) or "did not start" in str(exc).lower()
 
 
 def _reopen_astro_camera() -> None:
@@ -2780,7 +2845,7 @@ def _stop_targets(*, include_motors: bool = True) -> list[str]:
     return operations
 
 
-def _sdk_call_bounded(operation: str, seconds: float) -> Any:
+def _sdk_call_bounded(operation: str, seconds: float, *args: Any) -> Any:
     """Run one SDK command but give up if the device never answers.
 
     Fire-and-forget V3 stops never set ``_in_flight``, so the old timer
@@ -2796,7 +2861,7 @@ def _sdk_call_bounded(operation: str, seconds: float) -> Any:
     _call_timeout_s = seconds
     timer.start()
     try:
-        return sdk_call(operation)
+        return sdk_call(operation, *args)
     finally:
         timer.cancel()
         _in_flight = previous_flight
@@ -2965,8 +3030,14 @@ def camera_param_unchanged(
         return wanted is not None and wanted == have
     if operation == "set_ir":
         wanted = _ir_name(values[0] if values else "")
-        have = _ir_name(device.get("ir_filter"))
+        have = _ir_name(device.get("ir_filter") or snapshot.get("ir_filter"))
         return bool(wanted) and wanted == have
+    if operation == "set_auto_calibration":
+        wanted = values[0] if values else None
+        if isinstance(wanted, str):
+            wanted = wanted.strip().lower() in {"1", "true", "yes", "on"}
+        have = snapshot.get("auto_calibration")
+        return isinstance(wanted, bool) and have is wanted
     camera = _param_camera(values)
     wide = camera == "wide"
     if operation in {"set_exposure", "set_photo_exposure"}:
@@ -3665,16 +3736,32 @@ def _start_manual_stack(camera: str = "") -> bool:
     return True
 
 
-def _goto_target(name: str, ra: float, dec: float, target_name: str, *, v3_model: bool) -> None:
+def _goto_target(
+    name: str,
+    ra: float,
+    dec: float,
+    target_name: str,
+    *,
+    v3_model: bool,
+    release_stack: bool = False,
+) -> None:
     """GOTO one mosaic pane. Reopen the tele camera and retry if needed.
 
     A finished stack leaves DSO mode on with the tele camera closed, so the
     next 11002 often comes back TELE_CLOSED. Leftover stop_goto can also
     keep goto_state=stopping; that must not be treated as this slew.
+    After a pane stack, stop_goto plus 11002 stays FUNCTION_BUSY until
+    GoLive releases the capture function. Close the stack first, then slew.
     """
-    last_error: BaseException | None = None
-    for attempt in range(3):
+    released = False
+    if release_stack:
+        _release_stack_for_goto()
+        released = True
+    else:
         _stop_tracking_for_goto(f"Stopping tracking before {name}")
+    deadline = time.monotonic() + _GOTO_BUSY_TIMEOUT_S
+    camera_retried = False
+    while True:
         started = time.monotonic()
         try:
             if sdk_call("goto", ra, dec, target_name, False) is False:
@@ -3683,32 +3770,37 @@ def _goto_target(name: str, ra: float, dec: float, target_name: str, *, v3_model
                 _await_operation(name, "goto", started)
             return
         except RuntimeError as exc:
-            last_error = exc
             if _stop.is_set():
                 raise
-            if _camera_closed_error(exc):
-                log(f"{name}: tele camera was closed; opening it and retrying", "warning")
+            if _goto_needs_camera_reopen(exc) and not camera_retried:
+                camera_retried = True
+                log(f"{name}: tele camera was closed or the slew never started; opening it and retrying", "warning")
                 _reopen_astro_camera()
-                continue
-            if "did not start" in str(exc).lower():
-                log(f"{name}: slew did not start; waiting for leftover GOTO to finish", "warning")
-                deadline = time.monotonic() + 15.0
-                while time.monotonic() < deadline:
-                    if _stop.is_set():
-                        raise InterruptedError("Session stopped")
-                    snapshot = _tap.snapshot() if _tap is not None else {}
-                    if not _goto_busy(snapshot) and snapshot.get("tracking_state") != "running":
-                        break
-                    time.sleep(0.25)
+                if "did not start" in str(exc).lower():
+                    unwind = time.monotonic() + 15.0
+                    while time.monotonic() < unwind:
+                        if _stop.is_set():
+                            raise InterruptedError("Session stopped")
+                        snapshot = _tap.snapshot() if _tap is not None else {}
+                        if not _goto_busy(snapshot) and snapshot.get("tracking_state") != "running":
+                            break
+                        time.sleep(0.25)
                 continue
             if _engine_busy_error(exc):
-                log(f"{name}: astro engine still busy; retrying", "warning")
-                _wait_seconds(3, "Waiting for the astro engine")
+                if not released:
+                    released = True
+                    log(f"{name}: astro engine still busy; closing leftover capture and retrying", "warning")
+                    _release_stack_for_goto()
+                    continue
+                if time.monotonic() >= deadline:
+                    raise
+                log(
+                    f"{name}: astro engine still busy; retrying in {int(_CAPTURE_BUSY_RETRY_S)} s",
+                    "warning",
+                )
+                _wait_seconds(_CAPTURE_BUSY_RETRY_S, "Waiting for the astro engine")
                 continue
             raise
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError(f"{name} failed")
 
 
 def _stack_mosaic(
@@ -3733,6 +3825,7 @@ def _stack_mosaic(
     except (TypeError, ValueError):
         resume_from = 1
     join_first = bool(join_current)
+    stacked_previous = False
 
     def report(pane: int, step: str, wait_seconds: float = 0) -> None:
         emit({
@@ -3773,14 +3866,23 @@ def _stack_mosaic(
                         name=f"Waiting for pane {index}",
                     )
                     report(index, f"Pane {index}/{total} complete")
+                    stacked_previous = True
                     continue
                 log(f"Mosaic pane {index}/{total} already finished; continuing", "notice")
                 report(index, f"Pane {index}/{total} complete")
+                stacked_previous = True
                 continue
             report(index, f"GOTO pane {index}/{total}")
             log(f"Mosaic pane {index}/{total} → RA {ra:.4f}h Dec {dec:+.3f}° ({name})")
             _session_phase = "goto"
-            _goto_target(f"GOTO pane {index}", ra, dec, name, v3_model=v3_model)
+            _goto_target(
+                f"GOTO pane {index}",
+                ra,
+                dec,
+                name,
+                v3_model=v3_model,
+                release_stack=stacked_previous,
+            )
             _wait_for_capture_slot(lambda text, pane=index, **_k: report(pane, text))
             _reset_session_capture({
                 "camera": {"frame_count": _device.get("frame_count")},
@@ -3795,6 +3897,9 @@ def _stack_mosaic(
                 name=f"Waiting for pane {index}",
             )
             report(index, f"Pane {index}/{total} complete")
+            stacked_previous = True
+            if index < total:
+                _wait_seconds(3, "Settling after pane stack", lambda text, pane=index, **_k: report(pane, text))
         completed = True
         return True
     finally:
@@ -3953,6 +4058,10 @@ def dispatch(message: dict[str, Any]) -> Any:
         return result
     if command == "enter_camera":
         return _enter_astro_camera()
+    if command == "set_auto_calibration":
+        # Firmware often already has this flag. The V3 setter then never
+        # replies and the SDK sits on its 150 s wait, freezing connect.
+        return _sdk_call_bounded(command, 8.0, *list(message.get("args") or []))
     if command == "autofocus":
         # Astro AF mode 0. Mode 1 is infinity (the INFINITY pad).
         result = sdk_call("autofocus", False)
