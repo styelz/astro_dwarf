@@ -696,7 +696,7 @@ Item {
                                         cameraField.currentIndex = 0
                                 }
                             }
-                            FieldHint { text: "Selects the firmware profile, lens set, and telephoto sky-map FOV. Dwarf 3 and Dwarf II expose a fixed-focus wide camera alongside the telephoto." }
+                            FieldHint { text: "Selects the firmware profile, lens set, and sky-map FOV. Dwarf 3 and Dwarf II expose a fixed-focus wide camera alongside the telephoto." }
                             FieldLabel { text: "CAMERA"; visible: settingsPage.cameraWideAvailable }
                             HudCombo {
                                 id: cameraField
@@ -707,7 +707,7 @@ Item {
                             }
                             FieldHint {
                                 visible: settingsPage.cameraWideAvailable
-                                text: "Default lens for new sessions and live preview on this telescope. SKY and mosaic frames stay on the telephoto field. Focus controls act on Tele only; Wide has no focus motor."
+                                text: "Default lens for new sessions and live preview on this telescope. The SKY map FOV and mosaic panes follow this camera. Focus controls act on Tele only; Wide has no focus motor."
                             }
                         }
                         SettingGroup {

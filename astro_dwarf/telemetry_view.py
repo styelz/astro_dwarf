@@ -8,6 +8,8 @@ from typing import Any
 
 SHOOTING_MODES = {1: "PHOTO", 2: "DSO", 8: "SUN", 9: "MOON", 10: "PLANET"}
 STALE_AFTER_S = 60.0
+_PHOTO_SHOOTING_MODE = 1
+_ASTRO_SHOOTING_MODE = 2
 BATTERY_WARN = 20
 BATTERY_CRITICAL = 10
 STORAGE_LOW_GB = 2
@@ -113,12 +115,43 @@ def _exposure_text_from_params(exposure: dict[str, Any], model_id: str) -> str |
     return str(value)
 
 
+def apply_mode_exposure_fields(state: dict[str, Any] | None) -> dict[str, Any]:
+    """Copy photo vs DSO exposure/gain into the HUD keys for the live mode.
+
+    Firmware keeps independent PHOTO and ASTRO tables. Mapping both onto
+    ``exposure_text`` made a 1/30 photo default overwrite a saved 15s DSO
+    exposure after a camera switch or app restart.
+    """
+    snap = state or {}
+    try:
+        mode = int(snap["shooting_mode"]) if snap.get("shooting_mode") is not None else 0
+    except (TypeError, ValueError):
+        mode = 0
+    if mode == _PHOTO_SHOOTING_MODE:
+        slot = "photo"
+    elif mode == _ASTRO_SHOOTING_MODE:
+        slot = "astro"
+    else:
+        return {}
+    out: dict[str, Any] = {}
+    for prefix in ("", "wide_"):
+        exp = snap.get(f"{slot}_{prefix}exposure_text")
+        if exp not in (None, "", "—"):
+            out[f"{prefix}exposure_text"] = exp
+        gain = snap.get(f"{slot}_{prefix}gain")
+        if gain not in (None, "", "—"):
+            out[f"{prefix}gain"] = gain
+    return out
+
+
 def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, Any]:
     """Map HTTP camera-param JSON onto the telemetry keys QML already reads."""
     if not isinstance(result, dict):
         return {}
     cameras = result.get("cameras") or {}
     changes: dict[str, Any] = {}
+    mode_id = _as_int(result.get("mode_id"))
+    slot = "photo" if mode_id == _PHOTO_SHOOTING_MODE else "astro"
 
     def collect(values: Any, prefix: str = "") -> None:
         if not isinstance(values, dict):
@@ -127,17 +160,22 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
         if isinstance(exposure, dict):
             text = _exposure_text_from_params(exposure, model_id)
             if text:
-                changes[f"{prefix}exposure_text"] = text
+                changes[f"{slot}_{prefix}exposure_text"] = text
+                if slot == "astro":
+                    changes[f"{prefix}exposure_text"] = text
         elif exposure not in (None, ""):
-            changes[f"{prefix}exposure_text"] = str(exposure)
+            text = str(exposure)
+            changes[f"{slot}_{prefix}exposure_text"] = text
+            if slot == "astro":
+                changes[f"{prefix}exposure_text"] = text
         gain = values.get("gain")
         if isinstance(gain, dict):
             gain_value = _as_int(gain.get("value"))
-            if gain_value is not None:
-                changes[f"{prefix}gain"] = gain_value
         else:
             gain_value = _as_int(gain)
-            if gain_value is not None:
+        if gain_value is not None:
+            changes[f"{slot}_{prefix}gain"] = gain_value
+            if slot == "astro":
                 changes[f"{prefix}gain"] = gain_value
         white_balance = values.get("wb") if isinstance(values.get("wb"), dict) else {}
         wb_value = _as_int(white_balance.get("value"))

@@ -8,8 +8,7 @@ Sky work (calibrate, GOTO, mosaic, track) needs stars out the window, not
 the table or roof. Snapshot and read it. Polar pos homes to the polar pose
 (indoors: the roof) and is not a recovery for a failed mosaic or GOTO.
 
-When the test work is finished, power down the device with
-    ``action power_down`` then ``confirm accept``.
+Do not power down the telescope unless the user explicitly asks.
 """
 
 from __future__ import annotations

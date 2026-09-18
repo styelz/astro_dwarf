@@ -5,6 +5,17 @@ import ".."
 Item {
     id: dialogFrame
     property color tone: Theme.accent
+    MouseArea {
+        anchors.fill: parent
+        z: -1
+        acceptedButtons: Qt.LeftButton
+        onPressed: (mouse) => {
+            const focused = dialogFrame.Window.window ? dialogFrame.Window.window.activeFocusItem : null
+            if (focused)
+                focused.focus = false
+            mouse.accepted = false
+        }
+    }
     HudFrame {
         anchors.fill: parent
         topLeft: Theme.notch

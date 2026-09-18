@@ -264,7 +264,7 @@ QtObject {
     function shouldEnhanceMedia(item) {
         if (!item)
             return false
-        if (Util.isVideoMedia(item))
+        if (Util.isFolderMedia(item) || Util.isVideoMedia(item) || Util.isFitsMedia(item) || Util.isTiffMedia(item))
             return false
         if (item.source === "stills")
             return false
@@ -277,16 +277,83 @@ QtObject {
     function mediaKind(item) {
         return String((item && item.kind) || "").toLowerCase()
     }
+    function isFolderMedia(item) {
+        return !!(item && item.is_dir)
+    }
     function isVideoMedia(item) {
-        if (!item)
+        if (!item || Util.isFolderMedia(item))
             return false
         if (Util.mediaKind(item) === "video")
             return true
         const name = String(item.file_name || item.file_path || item.local_path || item.id || "")
-        return /\.(mp4|mov|m4v|mkv|avi)$/i.test(name)
+        return Util.isVideoName(name)
+    }
+    function isVideoName(text) {
+        return /\.(mp4|mov|m4v|mkv|avi)(?:$|[?#])/i.test(String(text || ""))
+    }
+    function isPreviewImageName(text) {
+        return /\.(jpg|jpeg|png)(?:$|[?#])/i.test(String(text || ""))
+    }
+    function isFitsName(text) {
+        return /\.(fits|fit|fts)(?:$|[?#])/i.test(String(text || ""))
+    }
+    function isTiffName(text) {
+        return /\.(tif|tiff)(?:$|[?#])/i.test(String(text || ""))
+    }
+    function isHeavyPreviewName(text) {
+        return Util.isFitsName(text) || Util.isTiffName(text)
+    }
+    function isFitsMedia(item) {
+        if (!item || Util.isFolderMedia(item))
+            return false
+        return Util.isFitsName(item.file_name || item.file_path || item.local_path || item.image_url || item.id || "")
+    }
+    function isTiffMedia(item) {
+        if (!item || Util.isFolderMedia(item))
+            return false
+        return Util.isTiffName(item.file_name || item.file_path || item.local_path || item.image_url || item.id || "")
+    }
+    function albumFolderLabel(name) {
+        const key = String(name || "").trim().toLowerCase().replace(/_/g, " ")
+        if (key === "normal photos" || key === "photos")
+            return "PHOTOS"
+        if (key === "astronomy" || key === "astro")
+            return "ASTRO"
+        if (key === "video" || key === "videos")
+            return "VIDEO"
+        if (key === "burst" || key === "bursts")
+            return "BURST"
+        if (key === "panorama")
+            return "PANO"
+        if (key === "panoramas")
+            return "PANOS"
+        return String(name || "").toUpperCase()
+    }
+    function albumFolderActive(folder, path) {
+        const current = String(folder || "").replace(/\\/g, "/")
+        const target = String(path || "").replace(/\\/g, "/")
+        if (!current || !target)
+            return false
+        return current === target || current.startsWith(target + "/")
+    }
+    function mediaClock(ms) {
+        const total = Math.max(0, Math.floor(Number(ms || 0) / 1000))
+        const hours = Math.floor(total / 3600)
+        const minutes = Math.floor((total % 3600) / 60)
+        const secs = total % 60
+        if (hours > 0)
+            return hours + ":" + String(minutes).padStart(2, "0") + ":" + String(secs).padStart(2, "0")
+        return minutes + ":" + String(secs).padStart(2, "0")
     }
     function mediaKindLabel(item) {
+        if (Util.isFitsMedia(item))
+            return "FITS"
+        if (Util.isTiffMedia(item))
+            return "TIFF"
+        if (Util.isFolderMedia(item) && Util.mediaKind(item) === "folder")
+            return "FOLDER"
         switch (Util.mediaKind(item)) {
+        case "folder": return "FOLDER"
         case "video": return "VIDEO"
         case "burst": return "BURST"
         case "panorama": return "PANO"
@@ -297,7 +364,10 @@ QtObject {
         }
     }
     function mediaKindGlyph(item) {
+        if (Util.isFolderMedia(item))
+            return "▤"
         switch (Util.mediaKind(item)) {
+        case "folder": return "▤"
         case "video": return "▶"
         case "burst": return "◫"
         case "panorama": return "▣"

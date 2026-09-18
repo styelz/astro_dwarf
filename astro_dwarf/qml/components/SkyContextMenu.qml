@@ -27,6 +27,12 @@ HudMenu {
         onTriggered: skyMenu.overlayToggled()
     }
     HudMenuItem {
+        text: "Ctrl + mouse wheel adjusts overlay opacity"
+        info: true
+        enabled: false
+        accessibleDescription: "Hold Ctrl and scroll the mouse wheel to change live stream overlay opacity"
+    }
+    HudMenuItem {
         text: backend.previewActive ? "Stop live view" : "Start live view"
         glyph: backend.previewActive ? "\uE71A" : "\uE768"
         enabled: backend.previewActive || !!(backend.selectedDevice && backend.selectedDevice.connected)

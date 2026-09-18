@@ -50,17 +50,33 @@ from .domain import (
     WifiMode,
     Workflow,
     LOCAL_ALBUM_SUFFIXES,
+    album_display_name,
+    album_entry_preview_path,
+    album_folder_parent,
+    album_folder_preview_fallback_path,
+    album_folder_preview_path,
+    album_folder_root,
+    album_http_path,
     album_http_url,
     album_is_astro_media,
+    album_is_stack_display_image,
+    album_item_preview_path,
+    album_is_media_file,
+    album_is_protected_folder,
     album_is_video_name,
+    album_session_dir,
     album_local_file_in_dir,
     album_media_kind,
     album_path_matches_model,
     apply_camera_fov_defaults,
     camera_fov,
+    camera_fov_plausible,
     camera_settings_from_capture,
+    sky_map_camera,
     capture_defaults_from_dict,
     clamp_cutoff_hour,
+    control_exposure_field,
+    control_gain_field,
     control_settings_from_telemetry,
     control_settings_patch,
     control_settings_to_telemetry,
@@ -148,6 +164,17 @@ from .image_enhance import (
     is_enhance_cache_valid,
     set_enhance_levels,
 )
+from .media_preview import (
+    DEFAULT_BLACK_PCT,
+    DEFAULT_MID,
+    DEFAULT_WHITE_PCT,
+    CacheStretchJob,
+    MediaPreviewSignals,
+    is_preview_cache_valid,
+    needs_stretch,
+    stretch_available,
+    stretch_cache_key,
+)
 from .stream_preview import (
     LiveFrames,
     MosaicFrames,
@@ -165,6 +192,7 @@ from .telemetry_view import (
     TRACKING_NEEDS_CALIBRATION_TOAST,
     camera_params_to_telemetry,
     derive_activity,
+    apply_mode_exposure_fields,
     exposure_seconds_from_text,
     format_telemetry,
     tracking_needs_calibration,
@@ -301,6 +329,9 @@ class TelescopeProcess(QObject):
 
     def disconnect_device(self, callback: Callable[[bool, Any], None] | None = None) -> None:
         self._reject_link = True
+        if self.connected:
+            self.connected = False
+            self.availabilityChanged.emit()
 
         def done(ok: bool, result: Any) -> None:
             self.connected = False
@@ -480,9 +511,24 @@ _MEDIA_LOCKED_STATUS = (
     "The telescope album isn't available while it's capturing. "
     "Wait until imaging finishes, or switch to Local."
 )
+_MEDIA_FOLDER_ORDER = {
+    "astronomy": 0,
+    "astro": 0,
+    "burst": 1,
+    "bursts": 1,
+    "normal photos": 2,
+    "photos": 2,
+    "panorama": 3,
+    "panoramas": 4,
+    "video": 5,
+    "videos": 5,
+}
 
 
 _STACK_RESULT_RETRY_MS = 2000
+# Dual Lenses 14009 is fire-and-forget. Keep the wide view locked only until
+# PictureMatching lands on the tap, or this short settle after the send.
+_CENTER_TAP_SETTLE_MS = 1500
 _STACK_RESULT_RETRY_S = 30.0
 _STACK_RESULT_LOADING = "Loading completed stack…"
 _STACK_RESULT_READY = (
@@ -564,6 +610,7 @@ _ACTION_LABELS = {
     "power_down": "Power down requested",
     "open_camera": "Tele camera opened",
     "open_wide_camera": "Wide camera opened",
+    "set_preview_quality": "Tele preview encoder refreshed",
 }
 _ACTION_DETAILS = {
     "calibrate": "Device will plate-solve and report progress",
@@ -633,6 +680,14 @@ def preview_should_skip_go_live(
     if snap.get("capture_active") or snap.get("capture_state") == "running":
         return False
     return preview_should_preserve_shooting_mode(telemetry, persisted_mode)
+
+
+def preview_can_attach_rtsp(telemetry: dict[str, Any] | None) -> bool:
+    """True when the tele encoder is already advertising RTSP."""
+    snap = telemetry or {}
+    if snap.get("capture_active") or snap.get("capture_state") == "running":
+        return False
+    return str(snap.get("stream_type") or "").strip().upper() == "RTSP"
 
 
 def mosaic_result_pane(current_index: int, phase: str) -> int:
@@ -1047,6 +1102,7 @@ class AppBackend(QObject):
     previewHoldChanged = Signal()
     previewStackingChanged = Signal()
     previewResultChanged = Signal()
+    centerTapBusyChanged = Signal()
     mosaicPreviewChanged = Signal()
     skyMosaicGridChanged = Signal()
     enhanceImagesChanged = Signal()
@@ -1054,6 +1110,7 @@ class AppBackend(QObject):
     enhanceDenoiseChanged = Signal()
     enhanceSkyCrushChanged = Signal()
     enhanceCacheChanged = Signal()
+    mediaPreviewChanged = Signal()
     mediaChanged = Signal()
     mediaItemsChanged = Signal()
     appSettingsChanged = Signal()
@@ -1113,6 +1170,7 @@ class AppBackend(QObject):
         self._device_indicators: dict[str, bool] = {}
         self._control_dirty: set[str] = set()
         self._control_restoring: set[str] = set()
+        self._control_restore_pending: set[str] = set()
         self._control_persist_timer = QTimer(self)
         self._control_persist_timer.setSingleShot(True)
         self._control_persist_timer.setInterval(400)
@@ -1120,7 +1178,10 @@ class AppBackend(QObject):
         self._album_items: list[dict[str, Any]] = []
         self._album_path = ""
         self._album_busy = ""
-        self._media_source = "astro"
+        self._media_source = "folders"
+        self._media_folder = ""
+        self._media_folder_parent = ""
+        self._media_root_folders: list[dict[str, Any]] = []
         self._media_items: list[dict[str, Any]] = []
         self._media_selected_id = ""
         self._media_device_id = ""
@@ -1162,7 +1223,7 @@ class AppBackend(QObject):
         self._joystick_inflight: set[str] = set()
         self._joystick_pending: dict[str, tuple[float, float]] = {}
         self._center_tap_inflight: set[str] = set()
-        self._center_tap_pending: dict[str, tuple[float, float, str]] = {}
+        self._center_tap_target: dict[str, tuple[float, float]] = {}
         self._center_tap_token: dict[str, int] = {}
         self._ui_busy = ""
         self._sky_target: Target | None = None
@@ -1217,7 +1278,7 @@ class AppBackend(QObject):
         self._sky_mosaic_rows = 1
         self._sky_mosaic_overlap = 0.2
         self._sky_preview_panes: list[dict[str, Any]] = []
-        self._sky_preview_key: tuple[int, int, float, float] | None = None
+        self._sky_preview_key: tuple[int, int, float, float, float, float] | None = None
         self._live_mosaic: dict[str, dict[str, Any]] = {}
         self._load_sky_mosaic_grid()
         self._restore_live_mosaics()
@@ -1256,6 +1317,13 @@ class AppBackend(QObject):
         self._enhance_failed: set[str] = set()
         self._cache_enhance_signals = CacheEnhanceSignals(self)
         self._cache_enhance_signals.finished.connect(self._on_enhance_cache_ready)
+        self._media_preview_pool = QThreadPool(self)
+        self._media_preview_pool.setMaxThreadCount(1)
+        self._media_preview_rev = 0
+        self._media_preview_inflight: set[str] = set()
+        self._media_preview_failed: set[str] = set()
+        self._media_preview_signals = MediaPreviewSignals(self)
+        self._media_preview_signals.finished.connect(self._on_media_preview_ready)
         self._shut_down = False
         self._preview_thread = QThread(self)
         self._tele_player = StreamPlayer()
@@ -1338,6 +1406,7 @@ class AppBackend(QObject):
             self._pending_actions.pop(device_id, None)
             self._pending_details.pop(device_id, None)
             self._device_activity.pop(device_id, None)
+            self._clear_center_tap(device_id)
             self._device_telemetry.pop(device_id, None)
             self._telemetry_updated.pop(device_id, None)
             self._hold_session_capture.discard(device_id)
@@ -1464,6 +1533,7 @@ class AppBackend(QObject):
             raw_view = dict(control_settings_to_telemetry(device.control_settings))
             if connected:
                 raw_view.update(self._device_telemetry.get(device.id, {}))
+            raw_view.update(apply_mode_exposure_fields(raw_view))
             apply_camera_fov_defaults(raw_view, device.model)
             telemetry = format_telemetry(
                 raw_view,
@@ -1528,6 +1598,13 @@ class AppBackend(QObject):
         """Merge a telemetry delta from the worker and raise transition alerts."""
         if not isinstance(data, dict) or not data:
             return
+        worker = self._workers.get(device_id)
+        if (
+            device_id in self._disconnecting_ids
+            or device_id in self._cancel_connect_ids
+            or (worker is not None and worker._reject_link)
+        ):
+            return
         data = dict(data)
         if device_id in self._hold_session_capture:
             # Firmware often never sends a 0/0 reset — the first packet is
@@ -1557,10 +1634,14 @@ class AppBackend(QObject):
         previous = dict(self._device_telemetry.get(device_id, {}))
         current = dict(previous)
         current.update(data)
+        aliases = apply_mode_exposure_fields(current)
+        if aliases:
+            current.update(aliases)
+            data.update(aliases)
         self._device_telemetry[device_id] = current
         self._telemetry_updated[device_id] = time.time()
-        if "tele_match_width" in data:
-            self._finish_center_tap(device_id)
+        if device_id in self._center_tap_inflight:
+            self._consider_center_tap_progress(device_id, data)
         if "lights_on" in data:
             self._device_lights[device_id] = bool(data["lights_on"])
         if "indicator_on" in data:
@@ -2427,13 +2508,21 @@ class AppBackend(QObject):
         return payload
 
     def _sky_preview_cache_key(
-        self, columns: int, rows: int, overlap: float, position_angle: float
-    ) -> tuple[int, int, float, float]:
+        self,
+        columns: int,
+        rows: int,
+        overlap: float,
+        position_angle: float,
+        fov_h: float = 0.0,
+        fov_v: float = 0.0,
+    ) -> tuple[int, int, float, float, float, float]:
         return (
             int(columns),
             int(rows),
             round(float(overlap), 4),
             round(float(position_angle) % 360.0, 3),
+            round(float(fov_h), 4),
+            round(float(fov_v), 4),
         )
 
     def _cache_sky_preview_panes(
@@ -2443,17 +2532,27 @@ class AppBackend(QObject):
         rows: int,
         overlap: float,
         position_angle: float = 0.0,
+        fov_h: float = 0.0,
+        fov_v: float = 0.0,
     ) -> None:
         payload = self._preview_pane_payload(panes)
         if len(payload) < 2:
             return
         self._sky_preview_panes = payload
-        self._sky_preview_key = self._sky_preview_cache_key(columns, rows, overlap, position_angle)
+        self._sky_preview_key = self._sky_preview_cache_key(
+            columns, rows, overlap, position_angle, fov_h, fov_v
+        )
 
     def _cached_sky_preview_panes(
-        self, columns: int, rows: int, overlap: float, position_angle: float = 0.0
+        self,
+        columns: int,
+        rows: int,
+        overlap: float,
+        position_angle: float = 0.0,
+        fov_h: float = 0.0,
+        fov_v: float = 0.0,
     ) -> list[dict[str, Any]]:
-        key = self._sky_preview_cache_key(columns, rows, overlap, position_angle)
+        key = self._sky_preview_cache_key(columns, rows, overlap, position_angle, fov_h, fov_v)
         if self._sky_preview_key != key:
             return []
         panes = self._preview_pane_payload(self._sky_preview_panes)
@@ -2793,7 +2892,7 @@ class AppBackend(QObject):
             return live_frame_data_url(self.live_images.peek("tele"))
         choice = str(camera or "").strip().lower()
         if choice not in ("tele", "wide"):
-            _fov_h, _fov_v, choice = self._mosaic_fov()
+            _fov_h, _fov_v, choice = self._sky_map_fov()
         image = self.live_images.peek(choice)
         if image.isNull():
             other = "wide" if choice == "tele" else "tele"
@@ -3279,17 +3378,31 @@ class AppBackend(QObject):
             fov_v = float(telemetry.get(f"{prefix}_fov_v") or 0)
         except (TypeError, ValueError):
             fov_h = fov_v = 0.0
-        # Firmware sometimes reports a near-zero stub. Treat that as missing so
-        # mosaic pane offsets use the published camera FOV instead of collapsing.
-        if fov_h < 0.2 or fov_v < 0.2:
+        # Firmware sometimes reports a stub, radians, or the other lens. Use
+        # the published field when the pair is not a plausible H×V for this camera.
+        if not camera_fov_plausible(fov_h, fov_v, choice):
             model = device.model if device is not None else DeviceModel.DWARF_3
             fov_h, fov_v = camera_fov(model, choice)
         return fov_h, fov_v, choice.value
 
     def _mosaic_fov(self) -> tuple[float, float, str]:
-        # SKY / mosaic frames stay on the imaging lens. A live Wide preview
-        # switch (including a harness photo pass) must not inflate the overlay.
-        return self._device_fov(camera=Camera.TELE)
+        # Pane spacing follows the selected live camera so a Wide mosaic
+        # keeps Wide offsets. A running live mosaic keeps the lens it started with.
+        device_id = str(self._selected_device_id or "")
+        live = self._live_mosaic.get(device_id)
+        if self._live_mosaic_running(device_id, live):
+            camera = str((live or {}).get("camera") or "").strip().lower()
+            if camera in {"tele", "wide"}:
+                return self._device_fov(camera=camera)
+        return self._device_fov()
+
+    def _sky_map_fov(self, *, mosaic_grid: bool = False) -> tuple[float, float, str]:
+        stacking = self._sky_live_uses_stack_frame()
+        if mosaic_grid and not stacking:
+            return self._mosaic_fov()
+        device = self._schedule_device()
+        selected = device.camera if device is not None else Camera.TELE
+        return self._device_fov(camera=sky_map_camera(selected, stacking=stacking))
 
     def _mosaic_group_sessions(self, device_id: str, group_id: str) -> list[Session]:
         if not group_id:
@@ -3679,25 +3792,16 @@ class AppBackend(QObject):
         fov_h, fov_v, camera = self._mosaic_fov()
         return f"{camera.upper()} {fov_h:.2f}° × {fov_v:.2f}°"
 
+    @Property(str, notify=selectedDeviceChanged)
+    def skyFovText(self) -> str:
+        fov_h, fov_v, camera = self._sky_map_fov()
+        return f"{camera.upper()} {fov_h:.2f}° × {fov_v:.2f}°"
+
     @Slot("QVariant", int, int, float, str, float, result=str)
     def skyWebFovScript(
         self, web_raw: Any, columns: int, rows: int, overlap: float, color: str, position_angle: float = 0.0
     ) -> str:
-        fov_h, fov_v, camera = self._mosaic_fov()
         south_up = self._mosaic_south_up()
-        payload: dict[str, Any] = {
-            "color": str(color or "").strip() or "#7ee0d0",
-            "label": f"{camera.upper()} {fov_h:.2f}° × {fov_v:.2f}°  PA {float(position_angle) % 360.0:.0f}°",
-            "fov_h": fov_h,
-            "fov_v": fov_v,
-            "south_up": south_up,
-            "position_angle": float(position_angle) % 360.0,
-            "columns": 1,
-            "rows": 1,
-            "overlap": 0.0,
-            "panes": [],
-            "mode": "center",
-        }
         snapshot = self._snapshot_web_raw(web_raw)
         if isinstance(snapshot, str) and snapshot:
             try:
@@ -3719,6 +3823,26 @@ class AppBackend(QObject):
             grid_ok = columns_n >= 1 and rows_n >= 1
         except (TypeError, ValueError):
             columns_n, rows_n, overlap_n, grid_ok = 1, 1, 0.0, False
+        session, members = self._mosaic_context()
+        mosaic_columns, mosaic_rows, live_pane, _group = self._mosaic_layout(session, members)
+        mosaic_active = self._mosaic_is_active(session, members) and (
+            mosaic_columns > 1 or mosaic_rows > 1
+        )
+        mosaic_grid = mosaic_active or (grid_ok and (columns_n > 1 or rows_n > 1))
+        fov_h, fov_v, camera = self._sky_map_fov(mosaic_grid=mosaic_grid)
+        payload: dict[str, Any] = {
+            "color": str(color or "").strip() or "#7ee0d0",
+            "label": f"{camera.upper()} {fov_h:.2f}° × {fov_v:.2f}°  PA {float(position_angle) % 360.0:.0f}°",
+            "fov_h": fov_h,
+            "fov_v": fov_v,
+            "south_up": south_up,
+            "position_angle": float(position_angle) % 360.0,
+            "columns": 1,
+            "rows": 1,
+            "overlap": 0.0,
+            "panes": [],
+            "mode": "center",
+        }
         if grid_ok:
             payload["columns"] = columns_n
             payload["rows"] = rows_n
@@ -3736,9 +3860,7 @@ class AppBackend(QObject):
         if target is not None and target.ra_hours is not None and target.dec_degrees is not None:
             payload["target_ra_hours"] = float(target.ra_hours)
             payload["target_dec_degrees"] = float(target.dec_degrees)
-        session, members = self._mosaic_context()
-        mosaic_columns, mosaic_rows, live_pane, _group = self._mosaic_layout(session, members)
-        if self._mosaic_is_active(session, members) and (mosaic_columns > 1 or mosaic_rows > 1):
+        if mosaic_active:
             payload["columns"] = mosaic_columns
             payload["rows"] = mosaic_rows
             payload["live_pane"] = live_pane
@@ -3798,6 +3920,8 @@ class AppBackend(QObject):
                     rows_n,
                     payload["overlap"],
                     payload["position_angle"],
+                    fov_h,
+                    fov_v,
                 )
             except ValueError:
                 payload["mode"] = "center"
@@ -3927,6 +4051,10 @@ class AppBackend(QObject):
     @Property(bool, notify=previewResultChanged)
     def previewResult(self) -> bool:
         return bool(self._preview_result)
+
+    @Property(bool, notify=centerTapBusyChanged)
+    def centerTapBusy(self) -> bool:
+        return self._selected_device_id in self._center_tap_inflight
 
     @Property(str, notify=previewResultChanged)
     def previewResultTitle(self) -> str:
@@ -4060,6 +4188,69 @@ class AppBackend(QObject):
     def mediaFileUrl(self, path: str) -> str:
         return self._media_file_url(path)
 
+    @Property(int, notify=mediaPreviewChanged)
+    def mediaPreviewGeneration(self) -> int:
+        return self._media_preview_rev
+
+    @Slot(str, result=bool)
+    def mediaNeedsStretch(self, url: str) -> bool:
+        text = canonical_image_url(str(url or "").strip()) or str(url or "").strip()
+        return bool(text) and needs_stretch(text)
+
+    @Slot(str, float, float, float, result=str)
+    def mediaStretchSource(self, url: str, black: float, white: float, mid: float) -> str:
+        """Return a file:// JPEG of a FITS/16-bit preview, building it in the background."""
+        text = canonical_image_url(str(url or "").strip()) or str(url or "").strip()
+        if not text:
+            return ""
+        if not stretch_available():
+            return ""
+        lo = DEFAULT_BLACK_PCT if black is None else float(black)
+        hi = DEFAULT_WHITE_PCT if white is None else float(white)
+        tone = DEFAULT_MID if mid is None else float(mid)
+        key = stretch_cache_key(text, lo, hi, tone)
+        dest = self._media_preview_dir() / f"{key}.jpg"
+        if is_preview_cache_valid(dest):
+            self._media_preview_failed.discard(key)
+            return QUrl.fromLocalFile(str(dest.resolve())).toString()
+        if key in self._media_preview_failed:
+            return ""
+        if key not in self._media_preview_inflight:
+            self._media_preview_inflight.add(key)
+            self._media_preview_pool.start(
+                CacheStretchJob(key, text, dest, lo, hi, tone, self._media_preview_signals)
+            )
+        return ""
+
+    @Slot(str, float, float, float, result=bool)
+    def mediaStretchFailed(self, url: str, black: float, white: float, mid: float) -> bool:
+        text = canonical_image_url(str(url or "").strip()) or str(url or "").strip()
+        if not text:
+            return False
+        key = stretch_cache_key(
+            text,
+            DEFAULT_BLACK_PCT if black is None else float(black),
+            DEFAULT_WHITE_PCT if white is None else float(white),
+            DEFAULT_MID if mid is None else float(mid),
+        )
+        return key in self._media_preview_failed
+
+    def _media_preview_dir(self) -> Path:
+        folder = self.store.root / "media-preview"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def _on_media_preview_ready(self, key: str) -> None:
+        key = str(key or "")
+        self._media_preview_inflight.discard(key)
+        dest = self._media_preview_dir() / f"{key}.jpg"
+        if is_preview_cache_valid(dest):
+            self._media_preview_failed.discard(key)
+        else:
+            self._media_preview_failed.add(key)
+        self._media_preview_rev += 1
+        self.mediaPreviewChanged.emit()
+
     def _enhance_cache_dir(self) -> Path:
         folder = self.store.root / "enhance-cache"
         folder.mkdir(parents=True, exist_ok=True)
@@ -4079,6 +4270,18 @@ class AppBackend(QObject):
     @Property(str, notify=mediaChanged)
     def mediaSource(self) -> str:
         return self._media_source
+
+    @Property(str, notify=mediaChanged)
+    def mediaFolder(self) -> str:
+        return self._media_folder
+
+    @Property(str, notify=mediaChanged)
+    def mediaFolderParent(self) -> str:
+        return self._media_folder_parent
+
+    @Property("QVariantList", notify=mediaChanged)
+    def mediaRootFolders(self) -> list[dict[str, Any]]:
+        return list(self._media_root_folders)
 
     @Property("QVariantList", notify=mediaItemsChanged)
     def mediaItems(self) -> list[dict[str, Any]]:
@@ -4174,6 +4377,11 @@ class AppBackend(QObject):
         if self._preview_hold_device_id == device_id and self._active_sessions.get(device_id):
             self.add_log("info", "Live view stays paused until this session starts capturing", device_id)
             self._refresh_preview_hold()
+            return
+        if preview_can_attach_rtsp(self._device_telemetry.get(device_id)):
+            self._clear_preview_hold()
+            self.add_log("info", "Attaching to the live cameras already running on the telescope", device_id)
+            self._attach_preview_streams(device_id, "Attaching to live view…")
             return
         self._clear_preview_hold()
         token = self._arm_preview_ui("Starting live camera…")
@@ -4280,6 +4488,7 @@ class AppBackend(QObject):
             if not ok:
                 after_cameras(False, result)
                 return
+            after_cameras(True, result)
 
             def after_wide(wide_ok: bool, wide_result: Any) -> None:
                 if token != self._preview_token:
@@ -4290,7 +4499,6 @@ class AppBackend(QObject):
                         f"Wide camera did not open for picture-in-picture: {wide_result}",
                         device.id,
                     )
-                after_cameras(True, result)
 
             worker.send("open_wide_camera", callback=after_wide)
 
@@ -4439,7 +4647,11 @@ class AppBackend(QObject):
         """Keep RTSP live view up until stacking; `_sync_preview_for_capture` switches it."""
 
     def _device_is_stopping(self, device_id: str) -> bool:
-        return self._pending_actions.get(device_id) in _STOP_ACTIONS
+        return (
+            self._pending_actions.get(device_id) in _STOP_ACTIONS
+            or device_id in self._disconnecting_ids
+            or device_id in self._cancel_connect_ids
+        )
 
     def _telemetry_capturing(self, device_id: str) -> bool:
         telemetry = self._device_telemetry.get(device_id) or {}
@@ -5150,6 +5362,9 @@ class AppBackend(QObject):
                 self._clear_mosaic_preview()
             self._selected_device_id = device_id
             if previous != device_id and self._media_source != "local":
+                self._media_folder = ""
+                self._media_folder_parent = ""
+                self._media_root_folders = []
                 self._clear_media()
             self._rebuild_devices_view()
             self.selectedDeviceChanged.emit()
@@ -5488,7 +5703,7 @@ class AppBackend(QObject):
             return False
         fov_h, fov_v, _camera = self._mosaic_fov()
         pa = self._mosaic_pa()
-        panes = self._cached_sky_preview_panes(columns, rows, overlap, pa)
+        panes = self._cached_sky_preview_panes(columns, rows, overlap, pa, fov_h, fov_v)
         target = self._live_mosaic_center()
         if not panes:
             if target is None or target.ra_hours is None or target.dec_degrees is None:
@@ -5959,16 +6174,14 @@ class AppBackend(QObject):
         nx = max(0.0, min(1.0, float(nx)))
         ny = max(0.0, min(1.0, float(ny)))
         if device_id in self._center_tap_inflight:
-            self._center_tap_pending[device_id] = (nx, ny, diag)
             return
-        fov_h, fov_v, _camera = self._device_fov(device_id, Camera.WIDE)
         if diag:
             self.add_log("debug", f"Center tap map {diag}", device_id)
 
-        self._center_tap_inflight.add(device_id)
+        self._center_tap_target[device_id] = (nx, ny)
         token = self._center_tap_token.get(device_id, 0) + 1
         self._center_tap_token[device_id] = token
-        QTimer.singleShot(8000, lambda did=device_id, current=token: self._finish_center_tap(did, current, False))
+        self._set_center_tap_inflight(device_id, True)
 
         def done(ok: bool, result: Any) -> None:
             if not ok:
@@ -5979,23 +6192,65 @@ class AppBackend(QObject):
             if detail.get("ok") is False:
                 self.add_log("error", "Center on tap failed", device_id)
                 self._finish_center_tap(device_id, token, False)
+                return
+            QTimer.singleShot(
+                _CENTER_TAP_SETTLE_MS,
+                lambda did=device_id, current=token: self._finish_center_tap(did, current, False),
+            )
 
-        worker.send("center_tap", {"args": [nx, ny, fov_h, fov_v]}, done)
+        worker.send("center_tap", {"args": [nx, ny]}, done)
+
+    def _set_center_tap_inflight(self, device_id: str, busy: bool) -> None:
+        was = device_id in self._center_tap_inflight
+        if busy:
+            self._center_tap_inflight.add(device_id)
+        else:
+            self._center_tap_inflight.discard(device_id)
+        if was == (device_id in self._center_tap_inflight):
+            return
+        if device_id == self._selected_device_id:
+            self.centerTapBusyChanged.emit()
+
+    def _clear_center_tap(self, device_id: str) -> None:
+        self._center_tap_token[device_id] = self._center_tap_token.get(device_id, 0) + 1
+        self._center_tap_target.pop(device_id, None)
+        self._set_center_tap_inflight(device_id, False)
+
+    def _center_tap_match_arrived(self, device_id: str) -> bool:
+        """True when PictureMatching has put the tap onto the tele camera."""
+        target = self._center_tap_target.get(device_id)
+        if target is None:
+            return False
+        current = self._device_telemetry.get(device_id) or {}
+        try:
+            mx = float(current.get("tele_match_nx"))
+            my = float(current.get("tele_match_ny"))
+        except (TypeError, ValueError):
+            return False
+        try:
+            nw = float(current.get("tele_match_nw") or 0)
+            nh = float(current.get("tele_match_nh") or 0)
+        except (TypeError, ValueError):
+            nw = nh = 0.0
+        nx, ny = target
+        tol_x = max(0.02, nw / 2.0) if nw > 0 else 0.04
+        tol_y = max(0.02, nh / 2.0) if nh > 0 else 0.04
+        return abs(mx - nx) <= tol_x and abs(my - ny) <= tol_y
+
+    def _consider_center_tap_progress(self, device_id: str, data: dict[str, Any]) -> None:
+        if "tele_match_nx" not in data and "tele_match_ny" not in data and "tele_match_width" not in data:
+            return
+        if self._center_tap_match_arrived(device_id):
+            self._finish_center_tap(device_id)
 
     def _finish_center_tap(self, device_id: str, token: int | None = None, confirmed: bool = True) -> None:
         if token is not None and token != self._center_tap_token.get(device_id):
             return
         if device_id not in self._center_tap_inflight:
             return
-        self._center_tap_inflight.discard(device_id)
-        self._center_tap_token[device_id] = self._center_tap_token.get(device_id, 0) + 1
-        pending = self._center_tap_pending.pop(device_id, None)
-        if pending is None:
-            if confirmed:
-                self._toast("Target centered", "success", "Press TRACK to start sidereal tracking, then STACK")
-            return
-        nx, ny, diag = pending
-        QTimer.singleShot(0, lambda: self.centerOnTap(device_id, nx, ny, diag))
+        self._clear_center_tap(device_id)
+        if confirmed:
+            self._toast("Target centered", "success", "Press TRACK to start sidereal tracking, then STACK")
 
     @Slot(str, int)
     def manualFocus(self, device_id: str, direction: int) -> None:
@@ -6301,7 +6556,7 @@ class AppBackend(QObject):
         self._toast("Session reset", "success")
 
     def _remember_control_settings(self, device_id: str, telemetry: dict[str, Any] | None = None) -> None:
-        if device_id in self._control_restoring:
+        if device_id in self._control_restoring or device_id in self._control_restore_pending:
             return
         live = self._live_mosaic.get(device_id)
         if live and live.get("phase"):
@@ -6386,20 +6641,28 @@ class AppBackend(QObject):
             self._notify_devices(immediate=False)
 
     def _schedule_control_restore(self, device_id: str, delay_ms: int) -> None:
+        self._control_restore_pending.add(device_id)
         QTimer.singleShot(max(0, int(delay_ms)), lambda did=device_id: self._restore_control_settings(did))
 
-    def _control_restore_steps(self, device: Device, telemetry: dict[str, Any]) -> list[tuple[str, str]]:
+    def _control_restore_steps(self, device: Device, telemetry: dict[str, Any]) -> list[tuple[str, str, str]]:
         settings = device.control_settings
         wide = device.camera == Camera.WIDE
         prefix = "wide_" if wide else ""
-        steps: list[tuple[str, str]] = []
+        default_camera = "wide" if wide else "tele"
+        wanted_mode = settings.shooting_mode
+        if wanted_mode not in {1, 2}:
+            wanted_mode = _shooting_mode_int(telemetry.get("shooting_mode"))
+        photo = wanted_mode == 1
+        steps: list[tuple[str, str, str]] = []
 
-        def add(name: str, wanted: str, current: Any) -> None:
+        def add(name: str, wanted: str, current: Any, camera: str = "") -> None:
             text = str(wanted or "").strip()
             if not text:
                 return
             have = "" if current in (None, "", "—") else str(current).strip()
             if have and have == text:
+                return
+            if name == "exposure" and have and firmware_exposure_name(have) == firmware_exposure_name(text):
                 return
             if name in {"gain", "count", "burst_count", "stack_format", "brightness", "contrast", "saturation", "hue", "sharpness", "wb"}:
                 try:
@@ -6407,10 +6670,51 @@ class AppBackend(QObject):
                         return
                 except (TypeError, ValueError):
                     pass
-            steps.append((name, text))
+            steps.append((name, text, camera or default_camera))
 
-        add("exposure", settings.wide_exposure if wide else settings.exposure, telemetry.get(f"{prefix}exposure_text") if wide else telemetry.get("exposure_text"))
-        add("gain", settings.wide_gain if wide else settings.gain, telemetry.get(f"{prefix}gain") if wide else telemetry.get("gain"))
+        def live_exposure(camera: str) -> Any:
+            if photo:
+                key = "photo_wide_exposure_text" if camera == "wide" else "photo_exposure_text"
+            else:
+                key = "astro_wide_exposure_text" if camera == "wide" else "astro_exposure_text"
+            fallback = "wide_exposure_text" if camera == "wide" else "exposure_text"
+            value = telemetry.get(key)
+            return value if value not in (None, "", "—") else telemetry.get(fallback)
+
+        def live_gain(camera: str) -> Any:
+            if photo:
+                key = "photo_wide_gain" if camera == "wide" else "photo_gain"
+            else:
+                key = "astro_wide_gain" if camera == "wide" else "astro_gain"
+            fallback = "wide_gain" if camera == "wide" else "gain"
+            value = telemetry.get(key)
+            return value if value not in (None, "", "—") else telemetry.get(fallback)
+
+        add(
+            "exposure",
+            settings.photo_exposure if photo else settings.exposure,
+            live_exposure("tele"),
+            "tele",
+        )
+        add(
+            "gain",
+            settings.photo_gain if photo else settings.gain,
+            live_gain("tele"),
+            "tele",
+        )
+        if device.model != DeviceModel.DWARF_MINI:
+            add(
+                "exposure",
+                settings.photo_wide_exposure if photo else settings.wide_exposure,
+                live_exposure("wide"),
+                "wide",
+            )
+            add(
+                "gain",
+                settings.photo_wide_gain if photo else settings.wide_gain,
+                live_gain("wide"),
+                "wide",
+            )
         add("count", settings.stack_count, telemetry.get("stack_count"))
         add("stack_format", settings.stack_format, telemetry.get("stack_format"))
         if not wide:
@@ -6428,7 +6732,7 @@ class AppBackend(QObject):
         preset = wb_preset_name(settings.wide_wb_scene if wide else settings.wb_scene)
         have_preset = wb_preset_name(telemetry.get(f"{prefix}wb_scene") if wide else telemetry.get("wb_scene"))
         if preset and preset != have_preset:
-            steps.append(("wb_preset", preset))
+            steps.append(("wb_preset", preset, default_camera))
         add("wb", settings.wide_wb_value if wide else settings.wb_value, telemetry.get(f"{prefix}wb_value") if wide else telemetry.get("wb_value"))
         add("brightness", settings.wide_brightness if wide else settings.brightness, telemetry.get(f"{prefix}brightness") if wide else telemetry.get("brightness"))
         add("contrast", settings.wide_contrast if wide else settings.contrast, telemetry.get(f"{prefix}contrast") if wide else telemetry.get("contrast"))
@@ -6439,10 +6743,12 @@ class AppBackend(QObject):
 
     def _restore_control_settings(self, device_id: str) -> None:
         if self._shut_down:
+            self._control_restore_pending.discard(device_id)
             return
         device = self._device_by_id(device_id)
         worker = self._workers.get(device_id)
         if device is None or not worker or not worker.connected:
+            self._control_restore_pending.discard(device_id)
             return
         if self._active_sessions.get(device_id) or self._device_is_stopping(device_id):
             self._schedule_control_restore(device_id, 2000)
@@ -6457,6 +6763,7 @@ class AppBackend(QObject):
 
         def finish() -> None:
             self._control_restoring.discard(device_id)
+            self._control_restore_pending.discard(device_id)
             self._schedule_camera_param_refresh(device_id, 200)
 
         def apply_from_telemetry() -> None:
@@ -6488,8 +6795,10 @@ class AppBackend(QObject):
                     if not queue:
                         finish()
                         return
-                    name, value = queue.pop(0)
-                    self._send_camera_param(device_id, name, value, notify=False, callback=next_param)
+                    name, value, camera = queue.pop(0)
+                    self._send_camera_param(
+                        device_id, name, value, notify=False, callback=next_param, camera=camera
+                    )
 
                 next_param()
 
@@ -6550,6 +6859,7 @@ class AppBackend(QObject):
         *,
         notify: bool = True,
         callback: Callable[[bool, Any], None] | None = None,
+        camera: str | None = None,
     ) -> bool:
         device = self._device_by_id(device_id)
         worker = self._workers.get(device_id)
@@ -6557,14 +6867,16 @@ class AppBackend(QObject):
             if callback:
                 callback(False, "Telescope is not connected")
             return False
-        camera = device.camera.value if hasattr(device.camera, "value") else str(device.camera)
-        if name == "focus" and camera == Camera.WIDE.value:
+        choice = str(camera or "").strip().lower()
+        if choice not in {"tele", "wide"}:
+            choice = device.camera.value if hasattr(device.camera, "value") else str(device.camera)
+        if name == "focus" and choice == Camera.WIDE.value:
             if notify:
                 self._toast("Focus is only available on the tele camera", "warning")
             if callback:
                 callback(False, "Focus is only available on the tele camera")
             return False
-        shooting_mode = self._device_telemetry.get(device_id, {}).get("shooting_mode")
+        shooting_mode = _shooting_mode_int(self._device_telemetry.get(device_id, {}).get("shooting_mode"))
         if name in {"exposure", "gain", "count", "stack_format"} and shooting_mode not in {1, 2}:
             if notify:
                 self._toast("Select PHOTO or DSO mode before changing camera settings", "warning")
@@ -6581,14 +6893,14 @@ class AppBackend(QObject):
         try:
             if name == "exposure":
                 operation = "set_photo_exposure" if shooting_mode == 1 else "set_exposure"
-                args = [firmware_exposure_name(value), model_id, camera]
+                args = [firmware_exposure_name(value), model_id, choice]
             elif name == "focus":
                 operation, args = "set_focus", [int(round(float(value)))]
             elif name == "gain":
                 operation = "set_photo_gain" if shooting_mode == 1 else "set_gain"
-                args = [int(value), model_id, camera] if shooting_mode == 1 else [int(value), camera]
+                args = [int(value), model_id, choice] if shooting_mode == 1 else [int(value), choice]
             elif name == "ir":
-                if camera == Camera.WIDE.value:
+                if choice == Camera.WIDE.value:
                     if callback:
                         callback(True, None)
                     return False
@@ -6610,7 +6922,7 @@ class AppBackend(QObject):
             elif name == "stack_format":
                 operation, args = "set_stack_format", [int(value)]
             elif name == "count":
-                operation, args = "set_count", [int(value), camera]
+                operation, args = "set_count", [int(value), choice]
             elif name == "auto_calibration":
                 operation, args = "set_auto_calibration", [value.strip().lower() in {"1", "true", "yes", "on"}]
             else:
@@ -6646,12 +6958,16 @@ class AppBackend(QObject):
     def setCameraParam(self, device_id: str, name: str, value: str) -> None:
         wide = False
         device = self._device_by_id(device_id)
+        mode = 0
         if device is not None:
             wide = device.camera == Camera.WIDE
+            mode = _shooting_mode_int(self._device_telemetry.get(device_id, {}).get("shooting_mode"))
+            if mode not in {1, 2}:
+                mode = device.control_settings.shooting_mode
         if name == "exposure":
-            self._patch_control_settings(device_id, **({"wide_exposure" if wide else "exposure": value}))
+            self._patch_control_settings(device_id, **{control_exposure_field(mode, wide): value})
         elif name == "gain":
-            self._patch_control_settings(device_id, **({"wide_gain" if wide else "gain": value}))
+            self._patch_control_settings(device_id, **{control_gain_field(mode, wide): value})
         elif name == "count":
             self._patch_control_settings(device_id, stack_count=value)
         elif name == "stack_format":
@@ -6797,22 +7113,42 @@ class AppBackend(QObject):
         ) else {}
         params = details.get("params") if isinstance(details.get("params"), dict) else {}
         kind = album_media_kind(remote or thumb, name, entry.get("mediaType"))
-        is_video = kind == "video" or album_is_video_name(remote or thumb, name)
+        is_dir = entry.get("isDir") is True
+        is_video = (not is_dir) and (kind == "video" or album_is_video_name(remote or thumb, name))
+        display_name = album_display_name(remote or thumb, name)
         target = str(
             details.get("target")
-            or name
-            or Path(str(remote or thumb).replace("\\", "/")).name
+            or display_name
             or "Untitled"
         )
-        local = self._match_local_album_file(name, remote or thumb, local_files)
+        local = self._match_local_album_file(display_name or name, remote or thumb, local_files)
         local_url = self._media_file_url(str(local)) if local else ""
-        file_available = entry.get("fileAvailable", True) is not False
-        thumb_url = album_http_url(ip, thumb) if thumb and ip else ""
+        preview_resolved = entry.get("previewResolved") is True
+        if preview_resolved:
+            thumb = str(entry.get("thumbnailPath") or "").strip()
+        else:
+            computed = album_entry_preview_path(entry)
+            if computed:
+                thumb = computed
+            elif not album_is_stack_display_image(thumb):
+                session_folder = album_session_dir(remote or thumb or name)
+                if is_dir or album_is_astro_media(remote or thumb, name, entry.get("mediaType")):
+                    thumb = album_folder_preview_path(session_folder or remote or name) or thumb
+                else:
+                    thumb = album_item_preview_path(session_folder, name or display_name) or thumb
+        file_available = (not is_dir) and entry.get("fileAvailable", True) is not False
+        display_thumb = bool(thumb) and album_is_stack_display_image(thumb)
+        thumb_url = album_http_url(ip, thumb) if display_thumb and ip else ""
         image_url = album_http_url(ip, remote) if remote and ip and file_available else ""
-        if not image_url:
+        if is_dir and ip and not preview_resolved:
+            stacked = album_folder_preview_fallback_path(remote or name)
+            if stacked and album_http_path(stacked) != album_http_path(thumb):
+                image_url = album_http_url(ip, stacked)
+        if not image_url and not is_dir and not is_video:
             image_url = thumb_url
         if local_url and not is_video:
-            thumb_url = local_url
+            if album_is_stack_display_image(str(local) if local else display_name):
+                thumb_url = local_url
             image_url = local_url
         elif local_url:
             image_url = local_url
@@ -6832,12 +7168,17 @@ class AppBackend(QObject):
             modified = int(entry.get("modificationTime") or 0)
         except (TypeError, ValueError):
             modified = 0
+        try:
+            duration = int(entry.get("videoDuration") or 0)
+        except (TypeError, ValueError):
+            duration = 0
         return {
             "id": remote or thumb or name,
             "source": source,
             "kind": kind,
             "target": target,
-            "file_name": name or Path(str(remote or thumb).replace("\\", "/")).name,
+            "file_name": display_name or name or Path(str(remote or thumb).replace("\\", "/")).name,
+            "album_name": name,
             "file_path": remote or name,
             "thumbnail_path": thumb,
             "thumbnail_url": thumb_url or (image_url if not is_video else ""),
@@ -6852,6 +7193,8 @@ class AppBackend(QObject):
             "downloaded": bool(local),
             "media_type": media_type,
             "sub_type": sub_type,
+            "duration": duration,
+            "is_dir": is_dir,
         }
 
     def _normalize_astro_item(self, entry: dict[str, Any], ip: str, local_files: dict[str, Path]) -> dict[str, Any] | None:
@@ -6869,7 +7212,7 @@ class AppBackend(QObject):
         if directory and name:
             folder = str(directory).rstrip("/").replace("\\", "/")
             remote = f"{folder}/{name}"
-            thumb = f"{folder}/Thumbnail/{name}"
+            thumb = album_item_preview_path(folder, name)
         item = self._normalize_remote_item(
             {
                 "fileName": name,
@@ -6887,6 +7230,7 @@ class AppBackend(QObject):
             "kind": album_media_kind(remote, name),
             "target": name,
             "file_name": name,
+            "album_name": name,
             "file_path": name,
             "thumbnail_path": "",
             "thumbnail_url": "",
@@ -6901,6 +7245,8 @@ class AppBackend(QObject):
             "downloaded": False,
             "media_type": 0,
             "sub_type": 0,
+            "duration": 0,
+            "is_dir": False,
         }
 
     def _normalize_local_item(self, path: Path) -> dict[str, Any]:
@@ -6917,6 +7263,7 @@ class AppBackend(QObject):
             "kind": kind,
             "target": path.stem,
             "file_name": path.name,
+            "album_name": "",
             "file_path": str(path),
             "thumbnail_path": "",
             "thumbnail_url": "" if is_video else url,
@@ -6931,18 +7278,19 @@ class AppBackend(QObject):
             "downloaded": True,
             "media_type": 0,
             "sub_type": 0,
+            "duration": 0,
+            "is_dir": False,
         }
 
     def _select_media_id(self, item_id: str) -> None:
-        if item_id and any(item.get("id") == item_id for item in self._media_items):
-            self._media_selected_id = item_id
-            local = next((item.get("local_path") for item in self._media_items if item.get("id") == item_id), "")
+        chosen = str(item_id or "")
+        if chosen and any(item.get("id") == chosen for item in self._media_items):
+            self._media_selected_id = chosen
+            local = next((item.get("local_path") for item in self._media_items if item.get("id") == chosen), "")
             if local:
                 self._album_path = str(local)
-        elif self._media_items:
-            self._media_selected_id = str(self._media_items[0].get("id") or "")
-        else:
-            self._media_selected_id = ""
+            return
+        self._media_selected_id = ""
 
     def _replace_media_items(self, items: list[dict[str, Any]], keep_id: str = "") -> None:
         items = [item for item in items if item]
@@ -6996,11 +7344,14 @@ class AppBackend(QObject):
         return "Connect this telescope to browse its album."
 
     def _camera_mode_id(self, device_id: str) -> int:
-        mode = self._device_telemetry.get(device_id, {}).get("shooting_mode")
-        try:
-            return int(mode) if mode is not None else 1
-        except (TypeError, ValueError):
-            return 1
+        mode = _shooting_mode_int(self._device_telemetry.get(device_id, {}).get("shooting_mode"))
+        if mode in {1, 2, 8, 9, 10}:
+            return mode
+        device = self._device_by_id(device_id)
+        persisted = int(getattr(getattr(device, "control_settings", None), "shooting_mode", 0) or 0) if device else 0
+        if persisted in {1, 2}:
+            return persisted
+        return 1
 
     def _camera_model_id(self, device_id: str) -> str:
         device = next((item for item in self._devices if item.id == device_id), None)
@@ -7031,12 +7382,16 @@ class AppBackend(QObject):
 
     @Slot(str)
     def setMediaSource(self, source: str) -> None:
-        choice = str(source or "astro").strip().lower()
-        if choice not in {"astro", "stills", "local"}:
-            choice = "astro"
+        choice = str(source or "folders").strip().lower()
+        if choice not in {"astro", "stills", "folders", "local"}:
+            choice = "folders"
         if self._media_source == choice:
+            if choice == "folders" and self._media_folder_parent:
+                self.openMediaFolderRoot()
             return
         self._media_source = choice
+        self._media_folder = ""
+        self._media_folder_parent = ""
         self._media_selected_id = ""
         self._media_items = []
         self._media_status = ""
@@ -7069,6 +7424,9 @@ class AppBackend(QObject):
             return
         if self._media_source == "stills":
             self.listAlbum(device_id, quiet)
+            return
+        if self._media_source == "folders":
+            self.listAlbumFolders(device_id, quiet)
             return
         self.listAstroSessions(device_id, quiet)
 
@@ -7186,6 +7544,135 @@ class AppBackend(QObject):
 
         worker.send("album_camera_list", {}, done)
 
+    @Slot(str)
+    @Slot(str, bool)
+    def listAlbumFolders(self, device_id: str, quiet: bool = False) -> None:
+        worker = self._workers.get(device_id)
+        device = next((item for item in self._devices if item.id == device_id), None)
+        if not worker or not worker.connected or not device or not str(device.ip_address or "").strip():
+            self._clear_media(self._media_offline_status(device_id))
+            if not quiet:
+                self._toast("Connect the telescope before listing folders", "warning")
+            return
+        if self._session_is_capturing(device_id):
+            self._media_locked = True
+            self._clear_media(_MEDIA_LOCKED_STATUS)
+            if not quiet:
+                self._toast("Can't browse the album while the telescope is capturing", "warning")
+            return
+        request_id = self._begin_media_request(device_id, "folders")
+        folder = self._media_folder
+        self._set_media_busy("list")
+
+        def done(ok: bool, result: Any) -> None:
+            if not self._media_request_current(request_id, device_id, "folders"):
+                return
+            self._set_media_busy("")
+            if ok and isinstance(result, dict):
+                ip = str(result.get("ip") or device.ip_address)
+                self._media_folder = str(result.get("directory") or folder or "")
+                self._media_folder_parent = str(result.get("parent") or "")
+                local_files = self._local_album_paths()
+                items = [
+                    item
+                    for entry in (result.get("sessions") or [])
+                    if isinstance(entry, dict)
+                    for item in [self._normalize_remote_item(entry, ip, local_files, "folders")]
+                    if item
+                ]
+                self._replace_media_items(items, self._media_selected_id)
+                if not self._media_folder_parent:
+                    self._set_media_root_folders(items)
+                if not self._media_items:
+                    self._set_media_status(
+                        "This folder is empty." if self._media_folder_parent
+                        else "No album folders found on this telescope."
+                    )
+                elif not quiet:
+                    self._toast(f"{len(self._media_items)} items in folder", "success")
+                return
+            self._replace_media_items([])
+            self._set_media_status(str(result) if result else "Could not list folders on the telescope. Connect it, then tap Refresh.")
+            if not quiet:
+                self._toast("Folder list failed", "error", str(result))
+
+        worker.send("album_folder_list", {"args": [folder]}, done)
+
+    def _set_media_root_folders(self, items: list[dict[str, Any]]) -> None:
+        folders = [
+            {
+                "id": str(item.get("id") or item.get("file_path") or ""),
+                "name": str(item.get("file_name") or item.get("target") or ""),
+                "path": str(item.get("file_path") or item.get("id") or ""),
+                "kind": str(item.get("kind") or "folder"),
+            }
+            for item in items
+            if item.get("is_dir") and str(item.get("file_path") or item.get("id") or "").strip()
+        ]
+        folders.sort(key=lambda item: (
+            _MEDIA_FOLDER_ORDER.get(str(item.get("name") or "").strip().lower().replace("_", " "), 50),
+            str(item.get("name") or "").lower(),
+        ))
+        if folders == self._media_root_folders:
+            return
+        self._media_root_folders = folders
+        self._emit_media()
+
+    def _selected_album_root(self) -> str:
+        device = next((item for item in self._devices if item.id == self._selected_device_id), None)
+        return album_folder_root(device.model if device else "")
+
+    def _prepare_media_folder(self, folder: str) -> None:
+        path = album_http_path(folder).rstrip("/")
+        root = self._selected_album_root()
+        if not path or album_http_path(path).rstrip("/") == album_http_path(root).rstrip("/"):
+            self._media_folder = ""
+            self._media_folder_parent = ""
+        else:
+            self._media_folder = path
+            self._media_folder_parent = album_folder_parent(path, root)
+        self._media_source = "folders"
+        self._media_selected_id = ""
+        self._media_items = []
+        self._media_status = ""
+        self._emit_media(items=True)
+
+    @Slot(str)
+    def openMediaFolder(self, folder: str) -> None:
+        path = album_http_path(folder).rstrip("/")
+        root = self._selected_album_root()
+        if not path or path == album_http_path(root).rstrip("/"):
+            self.openMediaFolderRoot()
+            return
+        if self._media_source != "folders":
+            self._media_source = "folders"
+        if self._media_folder == path and self._media_items and self._album_busy != "list":
+            return
+        self._prepare_media_folder(path)
+        self.listAlbumFolders(self._selected_device_id, True)
+
+    @Slot()
+    def openMediaFolderRoot(self) -> None:
+        if (
+            self._media_source == "folders"
+            and not self._media_folder_parent
+            and self._media_items
+            and self._album_busy != "list"
+        ):
+            return
+        self._prepare_media_folder("")
+        self.listAlbumFolders(self._selected_device_id, True)
+
+    @Slot()
+    def openMediaFolderParent(self) -> None:
+        parent = str(self._media_folder_parent or "").strip()
+        root = self._selected_album_root()
+        if not parent or album_http_path(parent).rstrip("/") == album_http_path(root).rstrip("/"):
+            self.openMediaFolderRoot()
+            return
+        self._prepare_media_folder(parent)
+        self.listAlbumFolders(self._selected_device_id, True)
+
     @Slot(str, "QVariantList")
     def downloadMediaItems(self, device_id: str, item_ids: list) -> None:
         self._start_media_downloads(device_id, item_ids)
@@ -7257,6 +7744,22 @@ class AppBackend(QObject):
             return
         item = next((entry for entry in self._media_items if entry.get("id") == chosen), None)
         remote = str((item or {}).get("file_path") or chosen)
+        if item and item.get("is_dir"):
+            preview = str(item.get("thumbnail_path") or "")
+            if album_is_protected_folder(remote, str(item.get("file_name") or item.get("album_name") or "")):
+                self._media_download_failed += 1
+                if self._media_download_batch <= 1:
+                    self._toast("Open the folder and download a file from it", "warning")
+                self._continue_media_download(device_id)
+                return
+            if album_is_media_file(preview):
+                remote = preview
+            else:
+                self._media_download_failed += 1
+                if self._media_download_batch <= 1:
+                    self._toast("Open the folder and download a file from it", "warning")
+                self._continue_media_download(device_id)
+                return
         if self._media_source == "stills" and not self._is_device_media_path(remote):
             self.downloadAlbumPhoto(device_id, str((item or {}).get("file_name") or chosen))
             return
@@ -7433,9 +7936,11 @@ class AppBackend(QObject):
             remote = str(item.get("file_path") or item_id)
             if not self._is_device_media_path(remote):
                 continue
+            if item.get("is_dir") and album_is_protected_folder(remote, str(item.get("file_name") or item.get("album_name") or "")):
+                continue
             entries.append({
                 "filePath": remote,
-                "fileName": str(item.get("file_name") or ""),
+                "fileName": str(item.get("album_name") or item.get("file_name") or ""),
                 "mediaType": item.get("media_type") or 0,
                 "subType": item.get("sub_type") or 0,
             })
@@ -7691,7 +8196,9 @@ class AppBackend(QObject):
         return item.capture_defaults if item is not None else CaptureDefaults()
 
     def _camera_settings_for(self, device: Device | None = None) -> CameraSettings:
-        return camera_settings_from_capture(self._capture_defaults_for(device))
+        item = device or self._schedule_device()
+        camera = item.camera if item is not None else Camera.TELE
+        return camera_settings_from_capture(self._capture_defaults_for(item), camera=camera)
 
     def _fields_from_payload(
         self,
@@ -8844,7 +9351,8 @@ class AppBackend(QObject):
 
     def _push_sky_to_desktop(self, target: Target) -> None:
         device = self._schedule_device()
-        fov_h, fov_v, _camera = self._mosaic_fov()
+        columns, rows, _overlap = self._sky_mosaic_grid()
+        fov_h, fov_v, _camera = self._sky_map_fov(mosaic_grid=columns > 1 or rows > 1)
         latitude = longitude = None
         name = ""
         if device is not None and has_site_coordinates(device.latitude, device.longitude):
@@ -9385,6 +9893,7 @@ class AppBackend(QObject):
         self.stopPreview()
         self._enhance_pool.waitForDone(1500)
         self._enhance_cache_pool.waitForDone(1500)
+        self._media_preview_pool.waitForDone(1500)
         self._tele_player.abort()
         self._wide_player.abort()
         set_live_frames(None)

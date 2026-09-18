@@ -111,6 +111,7 @@ hiddenimports = [
     "astro_dwarf.storage",
     "astro_dwarf.stream_preview",
     "astro_dwarf.image_enhance",
+    "astro_dwarf.media_preview",
     "astro_dwarf.location",
     "numpy",
     "cv2",

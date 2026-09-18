@@ -110,7 +110,7 @@ ApplicationWindow {
         confirmDialog.summary = kind === "deleteSessions"
             ? "Delete " + ids.length + " " + plural + "? Running sessions will be skipped. This cannot be undone."
             : kind === "deleteMedia" && backend.mediaSource !== "local"
-            ? "Delete " + ids.length + " " + plural + " from the telescope? This wipes them from the SD card. Astro, burst, and panorama items remove the whole session. Downloaded copies in Local are kept. This cannot be undone."
+            ? "Delete " + ids.length + " " + plural + " from the telescope? This wipes them from the SD card. Astro, burst, panorama, and folder items remove the whole session. Album category folders stay. Downloaded copies in Local are kept. This cannot be undone."
             : kind === "deleteMedia"
             ? "Delete " + ids.length + " " + plural + " from the local album? This cannot be undone."
             : "Delete " + ids.length + " " + plural + "? This cannot be undone."
@@ -268,6 +268,54 @@ ApplicationWindow {
             settingsPage.load()
     }
 
+    function isTextEditor(item) {
+        return !!(item && (item instanceof TextInput || item instanceof TextEdit))
+    }
+
+    function editorChrome(item) {
+        let node = item
+        while (node) {
+            if (node instanceof SpinBox || node instanceof TextField)
+                return node
+            node = node.parent
+        }
+        return item
+    }
+
+    function releaseEditorFocusAt(scenePos) {
+        const focused = root.activeFocusItem
+        if (!root.isTextEditor(focused))
+            return
+        const chrome = root.editorChrome(focused)
+        if (!chrome)
+            return
+        const local = chrome.mapFromItem(null, scenePos.x, scenePos.y)
+        if (local.x >= -2 && local.y >= -2 && local.x <= chrome.width + 2 && local.y <= chrome.height + 2)
+            return
+        focused.focus = false
+        if (chrome.focus)
+            chrome.focus = false
+    }
+
+    component EditorClickAway: HoverHandler {
+        property bool pressArmed: false
+        acceptedButtons: Qt.LeftButton
+        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad | PointerDevice.TouchScreen
+        onPointChanged: {
+            const down = (point.pressedButtons & Qt.LeftButton) !== 0
+            if (!down) {
+                pressArmed = false
+                return
+            }
+            if (pressArmed)
+                return
+            pressArmed = true
+            root.releaseEditorFocusAt(point.scenePosition)
+        }
+    }
+
+    EditorClickAway { }
+
     QtObject {
         id: testHarness
         objectName: "testHarness"
@@ -364,7 +412,7 @@ ApplicationWindow {
             if (key === "media") {
                 backend.selectMedia(String(id || ""))
                 if (op === "source") {
-                    mediaPage.showSource(String(id || "astro"))
+                    mediaPage.showSource(String(id || "folders"))
                     return "ok"
                 }
                 mediaPage.openSelected()
@@ -577,6 +625,15 @@ ApplicationWindow {
     Item {
         id: shell
         anchors.fill: parent
+        MouseArea {
+            anchors.fill: parent
+            z: -1
+            acceptedButtons: Qt.LeftButton
+            onPressed: (mouse) => {
+                root.releaseEditorFocusAt(mapToItem(null, mouse.x, mouse.y))
+                mouse.accepted = false
+            }
+        }
         Image {
             anchors.fill: parent
             source: root.asset("hud-background.png")
@@ -1143,6 +1200,10 @@ ApplicationWindow {
                 elide: Text.ElideRight
             }
         }
+    }
+
+    EditorClickAway {
+        parent: Overlay.overlay
     }
 
     Item {

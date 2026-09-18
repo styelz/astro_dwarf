@@ -21,6 +21,7 @@ QtObject {
         property real brightness: 0
         property string paletteJson: ""
         property string savedThemesJson: "[]"
+        property string themeNamesJson: "{}"
         property string activeThemeId: "stock"
         property bool previewChromeHintSeen: false
         property bool enhanceImages: true
@@ -35,6 +36,7 @@ QtObject {
     property alias brightness: appearanceStore.brightness
     property alias paletteJson: appearanceStore.paletteJson
     property alias savedThemesJson: appearanceStore.savedThemesJson
+    property alias themeNamesJson: appearanceStore.themeNamesJson
     property alias activeThemeId: appearanceStore.activeThemeId
     property alias previewChromeHintSeen: appearanceStore.previewChromeHintSeen
     property alias enhanceImages: appearanceStore.enhanceImages
@@ -74,6 +76,11 @@ QtObject {
             { key: "glowAccent", name: "GLOW", hint: "Soft halo behind accent elements." },
             { key: "fillActive", name: "LIVE FILL", hint: "Fill of a live or selected action button." },
             { key: "fillChecked", name: "CHECKED", hint: "Fill of a ticked box, selected menu row, or on toggle." }
+        ]},
+        { title: "STATUS", keys: [
+            { key: "success", name: "OK", hint: "Fixed status green. Not tinted by WINDOW or saved themes." },
+            { key: "warning", name: "WARN", hint: "Fixed status amber. Not tinted by WINDOW or saved themes." },
+            { key: "danger", name: "ERR", hint: "Fixed status red. Not tinted by WINDOW or saved themes." }
         ]}
     ]
 
@@ -94,8 +101,35 @@ QtObject {
         { id: "violet", name: "Violet", hue: 0.76, brightness: 0.02, palette: ({}) },
         { id: "amber", name: "Amber", hue: 0.08, brightness: -0.08, palette: ({}) },
         { id: "forest", name: "Forest", hue: 0.36, brightness: -0.12, palette: ({}) },
-        { id: "crimson", name: "Crimson", hue: 0.985, brightness: -0.1, palette: ({}) }
+        { id: "crimson", name: "Crimson", hue: 0.985, brightness: -0.1, palette: ({}) },
+        { id: "custom1", name: "CUSTOM 1", hue: 0.399, brightness: 0.08, palette: ({
+            accent: { hue: 0.435, brightness: -0.85 },
+            outline: { hue: 0.109, brightness: -0.19 },
+            surface: { hue: 0.738, brightness: 0.2 },
+            surfaceHigh: { hue: 0.831, brightness: -0.66 },
+            textPrimary: { hue: 0.117, brightness: -0.1 },
+            textSecondary: { hue: 0.472, brightness: -0.06 }
+        }) },
+        { id: "custom2", name: "CUSTOM 2", hue: 0.55, brightness: 0.14, palette: ({
+            accent: { hue: 0.053, brightness: -0.42, sat: 0.13 }
+        }) },
+        { id: "custom3", name: "CUSTOM 3", hue: 0.506, brightness: -0.12, palette: ({
+            accent: { hue: 0.181, brightness: -0.39, sat: 0.23 },
+            fillActive: { hue: 0.065, brightness: -0.54, sat: 0.27 },
+            fillChecked: { hue: 0.534, brightness: -0.39 },
+            glowAccent: { hue: 0.36, brightness: -0.12 },
+            windowBase: { sat: 0.51 }
+        }) }
     ]
+
+    // Older consoles stored these as user-saved slots. Keep applying the
+    // same look after they moved into the shipped preset list.
+    readonly property var promotedThemeIds: ({
+        tmu1ajuuh1ow9: "custom1",
+        tmu2hmuu46gnv: "custom2",
+        tmu54ynn0863o: "custom3",
+        custom4: "custom3"
+    })
 
     // offset/sat/light/weight reproduce the original cyan HUD at hue 0.521, brightness 0.
     // `from` names the editable swatch a relative token follows when that swatch is custom.
@@ -152,8 +186,19 @@ QtObject {
         return []
     }
 
+    readonly property var parsedThemeNames: {
+        try {
+            const raw = JSON.parse(theme.themeNamesJson || "{}")
+            if (raw && typeof raw === "object" && !Array.isArray(raw))
+                return raw
+        } catch (exc) {
+        }
+        return ({})
+    }
+
     readonly property var listedThemes: {
         void theme.savedThemesJson
+        void theme.themeNamesJson
         return theme.listThemes()
     }
 
@@ -161,6 +206,7 @@ QtObject {
 
     readonly property var activeTheme: {
         void theme.savedThemesJson
+        void theme.themeNamesJson
         return theme.themeById(theme.activeThemeId)
     }
 
@@ -219,6 +265,10 @@ QtObject {
     function roleOverride(key) {
         const ov = theme.parsedOverrides[key]
         return ov && typeof ov === "object" ? ov : null
+    }
+
+    function roleFixed(key) {
+        return key === "success" || key === "warning" || key === "danger"
     }
 
     function roleName(key) {
@@ -353,18 +403,28 @@ QtObject {
     }
 
     function effectiveHue(key) {
+        if (theme.roleFixed(key)) {
+            const h = theme.colorFor(key).hslHue
+            return h >= 0 ? h : 0
+        }
         return theme.paramsFor(key).h
     }
 
     function effectiveSat(key) {
+        if (theme.roleFixed(key))
+            return theme.colorFor(key).hslSaturation
         return theme.paramsFor(key).sat
     }
 
     function effectiveBrightness(key) {
+        if (theme.roleFixed(key))
+            return 0
         return theme.paramsFor(key).brightness
     }
 
     function effectiveLight(key) {
+        if (theme.roleFixed(key))
+            return theme.colorFor(key).hslLightness
         const p = theme.paramsFor(key)
         return theme.bakedLight(p.light, p.weight, p.brightness)
     }
@@ -451,7 +511,7 @@ QtObject {
     }
 
     function setRole(key, hue, brightness, sat, light) {
-        if (!theme.recipes[key])
+        if (theme.roleFixed(key) || !theme.recipes[key])
             return
         const h = theme.roundHue(hue)
         const b = theme.roundBright(brightness)
@@ -491,6 +551,8 @@ QtObject {
     }
 
     function clearRole(key) {
+        if (theme.roleFixed(key) || !theme.recipes[key])
+            return
         if (key === "windowBase") {
             theme.hue = theme.defaultHue
             theme.brightness = 0
@@ -537,7 +599,7 @@ QtObject {
     }
 
     function applyColor(key, col) {
-        if (col === undefined || col === null || !theme.recipes[key])
+        if (col === undefined || col === null || theme.roleFixed(key) || !theme.recipes[key])
             return false
         let h = col.hslHue
         let s = col.hslSaturation
@@ -571,17 +633,20 @@ QtObject {
     }
 
     function matchRole(targetKey, sourceKey) {
-        if (!theme.recipes[targetKey] || !theme.recipes[sourceKey])
+        if (theme.roleFixed(targetKey) || !theme.recipes[targetKey])
+            return false
+        if (!theme.recipes[sourceKey] && !theme.roleFixed(sourceKey))
             return false
         return theme.applyColor(targetKey, theme.colorFor(sourceKey))
     }
 
     function matchHue(targetKey, sourceKey) {
-        if (!theme.recipes[targetKey] || !theme.recipes[sourceKey])
+        if (theme.roleFixed(targetKey) || !theme.recipes[targetKey])
             return false
-        const src = theme.paramsFor(sourceKey)
+        if (!theme.recipes[sourceKey] && !theme.roleFixed(sourceKey))
+            return false
         const dst = theme.paramsFor(targetKey)
-        theme.setRole(targetKey, src.h, dst.brightness)
+        theme.setRole(targetKey, theme.effectiveHue(sourceKey), dst.brightness)
         return true
     }
 
@@ -630,14 +695,25 @@ QtObject {
         return theme.fingerprintOf(theme.snapshot())
     }
 
+    function withDisplayName(entry) {
+        if (!entry || !entry.id)
+            return entry
+        const override = theme.parsedThemeNames[entry.id]
+        if (!override)
+            return entry
+        const copy = Object.assign({}, entry)
+        copy.name = String(override)
+        return copy
+    }
+
     function listThemes() {
         const out = []
         const builtins = theme.builtinThemes
         for (let i = 0; i < builtins.length; i++)
-            out.push(builtins[i])
+            out.push(theme.withDisplayName(builtins[i]))
         const saved = theme.parsedSavedThemes
         for (let i = 0; i < saved.length; i++)
-            out.push(saved[i])
+            out.push(theme.withDisplayName(saved[i]))
         return out
     }
 
@@ -666,6 +742,34 @@ QtObject {
                 return true
         }
         return false
+    }
+
+    function isShippedCustomId(id) {
+        return id === "custom1" || id === "custom2" || id === "custom3"
+    }
+
+    function canRenameTheme(id) {
+        return !!id && (!theme.isBuiltinId(id) || theme.isShippedCustomId(id))
+    }
+
+    function adoptPromotedThemes() {
+        const map = theme.promotedThemeIds
+        const saved = theme.parsedSavedThemes
+        const next = []
+        let changed = false
+        for (let i = 0; i < saved.length; i++) {
+            const item = saved[i]
+            if (item && map[item.id]) {
+                changed = true
+                continue
+            }
+            next.push(item)
+        }
+        const mapped = map[theme.activeThemeId]
+        if (mapped)
+            theme.activeThemeId = mapped
+        if (changed)
+            theme.savedThemesJson = JSON.stringify(next)
     }
 
     function applyTheme(id) {
@@ -726,11 +830,15 @@ QtObject {
     }
 
     function renameTheme(id, name) {
-        if (!id || theme.isBuiltinId(id))
-            return false
         const trimmed = String(name || "").trim().slice(0, 40)
-        if (!trimmed)
+        if (!id || !trimmed || !theme.canRenameTheme(id))
             return false
+        if (theme.isShippedCustomId(id)) {
+            const names = Object.assign({}, theme.parsedThemeNames)
+            names[id] = trimmed
+            theme.themeNamesJson = JSON.stringify(names)
+            return true
+        }
         const saved = theme.parsedSavedThemes.slice()
         let found = false
         for (let i = 0; i < saved.length; i++) {
@@ -761,6 +869,7 @@ QtObject {
     // Older builds stored BASE as a leaf override, which left Theme.hsl() and
     // unedited swatches on the old seed. Fold that override back into the seed.
     Component.onCompleted: {
+        theme.adoptPromotedThemes()
         if (!theme.themeById(theme.activeThemeId))
             theme.activeThemeId = "stock"
         const ov = theme.roleOverride("windowBase")
@@ -801,6 +910,12 @@ QtObject {
     }
 
     function colorFor(key) {
+        if (key === "success")
+            return theme.success
+        if (key === "warning")
+            return theme.warning
+        if (key === "danger")
+            return theme.danger
         const p = theme.paramsFor(key)
         return theme.bake(p.h, p.sat, p.light, p.alpha, p.weight, p.brightness)
     }

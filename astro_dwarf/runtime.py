@@ -39,6 +39,8 @@ def configure_quick_runtime() -> None:
 
     configure_qt_display()
     os.environ.setdefault("QSG_RENDER_LOOP", "basic")
+    # Dwarf album clips are H.265. Windows Media Foundation often cannot decode them.
+    os.environ.setdefault("QT_MEDIA_BACKEND", "ffmpeg")
 
 
 def _webview_plugin_dirs() -> list[Path]:

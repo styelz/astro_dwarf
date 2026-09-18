@@ -99,13 +99,14 @@ Item {
 
     Rectangle {
         id: teleFootprint
+        z: 1
         enabled: false
-        visible: pane.showFootprint && pane.wideView && paintedWidth > 0
+        visible: pane.showFootprint && pane.wideView && pane.playing && pane.paintedWidth > 0
             && pane.footprintNw > 0 && pane.footprintNh > 0
-        width: paintedWidth * pane.footprintNw
-        height: paintedHeight * pane.footprintNh
-        x: pane.frameX + paintedWidth * pane.footprintNx - width / 2
-        y: pane.frameY + paintedHeight * pane.footprintNy - height / 2
+        width: pane.paintedWidth * pane.footprintNw
+        height: pane.paintedHeight * pane.footprintNh
+        x: pane.frameX + pane.paintedWidth * pane.footprintNx - width / 2
+        y: pane.frameY + pane.paintedHeight * pane.footprintNy - height / 2
         color: "transparent"
         border.color: Theme.accent
         border.width: 1

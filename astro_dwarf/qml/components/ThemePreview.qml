@@ -8,6 +8,7 @@ import ".."
 // Click a sample to select that colour; the current role is ringed.
 Rectangle {
     id: preview
+    objectName: "themePreview"
     property string highlightRole: ""
     signal rolePicked(string key)
 
@@ -63,7 +64,10 @@ Rectangle {
                     font.bold: true
                     font.letterSpacing: Theme.tracking2
                     HoverHandler { cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: preview.pick("accent") }
+                    TapHandler {
+                        gesturePolicy: TapHandler.ReleaseWithinBounds
+                        onTapped: preview.pick("accent")
+                    }
                     Rectangle {
                         anchors.fill: parent
                         anchors.margins: -2
@@ -77,11 +81,17 @@ Rectangle {
                 Item {
                     implicitWidth: actionBtn.implicitWidth
                     implicitHeight: actionBtn.implicitHeight
+                    Layout.preferredWidth: implicitWidth
+                    Layout.preferredHeight: implicitHeight
+                    Layout.alignment: Qt.AlignVCenter
                     HudButton {
                         id: actionBtn
+                        objectName: "previewAction"
                         text: "ACTION"
                         implicitHeight: Theme.compactControlHeight
+                        focusPolicy: Qt.NoFocus
                         Accessible.name: "Preview default button"
+                        onClicked: preview.pick("surfaceHigh")
                     }
                     Rectangle {
                         anchors.fill: parent
@@ -91,11 +101,13 @@ Rectangle {
                         border.width: 2
                         radius: 2
                     }
-                    TapHandler { onTapped: preview.pick("surfaceHigh") }
                 }
                 Item {
                     implicitWidth: liveBtn.implicitWidth
                     implicitHeight: liveBtn.implicitHeight
+                    Layout.preferredWidth: implicitWidth
+                    Layout.preferredHeight: implicitHeight
+                    Layout.alignment: Qt.AlignVCenter
                     Rectangle {
                         anchors.fill: liveBtn
                         anchors.margins: -3
@@ -106,11 +118,14 @@ Rectangle {
                     }
                     HudButton {
                         id: liveBtn
+                        objectName: "previewLive"
                         text: "LIVE"
                         implicitHeight: Theme.compactControlHeight
+                        focusPolicy: Qt.NoFocus
                         buttonColor: Theme.fillActive
                         foregroundColor: Theme.accent
                         Accessible.name: "Preview live button"
+                        onClicked: preview.pick(preview.lit("glowAccent") ? "glowAccent" : "fillActive")
                     }
                     Rectangle {
                         anchors.fill: liveBtn
@@ -120,38 +135,37 @@ Rectangle {
                         border.width: 2
                         radius: 2
                     }
-                    TapHandler {
-                        onTapped: preview.pick(preview.lit("glowAccent") ? "glowAccent" : "fillActive")
-                    }
                 }
-                Item {
+                PreviewHit {
+                    objectName: "previewChip"
+                    roleKey: "accent"
                     implicitWidth: chipSample.implicitWidth
                     implicitHeight: chipSample.implicitHeight
+                    Layout.preferredWidth: implicitWidth
+                    Layout.preferredHeight: implicitHeight
+                    Layout.alignment: Qt.AlignVCenter
                     HudChip {
                         id: chipSample
                         label: "CHIP"
                         tone: Theme.accent
                     }
-                    Rectangle {
-                        anchors.fill: parent
-                        anchors.margins: -1
-                        color: "transparent"
-                        border.color: preview.lit("accent") ? Theme.accentSoft : "transparent"
-                        border.width: 2
-                        radius: 2
-                    }
-                    TapHandler { onTapped: preview.pick("accent") }
                 }
                 Rectangle {
+                    id: fieldSample
+                    objectName: "previewField"
+                    signal clicked()
                     Layout.preferredWidth: 72
                     Layout.preferredHeight: Theme.compactControlHeight
+                    Layout.alignment: Qt.AlignVCenter
                     color: Theme.inputBg
                     border.color: preview.lit("inputBg") || preview.lit("outline") || preview.lit("textPrimary") ? Theme.accentSoft : Theme.outline
                     border.width: 2
                     radius: 2
                     HoverHandler { cursorShape: Qt.PointingHandCursor }
+                    onClicked: preview.pick(preview.lit("textPrimary") ? "textPrimary" : (preview.lit("outline") ? "outline" : "inputBg"))
                     TapHandler {
-                        onTapped: preview.pick(preview.lit("textPrimary") ? "textPrimary" : (preview.lit("outline") ? "outline" : "inputBg"))
+                        gesturePolicy: TapHandler.ReleaseWithinBounds
+                        onTapped: fieldSample.clicked()
                     }
                     Text {
                         anchors.fill: parent
@@ -170,7 +184,10 @@ Rectangle {
                     color: Theme.textSecondary
                     font.pixelSize: Theme.fontSm
                     HoverHandler { cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: preview.pick("textSecondary") }
+                    TapHandler {
+                        gesturePolicy: TapHandler.ReleaseWithinBounds
+                        onTapped: preview.pick("textSecondary")
+                    }
                     Rectangle {
                         anchors.fill: parent
                         anchors.margins: -2
@@ -182,9 +199,36 @@ Rectangle {
                     }
                 }
                 Item { Layout.fillWidth: true }
-                HudChip { label: "OK"; tone: Theme.success }
-                HudChip { label: "WARN"; tone: Theme.warning }
-                HudChip { label: "ERR"; tone: Theme.danger }
+                PreviewHit {
+                    objectName: "previewOk"
+                    roleKey: "success"
+                    implicitWidth: okChip.implicitWidth
+                    implicitHeight: okChip.implicitHeight
+                    Layout.preferredWidth: implicitWidth
+                    Layout.preferredHeight: implicitHeight
+                    Layout.alignment: Qt.AlignVCenter
+                    HudChip { id: okChip; label: "OK"; tone: Theme.success }
+                }
+                PreviewHit {
+                    objectName: "previewWarn"
+                    roleKey: "warning"
+                    implicitWidth: warnChip.implicitWidth
+                    implicitHeight: warnChip.implicitHeight
+                    Layout.preferredWidth: implicitWidth
+                    Layout.preferredHeight: implicitHeight
+                    Layout.alignment: Qt.AlignVCenter
+                    HudChip { id: warnChip; label: "WARN"; tone: Theme.warning }
+                }
+                PreviewHit {
+                    objectName: "previewErr"
+                    roleKey: "danger"
+                    implicitWidth: errChip.implicitWidth
+                    implicitHeight: errChip.implicitHeight
+                    Layout.preferredWidth: implicitWidth
+                    Layout.preferredHeight: implicitHeight
+                    Layout.alignment: Qt.AlignVCenter
+                    HudChip { id: errChip; label: "ERR"; tone: Theme.danger }
+                }
             }
         }
 
@@ -256,7 +300,10 @@ Rectangle {
                 color: Theme.muted
                 font.pixelSize: Theme.fontXs
                 HoverHandler { cursorShape: Qt.PointingHandCursor }
-                TapHandler { onTapped: preview.pick("muted") }
+                TapHandler {
+                    gesturePolicy: TapHandler.ReleaseWithinBounds
+                    onTapped: preview.pick("muted")
+                }
                 Rectangle {
                     anchors.fill: parent
                     anchors.margins: -2
@@ -268,6 +315,30 @@ Rectangle {
                 }
             }
             Item { Layout.fillWidth: true }
+        }
+    }
+
+    component PreviewHit: Item {
+        id: hit
+        property string roleKey: ""
+        property string alsoRole: ""
+        signal clicked()
+
+        Accessible.role: Accessible.Button
+        Accessible.name: hit.roleKey ? Theme.roleName(hit.roleKey) + " preview" : "Theme preview sample"
+        onClicked: preview.pick(hit.alsoRole && preview.lit(hit.roleKey) ? hit.alsoRole : hit.roleKey)
+        HoverHandler { cursorShape: Qt.PointingHandCursor }
+        TapHandler {
+            gesturePolicy: TapHandler.ReleaseWithinBounds
+            onTapped: hit.clicked()
+        }
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: -1
+            color: "transparent"
+            border.color: preview.lit(hit.roleKey) || (hit.alsoRole && preview.lit(hit.alsoRole)) ? Theme.accentSoft : "transparent"
+            border.width: 2
+            radius: 2
         }
     }
 
@@ -287,7 +358,10 @@ Rectangle {
         border.width: 2
         radius: 2
         HoverHandler { cursorShape: Qt.PointingHandCursor }
-        TapHandler { onTapped: preview.pick(chip.roleKey) }
+        TapHandler {
+            gesturePolicy: TapHandler.ReleaseWithinBounds
+            onTapped: preview.pick(chip.roleKey)
+        }
         Text {
             anchors.centerIn: parent
             text: chip.label

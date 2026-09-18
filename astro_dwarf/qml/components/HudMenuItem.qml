@@ -8,33 +8,37 @@ T.MenuItem {
     property string glyph: ""
     property string trailingText: ""
     property bool destructive: false
+    property bool info: false
     property string accessibleDescription: ""
     implicitWidth: 220
-    implicitHeight: 34
+    implicitHeight: visible ? (info ? Math.max(Theme.compactControlHeight, (contentItem ? contentItem.implicitHeight : 0) + topPadding + bottomPadding) : 34) : 0
+    height: visible ? implicitHeight : 0
     leftPadding: 8
     rightPadding: 10
-    topPadding: 0
-    bottomPadding: 0
-    hoverEnabled: true
-    focusPolicy: Qt.StrongFocus
+    topPadding: visible && info ? 4 : 0
+    bottomPadding: visible && info ? 4 : 0
+    hoverEnabled: !info
+    focusPolicy: info ? Qt.NoFocus : Qt.StrongFocus
     Accessible.name: text
     Accessible.description: accessibleDescription || trailingText
-    opacity: enabled ? 1 : 0.4
-    font.pixelSize: Theme.fontBase
+    Accessible.role: info ? Accessible.StaticText : Accessible.MenuItem
+    opacity: info ? 1 : (enabled ? 1 : 0.4)
+    font.pixelSize: info ? Theme.fontMd : Theme.fontBase
     HoverHandler {
-        enabled: hudMenuItem.enabled
+        enabled: hudMenuItem.enabled && !hudMenuItem.info
         cursorShape: Qt.PointingHandCursor
     }
     background: Rectangle {
-        color: hudMenuItem.highlighted || hudMenuItem.down ? Theme.fillChecked : "transparent"
+        color: !hudMenuItem.info && (hudMenuItem.highlighted || hudMenuItem.down) ? Theme.fillChecked : "transparent"
         radius: 4
     }
     contentItem: RowLayout {
         spacing: 10
         Text {
-            Layout.preferredWidth: 18
+            visible: !hudMenuItem.info || hudMenuItem.glyph !== ""
+            Layout.preferredWidth: visible ? 18 : 0
             text: hudMenuItem.glyph
-            color: hudMenuItem.destructive ? Theme.danger : Theme.textSecondary
+            color: hudMenuItem.info ? Theme.muted : (hudMenuItem.destructive ? Theme.danger : Theme.textSecondary)
             font.family: Theme.fontIcon
             font.pixelSize: 14
             horizontalAlignment: Text.AlignHCenter
@@ -43,9 +47,10 @@ T.MenuItem {
         Text {
             Layout.fillWidth: true
             text: hudMenuItem.text
-            color: hudMenuItem.destructive ? Theme.danger : Theme.textPrimary
+            color: hudMenuItem.info ? Theme.muted : (hudMenuItem.destructive ? Theme.danger : Theme.textPrimary)
             font: hudMenuItem.font
-            elide: Text.ElideRight
+            wrapMode: hudMenuItem.info ? Text.Wrap : Text.NoWrap
+            elide: hudMenuItem.info ? Text.ElideNone : Text.ElideRight
             verticalAlignment: Text.AlignVCenter
         }
         Text {

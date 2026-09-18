@@ -114,13 +114,13 @@ Item {
             settingsKey: "controlLeft"
             autoRestore: false
             orientation: Qt.Vertical
-            SplitView.preferredWidth: 268
+            SplitView.preferredWidth: 344
             SplitView.minimumWidth: 196
 
             HudPanel {
                 panelId: "status"
                 title: "SYSTEM STATUS"
-                SplitView.preferredHeight: 180
+                SplitView.preferredHeight: 196
                 SplitView.minimumHeight: 120
                 headerExtra: Row {
                     spacing: 4
@@ -233,7 +233,7 @@ Item {
                 id: vitalsPanel
                 panelId: "vitals"
                 title: "VITALS"
-                SplitView.preferredHeight: 262
+                SplitView.preferredHeight: 231
                 SplitView.minimumHeight: 150
                 readonly property var t: root.scopeTelemetry
                 readonly property bool live: root.scopeOnline && !!t.has_data
@@ -367,7 +367,7 @@ Item {
                 id: targetPanel
                 panelId: "target"
                 title: "TARGET"
-                SplitView.preferredHeight: 140
+                SplitView.preferredHeight: 174
                 SplitView.minimumHeight: 80
                 overlay: [
                     TapHandler {
@@ -661,7 +661,7 @@ Item {
                     tooltip: (cameraPanel.miniBody
                         ? "Dwarf Mini has a single telephoto camera."
                         : "Camera for capture and settings.\nSWAP only rearranges the live panes; it does not change this.\nWide is fixed-focus; focus controls apply to Tele only.")
-                        + "\nSKY and mosaic frames stay on the telephoto field (" + backend.mosaicFovText + ")."
+                        + "\nSKY FOV and mosaic panes follow this camera (" + backend.skyFovText + ")."
                     model: cameraPanel.miniBody ? ["Tele"] : ["Tele", "Wide"]
                     function syncFromDevice() {
                         if (cameraPanel.miniBody && backend.selectedDevice.camera === "wide")
@@ -1091,28 +1091,30 @@ Item {
                     readonly property real teleFovH: {
                         const tele = Number(root.scopeTelemetry.tele_fov_h)
                         const wide = Number(root.scopeTelemetry.wide_fov_h)
-                        return (tele > 0 && wide > 0) ? tele / wide : 2.95 / 45.06
+                        const ratio = (tele > 0.5 && wide > 15) ? tele / wide : 2.95 / 45.06
+                        return (ratio > 0.03 && ratio < 0.18) ? ratio : 2.95 / 45.06
                     }
                     readonly property real teleFovV: {
                         const tele = Number(root.scopeTelemetry.tele_fov_v)
                         const wide = Number(root.scopeTelemetry.wide_fov_v)
-                        return (tele > 0 && wide > 0) ? tele / wide : 1.66 / 25.93
+                        const ratio = (tele > 0.3 && wide > 8) ? tele / wide : 1.66 / 25.93
+                        return (ratio > 0.03 && ratio < 0.18) ? ratio : 1.66 / 25.93
                     }
                     readonly property real teleMatchNx: {
                         const v = Number(root.scopeTelemetry.tele_match_nx)
-                        return (v > 0 && v < 1) ? v : 0.5
+                        return (isFinite(v) && v > 0 && v < 1) ? v : 0.5
                     }
                     readonly property real teleMatchNy: {
                         const v = Number(root.scopeTelemetry.tele_match_ny)
-                        return (v > 0 && v < 1) ? v : 0.5
+                        return (isFinite(v) && v > 0 && v < 1) ? v : 0.5
                     }
                     readonly property real teleMatchNw: {
                         const v = Number(root.scopeTelemetry.tele_match_nw)
-                        return (v > 0 && v < 1) ? v : 0
+                        return (isFinite(v) && v > 0 && v < 1) ? v : 0
                     }
                     readonly property real teleMatchNh: {
                         const v = Number(root.scopeTelemetry.tele_match_nh)
-                        return (v > 0 && v < 1) ? v : 0
+                        return (isFinite(v) && v > 0 && v < 1) ? v : 0
                     }
                     function liveCamera(wide) {
                         return wide ? "wide" : "tele"
@@ -1275,7 +1277,7 @@ Item {
                         playing: previewHost.mainPlaying && !previewHost.mosaicPreview
                         wideView: previewHost.displayWide
                         camera: previewHost.liveCamera(previewHost.displayWide)
-                        centerEnabled: playing && root.motionEnabled && !backend.previewResult
+                        centerEnabled: playing && root.motionEnabled && !backend.previewResult && !backend.centerTapBusy
                         showFootprint: wideView
                         chromeShown: previewHost.chromeShown
                         fovH: previewHost.teleFovH
@@ -1346,7 +1348,7 @@ Item {
                             playing: previewHost.pipPlaying
                             wideView: !previewHost.displayWide
                             camera: previewHost.liveCamera(!previewHost.displayWide)
-                            centerEnabled: playing && root.motionEnabled
+                            centerEnabled: playing && root.motionEnabled && !backend.centerTapBusy
                             inputEnabled: false
                             swallowClicks: true
                             showFootprint: wideView
@@ -1977,6 +1979,7 @@ Item {
                             onClicked: previewHost.pipEnabled = !previewHost.pipEnabled
                         }
                         HudButton {
+                            objectName: "swapViews"
                             visible: previewHost.pipAvailable
                             text: "SWAP VIEWS"
                             onHoveredChanged: previewHost.holdControls(hovered)
@@ -2122,7 +2125,7 @@ Item {
             HudPanel {
                 panelId: "commands"
                 title: "COMMANDS"
-                SplitView.preferredHeight: 244
+                SplitView.preferredHeight: 358
                 SplitView.minimumHeight: 140
                 headerExtra: Row {
                     spacing: 8
@@ -2325,7 +2328,7 @@ Item {
             settingsKey: "controlRight"
             autoRestore: false
             orientation: Qt.Vertical
-            SplitView.preferredWidth: 312
+            SplitView.preferredWidth: 375
             SplitView.minimumWidth: 220
 
             HudPanel {
@@ -2357,7 +2360,7 @@ Item {
                 hot: motionPanel.stacking
                 readonly property bool captureArmed: root.scopeOnline && !!root.scopeTelemetry.capture_active
                 readonly property bool stacking: captureArmed && !!root.scopeTelemetry.exposure_running
-                SplitView.preferredHeight: 188
+                SplitView.preferredHeight: 289
                 SplitView.minimumHeight: 136
                 onCaptureArmedChanged: {
                     if (captureArmed) {
@@ -2745,7 +2748,7 @@ Item {
             HudPanel {
                 panelId: "upcoming"
                 title: "UP NEXT"
-                SplitView.preferredHeight: 110
+                SplitView.preferredHeight: 368
                 SplitView.minimumHeight: 72
                 headerExtra: Row {
                     spacing: 4
@@ -3063,6 +3066,7 @@ Item {
                         property bool followTail: true
                         property int unseen: 0
                         property bool _programmatic: false
+                        readonly property bool pageVisible: controlPage.visible
                         anchors.fill: parent
                         clip: true
                         spacing: 1
@@ -3077,24 +3081,46 @@ Item {
                         ScrollBar.horizontal: HiddenBar {}
                         model: backend.logModel
                         reuseItems: true
+                        function tailY() {
+                            return originY + Math.max(0, contentHeight - height)
+                        }
                         function resumeFollow() {
                             followTail = true
                             unseen = 0
-                            _programmatic = true
-                            positionViewAtEnd()
-                            _programmatic = false
+                            scrollToTail()
                         }
                         function scrollToTail() {
+                            // StackLayout hides this page; snapping while height is 0
+                            // leaves contentY a few pixels short of the last row.
+                            if (!pageVisible || height <= 0)
+                                return
                             _programmatic = true
-                            positionViewAtEnd()
+                            if (count > 0)
+                                positionViewAtEnd()
+                            contentY = tailY()
                             _programmatic = false
+                        }
+                        function scheduleScrollToTail() {
+                            if (!followTail || !pageVisible)
+                                return
+                            Qt.callLater(function() {
+                                scrollToTail()
+                                // Delegates polish on the next frame after a hide/show.
+                                Qt.callLater(scrollToTail)
+                            })
+                        }
+                        onPageVisibleChanged: {
+                            if (pageVisible && followTail)
+                                scheduleScrollToTail()
                         }
                         onCountChanged: {
                             if (followTail)
-                                Qt.callLater(scrollToTail)
+                                scheduleScrollToTail()
                             else if (count > 0)
                                 unseen += 1
                         }
+                        onContentHeightChanged: scheduleScrollToTail()
+                        onHeightChanged: scheduleScrollToTail()
                         onDraggingChanged: {
                             if (dragging && !_programmatic && contentHeight > height)
                                 followTail = false

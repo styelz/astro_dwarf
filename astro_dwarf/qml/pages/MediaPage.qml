@@ -17,6 +17,9 @@ Item {
     readonly property bool hasIp: !!(backend.selectedDevice && backend.selectedDevice.ip_address)
     readonly property bool scopeOnline: !!(backend.selectedDevice && backend.selectedDevice.connected)
     readonly property bool onDevice: backend.mediaSource !== "local"
+    readonly property bool deviceRootActive: backend.mediaSource === "folders" && backend.mediaFolderParent === ""
+    readonly property bool inNestedFolder: backend.mediaSource === "folders" && backend.mediaFolderParent !== ""
+    readonly property bool showMediaTools: mediaPage.inNestedFolder || (!mediaPage.albumLocked && mediaPage.items.length > 0)
     readonly property bool albumLocked: backend.mediaLocked && mediaPage.onDevice
     readonly property bool mediaError: {
         const s = String(backend.mediaStatus || "").toLowerCase()
@@ -48,8 +51,12 @@ Item {
         if (!mediaPage.scopeOnline)
             return "Connect this telescope to browse its album."
         if (backend.mediaSource === "stills")
-            return "No photos, videos, or bursts found on this telescope. Capture, then refresh. DSO stacks are under Astro."
-        return "No astro sessions found on this telescope. Finished DSO and manual stacks show up here."
+            return "No photos, videos, or bursts found on this telescope. Capture, then refresh."
+        if (backend.mediaSource === "astro")
+            return "No astro sessions found on this telescope. Finished DSO and manual stacks show up here."
+        return backend.mediaFolderParent
+            ? "This folder is empty."
+            : "No album folders found on this telescope. Video, burst, and other session folders show up here."
     }
 
     onAlbumLockedChanged: {
@@ -70,7 +77,7 @@ Item {
     }
 
     function sourceKey() {
-        return backend.selectedDeviceId + ":" + backend.mediaSource
+        return backend.selectedDeviceId + ":" + backend.mediaSource + ":" + (backend.mediaFolder || "")
     }
     function refresh() {
         mediaPage.loadedKey = mediaPage.sourceKey()
@@ -94,6 +101,13 @@ Item {
     function openSelected() {
         if (!backend.selectedMedia || !backend.selectedMedia.id)
             return
+        if (Util.isFolderMedia(backend.selectedMedia)) {
+            mediaPage.clearSelection()
+            lightbox.close()
+            backend.openMediaFolder(String(backend.selectedMedia.file_path || backend.selectedMedia.id || ""))
+            mediaPage.loadedKey = mediaPage.sourceKey()
+            return
+        }
         lightbox.open()
     }
     function downloadItems(ids) {
@@ -129,7 +143,7 @@ Item {
         const chosen = Array.isArray(ids) ? ids : Util.idSetKeys(ids)
         if (!chosen.length)
             return
-        root.confirmBulkDelete("deleteMedia", chosen, "file")
+        root.confirmBulkDelete("deleteMedia", chosen, backend.mediaSource === "folders" ? "item" : "file")
     }
     function clearSelection() {
         mediaPage.selectedIds = ({})
@@ -156,11 +170,77 @@ Item {
         backend.selectMedia(String(item.id))
         mediaPage.openSelected()
     }
+    function syncGridIndex() {
+        const id = String(backend.mediaSelectedId || "")
+        mediaGrid.currentIndex = id ? Util.itemIndexById(mediaPage.items, id) : -1
+    }
 
     function showSource(source) {
         mediaPage.clearSelection()
-        backend.setMediaSource(source)
-        mediaPage.loadedKey = backend.selectedDeviceId + ":" + source
+        lightbox.close()
+        const choice = String(source || "").trim()
+        const lower = choice.toLowerCase()
+        if (lower === "folders") {
+            backend.openMediaFolderRoot()
+            mediaPage.loadedKey = backend.selectedDeviceId + ":folders:"
+            return
+        }
+        if (lower === "local" || lower === "astro" || lower === "stills") {
+            backend.setMediaSource(lower)
+            mediaPage.loadedKey = backend.selectedDeviceId + ":" + lower + ":"
+            return
+        }
+        const folders = backend.mediaRootFolders || []
+        for (let i = 0; i < folders.length; i++) {
+            const name = String(folders[i].name || "").toLowerCase()
+            const path = String(folders[i].path || "")
+            const compact = name.replace(/[\s_]+/g, "")
+            const wanted = lower.replace(/[\s_]+/g, "")
+            if (name === lower || compact === wanted || path === choice)
+                return mediaPage.showFolder(path)
+        }
+        if (choice.indexOf("/") >= 0)
+            return mediaPage.showFolder(choice)
+        backend.openMediaFolderRoot()
+        mediaPage.loadedKey = backend.selectedDeviceId + ":folders:"
+    }
+    function showFolder(path) {
+        const target = String(path || "")
+        if (!target)
+            return
+        mediaPage.clearSelection()
+        lightbox.close()
+        backend.openMediaFolder(target)
+        mediaPage.loadedKey = mediaPage.sourceKey()
+    }
+    function tileImageSource(item) {
+        if (!item || Util.isVideoMedia(item))
+            return ""
+        const thumb = String(item.thumbnail_url || "")
+        if (Util.isPreviewImageName(thumb))
+            return thumb
+        if (Util.isFolderMedia(item))
+            return ""
+        const image = String(item.image_url || "")
+        return Util.isPreviewImageName(image) ? image : ""
+    }
+    function tileImageFallback(item) {
+        if (!item || Util.isVideoMedia(item) || Util.isFolderMedia(item))
+            return ""
+        const thumb = String(item.thumbnail_url || "")
+        const image = String(item.image_url || "")
+        if (Util.isPreviewImageName(thumb) && Util.isPreviewImageName(image) && image !== thumb)
+            return image
+        return ""
+    }
+    function viewableItems() {
+        const list = mediaPage.items || []
+        const out = []
+        for (let i = 0; i < list.length; i++) {
+            if (list[i] && list[i].id && !Util.isFolderMedia(list[i]))
+                out.push(list[i])
+        }
+        return out
     }
 
     Connections {
@@ -179,6 +259,7 @@ Item {
             mediaPage.selectedIds = Util.pruneIdSet(mediaPage.selectedIds, mediaPage.items)
             if (lightbox.visible && !(mediaPage.selected && mediaPage.selected.id))
                 lightbox.close()
+            Qt.callLater(mediaPage.syncGridIndex)
         }
     }
     Connections {
@@ -201,18 +282,30 @@ Item {
                     ? (mediaPage.items.length + " downloaded file" + (mediaPage.items.length === 1 ? "" : "s") + "  ·  local album")
                     : (mediaPage.items.length + " on " + (backend.selectedDevice.name || "telescope") + (mediaPage.hasIp ? "  ·  " + backend.selectedDevice.ip_address : "")))
             HudButton {
-                text: "ASTRO"
-                accessibleDescription: backend.mediaSource === "astro" ? "On-device astro sessions, selected" : "On-device astro sessions"
-                buttonColor: backend.mediaSource === "astro" ? Theme.fillActive : Theme.inputBg
-                foregroundColor: backend.mediaSource === "astro" ? Theme.accent : Theme.textSecondary
-                onClicked: mediaPage.showSource("astro")
+                objectName: "mediaDeviceButton"
+                text: "DEVICE"
+                accessibleDescription: mediaPage.deviceRootActive ? "Telescope album, selected" : "Telescope album folders"
+                tooltip: "Shows the album folders on this telescope"
+                buttonColor: mediaPage.deviceRootActive ? Theme.fillActive : Theme.inputBg
+                foregroundColor: mediaPage.deviceRootActive ? Theme.accent : Theme.textSecondary
+                onClicked: mediaPage.showSource("folders")
             }
-            HudButton {
-                text: "STILLS"
-                accessibleDescription: backend.mediaSource === "stills" ? "On-device camera files, selected" : "On-device camera files"
-                buttonColor: backend.mediaSource === "stills" ? Theme.fillActive : Theme.inputBg
-                foregroundColor: backend.mediaSource === "stills" ? Theme.accent : Theme.textSecondary
-                onClicked: mediaPage.showSource("stills")
+            Repeater {
+                model: backend.mediaRootFolders
+                HudButton {
+                    required property var modelData
+                    readonly property bool folderActive: backend.mediaSource === "folders" && Util.albumFolderActive(backend.mediaFolder, modelData.path)
+                    objectName: "mediaFolder-" + String(modelData.name || "").replace(/\s+/g, "")
+                    text: Util.albumFolderLabel(modelData.name)
+                    accessibleDescription: folderActive
+                        ? (String(modelData.name || "Folder") + ", selected")
+                        : ("Open " + String(modelData.name || "folder") + " on the telescope")
+                    tooltip: "Opens " + String(modelData.name || "this album folder") + " on the telescope"
+                    enabled: !mediaPage.albumLocked && !mediaPage.busy && mediaPage.scopeOnline
+                    buttonColor: folderActive ? Theme.fillActive : Theme.inputBg
+                    foregroundColor: folderActive ? Theme.accent : Theme.textSecondary
+                    onClicked: mediaPage.showFolder(modelData.path)
+                }
             }
             HudButton {
                 text: "LOCAL"
@@ -247,21 +340,45 @@ Item {
             Layout.fillHeight: true
             title: mediaPage.albumLocked
                 ? "ON DEVICE  ·  UNAVAILABLE"
-                : (backend.mediaSource === "astro" ? "ON DEVICE  ·  ASTRO SESSIONS" : (backend.mediaSource === "stills" ? "ON DEVICE  ·  CAMERA" : "LOCAL ALBUM"))
+                : (backend.mediaSource === "local" ? "LOCAL ALBUM"
+                    : (backend.mediaSource === "astro" ? "ON DEVICE  ·  ASTRO SESSIONS"
+                        : (backend.mediaSource === "stills" ? "ON DEVICE  ·  CAMERA"
+                            : ("ON DEVICE  ·  " + (backend.mediaFolder ? String(backend.mediaFolder).replace(/\\/g, "/").split("/").filter(Boolean).slice(-1)[0] || "FOLDERS" : "FOLDERS")))))
 
-            SelectionBar {
-                selectedCount: mediaPage.selectedCount
-                totalCount: mediaPage.items.length
-                noun: "file"
-                allowEdit: false
-                deleteEnabled: !mediaPage.busy && !mediaPage.albumLocked
-                active: !mediaPage.albumLocked && mediaPage.items.length > 0
-                onSelectAllRequested: mediaPage.selectedIds = Util.idSetAll(mediaPage.items, true)
-                onClearRequested: mediaPage.clearSelection()
-                onDeleteRequested: {
-                    if (mediaPage.busy || mediaPage.albumLocked)
-                        return
-                    mediaPage.confirmDelete(mediaPage.selectedIds)
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.s2
+                visible: mediaPage.showMediaTools
+                HudButton {
+                    id: mediaBackButton
+                    objectName: "mediaBackButton"
+                    text: "BACK"
+                    visible: mediaPage.inNestedFolder
+                    enabled: !mediaPage.albumLocked && !mediaPage.busy && mediaPage.scopeOnline
+                    implicitHeight: 28
+                    tooltip: "Returns to the previous album folder"
+                    onClicked: {
+                        mediaPage.clearSelection()
+                        lightbox.close()
+                        backend.openMediaFolderParent()
+                        mediaPage.loadedKey = mediaPage.sourceKey()
+                    }
+                }
+                SelectionBar {
+                    id: mediaSelectionBar
+                    selectedCount: mediaPage.selectedCount
+                    totalCount: mediaPage.items.length
+                    noun: backend.mediaSource === "folders" ? "item" : "file"
+                    allowEdit: false
+                    deleteEnabled: !mediaPage.busy && !mediaPage.albumLocked
+                    active: !mediaPage.albumLocked && mediaPage.items.length > 0
+                    onSelectAllRequested: mediaPage.selectedIds = Util.idSetAll(mediaPage.items, true)
+                    onClearRequested: mediaPage.clearSelection()
+                    onDeleteRequested: {
+                        if (mediaPage.busy || mediaPage.albumLocked)
+                            return
+                        mediaPage.confirmDelete(mediaPage.selectedIds)
+                    }
                 }
             }
 
@@ -278,8 +395,10 @@ Item {
                     focus: true
                     activeFocusOnTab: true
                     keyNavigationEnabled: true
+                    currentIndex: -1
                     highlightFollowsCurrentItem: true
                     highlightMoveDuration: 0
+                    onCountChanged: Qt.callLater(mediaPage.syncGridIndex)
                     cellWidth: Math.max(148, Math.floor(width / Math.max(1, Math.floor(width / 168))))
                     cellHeight: cellWidth + 36
                     model: backend.mediaItems
@@ -330,11 +449,11 @@ Item {
                                         anchors.fill: parent
                                         visible: !previewImage.visible
                                         color: Theme.surface
-                                        Text {
+                                        MediaKindIcon {
                                             anchors.centerIn: parent
-                                            text: Util.mediaKindGlyph(tile.modelData)
-                                            color: Theme.muted
-                                            font.pixelSize: Theme.fontXl
+                                            width: Math.min(parent.width, parent.height) * 0.62
+                                            height: width
+                                            item: tile.modelData
                                         }
                                     }
                                     Image {
@@ -343,7 +462,15 @@ Item {
                                         fillMode: Image.PreserveAspectCrop
                                         asynchronous: true
                                         cache: true
-                                        source: tile.modelData.thumbnail_url || (Util.isVideoMedia(tile.modelData) ? "" : (tile.modelData.image_url || ""))
+                                        readonly property string primarySource: mediaPage.tileImageSource(tile.modelData)
+                                        readonly property string fallbackSource: mediaPage.tileImageFallback(tile.modelData)
+                                        source: ""
+                                        onPrimarySourceChanged: source = primarySource
+                                        Component.onCompleted: source = primarySource
+                                        onStatusChanged: {
+                                            if (status === Image.Error && fallbackSource !== "" && source !== fallbackSource)
+                                                source = fallbackSource
+                                        }
                                         visible: source !== "" && status === Image.Ready
                                     }
                                     Rectangle {
@@ -363,6 +490,21 @@ Item {
                                             color: Theme.textSecondary
                                             font.pixelSize: Theme.fontXs
                                             font.bold: true
+                                        }
+                                    }
+                                    Rectangle {
+                                        visible: Util.isVideoMedia(tile.modelData) && previewImage.visible
+                                        anchors.centerIn: parent
+                                        width: Theme.s5 + Theme.s3
+                                        height: Theme.s5 + Theme.s3
+                                        radius: width / 2
+                                        color: Theme.surface
+                                        border.color: Theme.outlineSoft
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "▶"
+                                            color: Theme.textPrimary
+                                            font.pixelSize: Theme.fontSm
                                         }
                                     }
                                     Rectangle {
@@ -450,10 +592,53 @@ Item {
         background: DialogFrame {}
         property bool viewEnhance: true
         property bool viewDeep: false
-        readonly property bool enhanceOn: lightbox.viewEnhance && Util.shouldEnhanceMedia(mediaPage.selected)
+        property bool imageFailed: false
+        property bool videoMuted: false
+        property real stretchBlack: 1.0
+        property real stretchWhite: 99.8
+        property real stretchMid: 0.32
+        property real appliedBlack: 1.0
+        property real appliedWhite: 99.8
+        property real appliedMid: 0.32
         readonly property bool isVideo: Util.isVideoMedia(mediaPage.selected)
+        readonly property bool isFits: Util.isFitsMedia(mediaPage.selected)
+        readonly property bool canStretch: !lightbox.isVideo && (lightbox.isFits || Util.isTiffMedia(mediaPage.selected) || (lightbox.imageFailed && Util.isHeavyPreviewName(lightbox.rawUrl)) || (!!lightbox.rawUrl && backend.mediaNeedsStretch(lightbox.rawUrl)))
+        readonly property var viewerImage: canStretch ? stretchImage : (enhanceOn ? cleanImage : rawImage)
+        readonly property bool viewerFailed: isVideo ? !!clipPlayer.errorString : (canStretch ? stretchFailed : enhanceFailed)
+        readonly property bool viewerLoading: {
+            if (isVideo)
+                return !clipPlayer.errorString && clipPlayer.playbackState !== MediaPlayer.PlayingState && clipPlayer.mediaStatus !== MediaPlayer.EndOfMedia && (clipPlayer.mediaStatus === MediaPlayer.LoadingMedia || clipPlayer.mediaStatus === MediaPlayer.NoMedia || (clipPlayer.duration <= 0 && !videoOut.visible && !videoPoster.visible))
+            if (viewerFailed)
+                return false
+            const img = viewerImage
+            if (!img)
+                return false
+            if (img.source !== "" && img.status !== Image.Ready && img.status !== Image.Error)
+                return true
+            if (canStretch)
+                return !!rawUrl && !stretchFailed && (stretchUrl === "" || img.status === Image.Null)
+            if (enhanceOn)
+                return !!rawUrl && !enhanceFailed && (cleanUrl === "" && heldCleanUrl === "")
+            return !!rawUrl && img.status !== Image.Ready && img.status !== Image.Error
+        }
+        readonly property real viewerProgress: {
+            if (isVideo || !viewerImage || viewerImage.source === "")
+                return -1
+            return viewerImage.progress
+        }
+        readonly property string viewerLoadText: isVideo ? "LOADING VIDEO"
+            : (canStretch ? (isFits ? "STRETCHING FITS" : "STRETCHING")
+               : (enhanceOn ? (viewDeep ? "DEEP CLEAN" : "SMOOTHING") : "LOADING"))
+        readonly property bool enhanceOn: lightbox.viewEnhance && !lightbox.canStretch && Util.shouldEnhanceMedia(mediaPage.selected)
         readonly property string selectedKey: String((mediaPage.selected && mediaPage.selected.id) || "")
         readonly property string enhanceProfile: lightbox.viewDeep ? "deep" : "std"
+        readonly property var viewable: {
+            mediaPage.items
+            return mediaPage.viewableItems()
+        }
+        readonly property int viewIndex: Util.itemIndexById(lightbox.viewable, lightbox.selectedKey)
+        readonly property bool hasPrev: lightbox.viewIndex > 0
+        readonly property bool hasNext: lightbox.viewIndex >= 0 && lightbox.viewIndex < lightbox.viewable.length - 1
         function syncEnhanceFromTheme() {
             viewEnhance = Theme.enhanceImages
             viewDeep = Theme.deepCleanImages
@@ -467,19 +652,32 @@ Item {
             backend.enhanceCacheGeneration
             return lightbox.enhanceOn && !lightbox.isVideo && !!lightbox.rawUrl && backend.mediaEnhanceFailed(lightbox.rawUrl, lightbox.enhanceProfile)
         }
+        readonly property bool stretchFailed: {
+            backend.mediaPreviewGeneration
+            return lightbox.canStretch && !!lightbox.rawUrl && backend.mediaStretchFailed(lightbox.rawUrl, lightbox.appliedBlack, lightbox.appliedWhite, lightbox.appliedMid)
+        }
         readonly property string rawUrl: {
             const item = mediaPage.selected
-            if (!item)
+            if (!item || Util.isFolderMedia(item))
                 return ""
             if (item.local_path)
                 return backend.mediaFileUrl(String(item.local_path))
-            return String(item.image_url || item.thumbnail_url || "")
+            const image = String(item.image_url || "")
+            const thumb = String(item.thumbnail_url || "")
+            if (lightbox.isVideo)
+                return image
+            if (Util.isPreviewImageName(image) || Util.isHeavyPreviewName(image))
+                return image
+            if (Util.isPreviewImageName(thumb) || Util.isHeavyPreviewName(thumb))
+                return thumb
+            return ""
         }
         readonly property string posterUrl: {
             const item = mediaPage.selected
             if (!item)
                 return ""
-            return String(item.thumbnail_url || "")
+            const thumb = String(item.thumbnail_url || "")
+            return Util.isPreviewImageName(thumb) ? thumb : ""
         }
         property string heldCleanUrl: ""
         readonly property string cleanUrl: {
@@ -489,25 +687,98 @@ Item {
             Theme.enhanceDenoise
             Theme.enhanceSkyCrush
             backend.enhanceCacheGeneration
-            if (!lightbox.enhanceOn || !lightbox.rawUrl || lightbox.isVideo)
+            if (!lightbox.enhanceOn || !lightbox.rawUrl || lightbox.isVideo || lightbox.canStretch)
                 return ""
             return backend.mediaEnhanceSource(lightbox.rawUrl, lightbox.enhanceProfile)
         }
+        readonly property string stretchUrl: {
+            lightbox.selectedKey
+            lightbox.appliedBlack
+            lightbox.appliedWhite
+            lightbox.appliedMid
+            backend.mediaPreviewGeneration
+            if (!lightbox.canStretch || !lightbox.rawUrl)
+                return ""
+            return backend.mediaStretchSource(lightbox.rawUrl, lightbox.appliedBlack, lightbox.appliedWhite, lightbox.appliedMid)
+        }
+        function resetStretch() {
+            stretchBlack = 1.0
+            stretchWhite = 99.8
+            stretchMid = 0.32
+            appliedBlack = 1.0
+            appliedWhite = 99.8
+            appliedMid = 0.32
+        }
+        function applyStretchSoon() {
+            stretchDebounce.restart()
+        }
+        function step(delta) {
+            const next = lightbox.viewIndex + Number(delta || 0)
+            if (next < 0 || next >= lightbox.viewable.length)
+                return
+            const item = lightbox.viewable[next]
+            const id = String((item && item.id) || "")
+            if (!id)
+                return
+            backend.selectMedia(id)
+            mediaGrid.currentIndex = Util.itemIndexById(mediaPage.items, id)
+        }
+        function togglePlay() {
+            if (!lightbox.isVideo)
+                return
+            if (clipPlayer.playbackState === MediaPlayer.PlayingState)
+                clipPlayer.pause()
+            else
+                clipPlayer.play()
+        }
+        Timer {
+            id: stretchDebounce
+            interval: 120
+            repeat: false
+            onTriggered: {
+                lightbox.appliedBlack = lightbox.stretchBlack
+                lightbox.appliedWhite = lightbox.stretchWhite
+                lightbox.appliedMid = lightbox.stretchMid
+            }
+        }
         onSelectedKeyChanged: {
             heldCleanUrl = ""
+            imageFailed = false
+            lightbox.resetStretch()
             clipPlayer.stop()
         }
         onClosed: clipPlayer.stop()
         onOpened: {
             lightbox.syncEnhanceFromTheme()
+            lightboxBody.forceActiveFocus()
             if (lightbox.isVideo && clipPlayer.source !== "")
                 clipPlayer.play()
         }
         onEnhanceOnChanged: if (!enhanceOn) heldCleanUrl = ""
         onCleanUrlChanged: if (cleanUrl !== "") heldCleanUrl = cleanUrl
         contentItem: ColumnLayout {
+            id: lightboxBody
             spacing: 0
+            focus: true
             Accessible.name: mediaPage.selected.target || mediaPage.selected.file_name || "Media viewer"
+            Keys.onLeftPressed: (event) => {
+                if (!lightbox.hasPrev)
+                    return
+                event.accepted = true
+                lightbox.step(-1)
+            }
+            Keys.onRightPressed: (event) => {
+                if (!lightbox.hasNext)
+                    return
+                event.accepted = true
+                lightbox.step(1)
+            }
+            Keys.onSpacePressed: (event) => {
+                if (!lightbox.isVideo)
+                    return
+                event.accepted = true
+                lightbox.togglePlay()
+            }
             Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -520,8 +791,12 @@ Item {
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                     cache: false
-                    visible: !lightbox.isVideo && !lightbox.enhanceOn && source !== "" && status === Image.Ready
-                    source: lightbox.enhanceOn || lightbox.isVideo ? "" : lightbox.rawUrl
+                    visible: !lightbox.isVideo && !lightbox.canStretch && !lightbox.enhanceOn && source !== "" && status === Image.Ready
+                    source: lightbox.enhanceOn || lightbox.isVideo || lightbox.canStretch ? "" : lightbox.rawUrl
+                    onStatusChanged: {
+                        if (status === Image.Error && source !== "" && !lightbox.isVideo)
+                            lightbox.imageFailed = true
+                    }
                 }
                 Image {
                     id: cleanImage
@@ -531,19 +806,47 @@ Item {
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                     cache: false
-                    visible: !lightbox.isVideo && lightbox.enhanceOn && source !== "" && status === Image.Ready
+                    visible: !lightbox.isVideo && !lightbox.canStretch && lightbox.enhanceOn && source !== "" && status === Image.Ready
                     source: lightbox.cleanUrl !== "" ? lightbox.cleanUrl : lightbox.heldCleanUrl
                 }
-                Video {
+                Image {
+                    id: stretchImage
+                    objectName: "stretchImage"
+                    anchors.fill: parent
+                    anchors.margins: Theme.s2
+                    fillMode: Image.PreserveAspectFit
+                    asynchronous: true
+                    cache: false
+                    visible: lightbox.canStretch && source !== "" && status === Image.Ready
+                    source: lightbox.stretchUrl
+                }
+                MediaPlayer {
                     id: clipPlayer
+                    source: lightbox.isVideo ? lightbox.rawUrl : ""
+                    videoOutput: videoOut
+                    audioOutput: clipAudio
+                    onSourceChanged: {
+                        if (lightbox.visible && lightbox.isVideo && source !== "")
+                            clipPlayer.play()
+                    }
+                    onMediaStatusChanged: {
+                        if (!lightbox.visible || !lightbox.isVideo)
+                            return
+                        if (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia)
+                            clipPlayer.play()
+                    }
+                }
+                AudioOutput {
+                    id: clipAudio
+                    muted: lightbox.videoMuted
+                }
+                VideoOutput {
+                    id: videoOut
                     objectName: "mediaVideo"
                     anchors.fill: parent
                     anchors.margins: Theme.s2
                     fillMode: VideoOutput.PreserveAspectFit
-                    source: lightbox.isVideo ? lightbox.rawUrl : ""
-                    visible: lightbox.isVideo && source !== ""
-                    autoPlay: lightbox.visible && lightbox.isVideo
-                    loops: 1
+                    visible: lightbox.isVideo && clipPlayer.source !== ""
                 }
                 Image {
                     id: videoPoster
@@ -559,7 +862,7 @@ Item {
                     anchors.left: parent.left
                     anchors.top: parent.top
                     anchors.margins: Theme.s4
-                    visible: rawImage.visible || cleanImage.visible || clipPlayer.visible
+                    visible: rawImage.visible || cleanImage.visible || stretchImage.visible || videoOut.visible
                     color: Theme.surface
                     border.color: Theme.outline
                     radius: Theme.radius
@@ -568,22 +871,40 @@ Item {
                     Text {
                         id: modeLabel
                         anchors.centerIn: parent
-                        text: lightbox.isVideo ? "VIDEO" : (lightbox.enhanceFailed ? "ENHANCE FAILED" : (lightbox.enhanceOn ? "SMOOTHED" : "RAW"))
-                        color: lightbox.enhanceOn && !lightbox.isVideo ? Theme.accent : Theme.textSecondary
+                        text: lightbox.isVideo ? "VIDEO"
+                              : (lightbox.canStretch ? (lightbox.stretchFailed ? "STRETCH FAILED" : (lightbox.isFits ? "FITS" : "STRETCH"))
+                                 : (lightbox.enhanceFailed ? "ENHANCE FAILED" : (lightbox.enhanceOn ? "SMOOTHED" : "RAW")))
+                        color: (lightbox.enhanceOn && !lightbox.isVideo) || lightbox.canStretch ? Theme.accent : Theme.textSecondary
                         font.pixelSize: Theme.fontSm
                         font.letterSpacing: Theme.tracking2
                         font.bold: true
                     }
                 }
-                Text {
+                Column {
                     anchors.centerIn: parent
-                    visible: (!rawImage.visible && !cleanImage.visible && !clipPlayer.visible && !videoPoster.visible)
-                             || (lightbox.isVideo && !!clipPlayer.errorString)
-                             || (lightbox.isVideo && clipPlayer.playbackState === MediaPlayer.StoppedState && !videoPoster.visible && !clipPlayer.errorString)
-                    text: lightbox.isVideo ? (clipPlayer.errorString || "LOADING VIDEO…") : (lightbox.enhanceFailed ? "COULD NOT ENHANCE" : (lightbox.enhanceOn ? "SMOOTHING…" : (mediaPage.busy ? "LOADING…" : "NO PREVIEW")))
-                    color: lightbox.enhanceFailed || (lightbox.isVideo && clipPlayer.errorString) ? Theme.warning : Theme.muted
-                    font.pixelSize: Theme.fontMd
-                    font.letterSpacing: Theme.tracking2
+                    spacing: Theme.s2
+                    width: Math.min(parent.width - Theme.s5 * 2, 220)
+                    visible: lightbox.viewerFailed || lightbox.viewerLoading || (!lightbox.isVideo && !rawImage.visible && !cleanImage.visible && !stretchImage.visible)
+                    HudMeter {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: parent.width
+                        visible: lightbox.viewerLoading && !lightbox.viewerFailed
+                        running: visible
+                        progress: lightbox.viewerProgress
+                        text: lightbox.viewerLoadText
+                    }
+                    Text {
+                        width: parent.width
+                        visible: !lightbox.viewerLoading || lightbox.viewerFailed
+                        horizontalAlignment: Text.AlignHCenter
+                        wrapMode: Text.Wrap
+                        text: lightbox.isVideo ? (clipPlayer.errorString || "NO PREVIEW")
+                              : (lightbox.stretchFailed ? "COULD NOT STRETCH"
+                                 : (lightbox.enhanceFailed ? "COULD NOT ENHANCE" : "NO PREVIEW"))
+                        color: lightbox.viewerFailed ? Theme.warning : Theme.muted
+                        font.pixelSize: Theme.fontMd
+                        font.letterSpacing: Theme.tracking2
+                    }
                 }
                 Text {
                     anchors.horizontalCenter: parent.horizontalCenter
@@ -594,6 +915,195 @@ Item {
                     color: lightbox.enhanceFailed ? Theme.warning : Theme.accent
                     font.pixelSize: Theme.fontSm
                     font.letterSpacing: Theme.tracking2
+                }
+                HudButton {
+                    objectName: "lightboxPrevButton"
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: Theme.s3
+                    visible: lightbox.hasPrev
+                    text: "‹"
+                    tooltip: "Previous file"
+                    accessibleDescription: "Show the previous file"
+                    leftPadding: Theme.s2
+                    rightPadding: Theme.s2
+                    implicitWidth: Theme.controlHeight
+                    onClicked: lightbox.step(-1)
+                }
+                HudButton {
+                    objectName: "lightboxNextButton"
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.rightMargin: Theme.s3
+                    visible: lightbox.hasNext
+                    text: "›"
+                    tooltip: "Next file"
+                    accessibleDescription: "Show the next file"
+                    leftPadding: Theme.s2
+                    rightPadding: Theme.s2
+                    implicitWidth: Theme.controlHeight
+                    onClicked: lightbox.step(1)
+                }
+                Rectangle {
+                    objectName: "mediaVideoControls"
+                    visible: lightbox.isVideo
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: Theme.s3
+                    height: Theme.controlHeight + Theme.s2
+                    color: Theme.panelFill
+                    border.color: Theme.outline
+                    radius: Theme.radius
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: Theme.s2
+                        anchors.rightMargin: Theme.s2
+                        spacing: Theme.s2
+                        HudButton {
+                            objectName: "lightboxPlayButton"
+                            text: clipPlayer.playbackState === MediaPlayer.PlayingState ? "PAUSE" : "PLAY"
+                            tooltip: clipPlayer.playbackState === MediaPlayer.PlayingState ? "Pause video" : "Play video"
+                            onClicked: lightbox.togglePlay()
+                        }
+                        HudSlider {
+                            id: videoSeek
+                            objectName: "lightboxSeekSlider"
+                            Layout.fillWidth: true
+                            from: 0
+                            to: Math.max(1, clipPlayer.duration)
+                            stepSize: 1
+                            live: true
+                            enabled: clipPlayer.seekable && clipPlayer.duration > 0
+                            accessibleName: "Video position"
+                            tooltip: "Scrub the video"
+                            valueText: Util.mediaClock(videoSeek.pressed ? videoSeek.value : clipPlayer.position)
+                            onMoved: clipPlayer.position = value
+                            Binding {
+                                target: videoSeek
+                                property: "value"
+                                value: clipPlayer.position
+                                when: !videoSeek.pressed
+                            }
+                        }
+                        Text {
+                            text: Util.mediaClock(clipPlayer.duration)
+                            color: Theme.textSecondary
+                            font.family: Theme.fontMono
+                            font.pixelSize: Theme.fontSm
+                        }
+                        HudButton {
+                            objectName: "lightboxMuteButton"
+                            text: lightbox.videoMuted ? "UNMUTE" : "MUTE"
+                            tooltip: lightbox.videoMuted ? "Unmute video" : "Mute video"
+                            onClicked: lightbox.videoMuted = !lightbox.videoMuted
+                        }
+                    }
+                }
+                Rectangle {
+                    objectName: "mediaFitsControls"
+                    visible: lightbox.canStretch
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: Theme.s3
+                    height: Theme.controlHeight + Theme.s2
+                    color: Theme.panelFill
+                    border.color: Theme.outline
+                    radius: Theme.radius
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: Theme.s2
+                        anchors.rightMargin: Theme.s2
+                        spacing: Theme.s2
+                        Text {
+                            text: "BLACK"
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.fontXs
+                            font.bold: true
+                            font.letterSpacing: Theme.tracking1
+                        }
+                        HudSlider {
+                            id: fitsBlack
+                            objectName: "lightboxFitsBlack"
+                            Layout.fillWidth: true
+                            from: 0
+                            to: 12
+                            stepSize: 0.1
+                            live: true
+                            accessibleName: "FITS black point"
+                            tooltip: "Shadow clip percentile. Higher hides more sky."
+                            valueText: fitsBlack.value.toFixed(1)
+                            onMoved: lightbox.applyStretchSoon()
+                            Binding {
+                                target: fitsBlack
+                                property: "value"
+                                value: lightbox.stretchBlack
+                                when: !fitsBlack.pressed
+                            }
+                            onValueChanged: if (pressed) lightbox.stretchBlack = value
+                        }
+                        Text {
+                            text: "WHITE"
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.fontXs
+                            font.bold: true
+                            font.letterSpacing: Theme.tracking1
+                        }
+                        HudSlider {
+                            id: fitsWhite
+                            objectName: "lightboxFitsWhite"
+                            Layout.fillWidth: true
+                            from: 90
+                            to: 100
+                            stepSize: 0.1
+                            live: true
+                            accessibleName: "FITS white point"
+                            tooltip: "Highlight clip percentile. Lower lifts faint structure."
+                            valueText: fitsWhite.value.toFixed(1)
+                            onMoved: lightbox.applyStretchSoon()
+                            Binding {
+                                target: fitsWhite
+                                property: "value"
+                                value: lightbox.stretchWhite
+                                when: !fitsWhite.pressed
+                            }
+                            onValueChanged: if (pressed) lightbox.stretchWhite = value
+                        }
+                        Text {
+                            text: "LIFT"
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.fontXs
+                            font.bold: true
+                            font.letterSpacing: Theme.tracking1
+                        }
+                        HudSlider {
+                            id: fitsMid
+                            objectName: "lightboxFitsLift"
+                            Layout.fillWidth: true
+                            from: 0.15
+                            to: 0.65
+                            stepSize: 0.01
+                            live: true
+                            accessibleName: "FITS midtone lift"
+                            tooltip: "Midtone stretch. Lower brightens faint detail."
+                            valueText: Math.round(fitsMid.value * 100)
+                            onMoved: lightbox.applyStretchSoon()
+                            Binding {
+                                target: fitsMid
+                                property: "value"
+                                value: lightbox.stretchMid
+                                when: !fitsMid.pressed
+                            }
+                            onValueChanged: if (pressed) lightbox.stretchMid = value
+                        }
+                        HudButton {
+                            objectName: "lightboxFitsReset"
+                            text: "RESET"
+                            tooltip: "Restore the default FITS stretch"
+                            onClicked: lightbox.resetStretch()
+                        }
+                    }
                 }
                 TapHandler {
                     acceptedButtons: Qt.RightButton
@@ -624,7 +1134,7 @@ Item {
                         HudButton {
                             objectName: "lightboxEnhanceButton"
                             text: lightbox.viewEnhance ? "ENHANCE ON" : "ENHANCE OFF"
-                            visible: Util.shouldEnhanceMedia(mediaPage.selected)
+                            visible: Util.shouldEnhanceMedia(mediaPage.selected) && !lightbox.canStretch
                             buttonColor: lightbox.viewEnhance ? Theme.fillActive : Theme.inputBg
                             foregroundColor: lightbox.viewEnhance ? Theme.accent : Theme.textSecondary
                             onClicked: lightbox.viewEnhance = !lightbox.viewEnhance
@@ -632,7 +1142,7 @@ Item {
                         HudButton {
                             objectName: "lightboxDeepButton"
                             text: lightbox.viewDeep ? "DEEP ON" : "DEEP CLEAN"
-                            visible: Util.shouldEnhanceMedia(mediaPage.selected) && lightbox.viewEnhance
+                            visible: Util.shouldEnhanceMedia(mediaPage.selected) && !lightbox.canStretch && lightbox.viewEnhance
                             buttonColor: lightbox.viewDeep ? Theme.fillActive : Theme.inputBg
                             foregroundColor: lightbox.viewDeep ? Theme.accent : Theme.textSecondary
                             onClicked: lightbox.viewDeep = !lightbox.viewDeep
@@ -681,6 +1191,8 @@ Item {
                                 bits.push("IR " + mediaPage.selected.ir_filter)
                             if (mediaPage.selected.camera)
                                 bits.push(mediaPage.selected.camera === "wide" ? "Wide" : "Tele")
+                            if (mediaPage.selected.duration)
+                                bits.push(Util.durationLabel(mediaPage.selected.duration))
                             if (mediaPage.selected.kind && mediaPage.selected.kind !== "photo" && mediaPage.selected.kind !== "astro")
                                 bits.push(Util.mediaKindLabel(mediaPage.selected))
                             return bits.join("  ·  ") || (backend.mediaSource === "local" ? String(mediaPage.selected.file_name || "") : "On-device session")

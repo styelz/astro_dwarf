@@ -31,6 +31,7 @@ Item {
     readonly property string liveCamera: (backend.previewStacking || backend.previewResult)
         ? "tele"
         : (backend.selectedDevice.camera === "wide" ? "wide" : "tele")
+    onLiveCameraChanged: if (map.pageReady) map.applyFovOverlay()
     property string overlayKey: ""
     signal contextMenuRequested(real x, real y)
     signal trackRequested()
@@ -177,13 +178,18 @@ Item {
             )
             map.runJavaScript(script, result => {
                 const status = String(result || "")
+                const overlayFov = (backend.previewStacking || backend.previewResult)
+                    ? backend.skyFovText
+                    : ((map.mosaicColumns > 1 || map.mosaicRows > 1)
+                        ? backend.mosaicFovText
+                        : backend.skyFovText)
                 if (status === "panes" || status === "center" || status === "grid" || status === "hidden")
                     map.overlayKey = [
                         map.mosaicColumns,
                         map.mosaicRows,
                         map.mosaicOverlap,
                         map.mosaicPa,
-                        backend.mosaicFovText,
+                        overlayFov,
                         backend.mosaicSouthUp ? "S" : "N",
                         String(Theme.accent),
                         map.liveOverlay ? "live" : "off",
@@ -438,11 +444,17 @@ Item {
                 map.restoreSavedView()
         }
         function onPreviewStackingChanged() {
-            if (map.pageReady && map.liveOverlay)
+            if (!map.pageReady)
+                return
+            map.applyFovOverlay()
+            if (map.liveOverlay)
                 map.applyLiveOverlay()
         }
         function onPreviewResultChanged() {
-            if (map.pageReady && map.liveOverlay)
+            if (!map.pageReady)
+                return
+            map.applyFovOverlay()
+            if (map.liveOverlay)
                 map.applyLiveOverlay()
         }
         function onMosaicPreviewChanged() {

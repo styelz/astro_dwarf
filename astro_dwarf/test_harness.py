@@ -8,8 +8,7 @@ Sky work (calibrate, GOTO, mosaic, track) needs stars out the window, not
 the table or roof. Snapshot and read it. Polar pos homes to the polar pose
 (indoors: the roof) and is not a recovery for a failed mosaic or GOTO.
 
-When the test work is finished, power down the device with
-``scripts/harness.py action power_down`` then ``confirm accept``.
+Do not power down the telescope unless the user explicitly asks.
 """
 
 from __future__ import annotations
@@ -514,6 +513,8 @@ def item_summary(item: Any) -> dict[str, Any]:
         "start_time",
         "scheduled_start",
         "date",
+        "kind",
+        "is_dir",
         "outcome",
         "session_id",
         "has_session",
@@ -670,7 +671,13 @@ class TestHarness:
             "preview": {
                 "active": bool(getattr(backend, "previewActive", False)),
                 "playing": bool(getattr(backend, "previewPlaying", False)),
+                "tele": bool(getattr(backend, "previewTelePlaying", False)),
+                "wide": bool(getattr(backend, "previewWidePlaying", False)),
                 "status": str(getattr(backend, "previewStatus", "") or ""),
+                "tele_match_nx": (device.get("telemetry") or {}).get("tele_match_nx"),
+                "tele_match_ny": (device.get("telemetry") or {}).get("tele_match_ny"),
+                "tele_match_nw": (device.get("telemetry") or {}).get("tele_match_nw"),
+                "tele_match_nh": (device.get("telemetry") or {}).get("tele_match_nh"),
             },
             "session": {
                 "id": str(session.get("id") or ""),
@@ -684,6 +691,15 @@ class TestHarness:
                 "dec_degrees": sky.get("dec_degrees"),
             },
             "toast": dict(self.last_toast),
+            "media": {
+                "source": str(getattr(backend, "mediaSource", "") or ""),
+                "folder": str(getattr(backend, "mediaFolder", "") or ""),
+                "folders": [
+                    str(item.get("name") or "")
+                    for item in (getattr(backend, "mediaRootFolders", []) or [])
+                    if isinstance(item, dict)
+                ],
+            },
         }
 
     def controls(self) -> list[dict[str, Any]]:

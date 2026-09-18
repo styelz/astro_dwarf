@@ -960,8 +960,10 @@ class StreamPlayer(QObject):
         pid = int(process.processId() or 0)
         with self._pid_lock:
             self._pid = 0
-        if process.state() != QProcess.ProcessState.NotRunning:
+        running = process.state() != QProcess.ProcessState.NotRunning
+        if running:
             process.kill()
+            process.waitForFinished(400)
         if pid:
             kill_pid_tree(pid)
         process.deleteLater()

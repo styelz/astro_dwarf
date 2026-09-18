@@ -7,7 +7,7 @@ HudMenu {
     property var selectionItems: []
     property var selectedMap: ({})
     readonly property string itemId: String((itemData && itemData.id) || "")
-    readonly property string fileName: String((itemData && (itemData.file_name || itemData.target)) || "")
+    readonly property string fileName: String((itemData && (itemData.target || itemData.file_name)) || "")
     readonly property string localPath: String((itemData && itemData.local_path) || "")
     readonly property int selectedCount: Util.idSetCount(selectedMap)
     readonly property bool onDevice: backend.mediaSource !== "local"

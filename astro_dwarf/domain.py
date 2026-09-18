@@ -97,17 +97,49 @@ def album_path_matches_model(path: str, model: DeviceModel | str) -> bool:
 
 
 ASTRO_MEDIA_TYPE = 6
+VIDEO_MEDIA_TYPE = 2
 BURST_MEDIA_TYPE = 3
 PANORAMA_MEDIA_TYPE = 5
 ALBUM_VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".avi"}
-ALBUM_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".fits", ".fit"}
+ALBUM_FITS_SUFFIXES = {".fits", ".fit", ".fts"}
+ALBUM_TIFF_SUFFIXES = {".tif", ".tiff"}
+ALBUM_HEAVY_PREVIEW_SUFFIXES = ALBUM_FITS_SUFFIXES | ALBUM_TIFF_SUFFIXES
+ALBUM_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"} | ALBUM_HEAVY_PREVIEW_SUFFIXES
 ALBUM_STACK_DISPLAY_SUFFIXES = {".jpg", ".jpeg", ".png"}
 LOCAL_ALBUM_SUFFIXES = ALBUM_IMAGE_SUFFIXES | ALBUM_VIDEO_SUFFIXES
+_ALBUM_CATEGORY_NAMES = {
+    "astronomy",
+    "astro",
+    "burst",
+    "bursts",
+    "normal photos",
+    "normal_photos",
+    "panorama",
+    "panoramas",
+    "photos",
+    "video",
+    "videos",
+}
+_ALBUM_SKIP_DIR_NAMES = {
+    "system volume information",
+    "thumbnail",
+    "thumbnails",
+}
+_ALBUM_INDEX_ROW = re.compile(
+    r"""<a href=["']([^"']+)["']>[^<]*</a>(?:\s+(\d{1,2}-[A-Za-z]{3}-\d{4}\s+\d{2}:\d{2}))?""",
+    re.IGNORECASE,
+)
+_ALBUM_LISTING_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
 _STACK_JPEG_NAMES = ("stacked.jpg", "stacked.jpeg")
+_STACK_THUMB_NAMES = ("stacked_thumbnail.jpg", "stacked_thumbnail.jpeg")
+_STACK_COUNTER_NAMES = ("img_stacked_counter.png",)
 _STACK_RESULT_SKEW_S = 15
-_ALBUM_HREF = re.compile(r"""href=["']([^"']+)["']""", re.IGNORECASE)
 _SESSION_PREVIEW_TYPES = {BURST_MEDIA_TYPE, PANORAMA_MEDIA_TYPE}
 _SESSION_THUMB_NAMES = ("burst_thumbnail.jpg", "pano_thumbnail.jpg", "panorama_thumbnail.jpg")
+_THUMBNAIL_DIR_NAMES = frozenset(_ALBUM_SKIP_DIR_NAMES & {"thumbnail", "thumbnails"})
 _ASTRO_PATH_MARKERS = (
     "/ASTRONOMY/",
     "DWARF_RAW",
@@ -203,6 +235,226 @@ def album_is_video_name(path: str = "", name: str = "") -> bool:
     return _album_suffix(path, name) in ALBUM_VIDEO_SUFFIXES
 
 
+def album_is_fits_name(path: str = "", name: str = "") -> bool:
+    return _album_suffix(path, name) in ALBUM_FITS_SUFFIXES
+
+
+def album_is_tiff_name(path: str = "", name: str = "") -> bool:
+    return _album_suffix(path, name) in ALBUM_TIFF_SUFFIXES
+
+
+def album_is_heavy_preview(path: str = "", name: str = "") -> bool:
+    """TIFF/FITS are too large to decode as grid thumbnails."""
+    return _album_suffix(path, name) in ALBUM_HEAVY_PREVIEW_SUFFIXES
+
+
+def album_is_category_name(name: str = "") -> bool:
+    token = str(name or "").strip().lower().replace("-", "_")
+    token = " ".join(token.split())
+    return token in _ALBUM_CATEGORY_NAMES or token.replace(" ", "_") in _ALBUM_CATEGORY_NAMES
+
+
+def album_display_name(path: str = "", name: str = "") -> str:
+    """Prefer the real file when firmware fileName is an album category like Videos."""
+    remote_name = PurePosixPath(album_http_path(path)).name
+    label = str(name or "").strip()
+    if album_is_category_name(label):
+        return remote_name or label
+    return label or remote_name
+
+
+def album_is_media_file(path: str = "", name: str = "") -> bool:
+    return _album_suffix(path, name) in LOCAL_ALBUM_SUFFIXES
+
+
+def album_is_skip_dir(name: str = "") -> bool:
+    token = str(name or "").strip().lower()
+    return not token or token in {".", ".."} or token in _ALBUM_SKIP_DIR_NAMES
+
+
+def album_folder_root(model: DeviceModel | str = "") -> str:
+    return album_model_prefix(model) or "/DWARF3"
+
+
+def album_path_in_root(path: str, root: str) -> bool:
+    value = album_http_path(path)
+    base = album_http_path(root).rstrip("/")
+    if not value or not base:
+        return False
+    return value == base or value.startswith(base + "/")
+
+
+def album_folder_parent(path: str, root: str = "") -> str:
+    current = album_http_path(path).rstrip("/")
+    base = album_http_path(root).rstrip("/")
+    if not current or current == base:
+        return ""
+    parent = str(PurePosixPath(current).parent).replace("\\", "/")
+    if parent in {".", "/"}:
+        return ""
+    if base and not (parent == base or parent.startswith(base + "/")):
+        return ""
+    return parent
+
+
+def album_is_protected_folder(path: str = "", name: str = "") -> bool:
+    label = str(name or PurePosixPath(album_http_path(path)).name).strip()
+    return album_is_category_name(label) or album_is_skip_dir(label)
+
+
+def album_is_astro_session_folder(path: str = "", name: str = "") -> bool:
+    """True for an astronomy session directory, not the Astronomy category itself."""
+    directory = album_http_path(path).rstrip("/")
+    label = str(name or PurePosixPath(directory).name).strip()
+    if not directory or album_is_category_name(label) or album_is_skip_dir(label):
+        return False
+    return album_is_astro_media(directory, label)
+
+
+def album_is_thumbnail_dir_name(name: str = "") -> bool:
+    return str(name or "").strip().lower() in _THUMBNAIL_DIR_NAMES
+
+
+def album_is_inside_thumbnail_dir(path: str = "") -> bool:
+    return any(album_is_thumbnail_dir_name(part) for part in PurePosixPath(album_http_path(path)).parts)
+
+
+def album_is_astro_stack_product(path: str = "", name: str = "") -> bool:
+    """True for stacked.jpg, stacked-16_*.png/.fits, img_reference.png, and similar."""
+    token = str(name or PurePosixPath(album_http_path(path)).name).strip().lower()
+    if not token:
+        return False
+    if token in {item.lower() for item in (*_STACK_JPEG_NAMES, *_STACK_THUMB_NAMES, *_STACK_COUNTER_NAMES)}:
+        return True
+    if token == "img_reference.png":
+        return True
+    stem = PurePosixPath(token).stem
+    return stem == "stacked" or token.startswith("stacked-")
+
+
+def album_folder_preview_path(folder: str) -> str:
+    """Astronomy session folders keep stacked_thumbnail.jpg at the session root."""
+    directory = album_http_path(folder).rstrip("/")
+    if album_is_inside_thumbnail_dir(directory):
+        directory = album_session_dir(directory)
+    if not album_is_astro_session_folder(directory):
+        return ""
+    return album_join_path(directory, _STACK_THUMB_NAMES[0])
+
+
+def album_folder_preview_fallback_path(folder: str) -> str:
+    """Full stacked.jpg used when the session thumbnail is missing."""
+    directory = album_http_path(folder).rstrip("/")
+    if album_is_inside_thumbnail_dir(directory):
+        directory = album_session_dir(directory)
+    if not album_is_astro_session_folder(directory):
+        return ""
+    return album_join_path(directory, _STACK_JPEG_NAMES[0])
+
+
+def album_item_preview_path(folder: str, name: str, *, is_dir: bool = False) -> str:
+    """Grid thumbnail for a folder listing row.
+
+    Astronomy stack products live at the session root. The grid uses
+    stacked_thumbnail.jpg, not Thumbnail/<same name> — that folder only holds
+    JPEG sidecars for the individual TIFF/FITS frames. Photo stills keep the
+    firmware Thumbnail/ sidecar with the same file name.
+    """
+    directory = album_http_path(folder).rstrip("/")
+    file_name = str(name or "").replace("\\", "/").split("/")[-1]
+    remote = album_join_path(directory, file_name) if file_name else directory
+    if is_dir:
+        return album_folder_preview_path(remote)
+    if not file_name:
+        return ""
+    if album_is_inside_thumbnail_dir(directory):
+        directory = album_session_dir(directory)
+        remote = album_join_path(directory, file_name) if file_name else directory
+    astro = album_is_astro_media(remote, file_name)
+    if astro and album_is_astro_stack_product(remote, file_name):
+        lower = file_name.lower()
+        if lower in {item.lower() for item in (*_STACK_THUMB_NAMES, *_STACK_COUNTER_NAMES)}:
+            return remote
+        return album_folder_preview_path(directory) or (
+            remote if album_is_stack_display_image(file_name) else ""
+        )
+    if album_is_stack_display_image(file_name):
+        if astro:
+            return album_folder_preview_path(directory) or remote
+        return album_sidecar_thumbnail_path(directory, file_name)
+    if astro and album_is_heavy_preview(file_name):
+        return album_frame_sidecar_path(directory, file_name) or album_folder_preview_path(directory)
+    return ""
+
+
+def album_entry_preview_path(entry: dict[str, Any] | None, folder: str = "") -> str:
+    """Preview path for a firmware album row or HTTP folder listing entry."""
+    if not isinstance(entry, dict):
+        return ""
+    name = str(entry.get("fileName") or "").strip()
+    remote = str(entry.get("filePath") or "").strip()
+    is_dir = entry.get("isDir") is True
+    session = album_session_dir(remote or name or folder)
+    if is_dir or (
+        not album_is_media_file("", name)
+        and not album_is_media_file("", PurePosixPath(album_http_path(remote)).name)
+        and album_is_astro_session_folder(session or remote, name)
+    ):
+        return album_folder_preview_path(remote if is_dir else (session or remote or name))
+    file_name = PurePosixPath(album_http_path(remote)).name
+    if album_is_media_file("", name):
+        label = name
+    elif album_is_media_file("", file_name):
+        label = file_name
+    else:
+        label = name or file_name
+    return album_item_preview_path(session or folder, label)
+
+
+def album_sidecar_thumbnail_path(folder: str, name: str) -> str:
+    """Firmware photo thumbs live in Thumbnail/ with the same JPEG/PNG name."""
+    file_name = str(name or "").replace("\\", "/").split("/")[-1]
+    if not album_is_stack_display_image(file_name):
+        return ""
+    directory = album_http_path(folder).rstrip("/")
+    if not directory or not file_name:
+        return ""
+    if album_is_inside_thumbnail_dir(directory):
+        directory = album_session_dir(directory)
+    return album_join_path(f"{directory}/Thumbnail", file_name)
+
+
+def album_frame_sidecar_path(folder: str, name: str) -> str:
+    """Astro TIFF/FITS frames have JPEG thumbs in Thumbnail/ with a .jpg suffix."""
+    file_name = str(name or "").replace("\\", "/").split("/")[-1]
+    if not album_is_heavy_preview(file_name):
+        return ""
+    directory = album_http_path(folder).rstrip("/")
+    stem = PurePosixPath(file_name).stem
+    if not directory or not stem:
+        return ""
+    if album_is_inside_thumbnail_dir(directory):
+        directory = album_session_dir(directory)
+    return album_join_path(f"{directory}/Thumbnail", f"{stem}.jpg")
+
+
+def album_listing_mtime(stamp: str = "") -> int:
+    text = str(stamp or "").strip()
+    if not text:
+        return 0
+    try:
+        day_s, mon_s, rest = text.replace("-", " ").split(None, 2)
+        year_s, clock = rest.split()
+        hour_s, minute_s = clock.split(":")
+        month = _ALBUM_LISTING_MONTHS.get(mon_s[:3].lower(), 0)
+        year = int(year_s)
+        if not month or year >= 2038:
+            return 0
+        return int(datetime(year, month, int(day_s), int(hour_s), int(minute_s)).timestamp())
+    except (TypeError, ValueError):
+        return 0
+
+
 def album_is_astro_media(path: str = "", name: str = "", media_type: Any = None) -> bool:
     try:
         if int(media_type) == ASTRO_MEDIA_TYPE:
@@ -218,6 +470,9 @@ def album_media_kind(path: str = "", name: str = "", media_type: Any = None) -> 
     text = combined.upper()
     file_name = str(name or PurePosixPath(combined).name)
     suffix = _album_suffix(combined, file_name)
+    path_suffix = _album_suffix(combined)
+    if album_is_category_name(file_name) and path_suffix not in LOCAL_ALBUM_SUFFIXES:
+        return "folder"
     if album_is_astro_media(path, name, media_type):
         return "video" if suffix in ALBUM_VIDEO_SUFFIXES else "astro"
     try:
@@ -228,13 +483,13 @@ def album_media_kind(path: str = "", name: str = "", media_type: Any = None) -> 
         return "burst"
     if kind_type == PANORAMA_MEDIA_TYPE or "PANORAMA" in text:
         return "panorama"
-    if "/VIDEO" in text or suffix in ALBUM_VIDEO_SUFFIXES:
+    if kind_type == VIDEO_MEDIA_TYPE or "/VIDEO" in text or suffix in ALBUM_VIDEO_SUFFIXES:
         return "video"
     return "photo"
 
 
 def album_needs_preview_check(path: str = "", name: str = "", media_type: Any = None) -> bool:
-    if album_media_kind(path, name, media_type) in {"burst", "panorama"}:
+    if album_media_kind(path, name, media_type) in {"burst", "panorama", "astro"}:
         return True
     try:
         if int(media_type) in _SESSION_PREVIEW_TYPES:
@@ -250,8 +505,11 @@ def album_session_dir(path: str) -> str:
         return ""
     posix = PurePosixPath(value)
     if posix.suffix.lower() in LOCAL_ALBUM_SUFFIXES:
-        return str(posix.parent)
-    return str(posix).rstrip("/")
+        posix = posix.parent
+    if album_is_thumbnail_dir_name(posix.name):
+        posix = posix.parent
+    text = str(posix).rstrip("/")
+    return "" if text in {".", "/"} else text
 
 
 def album_join_path(folder: str, name: str) -> str:
@@ -262,30 +520,40 @@ def album_join_path(folder: str, name: str) -> str:
     return f"{directory}/{file_name}"
 
 
-def album_listing_names(html_text: str) -> list[str]:
-    names: list[str] = []
+def album_listing_entries(html_text: str) -> list[dict[str, Any]]:
+    """Parse an HTTP directory index into files and folders."""
+    entries: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for match in _ALBUM_HREF.finditer(str(html_text or "")):
+    for match in _ALBUM_INDEX_ROW.finditer(str(html_text or "")):
         href = unescape(unquote(match.group(1))).replace("\\", "/").split("?", 1)[0].split("#", 1)[0]
-        if not href or href.endswith("/") or href in {".", "./", "..", "../"}:
+        if not href or href in {".", "./", "..", "../"}:
             continue
-        name = PurePosixPath(href).name
+        is_dir = href.endswith("/")
+        name = PurePosixPath(href.rstrip("/")).name
         key = name.lower()
         if not name or key in seen:
             continue
         seen.add(key)
-        names.append(name)
-    return names
+        entries.append({
+            "name": name,
+            "is_dir": is_dir,
+            "modification_time": album_listing_mtime(match.group(2) if match.lastindex and match.lastindex >= 2 else ""),
+        })
+    return entries
+
+
+def album_listing_names(html_text: str) -> list[str]:
+    return [str(item.get("name") or "") for item in album_listing_entries(html_text) if not item.get("is_dir")]
 
 
 def album_preview_name(names: list[str] | None) -> str:
     files = [str(name) for name in (names or []) if str(name).strip()]
     lookup = {name.lower(): name for name in files}
-    for preferred in (*_SESSION_THUMB_NAMES, "0.jpg"):
+    for preferred in (*_STACK_THUMB_NAMES, *_SESSION_THUMB_NAMES, *_STACK_JPEG_NAMES, "0.jpg"):
         if preferred in lookup:
             return lookup[preferred]
     for name in files:
-        if PurePosixPath(name).suffix.lower() in ALBUM_IMAGE_SUFFIXES:
+        if album_is_stack_display_image(name):
             return name
     return ""
 
@@ -294,11 +562,22 @@ def album_apply_listing_preview(entry: dict[str, Any], names: list[str]) -> dict
     out = dict(entry)
     remote = str(out.get("filePath") or "").strip()
     thumb = str(out.get("thumbnailPath") or "").strip()
-    folder = album_session_dir(thumb or remote)
+    name = str(out.get("fileName") or "").strip()
+    folder = album_session_dir(thumb or remote or name)
     preview = album_preview_name(names)
-    out["thumbnailPath"] = album_join_path(folder, preview) if preview else ""
+    listed = {str(item).lower(): str(item) for item in names if str(item).strip()}
     remote_name = PurePosixPath(album_http_path(remote)).name.lower()
-    listed = {name.lower() for name in names}
+    file_name = remote_name or name.lower()
+    out["previewResolved"] = True
+    if out.get("isDir") is True:
+        out["thumbnailPath"] = album_join_path(folder, preview) if preview else ""
+        out["fileAvailable"] = False
+        return out
+    if file_name in {item.lower() for item in (*_STACK_THUMB_NAMES, *_STACK_COUNTER_NAMES)} and file_name in listed:
+        out["thumbnailPath"] = album_join_path(folder, listed[file_name])
+        out["fileAvailable"] = True
+        return out
+    out["thumbnailPath"] = album_join_path(folder, preview) if preview else ""
     out["fileAvailable"] = bool(remote_name and remote_name in listed)
     return out
 
@@ -474,8 +753,38 @@ def camera_fov(model: DeviceModel | str | None = None, camera: Camera | str | No
     return table[_as_camera(camera)]
 
 
+def camera_fov_plausible(
+    fov_h: float,
+    fov_v: float,
+    camera: Camera | str | None = Camera.TELE,
+) -> bool:
+    """True when firmware H×V degrees look like that lens, not a stub or swapped field."""
+    if fov_h <= 0 or fov_v <= 0:
+        return False
+    if _as_camera(camera) == Camera.WIDE:
+        return 15.0 <= fov_h <= 80.0 and 8.0 <= fov_v <= 50.0
+    return 0.5 <= fov_h <= 8.0 and 0.3 <= fov_v <= 5.0
+
+
+def sky_map_camera(
+    selected: Camera | str | None,
+    *,
+    mosaic_grid: bool = False,
+    stacking: bool = False,
+) -> Camera:
+    """Lens used for the SKY map FOV rectangle.
+
+    The overlay follows the selected live camera, including mosaic panes.
+    Live stacking stays on tele so stack frames do not inflate.
+    """
+    _ = mosaic_grid
+    if stacking:
+        return Camera.TELE
+    return _as_camera(selected)
+
+
 def apply_camera_fov_defaults(telemetry: dict[str, Any], model: DeviceModel | str | None = None) -> dict[str, Any]:
-    """Fill missing FOV fields from the model. Does not replace firmware values."""
+    """Fill missing or implausible FOV fields from the model."""
     for camera, prefix in ((Camera.TELE, "tele"), (Camera.WIDE, "wide")):
         h_key = f"{prefix}_fov_h"
         v_key = f"{prefix}_fov_v"
@@ -484,11 +793,12 @@ def apply_camera_fov_defaults(telemetry: dict[str, Any], model: DeviceModel | st
             fov_v = float(telemetry.get(v_key) or 0)
         except (TypeError, ValueError):
             fov_h = fov_v = 0.0
-        if fov_h <= 0 or fov_v <= 0:
+        if not camera_fov_plausible(fov_h, fov_v, camera):
             fov_h, fov_v = camera_fov(model, camera)
             telemetry[h_key] = fov_h
             telemetry[v_key] = fov_v
-        if not telemetry.get(f"{prefix}_fov"):
+            telemetry[f"{prefix}_fov"] = f"{fov_h:.2f}° × {fov_v:.2f}°"
+        elif not telemetry.get(f"{prefix}_fov"):
             telemetry[f"{prefix}_fov"] = f"{fov_h:.2f}° × {fov_v:.2f}°"
     return telemetry
 
@@ -646,6 +956,10 @@ class ControlSettings:
     wide_exposure: str = ""
     gain: str = ""
     wide_gain: str = ""
+    photo_exposure: str = ""
+    photo_wide_exposure: str = ""
+    photo_gain: str = ""
+    photo_wide_gain: str = ""
     stack_count: str = ""
     stack_format: str = ""
     ir_filter: str = ""
@@ -696,6 +1010,10 @@ def control_settings_from_dict(data: Any) -> ControlSettings:
         wide_exposure=_control_text(raw.get("wide_exposure")),
         gain=_control_text(raw.get("gain")),
         wide_gain=_control_text(raw.get("wide_gain")),
+        photo_exposure=_control_text(raw.get("photo_exposure")),
+        photo_wide_exposure=_control_text(raw.get("photo_wide_exposure")),
+        photo_gain=_control_text(raw.get("photo_gain")),
+        photo_wide_gain=_control_text(raw.get("photo_wide_gain")),
         stack_count=_control_text(raw.get("stack_count")),
         stack_format=_control_text(raw.get("stack_format")),
         ir_filter=normalize_ir_filter(raw.get("ir_filter")),
@@ -735,17 +1053,41 @@ def control_settings_from_telemetry(
         if text:
             data[dest] = text
 
-    if persist_mode:
-        try:
-            mode = int(tel["shooting_mode"]) if tel.get("shooting_mode") is not None else 0
-        except (TypeError, ValueError, KeyError):
-            mode = 0
-        if mode in {1, 2}:
-            data["shooting_mode"] = mode
-    take("exposure_text", "exposure")
-    take("wide_exposure_text", "wide_exposure")
-    take("gain", "gain")
-    take("wide_gain", "wide_gain")
+    mode = 0
+    try:
+        mode = int(tel["shooting_mode"]) if tel.get("shooting_mode") is not None else 0
+    except (TypeError, ValueError, KeyError):
+        mode = 0
+    if persist_mode and mode in {1, 2}:
+        data["shooting_mode"] = mode
+    # Photo and DSO keep independent firmware tables. Never let a PHOTO
+    # 1/30 notify overwrite a saved DSO exposure such as 15s.
+    take("astro_exposure_text", "exposure")
+    take("astro_wide_exposure_text", "wide_exposure")
+    take("astro_gain", "gain")
+    take("astro_wide_gain", "wide_gain")
+    take("photo_exposure_text", "photo_exposure")
+    take("photo_wide_exposure_text", "photo_wide_exposure")
+    take("photo_gain", "photo_gain")
+    take("photo_wide_gain", "photo_wide_gain")
+    if mode == 1:
+        if not tel.get("photo_exposure_text"):
+            take("exposure_text", "photo_exposure")
+        if not tel.get("photo_wide_exposure_text"):
+            take("wide_exposure_text", "photo_wide_exposure")
+        if tel.get("photo_gain") in (None, "", "—"):
+            take("gain", "photo_gain")
+        if tel.get("photo_wide_gain") in (None, "", "—"):
+            take("wide_gain", "photo_wide_gain")
+    elif mode == 2:
+        if not tel.get("astro_exposure_text"):
+            take("exposure_text", "exposure")
+        if not tel.get("astro_wide_exposure_text"):
+            take("wide_exposure_text", "wide_exposure")
+        if tel.get("astro_gain") in (None, "", "—"):
+            take("gain", "gain")
+        if tel.get("astro_wide_gain") in (None, "", "—"):
+            take("wide_gain", "wide_gain")
     take("stack_count", "stack_count")
     take("stack_format", "stack_format")
     if tel.get("ir_filter") not in (None, "", "—"):
@@ -780,10 +1122,23 @@ def control_settings_to_telemetry(settings: ControlSettings | None) -> dict[str,
     out: dict[str, Any] = {}
     if item.shooting_mode in {1, 2}:
         out["shooting_mode"] = item.shooting_mode
+    photo = item.shooting_mode == 1
+    tele_exp = item.photo_exposure if photo else item.exposure
+    wide_exp = item.photo_wide_exposure if photo else item.wide_exposure
+    tele_gain = item.photo_gain if photo else item.gain
+    wide_gain = item.photo_wide_gain if photo else item.wide_gain
+    if tele_exp:
+        out["exposure_text"] = tele_exp
+    if wide_exp:
+        out["wide_exposure_text"] = wide_exp
     if item.exposure:
-        out["exposure_text"] = item.exposure
+        out["astro_exposure_text"] = item.exposure
     if item.wide_exposure:
-        out["wide_exposure_text"] = item.wide_exposure
+        out["astro_wide_exposure_text"] = item.wide_exposure
+    if item.photo_exposure:
+        out["photo_exposure_text"] = item.photo_exposure
+    if item.photo_wide_exposure:
+        out["photo_wide_exposure_text"] = item.photo_wide_exposure
 
     def put_int(name: str, text: str) -> None:
         if not text:
@@ -793,8 +1148,12 @@ def control_settings_to_telemetry(settings: ControlSettings | None) -> dict[str,
         except (TypeError, ValueError):
             out[name] = text
 
-    put_int("gain", item.gain)
-    put_int("wide_gain", item.wide_gain)
+    put_int("gain", tele_gain)
+    put_int("wide_gain", wide_gain)
+    put_int("astro_gain", item.gain)
+    put_int("astro_wide_gain", item.wide_gain)
+    put_int("photo_gain", item.photo_gain)
+    put_int("photo_wide_gain", item.photo_wide_gain)
     put_int("stack_count", item.stack_count)
     put_int("stack_format", item.stack_format)
     if item.ir_filter:
@@ -823,6 +1182,20 @@ def control_settings_to_telemetry(settings: ControlSettings | None) -> dict[str,
     put_int("wide_hue", item.wide_hue)
     put_int("wide_sharpness", item.wide_sharpness)
     return out
+
+
+def control_exposure_field(shooting_mode: int, wide: bool) -> str:
+    """Persisted exposure slot for this shooting mode and camera."""
+    if shooting_mode == 1:
+        return "photo_wide_exposure" if wide else "photo_exposure"
+    return "wide_exposure" if wide else "exposure"
+
+
+def control_gain_field(shooting_mode: int, wide: bool) -> str:
+    """Persisted gain slot for this shooting mode and camera."""
+    if shooting_mode == 1:
+        return "photo_wide_gain" if wide else "photo_gain"
+    return "wide_gain" if wide else "gain"
 
 
 def control_settings_patch(previous: ControlSettings | None, **changes: Any) -> ControlSettings:

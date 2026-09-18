@@ -106,9 +106,9 @@ def normalize_picture_matching(x: int, y: int, width: int, height: int) -> dict[
     """Normalize a tele-in-wide rectangle without a position-dependent span."""
     if width <= 0 or height <= 0:
         return {}
-    # Some firmware reports the same rectangle in the 3840x2160 still frame.
-    # Its dimensions are roughly twice the live-frame rectangle, even when a
-    # left/top rectangle does not cross the 1920x1080 boundary.
+    # Live Dual Lenses Locating is 1920x1080. Some firmware reports the same
+    # rectangle in the 3840x2160 still frame — roughly twice as large even
+    # when a left/top box still fits inside 1920x1080.
     high_resolution = (
         x + width > _PICTURE_MATCHING_W
         or y + height > _PICTURE_MATCHING_H
@@ -143,10 +143,14 @@ PARAM_ID_PHOTO_WIDE_GAIN = 0x0101100000000002
 PARAM_ID_ASTRO_WIDE_EXPOSURE = 0x0201100000000001
 PARAM_ID_ASTRO_WIDE_GAIN = 0x0201100000000002
 
-_EXPOSURE_PARAMS = {PARAM_ID_PHOTO_TELE_EXPOSURE, PARAM_ID_ASTRO_EXPOSURE}
-_GAIN_PARAMS = {PARAM_ID_PHOTO_TELE_GAIN, PARAM_ID_ASTRO_GAIN}
-_WIDE_EXPOSURE_PARAMS = {PARAM_ID_PHOTO_WIDE_EXPOSURE, PARAM_ID_ASTRO_WIDE_EXPOSURE}
-_WIDE_GAIN_PARAMS = {PARAM_ID_PHOTO_WIDE_GAIN, PARAM_ID_ASTRO_WIDE_GAIN}
+_PHOTO_EXPOSURE_PARAMS = {PARAM_ID_PHOTO_TELE_EXPOSURE}
+_ASTRO_EXPOSURE_PARAMS = {PARAM_ID_ASTRO_EXPOSURE}
+_PHOTO_GAIN_PARAMS = {PARAM_ID_PHOTO_TELE_GAIN}
+_ASTRO_GAIN_PARAMS = {PARAM_ID_ASTRO_GAIN}
+_PHOTO_WIDE_EXPOSURE_PARAMS = {PARAM_ID_PHOTO_WIDE_EXPOSURE}
+_ASTRO_WIDE_EXPOSURE_PARAMS = {PARAM_ID_ASTRO_WIDE_EXPOSURE}
+_PHOTO_WIDE_GAIN_PARAMS = {PARAM_ID_PHOTO_WIDE_GAIN}
+_ASTRO_WIDE_GAIN_PARAMS = {PARAM_ID_ASTRO_WIDE_GAIN}
 
 
 class _ModuleProxy:
@@ -496,6 +500,16 @@ class TelemetryTap:
             return None
         return item[0]
 
+    def _queue_mode_exposure_fields(self) -> None:
+        from .telemetry_view import apply_mode_exposure_fields
+
+        merged = {**self._state, **self._pending}
+        for key, value in apply_mode_exposure_fields(merged).items():
+            if value is None:
+                continue
+            if self._state.get(key) != value or key not in self._state:
+                self._pending[key] = value
+
     def update(self, changes: dict[str, Any], force: bool = False) -> None:
         if not changes:
             return
@@ -506,6 +520,7 @@ class TelemetryTap:
                     continue
                 if self._state.get(key) != value or key not in self._state:
                     self._pending[key] = value
+            self._queue_mode_exposure_fields()
             self._hold_unpublished_host()
             if not self._pending:
                 return
@@ -520,6 +535,7 @@ class TelemetryTap:
 
     def flush(self) -> None:
         with self._lock:
+            self._queue_mode_exposure_fields()
             self._hold_unpublished_host()
             if not self._pending:
                 return
@@ -583,6 +599,7 @@ class TelemetryTap:
                 CMD_NOTIFY_STATE_ASTRO_CALIBRATION,
                 CMD_NOTIFY_STATE_CAPTURE_RAW_LIVE_STACKING,
                 CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING,
+                CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING,
                 CMD_NOTIFY_POWER_OFF,
             ))
 
@@ -824,14 +841,22 @@ class TelemetryTap:
             message = self._parse("GeneralIntParam", data)
             param_id = int(message.param_id)
             value = int(message.value)
-            if param_id in _EXPOSURE_PARAMS:
-                return {"exposure_text": _exposure_name(value, self._model_id), "exposure_auto": int(message.mode) == 0}
-            if param_id in _GAIN_PARAMS:
-                return {"gain": value}
-            if param_id in _WIDE_EXPOSURE_PARAMS:
-                return {"wide_exposure_text": _exposure_name(value, self._model_id)}
-            if param_id in _WIDE_GAIN_PARAMS:
-                return {"wide_gain": value}
+            if param_id in _PHOTO_EXPOSURE_PARAMS:
+                return {"photo_exposure_text": _exposure_name(value, self._model_id), "exposure_auto": int(message.mode) == 0}
+            if param_id in _ASTRO_EXPOSURE_PARAMS:
+                return {"astro_exposure_text": _exposure_name(value, self._model_id)}
+            if param_id in _PHOTO_GAIN_PARAMS:
+                return {"photo_gain": value}
+            if param_id in _ASTRO_GAIN_PARAMS:
+                return {"astro_gain": value}
+            if param_id in _PHOTO_WIDE_EXPOSURE_PARAMS:
+                return {"photo_wide_exposure_text": _exposure_name(value, self._model_id)}
+            if param_id in _ASTRO_WIDE_EXPOSURE_PARAMS:
+                return {"astro_wide_exposure_text": _exposure_name(value, self._model_id)}
+            if param_id in _PHOTO_WIDE_GAIN_PARAMS:
+                return {"photo_wide_gain": value}
+            if param_id in _ASTRO_WIDE_GAIN_PARAMS:
+                return {"astro_wide_gain": value}
             return {}
         return {}
 
@@ -1070,15 +1095,23 @@ def normalize_client_status(full: dict[str, Any], model_id: str = "3") -> dict[s
                 value = int((entry or {}).get("value"))
             except (TypeError, ValueError, AttributeError):
                 continue
-            if param_id in _EXPOSURE_PARAMS:
-                put("exposure_text", _exposure_name(value, model_id))
+            if param_id in _PHOTO_EXPOSURE_PARAMS:
+                put("photo_exposure_text", _exposure_name(value, model_id))
                 put("exposure_auto", int((entry or {}).get("mode", 1)) == 0)
-            elif param_id in _GAIN_PARAMS:
-                put("gain", value)
-            elif param_id in _WIDE_EXPOSURE_PARAMS:
-                put("wide_exposure_text", _exposure_name(value, model_id))
-            elif param_id in _WIDE_GAIN_PARAMS:
-                put("wide_gain", value)
+            elif param_id in _ASTRO_EXPOSURE_PARAMS:
+                put("astro_exposure_text", _exposure_name(value, model_id))
+            elif param_id in _PHOTO_GAIN_PARAMS:
+                put("photo_gain", value)
+            elif param_id in _ASTRO_GAIN_PARAMS:
+                put("astro_gain", value)
+            elif param_id in _PHOTO_WIDE_EXPOSURE_PARAMS:
+                put("photo_wide_exposure_text", _exposure_name(value, model_id))
+            elif param_id in _ASTRO_WIDE_EXPOSURE_PARAMS:
+                put("astro_wide_exposure_text", _exposure_name(value, model_id))
+            elif param_id in _PHOTO_WIDE_GAIN_PARAMS:
+                put("photo_wide_gain", value)
+            elif param_id in _ASTRO_WIDE_GAIN_PARAMS:
+                put("astro_wide_gain", value)
     return changes
 
 
@@ -1146,8 +1179,7 @@ _DEMOTE_PREFIXES = (
     "disconnected",  # the app logs its own "Disconnected" line
     "dwarf stream video type is unknown",  # stream_type 0 = camera not streaming yet
     "skipping malformed astrogotostate",
-    # Centre-tap probes the encoders; on an unhomed mount the firmware answers
-    # NEED_RESET and the worker falls back to Dual Lenses Locating itself.
+    # Pointing reads probe the encoders; an unhomed mount answers NEED_RESET.
     "error motor need reset",
     "error cmd_step_motor_get_position code code_step_motor_need_reset",
     # Dwarf 3 firmware often rejects IANA/GMT/UTC timezone strings; SET_TIME

@@ -57,6 +57,7 @@ ColumnLayout {
     readonly property bool tintLinked: Theme.roleLinked(iface.tintRole)
     readonly property string themeStatus: {
         void Theme.savedThemesJson
+        void Theme.themeNamesJson
         void Theme.activeThemeId
         void Theme.paletteJson
         void Theme.hue
@@ -99,9 +100,12 @@ ColumnLayout {
         return keys
     }
     readonly property bool seedRole: iface.tintRole === "windowBase"
+    readonly property bool tintFixed: Theme.roleFixed(iface.tintRole)
     readonly property bool savedSlot: !Theme.isBuiltinId(Theme.activeThemeId)
+    readonly property bool renameable: Theme.canRenameTheme(Theme.activeThemeId)
     readonly property bool colourSplit: iface.width >= 620
     readonly property string probeThemeId: Theme.activeThemeId
+    readonly property string probeTintRole: iface.tintRole
     readonly property string probeAccentHex: {
         void Theme.paletteJson
         void Theme.hue
@@ -272,21 +276,21 @@ ColumnLayout {
             }
         }
         FieldLabel {
-            visible: iface.naming || iface.savedSlot
+            visible: iface.naming || iface.renameable
             text: iface.naming ? "SAVE AS" : "NAME"
         }
         HudField {
             id: themeNameField
-            visible: iface.naming || iface.savedSlot
+            visible: iface.naming || iface.renameable
             Layout.preferredWidth: iface.controlWidth
-            enabled: iface.naming || iface.savedSlot
-            placeholderText: iface.naming ? "Theme name" : "Saved name"
+            enabled: iface.naming || iface.renameable
+            placeholderText: iface.naming ? "Theme name" : "Theme name"
             accessibleName: iface.naming ? "New theme name" : "Theme name"
             maximumLength: 40
             onEditingFinished: {
                 if (iface.naming)
                     return
-                if (iface.savedSlot)
+                if (iface.renameable)
                     Theme.renameTheme(Theme.activeThemeId, text)
             }
             Binding {
@@ -297,10 +301,10 @@ ColumnLayout {
             }
         }
         FieldHint {
-            visible: iface.naming || iface.savedSlot
+            visible: iface.naming || iface.renameable
             text: iface.naming
                 ? "Name this look, then confirm. " + Theme.savedThemeCount + "/" + Theme.maxSavedThemes + " saved."
-                : "Rename this saved theme."
+                : "Rename this theme."
         }
         FieldLabel {
             visible: iface.naming || (Theme.themeEdited && !!Theme.activeTheme) || iface.savedSlot
@@ -370,9 +374,9 @@ ColumnLayout {
                 anchors.verticalCenter: parent.verticalCenter
             },
             HudChip {
-                label: iface.tintLinked ? "FOLLOWS" : (Theme.roleCustom(iface.tintRole) ? "UNLOCKED" : "STOCK")
-                tone: iface.tintLinked ? Theme.accent : (Theme.roleCustom(iface.tintRole) ? Theme.warning : Theme.textSecondary)
-                dim: !iface.tintLinked && !Theme.roleCustom(iface.tintRole)
+                label: iface.tintFixed ? "FIXED" : (iface.tintLinked ? "FOLLOWS" : (Theme.roleCustom(iface.tintRole) ? "UNLOCKED" : "STOCK"))
+                tone: iface.tintFixed ? Theme.textSecondary : (iface.tintLinked ? Theme.accent : (Theme.roleCustom(iface.tintRole) ? Theme.warning : Theme.textSecondary))
+                dim: iface.tintFixed || (!iface.tintLinked && !Theme.roleCustom(iface.tintRole))
                 anchors.verticalCenter: parent.verticalCenter
             }
         ]
@@ -421,9 +425,11 @@ ColumnLayout {
                     }
                 }
                 FieldHint {
-                    text: iface.tintRoleHint
-                        ? iface.tintRoleName + " — " + iface.tintRoleHint + " Click the preview or a swatch. WINDOW tints unedited colours. Double-click restores one colour."
-                        : "Click a swatch or the preview to edit that colour. WINDOW tints unedited colours. Double-click restores one colour."
+                    text: iface.tintFixed
+                        ? iface.tintRoleName + " — " + iface.tintRoleHint + " Click the preview or a swatch to inspect it. Status colours stay fixed."
+                        : iface.tintRoleHint
+                            ? iface.tintRoleName + " — " + iface.tintRoleHint + " Click the preview or a swatch. WINDOW tints unedited colours. Double-click restores one colour."
+                            : "Click a swatch or the preview to edit that colour. WINDOW tints unedited colours. Double-click restores one colour."
                 }
             }
 
@@ -432,6 +438,7 @@ ColumnLayout {
                 Layout.preferredWidth: iface.colourSplit ? 420 : -1
                 Layout.minimumWidth: 240
                 Layout.alignment: Qt.AlignTop
+                enabled: !iface.tintFixed
                 columns: 2
                 columnSpacing: Theme.s3
                 rowSpacing: Theme.s2

@@ -109,8 +109,11 @@ Item {
                                        && (skyPage.mapLive || mapLoader.active)
                                        && !skyPage.mapInitialReady
                                        && !skyPage.mapInitialFailed
+    readonly property string overlayFovText: (backend.previewStacking || backend.previewResult)
+                                            ? backend.skyFovText
+                                            : (skyPage.mosaicGrid ? backend.mosaicFovText : backend.skyFovText)
     readonly property string targetSubtitle: {
-        const fov = backend.mosaicFovText
+        const fov = skyPage.overlayFovText
         const live = (mapLoader.item && mapLoader.item.selectedKey)
                      ? mapLoader.item.selectedTarget
                      : null
@@ -400,7 +403,7 @@ Item {
                 }
                 HudChip {
                     visible: !skyHeader.tight
-                    label: backend.mosaicFovText
+                    label: skyPage.overlayFovText
                     tone: Theme.accent
                     Layout.alignment: Qt.AlignVCenter
                 }

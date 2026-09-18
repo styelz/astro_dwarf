@@ -21,6 +21,7 @@ import threading
 import time
 import traceback
 import queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,22 +30,32 @@ from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_
 from .domain import (
     ALBUM_IMAGE_SUFFIXES,
     ASTRO_MEDIA_TYPE,
+    BURST_MEDIA_TYPE,
+    PANORAMA_MEDIA_TYPE,
+    VIDEO_MEDIA_TYPE,
     album_apply_listing_preview,
     album_delete_payload,
     album_entry_key,
+    album_entry_preview_path,
+    album_folder_parent,
+    album_folder_root,
     album_http_path,
     album_http_url,
     album_is_astro_media,
+    album_is_media_file,
+    album_is_skip_dir,
+    album_sidecar_thumbnail_path,
     album_is_stack_display_image,
-    album_listing_names,
+    album_join_path,
+    album_listing_entries,
     album_needs_preview_check,
+    album_path_in_root,
     album_path_matches_model,
     album_prefixed_path,
     album_session_dir,
     album_stack_result_path,
     album_stack_session_camera,
     album_stack_session_target,
-    camera_fov,
     capture_defaults_from_dict,
     choose_latest_astro_stack,
     device_name_model,
@@ -251,13 +262,13 @@ def _telemetry_loop() -> None:
         tap = _tap
         if tap is None:
             continue
+        if not _connected.is_set():
+            last_refresh = time.monotonic()
+            continue
         try:
             tap.flush()
         except Exception:
             pass
-        if not _connected.is_set():
-            last_refresh = time.monotonic()
-            continue
         if tap.snapshot().get("power_off"):
             _connected.clear()
             continue
@@ -347,6 +358,7 @@ FUNCTIONS = {
     "shooting_mode": "perform_enter_shooting_mode",
     "open_camera": "perform_open_camera",
     "open_wide_camera": "perform_open_widecamera",
+    "set_preview_quality": "perform_set_preview_quality",
     "calibrate": "perform_calibration",
     "stop_calibrate": "perform_stop_calibration",
     "autofocus": "perform_start_autofocus",
@@ -418,6 +430,46 @@ _CAPTURE_TECHNIQUES = {
     "record_start": 4,
     "timelapse_start": 5,
 }
+# Photo-mode capture: tele uses module 1 / 100xx; wide uses module 2 / 120xx.
+# The installed SDK only exposes tele start/stop helpers.
+_PHOTO_CAPTURE_STARTS = {"burst_start", "record_start", "timelapse_start"}
+_PHOTO_CAPTURE_STOPS = {"burst_stop", "record_stop", "timelapse_stop"}
+_TELE_PHOTO_CAPTURE = {
+    "burst_start": ("ReqBurstPhoto", 10003, 1),
+    "burst_stop": ("ReqStopBurstPhoto", 10004, 1),
+    "record_start": ("ReqStartRecord", 10005, 1),
+    "record_stop": ("ReqStopRecord", 10006, 1),
+    "timelapse_start": ("ReqStartTimeLapse", 10033, 1),
+    "timelapse_stop": ("ReqStopTimeLapse", 10034, 1),
+}
+_WIDE_PHOTO_CAPTURE = {
+    "burst_start": ("ReqBurstPhoto", 12023, 2),
+    "burst_stop": ("ReqStopBurstPhoto", 12024, 2),
+    "record_start": ("ReqStartRecord", 12030, 2),
+    "record_stop": ("ReqStopRecord", 12031, 2),
+    "timelapse_start": ("ReqStartTimeLapse", 12025, 2),
+    "timelapse_stop": ("ReqStopTimeLapse", 12026, 2),
+}
+# Camera that accepted the current burst/record/timelapse start, so stop
+# stays on that sensor if the HUD selection changes mid-capture.
+_photo_capture_camera = ""
+
+
+def _photo_capture_route(
+    operation: str,
+    camera: str,
+    model: str = "",
+    active_camera: str = "",
+) -> tuple[str, int, int] | None:
+    """Protobuf name, firmware command, and module for a photo-mode capture."""
+    if operation not in _TELE_PHOTO_CAPTURE:
+        return None
+    selected = "wide" if str(camera or "").strip().lower() == "wide" else "tele"
+    if operation in _PHOTO_CAPTURE_STOPS:
+        selected = "wide" if str(active_camera or selected).strip().lower() == "wide" else "tele"
+    if selected == "wide" and str(model or "") != "Dwarf II":
+        return _WIDE_PHOTO_CAPTURE[operation]
+    return _TELE_PHOTO_CAPTURE[operation]
 
 
 def configure(device: dict[str, Any]) -> bool:
@@ -587,18 +639,6 @@ def _motor_position(motor_id: int) -> float | None:
     return None
 
 
-def _motor_run_to(motor_id: int, position: float) -> bool:
-    from dwarf_python_api.proto import motor_control_pb2
-
-    message = motor_control_pb2.ReqMotorRunTo()
-    message.id = int(motor_id)
-    message.end_position = float(position)
-    message.speed = 10
-    message.speed_ramping = 100
-    message.resolution_level = 3
-    return send_without_response(message, 14001, 6)
-
-
 def _wide_linkage_pixels(nx: float, ny: float) -> tuple[int, int]:
     """Map a 0-1 wide-view tap onto firmware DualCameraLinkage pixels.
 
@@ -624,12 +664,8 @@ def _send_dual_camera_linkage(x: int, y: int) -> bool:
     return send_without_response(message, 14009, 6)
 
 
-def _center_wide_view(nx: float, ny: float, fov_h: float, fov_v: float) -> dict[str, Any]:
-    """Slew so a 0-1 wide-frame tap lands on the wide-view crosshair.
-
-    Dual Lenses Locating is the official double-tap and works unhomed. RunTo
-    by FOV is only a fallback if that command fails.
-    """
+def _center_wide_view(nx: float, ny: float) -> dict[str, Any]:
+    """Send a 0-1 wide-frame tap as Dual Lenses Locating in 1920x1080 pixels."""
     nx = max(0.0, min(1.0, float(nx)))
     ny = max(0.0, min(1.0, float(ny)))
     x, y = _wide_linkage_pixels(nx, ny)
@@ -642,31 +678,14 @@ def _center_wide_view(nx: float, ny: float, fov_h: float, fov_v: float) -> dict[
         "ok": False,
     }
     log(
-        f"Center tap ({nx:.3f}, {ny:.3f}) → Dual Lenses Locating ({x}, {y}) of {_LINKAGE_W}×{_LINKAGE_H}",
+        f"Center tap ({nx:.3f}, {ny:.3f}) → Dual Lenses Locating ({x}, {y}) of "
+        f"{_LINKAGE_W}×{_LINKAGE_H}",
         "info",
     )
     if _send_dual_camera_linkage(x, y):
         detail["ok"] = True
         return detail
-    yaw_delta = (nx - 0.5) * float(fov_h)
-    pitch_delta = (0.5 - ny) * float(fov_v)
-    az = _motor_position(1)
-    alt = _motor_position(2) if az is not None else None
-    if az is None or alt is None:
-        log("Dual Lenses Locating failed and mount position is unavailable", "error")
-        return detail
-    log(
-        f"Center fallback RunTo yaw {yaw_delta:+.2f}° pitch {pitch_delta:+.2f}° "
-        f"from ({az:.2f}, {alt:.2f})",
-        "info",
-    )
-    moved = True
-    if abs(yaw_delta) >= 0.05:
-        moved = _motor_run_to(1, az + yaw_delta) and moved
-    if abs(pitch_delta) >= 0.05:
-        moved = _motor_run_to(2, alt + pitch_delta) and moved
-    detail["path"] = "runto"
-    detail["ok"] = bool(moved)
+    log("Dual Lenses Locating failed", "error")
     return detail
 
 
@@ -843,7 +862,7 @@ def _set_focus_position(target: int) -> bool:
 
 
 def sdk_call(operation: str, *args: Any) -> Any:
-    global _motors_unhomed
+    global _motors_unhomed, _photo_capture_camera
     if _api is None:
         raise RuntimeError("Telescope worker is not configured")
     if operation == "astro_mode":
@@ -856,7 +875,7 @@ def sdk_call(operation: str, *args: Any) -> Any:
     if operation == "location":
         return _set_location()
     if operation in ("calibrate", "polar", "goto", "goto_solar"):
-        # These home the steppers, so let the next centre tap probe positions again.
+        # These home the steppers, so later pointing reads can probe again.
         _motors_unhomed = False
     if operation in ("joystick", "stop_motors", "joystick_nudge"):
         from dwarf_python_api.proto import motor_control_pb2
@@ -881,18 +900,7 @@ def sdk_call(operation: str, *args: Any) -> Any:
     if operation == "center_tap":
         nx = float(args[0]) if args else 0.5
         ny = float(args[1]) if len(args) > 1 else 0.5
-        fov_h = float(args[2]) if len(args) > 2 else 0.0
-        fov_v = float(args[3]) if len(args) > 3 else 0.0
-        if fov_h <= 0 or fov_v <= 0:
-            snap = _tap.snapshot() if _tap else {}
-            try:
-                fov_h = float(snap.get("wide_fov_h") or 0)
-                fov_v = float(snap.get("wide_fov_v") or 0)
-            except (TypeError, ValueError):
-                fov_h = fov_v = 0.0
-        if fov_h <= 0 or fov_v <= 0:
-            fov_h, fov_v = camera_fov(_device.get("model"), "wide")
-        return _center_wide_view(nx, ny, fov_h, fov_v)
+        return _center_wide_view(nx, ny)
     if operation == "manual_focus":
         return _nudge_focus(int(args[0]) if args else _FOCUS_FAR)
     if operation == "set_focus":
@@ -939,19 +947,23 @@ def sdk_call(operation: str, *args: Any) -> Any:
 
         _mark_photo_autofocus_running()
         return send_without_response(focus_pb2.ReqNormalAutoFocus(), 15000, 8)
-    capture_messages = {
-        "burst_start": ("ReqBurstPhoto", 10003),
-        "burst_stop": ("ReqStopBurstPhoto", 10004),
-        "record_start": ("ReqStartRecord", 10005),
-        "record_stop": ("ReqStopRecord", 10006),
-        "timelapse_start": ("ReqStartTimeLapse", 10033),
-        "timelapse_stop": ("ReqStopTimeLapse", 10034),
-    }
-    if operation in capture_messages:
+    capture_spec = _photo_capture_route(
+        operation,
+        str(_device.get("camera") or ""),
+        str(_device.get("model") or ""),
+        _photo_capture_camera,
+    )
+    if capture_spec is not None:
         from dwarf_python_api.proto import camera_pb2
 
-        message_name, command = capture_messages[operation]
-        return send_without_response(getattr(camera_pb2, message_name)(), command, 1)
+        message_name, command, module_id = capture_spec
+        ok = send_without_response(getattr(camera_pb2, message_name)(), command, module_id)
+        if ok:
+            if operation in _PHOTO_CAPTURE_STARTS:
+                _photo_capture_camera = "wide" if module_id == 2 else "tele"
+            elif operation in _PHOTO_CAPTURE_STOPS:
+                _photo_capture_camera = ""
+        return ok
     if _device.get("model") in ("Dwarf 3", "Dwarf Mini"):
         if operation in ("calibrate", "stop_calibrate", "polar", "stop_polar", "goto", "goto_solar"):
             from dwarf_python_api.proto import astro_pb2
@@ -1586,10 +1598,11 @@ def discover_nearby_dwarfs(
 
 
 def _mark_disconnected() -> None:
-    global _motors_unhomed
+    global _motors_unhomed, _photo_capture_camera
     _connected.clear()
     # A reconnect may follow a calibration/home; probe the encoders again.
     _motors_unhomed = False
+    _photo_capture_camera = ""
     if _tap is not None:
         _tap.reset()
 
@@ -3121,14 +3134,22 @@ def camera_param_unchanged(
     camera = _param_camera(values)
     wide = camera == "wide"
     if operation in {"set_exposure", "set_photo_exposure"}:
-        live = snapshot.get("wide_exposure_text" if wide else "exposure_text")
+        if operation == "set_photo_exposure":
+            keys = ("photo_wide_exposure_text", "wide_exposure_text") if wide else ("photo_exposure_text", "exposure_text")
+        else:
+            keys = ("astro_wide_exposure_text", "wide_exposure_text") if wide else ("astro_exposure_text", "exposure_text")
+        live = next((snapshot.get(key) for key in keys if snapshot.get(key) not in (None, "", "—")), None)
         if live in (None, "", "—"):
             return False
         wanted = firmware_exposure_name(values[0] if values else "")
         return wanted == firmware_exposure_name(live)
     if operation in {"set_gain", "set_photo_gain"}:
         wanted = _param_int(values[0] if values else None)
-        live = _param_int(snapshot.get("wide_gain" if wide else "gain"))
+        if operation == "set_photo_gain":
+            keys = ("photo_wide_gain", "wide_gain") if wide else ("photo_gain", "gain")
+        else:
+            keys = ("astro_wide_gain", "wide_gain") if wide else ("astro_gain", "gain")
+        live = next((_param_int(snapshot.get(key)) for key in keys if snapshot.get(key) not in (None, "", "—")), None)
         return wanted is not None and wanted == live
     return False
 
@@ -3337,7 +3358,7 @@ def _album_http_exists(ip: str, path: str) -> bool:
         return False
 
 
-def _album_dir_names(ip: str, folder: str) -> list[str] | None:
+def _album_dir_listing(ip: str, folder: str) -> list[dict[str, Any]] | None:
     directory = album_http_path(folder).rstrip("/")
     if not directory:
         return None
@@ -3349,9 +3370,9 @@ def _album_dir_names(ip: str, folder: str) -> list[str] | None:
 
     request = urllib.request.Request(url, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=4) as response:
+        with urllib.request.urlopen(request, timeout=8) as response:
             content_type = str(response.headers.get("Content-Type") or "").lower()
-            body = response.read(64 * 1024)
+            body = response.read(1024 * 1024)
     except urllib.error.HTTPError:
         return None
     except Exception as exc:
@@ -3360,36 +3381,68 @@ def _album_dir_names(ip: str, folder: str) -> list[str] | None:
     text = body.decode("utf-8", errors="replace")
     if "html" not in content_type and not text.lstrip().lower().startswith("<html"):
         return None
-    return album_listing_names(text)
+    return album_listing_entries(text)
+
+
+def _album_dir_names(ip: str, folder: str) -> list[str] | None:
+    listing = _album_dir_listing(ip, folder)
+    if listing is None:
+        return None
+    return [str(item.get("name") or "") for item in listing if not item.get("is_dir")]
 
 
 def _album_resolve_session_previews(ip: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    resolved: list[dict[str, Any]] = []
-    for entry in entries:
+    folders: list[str] = []
+    seen: set[str] = set()
+    pending: list[tuple[int, dict[str, Any], str]] = []
+    resolved: list[dict[str, Any] | None] = [None] * len(entries)
+    for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             continue
         thumb = str(entry.get("thumbnailPath") or "").strip()
         remote = str(entry.get("filePath") or "").strip()
         name = str(entry.get("fileName") or "").strip()
-        if not album_needs_preview_check(remote or thumb, name, entry.get("mediaType")):
-            resolved.append(entry)
+        if entry.get("previewResolved") or not album_needs_preview_check(
+            remote or thumb,
+            name,
+            entry.get("mediaType"),
+        ):
+            resolved[index] = entry
             continue
-        listing = _album_dir_names(ip, album_session_dir(thumb or remote))
+        folder = album_session_dir(thumb or remote or name)
+        pending.append((index, entry, folder))
+        if folder and folder not in seen:
+            seen.add(folder)
+            folders.append(folder)
+    listings: dict[str, list[str] | None] = {}
+    if folders:
+        workers = min(8, len(folders))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {pool.submit(_album_dir_names, ip, folder): folder for folder in folders}
+            for fut in as_completed(futs):
+                listings[futs[fut]] = fut.result()
+    for index, entry, folder in pending:
+        listing = listings.get(folder)
         if listing is not None:
-            resolved.append(album_apply_listing_preview(entry, listing))
+            resolved[index] = album_apply_listing_preview(entry, listing)
             continue
         updated = dict(entry)
-        exists_remote = bool(remote) and _album_http_exists(ip, remote)
+        exists_remote = bool(str(entry.get("filePath") or "").strip()) and _album_http_exists(
+            ip,
+            str(entry.get("filePath") or ""),
+        )
+        thumb = str(entry.get("thumbnailPath") or "").strip()
         if thumb and _album_http_exists(ip, thumb):
             preview = thumb
-        elif exists_remote:
-            preview = remote
+        elif exists_remote and album_is_stack_display_image(str(entry.get("filePath") or "")):
+            preview = str(entry.get("filePath") or "")
         else:
             preview = ""
         updated["thumbnailPath"] = preview
         updated["fileAvailable"] = exists_remote
-        resolved.append(updated)
-    return resolved
+        updated["previewResolved"] = True
+        resolved[index] = updated
+    return [item for item in resolved if item is not None]
 
 
 def _ftp_download_file(ip: str, remote_path: str, dest: Path) -> None:
@@ -3483,7 +3536,8 @@ def _ftp_camera_entries() -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for name in listing.get("files") or []:
         remote = album_prefixed_path(f"{directory.rstrip('/')}/{name}", model)
-        thumb = album_prefixed_path(f"{directory.rstrip('/')}/Thumbnail/{name}", model)
+        sidecar = album_sidecar_thumbnail_path(directory, name)
+        thumb = album_prefixed_path(sidecar, model) if sidecar else ""
         entries.append({
             "fileName": str(name),
             "filePath": remote,
@@ -3510,6 +3564,7 @@ def astro_sessions_list() -> dict[str, Any]:
     except Exception as exc:
         log(f"Album type-0 astro scan skipped: {exc}", "debug")
     sessions = _album_filter_model(_album_unique_entries([sessions, extra]))
+    sessions = _album_resolve_session_previews(ip, sessions)
     log(f"Listed {len(sessions)} astro sessions on {ip}")
     return {"ip": ip, "sessions": sessions}
 
@@ -3541,9 +3596,90 @@ def album_camera_media_list() -> dict[str, Any]:
             if errors:
                 raise RuntimeError(errors[0]) from exc
             raise
+    entries = [
+        entry for entry in entries
+        if album_is_media_file(str(entry.get("filePath") or ""), str(entry.get("fileName") or ""))
+    ]
     entries = _album_resolve_session_previews(ip, entries)
     log(f"Listed {len(entries)} camera files on {ip}")
     return {"ip": ip, "sessions": entries}
+
+
+def _album_folder_media_type(path: str, is_dir: bool) -> int:
+    text = album_http_path(path).upper()
+    if album_is_astro_media(path, ""):
+        return ASTRO_MEDIA_TYPE
+    if "/BURST" in text:
+        return BURST_MEDIA_TYPE
+    if "PANORAMA" in text:
+        return PANORAMA_MEDIA_TYPE
+    if "/VIDEO" in text or (not is_dir and album_is_media_file(path) and path.lower().endswith((".mp4", ".mov", ".m4v", ".mkv", ".avi"))):
+        return VIDEO_MEDIA_TYPE
+    return 0
+
+
+def album_folder_list(folder: str = "") -> dict[str, Any]:
+    ip = _device_ip()
+    _album_model_matches()
+    model = str(_device.get("model") or "")
+    root = album_folder_root(model)
+    requested = album_http_path(folder).rstrip("/")
+    if not requested or not album_path_in_root(requested, root):
+        requested = root
+    listing = _album_dir_listing(ip, requested)
+    if listing is None:
+        raise RuntimeError(f"Could not list {requested} on the telescope")
+    entries: list[dict[str, Any]] = []
+    for item in listing:
+        name = str(item.get("name") or "").strip()
+        is_dir = bool(item.get("is_dir"))
+        if not name:
+            continue
+        if is_dir and album_is_skip_dir(name):
+            continue
+        if not is_dir and not album_is_media_file(name):
+            continue
+        remote = album_join_path(requested, name)
+        thumb = album_entry_preview_path({
+            "fileName": name,
+            "filePath": remote,
+            "isDir": is_dir,
+        }, requested)
+        entries.append({
+            "fileName": name,
+            "filePath": remote,
+            "thumbnailPath": thumb,
+            "mediaType": _album_folder_media_type(remote, is_dir),
+            "modificationTime": int(item.get("modification_time") or 0),
+            "isDir": is_dir,
+            "fileAvailable": not is_dir,
+        })
+    file_names = [str(entry.get("fileName") or "") for entry in entries if not entry.get("isDir")]
+    pending_dirs = [entry for entry in entries if entry.get("isDir")]
+    dir_resolved = _album_resolve_session_previews(ip, pending_dirs)
+    dir_iter = iter(dir_resolved)
+    resolved: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry.get("isDir"):
+            resolved.append(next(dir_iter, entry))
+            continue
+        if album_needs_preview_check(
+            str(entry.get("filePath") or ""),
+            str(entry.get("fileName") or ""),
+            entry.get("mediaType"),
+        ):
+            resolved.append(album_apply_listing_preview(entry, file_names))
+        else:
+            resolved.append(entry)
+    entries = resolved
+    log(f"Listed {len(entries)} album items in {requested} on {ip}")
+    return {
+        "ip": ip,
+        "directory": requested,
+        "parent": album_folder_parent(requested, root),
+        "root": root,
+        "sessions": entries,
+    }
 
 
 def album_delete(items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -4111,6 +4247,9 @@ def dispatch(message: dict[str, Any]) -> Any:
         return astro_sessions_list()
     if command == "album_camera_list":
         return album_camera_media_list()
+    if command == "album_folder_list":
+        args = list(message.get("args") or [])
+        return album_folder_list(str(args[0] if args else message.get("folder") or ""))
     if command == "album_delete":
         args = list(message.get("args") or [])
         items = args[0] if args else message.get("items") or []
@@ -4179,7 +4318,16 @@ def dispatch(message: dict[str, Any]) -> Any:
         return True
     if command == "photo" and str(_device.get("camera") or "") == "wide":
         command = "wide_photo"
-    if command in {"disconnect", "reboot", "power_down"}:
+    if command == "disconnect":
+        # Firmware keeps this client as host until SET_MASTERLOCK(false).
+        # The socket close alone leaves the telescope looking connected.
+        try:
+            _sdk_call_bounded("host_release", 8.0)
+        except Exception as exc:
+            log(f"Host release skipped: {exc}", "debug")
+        _mark_disconnected()
+        return sdk_call("disconnect")
+    if command in {"reboot", "power_down"}:
         _mark_disconnected()
         return sdk_call(command)
     if command in {"calibrate", "autofocus", "infinity", "polar", "track", "stack"}:
@@ -4194,6 +4342,19 @@ def dispatch(message: dict[str, Any]) -> Any:
         return result
     if command == "enter_camera":
         return _enter_astro_camera()
+    if command == "open_camera":
+        # Legacy TELE open can sit on the SDK's 150 s wait after wide is up.
+        # Bound it so a reconnect IDR kick cannot freeze the worker.
+        return _sdk_call_bounded(command, 8.0)
+    if command == "set_preview_quality":
+        # V3 tele open / IDR kick. Official app sends this after enter
+        # camera. A missing reply must not sit on the SDK's 150 s wait.
+        args = list(message.get("args") or [])
+        try:
+            level = int(args[0]) if args else 1
+        except (TypeError, ValueError):
+            level = 1
+        return _sdk_call_bounded(command, 8.0, level)
     if command == "set_auto_calibration":
         # Firmware often already has this flag. The V3 setter then never
         # replies and the SDK sits on its 150 s wait, freezing connect.
