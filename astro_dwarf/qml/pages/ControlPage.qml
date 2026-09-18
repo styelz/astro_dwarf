@@ -661,7 +661,7 @@ Item {
                     tooltip: (cameraPanel.miniBody
                         ? "Dwarf Mini has a single telephoto camera."
                         : "Camera for capture and settings.\nSWAP only rearranges the live panes; it does not change this.\nWide is fixed-focus; focus controls apply to Tele only.")
-                        + "\nSKY and mosaic frames use " + backend.mosaicFovText + "."
+                        + "\nSKY and mosaic frames stay on the telephoto field (" + backend.mosaicFovText + ")."
                     model: cameraPanel.miniBody ? ["Tele"] : ["Tele", "Wide"]
                     function syncFromDevice() {
                         if (cameraPanel.miniBody && backend.selectedDevice.camera === "wide")

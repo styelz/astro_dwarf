@@ -3194,7 +3194,9 @@ class AppBackend(QObject):
         return fov_h, fov_v, choice.value
 
     def _mosaic_fov(self) -> tuple[float, float, str]:
-        return self._device_fov()
+        # SKY / mosaic frames stay on the imaging lens. A live Wide preview
+        # switch (including a harness photo pass) must not inflate the overlay.
+        return self._device_fov(camera=Camera.TELE)
 
     def _mosaic_group_sessions(self, device_id: str, group_id: str) -> list[Session]:
         if not group_id:
