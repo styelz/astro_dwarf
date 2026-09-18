@@ -1,3 +1,14 @@
+"""Env-gated HUD harness server for scripts/harness.py.
+
+If a test needs a scene in live view, raise the camera about 45° with
+``scripts/harness.py nudge 90`` (joystick up). After power-on the head is
+usually pointing at the table; sometimes it is already raised, so snapshot
+first and skip the nudge when the room is already in frame.
+
+When the test work is finished, power down the device with
+``scripts/harness.py action power_down`` then ``confirm accept``.
+"""
+
 from __future__ import annotations
 
 import json

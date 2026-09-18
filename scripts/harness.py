@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""CLI for the env-gated Astro Dwarf UI test harness."""
+"""CLI for the env-gated Astro Dwarf UI test harness.
+
+If a test needs a scene in live view, raise the camera about 45° with
+``nudge 90`` (joystick up). After power-on the head is usually pointing at
+the table; sometimes it is already raised, so snapshot first and skip the
+nudge when the room is already in frame.
+
+When the test work is finished, power down the device with
+``action power_down`` then ``confirm accept``.
+"""
 
 from __future__ import annotations
 
@@ -82,7 +91,10 @@ def main(argv: list[str] | None = None) -> int:
     center = sub.add_parser("center", help="Wide-view Dual Lenses Locating tap")
     center.add_argument("nx", type=float)
     center.add_argument("ny", type=float)
-    nudge = sub.add_parser("nudge", help="Joystick nudge angle in degrees")
+    nudge = sub.add_parser(
+        "nudge",
+        help="Joystick nudge angle in degrees (90=up; use to lift the camera ~45° when live view is looking at the table)",
+    )
     nudge.add_argument("angle", type=float)
 
     open_item = sub.add_parser("open")
