@@ -59,6 +59,9 @@ _RESPONSE_TYPES = (1, 3)  # WsPacket.type: 0 request, 1 reply, 2 notification, 3
 CMD_ASTRO_START_CALIBRATION = 11000
 CMD_ASTRO_START_GOTO_DSO = 11002
 CMD_ASTRO_START_GOTO_SOLAR_SYSTEM = 11003
+CODE_ASTRO_NEED_CALIBRATION = -11511
+# Plate-solving retry during an in-progress GOTO/calibration.
+CODE_ASTRO_PLATE_SOLVING_FAILED = -11500
 CMD_ASTRO_START_EQ_SOLVING = 11018
 CMD_FOCUS_AUTO_FOCUS = 15000
 CMD_FOCUS_START_ASTRO_AUTO_FOCUS = 15004
@@ -597,6 +600,15 @@ class TelemetryTap:
             return
         with self._lock:
             self._responses[cmd] = (code, time.monotonic())
+        if cmd in (CMD_ASTRO_START_GOTO_DSO, CMD_ASTRO_START_GOTO_SOLAR_SYSTEM):
+            # Live TRACK is fire-and-forget. A reject such as NEED_CALIBRATION
+            # never starts goto_state=running, so the HUD pad stays latched
+            # unless this reply is published.
+            if code not in (0, CODE_ASTRO_PLATE_SOLVING_FAILED):
+                error = "need_calibration" if code == CODE_ASTRO_NEED_CALIBRATION else "failed"
+                self.update({"goto_state": "idle", "goto_error": error}, force=True)
+            elif code == 0:
+                self.update({"goto_error": ""}, force=True)
         if cmd == CMD_ASTRO_START_EQ_SOLVING:
             changes: dict[str, Any] = {}
             azi = getattr(message, "azi_err", None)
@@ -721,7 +733,10 @@ class TelemetryTap:
         if cmd == CMD_NOTIFY_POWER_OFF:
             return {"power_off": True}
         if cmd == CMD_NOTIFY_STATE_ASTRO_GOTO:
-            return self._decode_named_state("AstroGotoState", data, "goto_state", "goto_target", ASTRO_STATES)
+            changes = self._decode_named_state("AstroGotoState", data, "goto_state", "goto_target", ASTRO_STATES)
+            if changes.get("goto_state") in ("running", "solving"):
+                changes["goto_error"] = ""
+            return changes
         if cmd == CMD_NOTIFY_STATE_ASTRO_TRACKING:
             changes = self._decode_named_state(
                 "AstroTrackingState", data, "tracking_state", "tracking_target", OPERATION_STATES

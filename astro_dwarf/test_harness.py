@@ -1,9 +1,12 @@
 """Env-gated HUD harness server for scripts/harness.py.
 
-If a test needs a scene in live view, raise the camera about 45° with
-``scripts/harness.py nudge 90`` (joystick up). After power-on the head is
-usually pointing at the table; sometimes it is already raised, so snapshot
-first and skip the nudge when the room is already in frame.
+Indoor HUD scene: ``scripts/harness.py nudge 90`` (joystick up) lifts the
+head off the table. Snapshot first; skip that nudge when the room is already
+in frame.
+
+Sky work (calibrate, GOTO, mosaic, track) needs stars out the window, not
+the table or roof. Snapshot and read it. Polar pos homes to the polar pose
+(indoors: the roof) and is not a recovery for a failed mosaic or GOTO.
 
 When the test work is finished, power down the device with
 ``scripts/harness.py action power_down`` then ``confirm accept``.

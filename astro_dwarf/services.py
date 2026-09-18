@@ -1264,6 +1264,8 @@ SKY_WEB_FOV_JS = r"""
           return projected;
         }
       } catch (err) {}
+      ctl.lastStatus = "error";
+      return "error";
     }
     ctl.lastStatus = drawScreenGrid(el, box, p, stel);
     return ctl.lastStatus;

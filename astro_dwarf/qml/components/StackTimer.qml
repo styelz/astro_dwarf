@@ -45,7 +45,9 @@ Item {
     }
     readonly property string framesText: {
         if (timer.total > 0)
-            return timer.current + " / " + timer.total
+            return timer.stacked + " / " + timer.total
+        if (timer.stacked > 0)
+            return String(timer.stacked)
         if (timer.current > 0)
             return String(timer.current)
         return "—"
@@ -120,10 +122,10 @@ Item {
 
     Accessible.role: Accessible.Indicator
     Accessible.name: {
-        const frame = timer.total > 0 ? timer.current + " of " + timer.total + " frames" : timer.framesText + " frames"
-        const stacked = timer.stacked > 0 ? ", " + timer.stacked + " stacked" : ""
+        const frame = timer.total > 0 ? timer.stacked + " of " + timer.total + " stacked" : timer.framesText + " stacked"
+        const taken = timer.current > timer.stacked ? ", " + timer.current + " taken" : ""
         const target = timer.target ? ", " + timer.target : ""
-        return "Exposure " + timer.secondsText + " of " + timer.exposureText + ", " + frame + stacked + target
+        return "Exposure " + timer.secondsText + " of " + timer.exposureText + ", " + frame + taken + target
     }
 
     Timer {

@@ -444,16 +444,29 @@ class CacheEnhanceJob(QRunnable):
 
 class PreviewEnhanceSignals(QObject):
     finished = Signal(int, str, object)
+    paneFinished = Signal(int, int, object)
 
 
 class PreviewEnhanceJob(QRunnable):
-    def __init__(self, token: int, camera: str, image: QImage, profile: str, signals: PreviewEnhanceSignals):
+    def __init__(
+        self,
+        token: int,
+        camera: str,
+        image: QImage,
+        profile: str,
+        signals: PreviewEnhanceSignals,
+        pane: int = 0,
+    ):
         super().__init__()
         self._token = token
         self._camera = camera
         self._image = image
         self._profile = profile
         self._signals = signals
+        try:
+            self._pane = int(pane or 0)
+        except (TypeError, ValueError):
+            self._pane = 0
         self.setAutoDelete(True)
 
     def run(self) -> None:
@@ -462,6 +475,9 @@ class PreviewEnhanceJob(QRunnable):
         except Exception:
             out = self._image
         try:
-            self._signals.finished.emit(self._token, self._camera, out)
+            if self._pane >= 1:
+                self._signals.paneFinished.emit(self._token, self._pane, out)
+            else:
+                self._signals.finished.emit(self._token, self._camera, out)
         except RuntimeError:
             pass

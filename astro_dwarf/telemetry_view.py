@@ -11,6 +11,10 @@ STALE_AFTER_S = 60.0
 BATTERY_WARN = 20
 BATTERY_CRITICAL = 10
 STORAGE_LOW_GB = 2
+TRACKING_NEEDS_CALIBRATION_TOAST = "Tracking needs calibration"
+TRACKING_NEEDS_CALIBRATION_DETAIL = (
+    "Run CALIBRATE and wait for it to complete, then try TRACK again"
+)
 
 
 def battery_tone(percent: Any) -> str:
@@ -256,23 +260,27 @@ def _exposure_progress_seconds(raw: dict[str, Any]) -> tuple[float, float]:
 
 
 def _capture_frame_count(raw: dict[str, Any]) -> int | None:
-    """Prefer taken frames; fall back to stacked when current was not in this update."""
-    values: list[int] = []
-    for key in ("capture_current", "capture_stacked"):
-        value = raw.get(key)
-        if value is None:
-            continue
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
-            continue
-        if number:
-            values.append(number)
-        elif not values:
-            values.append(0)
-    if not values:
-        return None
-    return max(values)
+    """Stacked frames are the HUD counter; taken is only a fallback.
+
+    Firmware ``current_count`` increments when a subframe is captured, often
+    as the next exposure starts. ``stacked_count`` is frames actually in the
+    stack. Using ``max()`` made STACKING N/M run a frame ahead of the preview.
+    """
+    stacked = _as_int(raw.get("capture_stacked"))
+    if stacked is not None:
+        return stacked
+    return _as_int(raw.get("capture_current"))
+
+
+def tracking_needs_calibration(result: Any) -> bool:
+    """True when a TRACK/GOTO failure is the uncalibrated-mount reject."""
+    text = str(result or "").lower()
+    return (
+        "need_calibration" in text
+        or "needs calibration" in text
+        or "-11511" in text
+        or "run calibrate" in text
+    )
 
 
 def derive_activity(raw: dict[str, Any]) -> tuple[str, str]:
@@ -373,15 +381,16 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     view["tele_resolution"] = raw.get("tele_resolution") or ""
     view["tele_fov"] = raw.get("tele_fov") or ""
     view["wide_fov"] = raw.get("wide_fov") or ""
-    current = _capture_frame_count(raw)
+    progress = _capture_frame_count(raw)
     total_frames = raw.get("capture_total")
     stacked = raw.get("capture_stacked")
+    taken = raw.get("capture_current")
     capturing = bool(raw.get("capture_active") or raw.get("capture_state") == "running")
-    if capturing and current is not None and total_frames:
-        view["capture_text"] = f"{int(current)}/{int(total_frames)}"
-        view["capture_fraction"] = min(1.0, float(current) / float(total_frames))
-    elif capturing and current is not None:
-        view["capture_text"] = str(int(current))
+    if capturing and progress is not None and total_frames:
+        view["capture_text"] = f"{int(progress)}/{int(total_frames)}"
+        view["capture_fraction"] = min(1.0, float(progress) / float(total_frames))
+    elif capturing and progress is not None:
+        view["capture_text"] = str(int(progress))
         view["capture_fraction"] = 0.0
     else:
         view["capture_text"] = ""
@@ -392,7 +401,7 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     except (TypeError, ValueError):
         view["capture_stacked"] = 0
     try:
-        view["capture_current"] = int(current or 0)
+        view["capture_current"] = int(taken or 0)
     except (TypeError, ValueError):
         view["capture_current"] = 0
     try:
@@ -501,10 +510,18 @@ class AlertEngine:
                 add("info", f"GOTO started{suffix}", "", toast=False)
             elif state == "solving" and previous_state == "running":
                 add("info", f"GOTO plate-solving{suffix}", "", toast=False)
-            elif state in ("stopped", "idle") and previous_state in ("running", "solving", "stopping"):
+            elif (
+                state in ("stopped", "idle")
+                and previous_state in ("running", "solving", "stopping")
+                and not current.get("goto_error")
+            ):
                 tracking = current.get("tracking_state") == "running"
                 detail = "Target centred; tracking engaged" if tracking else "Target centred"
                 add("success", f"GOTO complete{suffix}", detail)
+        if changed("goto_error") and current.get("goto_error") == "need_calibration":
+            add("warning", TRACKING_NEEDS_CALIBRATION_TOAST, TRACKING_NEEDS_CALIBRATION_DETAIL)
+        elif changed("goto_error") and current.get("goto_error"):
+            add("error", "GOTO failed", "The telescope rejected the slew")
         # Calibration
         if changed("calibration_state"):
             state = current["calibration_state"]

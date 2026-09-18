@@ -161,10 +161,13 @@ from .stream_preview import (
 )
 from .telemetry_view import (
     AlertEngine,
+    TRACKING_NEEDS_CALIBRATION_DETAIL,
+    TRACKING_NEEDS_CALIBRATION_TOAST,
     camera_params_to_telemetry,
     derive_activity,
     exposure_seconds_from_text,
     format_telemetry,
+    tracking_needs_calibration,
 )
 
 
@@ -713,6 +716,72 @@ def mosaic_stack_preview_should_retarget(
     return pane >= 1 and pane != previous
 
 
+def mosaic_pane_may_replace_frozen(enhance_on: bool) -> bool:
+    """Enhanced stills may replace a contact-sheet cell frozen as a raw placeholder.
+
+    Live stacking enhance is slower than the HTTP JPEG. The first raw frame
+    used to freeze on that pane, so some cells stayed raw while the live
+    pane (and later completed panes) showed enhance.
+    """
+    return bool(enhance_on)
+
+
+def mosaic_finished_pane(stream_pane: int, result_pane: int) -> int:
+    """Pane that just finished stacking.
+
+    Capture-end telemetry can arrive after the worker has already moved
+    ``current_index`` to the next pane. The HTTP stream pane is the one
+    that actually received that stack.
+    """
+    try:
+        stream = int(stream_pane or 0)
+    except (TypeError, ValueError):
+        stream = 0
+    if stream >= 1:
+        return stream
+    try:
+        result = int(result_pane or 0)
+    except (TypeError, ValueError):
+        return 0
+    return result if result >= 1 else 0
+
+
+def mosaic_stack_reset_seen(stacked: int, taken: int, previous_seen: bool = False) -> bool:
+    """True after the stacked.jpg owner has reset for the current pane."""
+    if previous_seen:
+        return True
+    try:
+        return max(int(stacked or 0), int(taken or 0)) <= 1
+    except (TypeError, ValueError):
+        return False
+
+
+def mosaic_accept_live_frame(
+    *,
+    pane: int,
+    stream_pane: int,
+    stacked: int,
+    taken: int,
+    seen_reset: bool,
+) -> bool:
+    """Reject leftover stacked.jpg frames after a pane change.
+
+    Firmware keeps serving the previous pane on the same HTTP URL until the
+    new stack produces a frame. Copying that leftover into the next cell is
+    what made pane 1 and pane 2 look identical.
+    """
+    try:
+        pane = int(pane or 0)
+        stream = int(stream_pane or 0)
+        stacked = int(stacked or 0)
+        taken = int(taken or 0)
+    except (TypeError, ValueError):
+        return False
+    if pane < 1 or stream != pane or not seen_reset:
+        return False
+    return max(stacked, taken) >= 1
+
+
 def control_restore_should_set_auto_calibration(wanted: str, have: Any) -> bool:
     """True only when firmware has reported a different auto-calibration flag.
 
@@ -1137,14 +1206,18 @@ class AppBackend(QObject):
         self.mosaic_frames = MosaicFrames(self)
         set_mosaic_frames(self.mosaic_frames)
         self._mosaic_pane_urls: dict[str, str] = {}
+        self._raw_mosaic_panes: dict[int, QImage] = {}
+        self._mosaic_enhance_token: dict[int, int] = {}
         self._mosaic_firmware_pane = 1
         self._mosaic_firmware_stacked = 0
         self._mosaic_stream_pane = 0
+        self._mosaic_seen_stack_reset = False
+        self._stack_result_mosaic_pane = 0
         self._sky_mosaic_columns = 1
         self._sky_mosaic_rows = 1
         self._sky_mosaic_overlap = 0.2
         self._sky_preview_panes: list[dict[str, Any]] = []
-        self._sky_preview_key: tuple[int, int, float] | None = None
+        self._sky_preview_key: tuple[int, int, float, float] | None = None
         self._live_mosaic: dict[str, dict[str, Any]] = {}
         self._load_sky_mosaic_grid()
         self._restore_live_mosaics()
@@ -1177,6 +1250,7 @@ class AppBackend(QObject):
         self._enhance_cache_pool.setMaxThreadCount(1)
         self._preview_enhance_signals = PreviewEnhanceSignals(self)
         self._preview_enhance_signals.finished.connect(self._on_preview_enhanced)
+        self._preview_enhance_signals.paneFinished.connect(self._on_mosaic_pane_enhanced)
         self._enhance_cache_rev = 0
         self._enhance_inflight: set[str] = set()
         self._enhance_failed: set[str] = set()
@@ -1511,6 +1585,10 @@ class AppBackend(QObject):
                     self._device_activity[device_id] = wanted
         # Photo AF often reports idle without a prior running sample. Drop the
         # AUTO FOCUS latch from _begin_activity when firmware says it is done.
+        if data.get("goto_error") and self._device_activity.get(device_id) == "goto":
+            # TRACK ACK is not completion. A NEED_CALIBRATION reject never
+            # starts goto_state=running, so drop the latched STOP GOTO pad.
+            self._set_activity(device_id, "")
         if (
             data.get("autofocus_state") in ("idle", "stopped")
             and self._device_activity.get(device_id) in ("autofocus", "infinity")
@@ -2348,19 +2426,34 @@ class AppBackend(QObject):
             })
         return payload
 
+    def _sky_preview_cache_key(
+        self, columns: int, rows: int, overlap: float, position_angle: float
+    ) -> tuple[int, int, float, float]:
+        return (
+            int(columns),
+            int(rows),
+            round(float(overlap), 4),
+            round(float(position_angle) % 360.0, 3),
+        )
+
     def _cache_sky_preview_panes(
-        self, panes: list[dict[str, Any]], columns: int, rows: int, overlap: float
+        self,
+        panes: list[dict[str, Any]],
+        columns: int,
+        rows: int,
+        overlap: float,
+        position_angle: float = 0.0,
     ) -> None:
         payload = self._preview_pane_payload(panes)
         if len(payload) < 2:
             return
         self._sky_preview_panes = payload
-        self._sky_preview_key = (int(columns), int(rows), round(float(overlap), 4))
+        self._sky_preview_key = self._sky_preview_cache_key(columns, rows, overlap, position_angle)
 
     def _cached_sky_preview_panes(
-        self, columns: int, rows: int, overlap: float
+        self, columns: int, rows: int, overlap: float, position_angle: float = 0.0
     ) -> list[dict[str, Any]]:
-        key = (int(columns), int(rows), round(float(overlap), 4))
+        key = self._sky_preview_cache_key(columns, rows, overlap, position_angle)
         if self._sky_preview_key != key:
             return []
         panes = self._preview_pane_payload(self._sky_preview_panes)
@@ -3303,6 +3396,40 @@ class AppBackend(QObject):
             return max(1, int(self._mosaic_firmware_pane or 1))
         return 0
 
+    def _mosaic_capture_counts(self, device_id: str = "") -> tuple[int, int]:
+        owner = str(device_id or self._selected_device_id or "")
+        telemetry = self._device_telemetry.get(owner) or {}
+        try:
+            stacked = int(telemetry.get("capture_stacked") or 0)
+        except (TypeError, ValueError):
+            stacked = 0
+        try:
+            taken = int(telemetry.get("capture_current") or 0)
+        except (TypeError, ValueError):
+            taken = 0
+        return stacked, taken
+
+    def _note_mosaic_stack_reset(self, device_id: str = "") -> None:
+        stacked, taken = self._mosaic_capture_counts(device_id)
+        if mosaic_stack_reset_seen(stacked, taken, self._mosaic_seen_stack_reset):
+            self._mosaic_seen_stack_reset = True
+
+    def _mosaic_live_frame_belongs(self, pane: int, device_id: str = "") -> bool:
+        stacked, taken = self._mosaic_capture_counts(device_id)
+        return mosaic_accept_live_frame(
+            pane=pane,
+            stream_pane=self._mosaic_stream_pane,
+            stacked=stacked,
+            taken=taken,
+            seen_reset=self._mosaic_seen_stack_reset,
+        )
+
+    def _published_mosaic_live_pane(self, device_id: str = "") -> int:
+        pane = self._current_mosaic_live_pane(device_id)
+        if pane < 1 or not self._mosaic_live_frame_belongs(pane, device_id):
+            return 0
+        return pane
+
     def _mosaic_capture_continues(self, device_id: str = "") -> bool:
         owner = str(device_id or self._selected_device_id or "")
         live = self._live_mosaic.get(owner) or {}
@@ -3322,52 +3449,124 @@ class AppBackend(QObject):
             session_running=session_running,
         )
 
-    def _remember_mosaic_live_frame(self, camera: str, image: QImage) -> None:
+    def _remember_mosaic_live_frame(self, camera: str, image: QImage, *, raw: bool = False) -> None:
         if camera != "tele" or image is None or image.isNull():
             return
         if not self._telemetry_capturing(self._selected_device_id):
             return
         pane = self._current_mosaic_live_pane()
-        if pane < 1 or self.mosaic_frames.frozen(pane):
+        if pane < 1:
             return
         if self._mosaic_stream_pane and pane != self._mosaic_stream_pane:
+            return
+        if not self._mosaic_live_frame_belongs(pane):
+            return
+        if raw:
+            if not self.mosaic_frames.frozen(pane):
+                self._raw_mosaic_panes[pane] = image.copy()
+            return
+        if self.mosaic_frames.frozen(pane):
             return
         existed = pane in self.mosaic_frames.indexes()
         self.mosaic_frames.put(pane, image)
         if not existed:
             self.mosaicPreviewChanged.emit()
 
-    def _snapshot_mosaic_pane(self, index: int) -> None:
+    def _publish_mosaic_pane_url(self, index: int, *, notify: bool = True) -> bool:
+        """Put a completed pane still on the sky FOV overlay.
+
+        Contact-sheet frames can arrive via live remember without a data URL.
+        Sky only sees ``_mosaic_pane_urls``, so a freeze that skipped store
+        left one pane blank on SKY.
+        """
+        try:
+            pane = int(index or 0)
+        except (TypeError, ValueError):
+            return False
+        if pane < 1:
+            return False
+        url = live_frame_data_url(self.mosaic_frames.peek(pane))
+        key = str(pane)
+        if not url or self._mosaic_pane_urls.get(key) == url:
+            return False
+        self._mosaic_pane_urls[key] = url
+        if notify:
+            self.mosaicPreviewChanged.emit()
+        return True
+
+    def _backfill_mosaic_pane_urls(self, *, notify: bool = True) -> None:
+        changed = False
+        for index in self.mosaic_frames.indexes():
+            if self._publish_mosaic_pane_url(index, notify=False):
+                changed = True
+        if changed and notify:
+            self.mosaicPreviewChanged.emit()
+
+    def _snapshot_mosaic_pane(self, index: int, *, from_live: bool | None = None) -> None:
         if index < 1:
             return
         stored = self.mosaic_frames.peek(index)
-        if self.mosaic_frames.frozen(index) and not stored.isNull():
-            return
-        live = self.live_images.peek("tele")
-        if live.isNull():
-            live = self.live_images.peek("wide")
-        capturing = self._telemetry_capturing(self._selected_device_id)
-        if not live.isNull() and (stored.isNull() or capturing):
-            self._store_mosaic_pane_image(index, live)
-        self.mosaic_frames.freeze(index)
+        already_frozen = self.mosaic_frames.frozen(index) and not stored.isNull()
+        if not already_frozen:
+            copy_live = self._mosaic_live_frame_belongs(index) if from_live is None else from_live
+            if copy_live:
+                live = self.live_images.peek("tele")
+                if live.isNull():
+                    live = self.live_images.peek("wide")
+                capturing = self._telemetry_capturing(self._selected_device_id)
+                if not live.isNull() and (stored.isNull() or capturing):
+                    self._keep_mosaic_pane_raw(index)
+                    self._store_mosaic_pane_image(index, live)
+            stored = self.mosaic_frames.peek(index)
+            if not stored.isNull():
+                self.mosaic_frames.freeze(index)
+                self._publish_mosaic_pane_url(index)
+        else:
+            self._publish_mosaic_pane_url(index)
+        self._keep_mosaic_pane_raw(index)
+        self._finish_mosaic_pane_still(index)
 
-    def _store_mosaic_pane_image(self, index: int, image: QImage) -> None:
+    def _keep_mosaic_pane_raw(self, index: int) -> None:
+        if index < 1:
+            return
+        existing = self._raw_mosaic_panes.get(index)
+        if existing is not None and not existing.isNull():
+            return
+        raw = self._raw_preview_images.get("tele") or QImage()
+        if raw.isNull():
+            return
+        if not self._mosaic_live_frame_belongs(index) and index != self._mosaic_stream_pane:
+            return
+        self._raw_mosaic_panes[index] = raw.copy()
+
+    def _finish_mosaic_pane_still(self, index: int) -> None:
+        raw = self._raw_mosaic_panes.get(index) or QImage()
+        if raw.isNull():
+            return
+        if mosaic_pane_may_replace_frozen(self._enhance_images):
+            self._queue_mosaic_pane_enhance(index, raw)
+            return
+        self._mosaic_enhance_token[index] = int(self._mosaic_enhance_token.get(index, 0)) + 1
+        self._store_mosaic_pane_image(index, raw, replace_frozen=True)
+
+    def _store_mosaic_pane_image(self, index: int, image: QImage, *, replace_frozen: bool = False) -> None:
         if index < 1 or image is None or image.isNull():
             return
-        self.mosaic_frames.put(index, image)
-        url = live_frame_data_url(self.mosaic_frames.peek(index))
-        key = str(index)
-        if url and self._mosaic_pane_urls.get(key) != url:
-            self._mosaic_pane_urls[key] = url
-            self.mosaicPreviewChanged.emit()
+        self.mosaic_frames.put(index, image, replace_frozen=replace_frozen)
+        self._publish_mosaic_pane_url(index)
 
     def _clear_mosaic_preview(self) -> None:
         had = bool(self.mosaic_frames.indexes() or self._mosaic_pane_urls or self.mosaic_frames.group())
+        for pane in list(self._mosaic_enhance_token):
+            self._mosaic_enhance_token[pane] = int(self._mosaic_enhance_token.get(pane, 0)) + 1
         self.mosaic_frames.clear()
         self._mosaic_pane_urls = {}
+        self._raw_mosaic_panes = {}
         self._mosaic_firmware_pane = 1
         self._mosaic_firmware_stacked = 0
         self._mosaic_stream_pane = 0
+        self._mosaic_seen_stack_reset = False
+        self._stack_result_mosaic_pane = 0
         if had:
             self.mosaicPreviewChanged.emit()
 
@@ -3388,8 +3587,10 @@ class AppBackend(QObject):
             previous_stacked = 0
         pane = max(1, min(panes, int(self._mosaic_firmware_pane or 1)))
         if previous_stacked >= 2 and stacked <= 1 and pane < panes:
-            self._snapshot_mosaic_pane(pane)
+            self._snapshot_mosaic_pane(pane, from_live=False)
             pane += 1
+            self._mosaic_seen_stack_reset = True
+            self._mosaic_stream_pane = pane
         self._mosaic_firmware_stacked = stacked
         return pane
 
@@ -3419,19 +3620,24 @@ class AppBackend(QObject):
             self._mosaic_pane_urls = {}
             self._mosaic_firmware_pane = 1
             self._mosaic_firmware_stacked = 0
+            self._mosaic_seen_stack_reset = False
+            self._stack_result_mosaic_pane = 0
         if not active:
             if stored and not same_group:
                 self._clear_mosaic_preview()
             elif stored:
                 before = self.mosaic_frames.snapshot()[:4]
                 self.mosaic_frames.set_layout(columns, rows, 0, False, stored)
+                self._backfill_mosaic_pane_urls(notify=False)
                 if before != self.mosaic_frames.snapshot()[:4]:
                     self.mosaicPreviewChanged.emit()
             return
         before = self.mosaic_frames.snapshot()
+        ready_before = self._mosaic_seen_stack_reset
+        self._note_mosaic_stack_reset(owner)
         self.mosaic_frames.set_layout(columns, rows, index, True, group)
         after = self.mosaic_frames.snapshot()
-        if before[:4] != after[:4]:
+        if before[:4] != after[:4] or ready_before != self._mosaic_seen_stack_reset:
             self.mosaicPreviewChanged.emit()
 
     @Property("QVariantMap", notify=mosaicPreviewChanged)
@@ -3454,11 +3660,7 @@ class AppBackend(QObject):
             "columns": int((live or {}).get("columns") or columns),
             "rows": int((live or {}).get("rows") or rows),
             "current_index": int((live or {}).get("current_index") or current or 0),
-            "live_pane": mosaic_live_pane(
-                int((live or {}).get("current_index") or current or 0),
-                phase,
-                bool(live or active),
-            ),
+            "live_pane": self._published_mosaic_live_pane(),
             "total": int((live or {}).get("total") or (columns * rows) or 0),
             "phase": phase,
             "label": str((live or {}).get("label") or (current_session.name if isinstance(current_session, Session) else "")),
@@ -3469,6 +3671,7 @@ class AppBackend(QObject):
 
     @Property("QVariantMap", notify=mosaicPreviewChanged)
     def skyMosaicPaneUrls(self) -> dict[str, str]:
+        self._backfill_mosaic_pane_urls(notify=False)
         return dict(self._mosaic_pane_urls)
 
     @Property(str, notify=selectedDeviceChanged)
@@ -3590,7 +3793,11 @@ class AppBackend(QObject):
                     dec_degrees=float(center.dec_degrees),
                 )
                 self._cache_sky_preview_panes(
-                    payload["panes"], columns_n, rows_n, payload["overlap"]
+                    payload["panes"],
+                    columns_n,
+                    rows_n,
+                    payload["overlap"],
+                    payload["position_angle"],
                 )
             except ValueError:
                 payload["mode"] = "center"
@@ -4269,6 +4476,7 @@ class AppBackend(QObject):
             return
         self._preview_stack_mode = stacking
         self.previewStackingChanged.emit()
+        self._refresh_preview_enhance()
 
     def _preview_has_frame(self) -> bool:
         for camera in ("tele", "wide"):
@@ -4296,6 +4504,7 @@ class AppBackend(QObject):
         self._stack_result_since = 0
         self._stack_result_started = 0.0
         self._stack_result_final_detail = ""
+        self._stack_result_mosaic_pane = 0
 
     def _preview_camera_name(self, device_id: str) -> str:
         session_id = self._active_sessions.get(device_id)
@@ -4407,7 +4616,11 @@ class AppBackend(QObject):
             return
         self.add_log("info", "Capture ended — loading the completed stack", device_id)
         self._sync_mosaic_preview(device_id)
-        self._snapshot_mosaic_pane(self._mosaic_result_pane_for(device_id))
+        self._stack_result_mosaic_pane = mosaic_finished_pane(
+            self._mosaic_stream_pane,
+            self._mosaic_result_pane_for(device_id),
+        )
+        self._snapshot_mosaic_pane(self._stack_result_mosaic_pane)
         self._start_stack_result_fetch(device_id, target, camera, since)
 
     def _start_stack_result_fetch(
@@ -4425,6 +4638,11 @@ class AppBackend(QObject):
         self._stack_result_camera = str(camera or self._preview_camera_name(device_id) or "tele")
         self._stack_result_since = int(since or self._stack_result_since_for(device_id))
         self._stack_result_started = time.monotonic()
+        if not self._stack_result_mosaic_pane:
+            self._stack_result_mosaic_pane = mosaic_finished_pane(
+                self._mosaic_stream_pane,
+                self._mosaic_result_pane_for(device_id),
+            )
         self._fetch_stack_result_image()
 
     def _fetch_stack_result_image(self) -> None:
@@ -4467,22 +4685,33 @@ class AppBackend(QObject):
         shown = image.copy()
         self._discard_stack_result_file(path)
         self._raw_preview_images["tele"] = shown
+        pane = self._stack_result_mosaic_pane or mosaic_finished_pane(
+            self._mosaic_stream_pane,
+            self._mosaic_result_pane_for(device_id),
+        )
+        if pane >= 1:
+            self._raw_mosaic_panes[pane] = shown.copy()
         if self._should_enhance_preview():
             current = self.live_images.peek("tele")
             if current.isNull():
                 self.live_images.update("tele", shown)
                 self.live_images.notify("tele")
             self._queue_preview_enhance("tele", shown)
+            if pane >= 1:
+                if self.mosaic_frames.peek(pane).isNull():
+                    self._store_mosaic_pane_image(pane, shown)
+                self._queue_mosaic_pane_enhance(pane, shown)
         else:
             self.live_images.update("tele", shown)
             self.live_images.notify("tele")
+            if pane >= 1:
+                self._store_mosaic_pane_image(pane, shown, replace_frozen=True)
         self._stack_result_loaded = True
         self._stack_result_timer.stop()
         self._preview_result_detail = self._stack_result_final_detail or _STACK_RESULT_READY
         self._set_preview_status(self._preview_result_detail)
         self.previewResultChanged.emit()
         self._sync_mosaic_preview(device_id)
-        self._store_mosaic_pane_image(self._mosaic_result_pane_for(device_id), shown)
         self.add_log("info", "Showing the completed stack in live preview", device_id)
         return True
 
@@ -4523,7 +4752,11 @@ class AppBackend(QObject):
             if self._preview_result:
                 self._clear_preview_result()
             self._attach_preview_streams(device_id, "Capture started — reconnecting stacking preview…")
-            self._mosaic_stream_pane = self._current_mosaic_live_pane(device_id)
+            next_stream = self._current_mosaic_live_pane(device_id)
+            if next_stream != self._mosaic_stream_pane:
+                self._mosaic_seen_stack_reset = False
+                self._note_mosaic_stack_reset(device_id)
+            self._mosaic_stream_pane = next_stream
             return
         if not self._preview_active:
             return
@@ -4545,7 +4778,12 @@ class AppBackend(QObject):
         if mode_changed or urls_changed or force_mosaic:
             was_stacking = self._preview_stack_mode
             if not stacking and was_stacking:
-                self._snapshot_mosaic_pane(self._mosaic_result_pane_for(device_id))
+                self._snapshot_mosaic_pane(
+                    mosaic_finished_pane(
+                        self._mosaic_stream_pane,
+                        self._mosaic_result_pane_for(device_id),
+                    )
+                )
                 if self._mosaic_capture_continues(device_id):
                     if self._preview_result:
                         self._clear_preview_result()
@@ -4578,7 +4816,11 @@ class AppBackend(QObject):
                 )
             self._retarget_preview_streams(tele_url, wide_url)
             if stacking:
-                self._mosaic_stream_pane = live_pane or self._mosaic_stream_pane
+                next_stream = live_pane or self._mosaic_stream_pane
+                if next_stream != self._mosaic_stream_pane:
+                    self._mosaic_seen_stack_reset = False
+                    self._note_mosaic_stack_reset(device_id)
+                self._mosaic_stream_pane = next_stream
 
     def _retarget_preview_streams(self, tele_url: str, wide_url: str, timeout: float = 20) -> None:
         """Switch stream URLs without clearing the last frame or sending go_live."""
@@ -4728,6 +4970,38 @@ class AppBackend(QObject):
         )
         self._enhance_pool.start(job)
 
+    def _queue_mosaic_pane_enhance(self, pane: int, raw: QImage) -> None:
+        try:
+            pane = int(pane or 0)
+        except (TypeError, ValueError):
+            return
+        if pane < 1 or raw is None or raw.isNull() or not self._enhance_images:
+            return
+        self._mosaic_enhance_token[pane] = int(self._mosaic_enhance_token.get(pane, 0)) + 1
+        token = self._mosaic_enhance_token[pane]
+        job = PreviewEnhanceJob(
+            token,
+            "mosaic",
+            raw.copy(),
+            self._preview_enhance_profile(),
+            self._preview_enhance_signals,
+            pane,
+        )
+        self._enhance_pool.start(job)
+
+    def _on_mosaic_pane_enhanced(self, token: int, pane: int, image) -> None:
+        if self._shut_down:
+            return
+        try:
+            pane = int(pane or 0)
+        except (TypeError, ValueError):
+            return
+        if pane < 1 or token != self._mosaic_enhance_token.get(pane):
+            return
+        if not isinstance(image, QImage) or image.isNull() or not self._enhance_images:
+            return
+        self._store_mosaic_pane_image(pane, image, replace_frozen=True)
+
     def _on_preview_enhanced(self, token: int, camera: str, image) -> None:
         if self._shut_down or not self._preview_can_enhance():
             return
@@ -4740,23 +5014,40 @@ class AppBackend(QObject):
         self.live_images.update(camera, image)
         self._remember_mosaic_live_frame(camera, image)
         if camera == "tele" and self._preview_result:
-            self._store_mosaic_pane_image(self._mosaic_result_pane_for(), image)
+            self._store_mosaic_pane_image(
+                self._stack_result_mosaic_pane or mosaic_finished_pane(
+                    self._mosaic_stream_pane,
+                    self._mosaic_result_pane_for(),
+                ),
+                image,
+                replace_frozen=True,
+            )
         if preview_window_is_live(self._preview_window):
             self.live_images.notify(camera)
 
     def _refresh_preview_enhance(self) -> None:
-        if not self._preview_can_enhance():
-            return
-        for camera in ("tele", "wide"):
-            raw = self._raw_preview_images.get(camera) or QImage()
-            if raw.isNull():
+        if self._preview_can_enhance():
+            for camera in ("tele", "wide"):
+                raw = self._raw_preview_images.get(camera) or QImage()
+                if raw.isNull():
+                    continue
+                if self._should_enhance_preview():
+                    self._queue_preview_enhance(camera, raw)
+                    continue
+                self._enhance_job_token[camera] = int(self._enhance_job_token.get(camera, 0)) + 1
+                self.live_images.update(camera, raw)
+                self.live_images.notify(camera)
+        live_pane = self._current_mosaic_live_pane()
+        for pane, raw in list(self._raw_mosaic_panes.items()):
+            if raw is None or raw.isNull():
                 continue
-            if self._should_enhance_preview():
-                self._queue_preview_enhance(camera, raw)
+            if pane == live_pane and not self.mosaic_frames.frozen(pane):
                 continue
-            self._enhance_job_token[camera] = int(self._enhance_job_token.get(camera, 0)) + 1
-            self.live_images.update(camera, raw)
-            self.live_images.notify(camera)
+            if mosaic_pane_may_replace_frozen(self._enhance_images):
+                self._queue_mosaic_pane_enhance(pane, raw)
+                continue
+            self._mosaic_enhance_token[pane] = int(self._mosaic_enhance_token.get(pane, 0)) + 1
+            self._store_mosaic_pane_image(pane, raw, replace_frozen=True)
 
     def _on_tele_frame(self, image) -> None:
         self._on_camera_frame("tele", image)
@@ -4789,7 +5080,7 @@ class AppBackend(QObject):
             shown = self.live_images.peek(camera)
             if shown.isNull():
                 self.live_images.update(camera, raw)
-                self._remember_mosaic_live_frame(camera, raw)
+            self._remember_mosaic_live_frame(camera, raw, raw=True)
             self._queue_preview_enhance(camera, raw)
         else:
             self.live_images.update(camera, raw)
@@ -5195,30 +5486,36 @@ class AppBackend(QObject):
         columns, rows, overlap = self._sky_mosaic_grid()
         if columns <= 1 and rows <= 1:
             return False
-        target = self._live_mosaic_center()
-        if target is None or target.ra_hours is None or target.dec_degrees is None:
-            self._toast(
-                "Select the target on SKY first",
-                "warning",
-                "A 2×2 or larger grid needs RA/Dec so each pane can be computed.",
-            )
-            return False
         fov_h, fov_v, _camera = self._mosaic_fov()
         pa = self._mosaic_pa()
-        try:
-            panes = mosaic_pane_footprints(
-                target,
-                columns,
-                rows,
-                fov_h,
-                fov_v,
-                overlap,
-                south_up=self._mosaic_south_up(),
-                position_angle=pa,
-            )
-        except ValueError as exc:
-            self._toast("Could not compute mosaic panes", "error", str(exc))
-            return False
+        panes = self._cached_sky_preview_panes(columns, rows, overlap, pa)
+        target = self._live_mosaic_center()
+        if not panes:
+            if target is None or target.ra_hours is None or target.dec_degrees is None:
+                self._toast(
+                    "Select the target on SKY first",
+                    "warning",
+                    "A 2×2 or larger grid needs RA/Dec so each pane can be computed.",
+                )
+                return False
+            try:
+                panes = mosaic_pane_footprints(
+                    target,
+                    columns,
+                    rows,
+                    fov_h,
+                    fov_v,
+                    overlap,
+                    south_up=self._mosaic_south_up(),
+                    position_angle=pa,
+                )
+            except ValueError as exc:
+                self._toast("Could not compute mosaic panes", "error", str(exc))
+                return False
+        if target is None or target.ra_hours is None or target.dec_degrees is None:
+            ra_mean = sum(float(pane["ra_hours"]) for pane in panes) / len(panes)
+            dec_mean = sum(float(pane["dec_degrees"]) for pane in panes) / len(panes)
+            target = Target(name="Sky mosaic", ra_hours=ra_mean, dec_degrees=dec_mean)
         self._sky_mosaic_center = Target(
             name=str(target.name or "Sky mosaic"),
             ra_hours=float(target.ra_hours),
@@ -5333,7 +5630,9 @@ class AppBackend(QObject):
         previous = int(live.get("current_index") or 0)
         text = str(step or "")
         if previous and index != previous:
-            self._snapshot_mosaic_pane(previous)
+            self._snapshot_mosaic_pane(
+                mosaic_finished_pane(self._mosaic_stream_pane, previous)
+            )
             if previous <= len(members):
                 members[previous - 1] = replace(
                     members[previous - 1],
@@ -5508,7 +5807,14 @@ class AppBackend(QObject):
                 self._toast(label, "success", _ACTION_DETAILS.get(operation, ""))
             else:
                 self.add_log("error", f"{label} failed: {result}", device_id)
-                self._toast(f"{label} failed", "error", str(result))
+                if operation in {"track", "sky_track"} and tracking_needs_calibration(result):
+                    self._toast(
+                        TRACKING_NEEDS_CALIBRATION_TOAST,
+                        "warning",
+                        TRACKING_NEEDS_CALIBRATION_DETAIL,
+                    )
+                else:
+                    self._toast(f"{label} failed", "error", str(result))
 
         payload: dict[str, Any] = {}
         if operation == "track":

@@ -2020,9 +2020,12 @@ CODE_CAMERA_TELE_CLOSED = -10501
 CODE_ASTRO_FUNCTION_BUSY = -11501
 CODE_ASTRO_DARK_NOT_FOUND = -11503
 CODE_ASTRO_GOTO_RUNNING = -11508
+CODE_ASTRO_NEED_CALIBRATION = -11511
 CODE_ASTRO_NEED_GOTO = -11513
 CODE_ASTRO_NEED_GOTO_DSO = -11518
+CODE_ASTRO_NEED_EQ = -11528
 CODE_ASTRO_DARK_TEMP_MISMATCH = -11530
+_GOTO_ACCEPT_TIMEOUT_S = 8.0
 # The astro engine is still winding down GOTO/calibration; try again shortly.
 _CAPTURE_BUSY_CODES = {CODE_ASTRO_FUNCTION_BUSY, CODE_ASTRO_GOTO_RUNNING}
 # Recoverable warnings the official app lets the user bypass ("continue shooting").
@@ -3723,6 +3726,45 @@ def _current_sky_pointing() -> dict[str, Any]:
     }
 
 
+def _goto_accept_error(code: int) -> str | None:
+    """User-facing reason a live TRACK/GOTO start was rejected, or None if accepted."""
+    if code in (0, -11500):
+        return None
+    if code == CODE_ASTRO_NEED_CALIBRATION:
+        return (
+            "Telescope needs calibration. Run CALIBRATE and wait for it to complete, "
+            "then try TRACK again"
+        )
+    if code == CODE_ASTRO_NEED_EQ:
+        return "Telescope needs equatorial alignment. Run POLAR / EQ before tracking"
+    return f"GOTO to start tracking failed: {_error_name(code)}"
+
+
+def _wait_goto_accepted(since: float) -> None:
+    """Wait for the 11002 ACK so live TRACK fails before the HUD pad stays lit.
+
+    V3 GOTO is fire-and-forget. NEED_CALIBRATION arrives as the command
+    reply and never starts goto_state=running, which used to leave STOP GOTO
+    latched with no toast.
+    """
+    if _tap is None:
+        return
+    deadline = time.monotonic() + _GOTO_ACCEPT_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if _session_active.is_set() and _stop.is_set():
+            raise InterruptedError("Tracking stopped")
+        code = _tap.response_after(11002, since)
+        if code is not None:
+            message = _goto_accept_error(code)
+            if message:
+                raise RuntimeError(message)
+            return
+        snapshot = _tap.snapshot()
+        if _goto_started(snapshot.get("goto_state")) or snapshot.get("tracking_state") == "running":
+            return
+        time.sleep(0.1)
+
+
 def _start_sky_track(ra_hours: float, dec_degrees: float, target_name: str = "") -> dict[str, Any]:
     """Slew to a sky-map RA/Dec and start sidereal tracking (goto_only=False)."""
     if _ensure_astro_mode(enter_camera=False) is False:
@@ -3739,8 +3781,10 @@ def _start_sky_track(ra_hours: float, dec_degrees: float, target_name: str = "")
         raise RuntimeError("Sky map target is missing RA/Dec")
     name = str(target_name or "").strip() or "Sky map target"
     log(f"TRACK from sky map → RA {ra:.4f}h Dec {dec:+.3f}° ({name})")
+    started = time.monotonic()
     if sdk_call("goto", ra, dec, name, False) is False:
         raise RuntimeError("GOTO to start tracking failed")
+    _wait_goto_accepted(started)
     return {
         "ok": True,
         "ra_hours": ra,
@@ -3773,8 +3817,10 @@ def _start_tracking(target_name: str = "") -> dict[str, Any]:
         f"TRACK from pointing az={az:.2f}° alt={alt:.2f}° → "
         f"RA {ra_hours:.4f}h Dec {dec_degrees:+.3f}° ({name})"
     )
+    started = time.monotonic()
     if sdk_call("goto", ra_hours, dec_degrees, name, False) is False:
         raise RuntimeError("GOTO to start tracking failed")
+    _wait_goto_accepted(started)
     return {
         "ok": True,
         "ra_hours": ra_hours,

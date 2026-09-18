@@ -2722,7 +2722,7 @@ Item {
                             height: 4
                             color: Theme.inputBg
                             Rectangle {
-                                width: parent.width * (stackTimer.total > 0 ? Math.min(1, stackTimer.current / stackTimer.total) : 0)
+                                width: parent.width * (stackTimer.total > 0 ? Math.min(1, stackTimer.stacked / stackTimer.total) : 0)
                                 height: parent.height
                                 color: Theme.accent
                             }
@@ -2731,8 +2731,8 @@ Item {
                     Text {
                         text: {
                             let label = stackTimer.framesText
-                            if (stackTimer.current > 0 && stackTimer.stacked !== stackTimer.current)
-                                label += " · " + stackTimer.stacked + " OK"
+                            if (stackTimer.current > stackTimer.stacked)
+                                label += " · " + stackTimer.current + " taken"
                             return label
                         }
                         color: Theme.textPrimary
