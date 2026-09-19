@@ -1132,6 +1132,23 @@ def control_restore_should_apply_mode(
     return not preview_active
 
 
+def control_restore_should_defer(
+    *,
+    session_active: bool,
+    stopping: bool,
+    worker_busy: bool,
+    mosaic_running: bool,
+    capturing: bool,
+) -> bool:
+    """True when CONTROL restore would rewrite exposure/gain onto a live run.
+
+    Mosaic STOP uses ``stop_astro``, which is not a ``_STOP_ACTIONS`` pending
+    value. Firmware can still be stacking when the mosaic worker has already
+    gone idle, and a 500 ms restore would then set count/exposure mid-stack.
+    """
+    return bool(session_active or stopping or worker_busy or mosaic_running or capturing)
+
+
 class LogListModel(QAbstractListModel):
     TimeRole = Qt.ItemDataRole.UserRole + 1
     LevelRole = Qt.ItemDataRole.UserRole + 2
@@ -7648,11 +7665,14 @@ class AppBackend(QObject):
         if device is None or not worker or not worker.connected:
             self._control_restore_pending.discard(device_id)
             return
-        if self._active_sessions.get(device_id) or self._device_is_stopping(device_id):
-            self._schedule_control_restore(device_id, 2000)
-            return
         live = self._live_mosaic.get(device_id)
-        if worker.busy or self._live_mosaic_running(device_id, live):
+        if control_restore_should_defer(
+            session_active=bool(self._active_sessions.get(device_id)),
+            stopping=self._device_is_stopping(device_id),
+            worker_busy=bool(worker.busy),
+            mosaic_running=self._live_mosaic_running(device_id, live),
+            capturing=self._telemetry_capturing(device_id),
+        ):
             self._schedule_control_restore(device_id, 2000)
             return
         if device_id in self._control_restoring:
@@ -7664,10 +7684,27 @@ class AppBackend(QObject):
             self._control_restore_pending.discard(device_id)
             self._schedule_camera_param_refresh(device_id, 200)
 
+        def defer() -> None:
+            self._control_restoring.discard(device_id)
+            self._schedule_control_restore(device_id, 2000)
+
+        def still_blocked() -> bool:
+            current_live = self._live_mosaic.get(device_id)
+            return control_restore_should_defer(
+                session_active=bool(self._active_sessions.get(device_id)),
+                stopping=self._device_is_stopping(device_id),
+                worker_busy=bool(worker.busy),
+                mosaic_running=self._live_mosaic_running(device_id, current_live),
+                capturing=self._telemetry_capturing(device_id),
+            )
+
         def apply_from_telemetry() -> None:
             current = self._device_by_id(device_id)
             if current is None or not worker.connected:
                 finish()
+                return
+            if still_blocked():
+                defer()
                 return
             telemetry = dict(self._device_telemetry.get(device_id) or {})
             wanted_mode = current.control_settings.shooting_mode
@@ -7689,6 +7726,9 @@ class AppBackend(QObject):
                 def next_param(ok: bool = True, result: Any = None) -> None:
                     if self._shut_down or device_id not in self._workers:
                         finish()
+                        return
+                    if still_blocked():
+                        defer()
                         return
                     if not queue:
                         finish()
