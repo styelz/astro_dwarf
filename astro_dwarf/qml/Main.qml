@@ -217,6 +217,8 @@ ApplicationWindow {
         }
         if (op === "stop_all")
             return pending !== "stop_session"
+        if (op === "cancel_prime")
+            return pending !== op
         if (op === "stop_session")
             return backend.currentSession.status === "running" && !root.scopeStopping
         const isStop = op === "stop_goto" || op.indexOf("stop_") === 0 || op.slice(-5) === "_stop"

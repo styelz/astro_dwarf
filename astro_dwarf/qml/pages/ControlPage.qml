@@ -2245,7 +2245,7 @@ Item {
                         }
                         readonly property bool stackTracking: !!t.tracking_active && root.scopeActivity !== "goto"
                         readonly property bool stackPrimed: modelData.start === "stack" && root.scopeOnline && cameraPanel.dsoMode && cameraPanel.stackParamsReady && stackTracking && !activeForState
-                        readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop)
+                        readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop || (root.scopePending === "cancel_prime" && (capturePrimed || stackPrimed)))
                         readonly property string padLabel: {
                             if (modelData.start === "stack" && (controlPage.mosaicGridArmed || controlPage.mosaicRunning))
                                 return "MOSAIC STACK"
@@ -2358,13 +2358,14 @@ Item {
                         activeState: trackingPad ? (slewingNow || trackingNow) : activeForState
                         pending: isPending
                         primed: capturePrimed || stackPrimed
+                        stopTooltip: stackPrimed ? "Stop tracking" : "Cancel primed capture"
                         destructive: !!modelData.destructive
                         enabled: cameraAllowed && modeAllowed && root.commandEnabled(effectiveOperation)
                         Accessible.description: trackingPad && root.scopeStacking
                                                            ? "Tracking is required while stacking; press STACK to stop the capture"
                                                            : capturePrimed ? (modelData.start === "photo"
-                                                                ? "Photo capture primed for a fast shot"
-                                                                : modelData.label + " is primed; tap to start")
+                                                                ? "Photo capture primed for a fast shot. Use stop to cancel."
+                                                                : modelData.label + " is primed; tap to start, or use stop to cancel")
                                                            : (modelData.start === "stack" && !stackTracking)
                                                              ? "Track a target before starting the stack"
                                                              : (modelData.start === "stack" && stackTracking && cameraPanel.stackSettingsText())
@@ -2374,20 +2375,31 @@ Item {
                                                                      : ""))
                                                                : (modelData.start === "stack" && (controlPage.mosaicGridArmed || controlPage.mosaicRunning))
                                                                  ? ("Mosaic stack " + controlPage.mosaicGridText + " panes")
-                                                                 : stackPrimed ? "Sidereal tracking is running and stack settings match the telescope"
+                                                                 : stackPrimed ? "Sidereal tracking is running and stack settings match the telescope. Use stop to cancel tracking."
                                                                                : String(modelData.detail || modelData.label)
                         onClicked: {
-                            if (!pad.enabled)
+                            if (!pad.enabled || pad.stopPressed)
                                 return
                             if (effectiveOperation === "stack")
                                 cameraPanel.applyPendingStackParams()
                             root.requestDeviceAction(effectiveOperation, padLabel)
+                        }
+                        onStopClicked: {
+                            if (stackPrimed)
+                                root.requestDeviceAction("stop_goto", "EXIT TRACKING")
+                            else if (capturePrimed)
+                                root.requestDeviceAction("cancel_prime", padLabel)
                         }
                         Connections {
                             target: backend
                             function onCommandFeedback(deviceId, operation, ok) {
                                 if (deviceId !== backend.selectedDeviceId)
                                     return
+                                if (operation === "cancel_prime") {
+                                    if (pad.capturePrimed)
+                                        pad.showFlash(ok ? "success" : "error")
+                                    return
+                                }
                                 if (operation === pad.modelData.start || (pad.modelData.stop !== "" && operation === pad.modelData.stop))
                                     pad.showFlash(ok ? "success" : "error")
                             }

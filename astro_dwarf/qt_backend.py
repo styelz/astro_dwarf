@@ -63,6 +63,8 @@ from .domain import (
     album_is_stack_display_image,
     album_item_preview_path,
     album_is_media_file,
+    album_delete_summary,
+    album_is_category_folder_path,
     album_is_protected_folder,
     album_is_video_name,
     album_session_dir,
@@ -626,6 +628,7 @@ _ACTION_LABELS = {
     "timelapse_stop": "Timelapse stopped",
     "photo": "Photo captured",
     "wide_photo": "Wide photo captured",
+    "cancel_prime": "Capture disarmed",
     "set_wb_preset": "White balance set",
     "set_wb": "White balance set",
     "set_brightness": "Brightness set",
@@ -1483,6 +1486,7 @@ class AppBackend(QObject):
         self._media_download_batch = 0
         self._media_download_ok = 0
         self._media_download_failed = 0
+        self._album_pending_delete_ids: set[str] | None = None
         self._telemetry_tick = 0
         self._sessions_view: list[dict[str, Any]] | None = None
         self._upcoming_sessions_view: list[dict[str, Any]] | None = None
@@ -6869,6 +6873,37 @@ class AppBackend(QObject):
             self.add_log("warning", blocked, device_id)
             self._toast(blocked, "warning")
             return
+        if operation == "cancel_prime":
+            telemetry = self._device_telemetry.get(device_id) or {}
+            from .device_worker import capture_prime_needs_mode_reset
+
+            if capture_prime_needs_mode_reset(telemetry):
+                label = _ACTION_LABELS["cancel_prime"]
+
+                def cancel_done(ok: bool, result: Any) -> None:
+                    self.commandFeedback.emit(device_id, operation, bool(ok))
+                    if ok:
+                        self._on_telemetry(
+                            device_id,
+                            {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": False},
+                        )
+                        self.add_log("success", f"{label} acknowledged", device_id)
+                        self._toast(label, "success")
+                    else:
+                        self.add_log("error", f"{label} failed: {result}", device_id)
+                        self._toast(f"{label} failed", "error", str(result))
+
+                worker.send(
+                    "shooting_mode",
+                    {"args": [1, 1]},
+                    callback=self._with_pending(device_id, operation, cancel_done),
+                )
+                return
+            self.commandFeedback.emit(device_id, operation, True)
+            self._on_telemetry(device_id, {"photo_primed": False})
+            self.add_log("success", "Capture disarmed", device_id)
+            self._toast("Capture disarmed", "success")
+            return
         if operation == "sky_track":
             sky = self._sky_target
             if sky is None or sky.ra_hours is None or sky.dec_degrees is None:
@@ -7994,6 +8029,19 @@ class AppBackend(QObject):
         self._media_status = text
         self._emit_media()
 
+    def _toast_pending_album_delete(self, items: list[dict[str, Any]], list_ok: bool) -> bool:
+        pending = self._album_pending_delete_ids
+        if not pending:
+            return False
+        self._album_pending_delete_ids = None
+        if not list_ok:
+            self._toast("Album delete finished, but the folder could not be refreshed", "warning")
+            return True
+        remaining = sum(1 for item in items if str(item.get("id") or "") in pending)
+        message, level = album_delete_summary(len(pending), remaining)
+        self._toast(message, level)
+        return True
+
     def _media_signature(self, items: list[dict[str, Any]]) -> tuple[tuple[Any, ...], ...]:
         return tuple(
             (
@@ -8281,6 +8329,7 @@ class AppBackend(QObject):
         self._media_selected_id = ""
         self._album_items = []
         self._album_busy = ""
+        self._album_pending_delete_ids = None
         self._media_download_queue = []
         self._media_download_batch = 0
         self._media_download_ok = 0
@@ -8452,6 +8501,8 @@ class AppBackend(QObject):
                     )
                 ]
                 self._replace_media_items([item for item in items if item], self._media_selected_id)
+                if self._toast_pending_album_delete(self._media_items, True):
+                    return
                 if not self._media_items:
                     self._set_media_status("No astro sessions found on this telescope. Finished DSO and manual stacks show up here.")
                 elif not quiet:
@@ -8459,7 +8510,7 @@ class AppBackend(QObject):
                 return
             self._replace_media_items([])
             self._set_media_status(str(result) if result else "Could not reach the telescope album. Connect it, then tap Refresh.")
-            if not quiet:
+            if not self._toast_pending_album_delete([], False) and not quiet:
                 self._toast("Astro session list failed", "error", str(result))
 
         worker.send("astro_sessions_list", {}, done)
@@ -8505,6 +8556,8 @@ class AppBackend(QObject):
                     ]
                 self._album_items = [{"file": item.get("file_name")} for item in items]
                 self._replace_media_items(items, self._media_selected_id)
+                if self._toast_pending_album_delete(self._media_items, True):
+                    return
                 if not self._media_items:
                     self._set_media_status("No photos, videos, or bursts found on this telescope.")
                 elif not quiet:
@@ -8512,7 +8565,7 @@ class AppBackend(QObject):
                 return
             self._replace_media_items([])
             self._set_media_status(str(result) if result else "Could not reach the telescope album. Connect it, then tap Refresh.")
-            if not quiet:
+            if not self._toast_pending_album_delete([], False) and not quiet:
                 self._toast("Album list failed", "error", str(result))
 
         worker.send("album_camera_list", {}, done)
@@ -8556,6 +8609,8 @@ class AppBackend(QObject):
                 self._replace_media_items(items, self._media_selected_id)
                 if not self._media_folder_parent:
                     self._set_media_root_folders(items)
+                if self._toast_pending_album_delete(self._media_items, True):
+                    return
                 if not self._media_items:
                     self._set_media_status(
                         "This folder is empty." if self._media_folder_parent
@@ -8566,7 +8621,7 @@ class AppBackend(QObject):
                 return
             self._replace_media_items([])
             self._set_media_status(str(result) if result else "Could not list folders on the telescope. Connect it, then tap Refresh.")
-            if not quiet:
+            if not self._toast_pending_album_delete([], False) and not quiet:
                 self._toast("Folder list failed", "error", str(result))
 
         worker.send("album_folder_list", {"args": [folder]}, done)
@@ -8909,7 +8964,7 @@ class AppBackend(QObject):
             remote = str(item.get("file_path") or item_id)
             if not self._is_device_media_path(remote):
                 continue
-            if item.get("is_dir") and album_is_protected_folder(remote, str(item.get("file_name") or item.get("album_name") or "")):
+            if album_is_category_folder_path(remote, str(item.get("file_name") or item.get("album_name") or "")):
                 continue
             entries.append({
                 "filePath": remote,
@@ -8921,27 +8976,22 @@ class AppBackend(QObject):
         if not entries:
             self._toast("Those files can't be deleted from the telescope", "warning")
             return
+        keep_id = self._media_selected_id if self._media_selected_id not in wanted else ""
+        self._album_pending_delete_ids = set(wanted)
+        self._replace_media_items(
+            [item for item in self._media_items if str(item.get("id") or "") not in wanted],
+            keep_id,
+        )
         request_id = self._media_request_id
         source = self._media_source
         self._set_media_busy("delete")
 
-        def done(ok: bool, result: Any) -> None:
+        def done(_ok: bool, _result: Any) -> None:
             if not self._media_request_current(request_id, device_id, source):
+                self._album_pending_delete_ids = None
                 return
             self._set_media_busy("")
-            if ok and isinstance(result, dict):
-                deleted = len(result.get("deleted") or [])
-                failed = int(result.get("failed") or 0)
-                self.refreshMedia(device_id, True)
-                if failed and deleted:
-                    self._toast(
-                        f"Deleted {deleted} file{'s' if deleted != 1 else ''}, {failed} failed",
-                        "warning",
-                    )
-                elif deleted:
-                    self._toast(f"Deleted {deleted} file{'s' if deleted != 1 else ''} from telescope", "success")
-                return
-            self._toast("Album delete failed", "error", str(result))
+            self.refreshMedia(device_id, True)
 
         worker.send("album_delete", {"args": [entries]}, done)
 

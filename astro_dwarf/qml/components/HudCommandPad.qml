@@ -8,12 +8,16 @@ Button {
     property string glyph: ""
     property string detail: ""
     property string tooltip: ""
+    property string stopTooltip: "Cancel primed command"
     property bool activeState: false
     property bool pending: false
     property bool primed: false
     property bool destructive: false
     property string flash: ""   // "", "success" or "error"
     readonly property color flashColor: flash === "error" ? Theme.danger : Theme.success
+    readonly property bool showStop: primed && !activeState && !pending
+    property bool stopPressed: false
+    signal stopClicked()
     hoverEnabled: enabled
     focusPolicy: Qt.StrongFocus
     implicitHeight: 58
@@ -27,7 +31,7 @@ Button {
     }
     Timer { id: flashTimer; interval: 900; onTriggered: commandPad.flash = "" }
     HudToolTip {
-        visible: commandPad.tooltip !== "" && commandPad.hovered
+        visible: commandPad.tooltip !== "" && commandPad.hovered && !stopButton.hovered
         text: commandPad.tooltip
     }
     background: Rectangle {
@@ -70,6 +74,7 @@ Button {
         Rectangle {
             anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 7
             width: 7; height: 7; radius: 4
+            visible: !commandPad.showStop
             color: commandPad.activeState || (commandPad.primed && !commandPad.pending) ? Theme.success : commandPad.pending ? Theme.accent : commandPad.enabled ? Theme.muted : Theme.disabledOutline
             border.color: commandPad.activeState || commandPad.primed ? Theme.accentSoft : Theme.outline
             SequentialAnimation on opacity {
@@ -87,6 +92,47 @@ Button {
             Layout.fillWidth: true; spacing: 0
             Text { text: commandPad.text; color: commandPad.enabled || commandPad.activeState ? Theme.textPrimary : Theme.textSecondary; font.pixelSize: 10; font.bold: true; font.letterSpacing: 0.7; elide: Text.ElideRight; Layout.fillWidth: true }
             Text { text: commandPad.flash === "success" ? "DONE" : commandPad.flash === "error" ? "FAILED" : commandPad.pending ? "SENDING…" : commandPad.detail; color: commandPad.flash !== "" ? commandPad.flashColor : commandPad.activeState || (commandPad.primed && !commandPad.pending) ? Theme.success : commandPad.pending ? Theme.accent : Theme.textSecondary; font.pixelSize: 8; font.family: commandPad.activeState || commandPad.primed ? Theme.fontMono : Theme.fontUi; elide: Text.ElideRight; Layout.fillWidth: true }
+        }
+        Button {
+            id: stopButton
+            objectName: commandPad.objectName ? commandPad.objectName + "-stop" : "pad-stop"
+            visible: commandPad.showStop
+            Layout.preferredWidth: 22
+            Layout.preferredHeight: 22
+            Layout.minimumWidth: 22
+            Layout.maximumWidth: 22
+            Layout.alignment: Qt.AlignVCenter
+            implicitWidth: 22
+            implicitHeight: 22
+            padding: 0
+            hoverEnabled: true
+            focusPolicy: Qt.TabFocus
+            Accessible.name: "Stop " + commandPad.text
+            Accessible.description: commandPad.stopTooltip
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
+            HudToolTip {
+                visible: stopButton.hovered && commandPad.stopTooltip !== ""
+                text: commandPad.stopTooltip
+            }
+            background: Rectangle {
+                color: stopButton.down ? Theme.fillDanger : stopButton.hovered || stopButton.visualFocus ? Theme.surfaceHigh : Theme.panelFill
+                border.color: stopButton.hovered || stopButton.visualFocus || stopButton.down ? Theme.danger : Theme.outline
+                border.width: 1
+                radius: Theme.radius
+            }
+            contentItem: Item {
+                Rectangle {
+                    width: 8
+                    height: 8
+                    radius: 1
+                    color: Theme.danger
+                    anchors.centerIn: parent
+                }
+            }
+            onPressed: commandPad.stopPressed = true
+            onCanceled: commandPad.stopPressed = false
+            onReleased: Qt.callLater(function () { commandPad.stopPressed = false })
+            onClicked: commandPad.stopClicked()
         }
     }
 }

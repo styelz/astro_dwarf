@@ -223,14 +223,43 @@ def album_canonical_media_type(
     return PHOTO_MEDIA_TYPE
 
 
+def album_is_category_folder_path(path: str = "", name: str = "") -> bool:
+    """True for an album category directory, not a file or session inside one.
+
+    Firmware photo rows often set fileName to the category (Normal_Photos,
+    Astronomy). Decide from the path itself so a session is not skipped and
+    the category folder is never sent to /album/delete.
+    """
+    remote = album_http_path(path).rstrip("/")
+    if not remote or _album_suffix(remote) in LOCAL_ALBUM_SUFFIXES:
+        return False
+    folder = PurePosixPath(remote).name
+    return album_is_category_name(folder) or album_is_skip_dir(folder)
+
+
+def _album_session_delete_file(path: str, file_name: str) -> str:
+    remote = album_http_path(path)
+    session = album_session_dir(remote)
+    label = PurePosixPath(session).name if session else ""
+    if not session or album_is_category_name(label) or album_is_skip_dir(label):
+        return remote
+    if _album_suffix(remote) in LOCAL_ALBUM_SUFFIXES:
+        return remote
+    return album_join_path(session, file_name) or remote
+
+
 def album_delete_remote_path(path: str, media_type: int) -> str:
     remote = album_http_path(path)
-    if media_type != ASTRO_MEDIA_TYPE:
-        return remote
-    session = album_session_dir(remote)
-    if not session or not album_is_astro_session_folder(session):
-        return remote
-    return album_join_path(session, _STACK_JPEG_NAMES[0]) or remote
+    if media_type == ASTRO_MEDIA_TYPE:
+        session = album_session_dir(remote)
+        if not session or not album_is_astro_session_folder(session):
+            return remote
+        return album_join_path(session, _STACK_JPEG_NAMES[0]) or remote
+    if media_type == BURST_MEDIA_TYPE:
+        return _album_session_delete_file(remote, "0.jpg")
+    if media_type == PANORAMA_MEDIA_TYPE:
+        return _album_session_delete_file(remote, "pano_thumbnail.jpg")
+    return remote
 
 
 def album_delete_remote_name(path: str, name: str, media_type: int) -> str:
@@ -277,6 +306,8 @@ def album_delete_payload(items: list[dict[str, Any]] | None) -> dict[str, Any]:
             sub_type = 0
         is_dir = item.get("isDir", item.get("is_dir")) is True
         media_type = album_canonical_media_type(file_path, file_name, media_type, is_dir)
+        if album_is_category_folder_path(file_path, file_name):
+            continue
         file_path = album_delete_remote_path(file_path, media_type)
         file_name = album_delete_remote_name(file_path, file_name, media_type)
         datas.append({
@@ -286,6 +317,68 @@ def album_delete_payload(items: list[dict[str, Any]] | None) -> dict[str, Any]:
             "subType": sub_type,
         })
     return {"datas": datas}
+
+
+def album_delete_entry_ok(entry: dict[str, Any] | None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    for key in ("isSuccess", "success", "is_success"):
+        value = entry.get(key)
+        if value is None:
+            continue
+        if value is True or value == 1:
+            return True
+        text = str(value).strip().lower()
+        return text in {"true", "1", "ok"}
+    return False
+
+
+def album_delete_result_entries(result: Any) -> list[dict[str, Any]]:
+    if not isinstance(result, dict):
+        return []
+    data = result.get("data")
+    if isinstance(data, list):
+        return [entry for entry in data if isinstance(entry, dict)]
+    if isinstance(data, dict):
+        for key in ("datas", "list", "items", "results"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [entry for entry in value if isinstance(entry, dict)]
+        if any(key in data for key in ("isSuccess", "filePath", "fileName")):
+            return [data]
+    return []
+
+
+def album_delete_outcome(result: Any, requested: int) -> dict[str, Any]:
+    """Interpret firmware /album/delete JSON. code 0 means the body was accepted."""
+    if not isinstance(result, dict):
+        raise RuntimeError("Album delete failed")
+    try:
+        code = int(result.get("code"))
+    except (TypeError, ValueError):
+        code = -1
+    if code != 0:
+        detail = str(result.get("message") or result.get("msg") or result)
+        raise RuntimeError(detail or "Album delete failed")
+    entries = album_delete_result_entries(result)
+    succeeded = [entry for entry in entries if album_delete_entry_ok(entry)]
+    requested = max(0, int(requested or 0))
+    failed = max(0, requested - len(succeeded))
+    return {"deleted": succeeded, "failed": failed, "results": entries, "requested": requested}
+
+
+def album_delete_summary(requested: int, remaining: int) -> tuple[str, str]:
+    """Toast after re-listing. Firmware isSuccess is not proof the folders stayed."""
+    wanted = max(0, int(requested or 0))
+    left = max(0, int(remaining or 0))
+    gone = max(0, wanted - left)
+    if wanted <= 0:
+        return ("Nothing to delete from the telescope", "warning")
+    if left == 0:
+        return (f"Deleted {gone} item{'s' if gone != 1 else ''} from telescope", "success")
+    if gone:
+        return (f"Deleted {gone}, {left} still on telescope", "warning")
+    return ("Those items are still on the telescope", "error")
 
 
 def album_local_file_in_dir(album_dir: Path | str, candidate: str) -> Path | None:

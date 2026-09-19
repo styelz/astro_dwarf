@@ -35,6 +35,7 @@ from .domain import (
     PHOTO_MEDIA_TYPE,
     album_apply_listing_preview,
     album_canonical_media_type,
+    album_delete_outcome,
     album_delete_payload,
     album_is_astro_type,
     album_entry_key,
@@ -983,11 +984,20 @@ def sdk_call(operation: str, *args: Any) -> Any:
         message_name, command, module_id = capture_spec
         message = getattr(camera_pb2, message_name)()
         if operation == "burst_start":
+            # Empty ReqBurstPhoto; count is a camera param. Do not call
+            # perform_set_burst_count_v3 here — connect_socket can block 150 s
+            # and the start packet never goes out.
             count = _param_int(args[0] if args else None)
             if not count and _tap is not None:
                 count = _param_int(_tap.snapshot().get("burst_count"))
             if count:
-                message.count = int(count)
+                from dwarf_python_api.lib.dwarf_utils import PARAM_ID_BURST_COUNT
+                from dwarf_python_api.proto import param_pb2
+
+                param_msg = param_pb2.ReqSetGeneralIntParam()
+                param_msg.param_id = PARAM_ID_BURST_COUNT
+                param_msg.value = int(count)
+                send_without_response(param_msg, 16703, 15)
         ok = send_without_response(message, command, module_id)
         if ok:
             state_key = _PHOTO_CAPTURE_STATES.get(operation)
@@ -3141,6 +3151,14 @@ def shooting_state_changes(
     return changes
 
 
+def capture_prime_needs_mode_reset(snapshot: dict[str, Any] | None) -> bool:
+    """True when BURST / RECORD / TIMELAPSE technique is latched on the telescope."""
+    snap = snapshot or {}
+    mode = _shooting_int(snap.get("shooting_mode"))
+    tech = _shooting_int(snap.get("shooting_tech"))
+    return mode == _PHOTO_SHOOTING_MODE and tech in {3, 4, 5}
+
+
 def capture_handshake_needed(snapshot: dict[str, Any], tech: int) -> bool:
     """True unless PHOTO mode is already on the requested capture technique."""
     mode = _shooting_int(snapshot.get("shooting_mode"))
@@ -3754,17 +3772,19 @@ def album_folder_list(folder: str = "") -> dict[str, Any]:
         requested = root
     listing = _album_dir_listing(ip, requested)
     entries: list[dict[str, Any]] = []
-    if listing is None and album_is_astronomy_category_folder(requested):
+    astronomy = album_is_astronomy_category_folder(requested)
+    if astronomy:
         entries = _album_astro_session_folder_entries()
-        log(f"Listed {len(entries)} astronomy sessions on {ip}")
-        return {
-            "ip": ip,
-            "directory": requested,
-            "parent": album_folder_parent(requested, root),
-            "root": root,
-            "sessions": entries,
-        }
-    if listing is None and album_is_astro_session_folder(requested):
+        if listing is None:
+            log(f"Listed {len(entries)} astronomy sessions on {ip}")
+            return {
+                "ip": ip,
+                "directory": requested,
+                "parent": album_folder_parent(requested, root),
+                "root": root,
+                "sessions": entries,
+            }
+    elif listing is None and album_is_astro_session_folder(requested):
         name = requested.rsplit("/", 1)[-1]
         stacked = album_join_path(requested, "stacked.jpg")
         thumb = album_folder_preview_path(requested)
@@ -3785,35 +3805,46 @@ def album_folder_list(folder: str = "") -> dict[str, Any]:
                 "previewResolved": bool(thumb),
             }],
         }
-    if listing is None:
+    elif listing is None:
         raise RuntimeError(f"Could not list {requested} on the telescope")
-    for item in listing:
-        name = str(item.get("name") or "").strip()
-        is_dir = bool(item.get("is_dir"))
-        if not name:
-            continue
-        if is_dir and album_is_skip_dir(name):
-            continue
-        if not is_dir and not album_is_media_file(name):
-            continue
-        remote = album_join_path(requested, name)
-        thumb = album_entry_preview_path({
-            "fileName": name,
-            "filePath": remote,
-            "isDir": is_dir,
-        }, requested)
-        entries.append({
-            "fileName": name,
-            "filePath": remote,
-            "thumbnailPath": thumb,
-            "mediaType": _album_folder_media_type(remote, is_dir),
-            "modificationTime": int(item.get("modification_time") or 0),
-            "isDir": is_dir,
-            "fileAvailable": not is_dir,
-        })
+    seen = {
+        album_http_path(str(entry.get("filePath") or "")).rstrip("/")
+        for entry in entries
+        if str(entry.get("filePath") or "").strip()
+    }
+    if listing is not None:
+        for item in listing:
+            name = str(item.get("name") or "").strip()
+            is_dir = bool(item.get("is_dir"))
+            if not name:
+                continue
+            if is_dir and album_is_skip_dir(name):
+                continue
+            if not is_dir and not album_is_media_file(name):
+                continue
+            remote = album_join_path(requested, name)
+            key = album_http_path(remote).rstrip("/")
+            if key in seen:
+                continue
+            seen.add(key)
+            thumb = album_entry_preview_path({
+                "fileName": name,
+                "filePath": remote,
+                "isDir": is_dir,
+            }, requested)
+            entries.append({
+                "fileName": name,
+                "filePath": remote,
+                "thumbnailPath": thumb,
+                "mediaType": _album_folder_media_type(remote, is_dir),
+                "modificationTime": int(item.get("modification_time") or 0),
+                "isDir": is_dir,
+                "fileAvailable": not is_dir,
+            })
     if album_http_path(requested).rstrip("/") == album_http_path(root).rstrip("/"):
         if not any(album_is_astronomy_category_folder(str(entry.get("filePath") or ""), str(entry.get("fileName") or "")) for entry in entries):
-            entries.append(_album_synthetic_astronomy_folder(root))
+            if _album_astro_session_folder_entries():
+                entries.append(_album_synthetic_astronomy_folder(root))
     file_names = [str(entry.get("fileName") or "") for entry in entries if not entry.get("isDir")]
     pending_dirs = [entry for entry in entries if entry.get("isDir")]
     dir_resolved = _album_resolve_session_previews(ip, pending_dirs)
@@ -3848,24 +3879,11 @@ def album_delete(items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     payload = album_delete_payload(items or [])
     if not payload["datas"]:
         raise RuntimeError("No album files to delete")
-    result = _http_json(f"http://{ip}:8082/album/delete", payload, timeout=60)
-    if not isinstance(result, dict) or result.get("code") != 0:
-        detail = ""
-        if isinstance(result, dict):
-            detail = str(result.get("message") or result.get("msg") or result)
-        raise RuntimeError(detail or "Album delete failed")
-    results = result.get("data") or []
-    if not isinstance(results, list) or not results:
-        raise RuntimeError("Telescope did not confirm the delete")
-    succeeded = [
-        entry for entry in results
-        if isinstance(entry, dict) and entry.get("isSuccess")
-    ]
-    if not succeeded:
-        raise RuntimeError("Telescope refused to delete those files")
-    failed = max(0, len(payload["datas"]) - len(succeeded))
-    log(f"Deleted {len(succeeded)} album file{'s' if len(succeeded) != 1 else ''} on {ip}")
-    return {"ip": ip, "deleted": succeeded, "failed": failed, "results": results}
+    result = _http_json(f"http://{ip}:8082/album/delete", payload, timeout=300)
+    outcome = album_delete_outcome(result, len(payload["datas"]))
+    deleted = len(outcome["deleted"])
+    log(f"Deleted {deleted} album file{'s' if deleted != 1 else ''} on {ip}")
+    return {"ip": ip, **outcome}
 
 
 def astro_session_download(file_path: str = "", dest_dir: str = "") -> dict[str, Any]:
