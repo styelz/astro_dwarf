@@ -185,7 +185,9 @@ ApplicationWindow {
             return Theme.accent
         switch (root.scopeActivity) {
         case "imaging":
-        case "record": return Theme.danger
+        case "record":
+        case "burst":
+        case "timelapse": return Theme.danger
         case "poweroff": return Theme.danger
         case "": return root.scopeImaging ? Theme.danger : Theme.success
         default: return Theme.notice

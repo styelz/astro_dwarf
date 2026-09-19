@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_sdk_logging
+from .telemetry_view import photo_capture_seconds
 from .domain import (
     ALBUM_IMAGE_SUFFIXES,
     ASTRO_LIST_MEDIA_TYPE,
@@ -411,9 +412,9 @@ FUNCTIONS = {
     "set_hue": "perform_set_hue_v3",
     "set_sharpness": "perform_set_sharpness_v3",
     "set_burst_count": "perform_set_burst_count_v3",
-    "set_burst_interval": "perform_set_burst_interval_by_name_v3",
-    "set_timelapse_interval": "perform_set_timelapse_interval_by_name_v3",
-    "set_timelapse_duration": "perform_set_timelapse_duration_by_name_v3",
+    "set_burst_interval": "perform_set_burst_interval_v3",
+    "set_timelapse_interval": "perform_set_timelapse_interval_v3",
+    "set_timelapse_duration": "perform_set_timelapse_duration_v3",
     "set_stack_format": "perform_set_astro_stack_format_v3",
     "set_auto_calibration": "perform_set_astro_auto_calibration_v3",
     "read_camera": "perform_read_camera_params_http_v3",
@@ -440,6 +441,14 @@ _CAPTURE_TECHNIQUES = {
 # The installed SDK only exposes tele start/stop helpers.
 _PHOTO_CAPTURE_STARTS = {"burst_start", "record_start", "timelapse_start"}
 _PHOTO_CAPTURE_STOPS = {"burst_stop", "record_stop", "timelapse_stop"}
+_PHOTO_CAPTURE_STATES = {
+    "burst_start": "burst_state",
+    "burst_stop": "burst_state",
+    "record_start": "record_state",
+    "record_stop": "record_state",
+    "timelapse_start": "timelapse_state",
+    "timelapse_stop": "timelapse_state",
+}
 _TELE_PHOTO_CAPTURE = {
     "burst_start": ("ReqBurstPhoto", 10003, 1),
     "burst_stop": ("ReqStopBurstPhoto", 10004, 1),
@@ -911,6 +920,11 @@ def sdk_call(operation: str, *args: Any) -> Any:
         return _nudge_focus(int(args[0]) if args else _FOCUS_FAR)
     if operation == "set_focus":
         return _set_focus_position(int(args[0]))
+    if operation in {"set_burst_interval", "set_timelapse_interval", "set_timelapse_duration"}:
+        seconds = photo_capture_seconds(args[0] if args else None)
+        if seconds is None:
+            raise RuntimeError(f"{operation} needs a duration in seconds")
+        args = (seconds,) + tuple(args[1:])
     if operation in {
         "set_ir",
         "set_count",
@@ -919,6 +933,10 @@ def sdk_call(operation: str, *args: Any) -> Any:
         "set_photo_exposure",
         "set_photo_gain",
         "set_auto_calibration",
+        "set_burst_count",
+        "set_burst_interval",
+        "set_timelapse_interval",
+        "set_timelapse_duration",
     } and camera_param_unchanged(
         operation,
         args,
@@ -963,12 +981,29 @@ def sdk_call(operation: str, *args: Any) -> Any:
         from dwarf_python_api.proto import camera_pb2
 
         message_name, command, module_id = capture_spec
-        ok = send_without_response(getattr(camera_pb2, message_name)(), command, module_id)
+        message = getattr(camera_pb2, message_name)()
+        if operation == "burst_start":
+            count = _param_int(args[0] if args else None)
+            if not count and _tap is not None:
+                count = _param_int(_tap.snapshot().get("burst_count"))
+            if count:
+                message.count = int(count)
+        ok = send_without_response(message, command, module_id)
         if ok:
+            state_key = _PHOTO_CAPTURE_STATES.get(operation)
             if operation in _PHOTO_CAPTURE_STARTS:
                 _photo_capture_camera = "wide" if module_id == 2 else "tele"
+                if _tap is not None and state_key:
+                    _tap.update({state_key: "running"}, force=True)
             elif operation in _PHOTO_CAPTURE_STOPS:
                 _photo_capture_camera = ""
+                if _tap is not None and state_key:
+                    idle = {state_key: "idle"}
+                    if state_key == "record_state":
+                        idle["record_seconds"] = 0
+                    elif state_key == "timelapse_state":
+                        idle["timelapse_elapsed_s"] = 0
+                    _tap.update(idle, force=True)
         return ok
     if _device.get("model") in ("Dwarf 3", "Dwarf Mini"):
         if operation in ("calibrate", "stop_calibrate", "polar", "stop_polar", "goto", "goto_solar"):
@@ -3158,6 +3193,19 @@ def camera_param_unchanged(
             wanted = wanted.strip().lower() in {"1", "true", "yes", "on"}
         have = snapshot.get("auto_calibration")
         return isinstance(wanted, bool) and have is wanted
+    if operation == "set_burst_count":
+        wanted = _param_int(values[0] if values else None)
+        have = _param_int(snapshot.get("burst_count"))
+        return wanted is not None and wanted == have
+    if operation in {"set_burst_interval", "set_timelapse_interval", "set_timelapse_duration"}:
+        key = {
+            "set_burst_interval": "burst_interval",
+            "set_timelapse_interval": "timelapse_interval",
+            "set_timelapse_duration": "timelapse_duration",
+        }[operation]
+        wanted = photo_capture_seconds(values[0] if values else None)
+        have = photo_capture_seconds(snapshot.get(key))
+        return wanted is not None and wanted == have
     camera = _param_camera(values)
     wide = camera == "wide"
     if operation in {"set_exposure", "set_photo_exposure"}:

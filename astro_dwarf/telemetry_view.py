@@ -84,6 +84,56 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
+def photo_capture_seconds(value: Any) -> int | None:
+    """Parse HUD burst/timelapse interval and duration as raw firmware seconds.
+
+    CONTROL combos send ``1`` or ``30``. The SDK duration-by-name helper treats
+    ``30`` as 30 minutes, so a 30-second timelapse never finished until STOP
+    and the MP4 stayed unreadable while it was still being written.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, dict):
+        value = value.get("value", value.get("name", value.get("seconds")))
+    if isinstance(value, (int, float)):
+        if value < 0:
+            return None
+        return int(round(float(value)))
+    text = str(value).strip()
+    if not text or text == "—":
+        return None
+    lower = text.lower().replace("secs", "s").replace("sec", "s")
+    if lower in {"off", "∞", "inf", "infinite", "unlimited", "infinity"}:
+        return 0
+    if "min" in lower:
+        number = lower.replace("minutes", "").replace("minute", "").replace("mins", "").replace("min", "").strip()
+        try:
+            return int(round(float(number) * 60.0))
+        except (TypeError, ValueError):
+            return None
+    if lower.endswith("s") and "/" not in lower:
+        lower = lower[:-1].strip()
+    try:
+        seconds = float(lower)
+    except (TypeError, ValueError):
+        return None
+    if seconds < 0:
+        return None
+    return int(round(seconds))
+
+
+def _feature_seconds_text(value: Any) -> str | None:
+    seconds = photo_capture_seconds(value)
+    if seconds is None:
+        return None
+    return str(seconds)
+
+
+def _clock_text(seconds: int) -> str:
+    value = max(0, int(seconds))
+    return f"{value // 60:02d}:{value % 60:02d}"
+
+
 def _camera_params_entry(cameras: Any, index: int) -> dict[str, Any]:
     if isinstance(cameras, dict):
         for key in (index, str(index)):
@@ -199,29 +249,26 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
             if name:
                 changes["ir_filter"] = name
         burst = values.get("burst") if isinstance(values.get("burst"), dict) else {}
-        burst_count = _as_int(burst.get("count", values.get("burst_count")))
+        burst_count = burst.get("count", values.get("burst_count"))
+        if isinstance(burst_count, dict):
+            burst_count = burst_count.get("value", burst_count.get("name"))
+        burst_count = _as_int(burst_count)
         if burst_count is not None:
             changes[f"{prefix}burst_count"] = burst_count
-        burst_interval = burst.get("interval", values.get("burst_interval"))
-        if isinstance(burst_interval, dict):
-            burst_interval = burst_interval.get("name", burst_interval.get("value"))
-        if burst_interval not in (None, ""):
-            changes[f"{prefix}burst_interval"] = str(burst_interval).strip()
+        burst_interval = _feature_seconds_text(burst.get("interval", values.get("burst_interval")))
+        if burst_interval is not None:
+            changes[f"{prefix}burst_interval"] = burst_interval
         lapse = values.get("timelapse")
         if not isinstance(lapse, dict):
             lapse = values.get("timeLapse") if isinstance(values.get("timeLapse"), dict) else {}
         if not lapse:
             lapse = values.get("time_lapse") if isinstance(values.get("time_lapse"), dict) else {}
-        lapse_interval = lapse.get("interval", values.get("timelapse_interval"))
-        if isinstance(lapse_interval, dict):
-            lapse_interval = lapse_interval.get("name", lapse_interval.get("value"))
-        if lapse_interval not in (None, ""):
-            changes[f"{prefix}timelapse_interval"] = str(lapse_interval).strip()
-        lapse_duration = lapse.get("duration", values.get("timelapse_duration"))
-        if isinstance(lapse_duration, dict):
-            lapse_duration = lapse_duration.get("name", lapse_duration.get("value"))
-        if lapse_duration not in (None, ""):
-            changes[f"{prefix}timelapse_duration"] = str(lapse_duration).strip()
+        lapse_interval = _feature_seconds_text(lapse.get("interval", values.get("timelapse_interval")))
+        if lapse_interval is not None:
+            changes[f"{prefix}timelapse_interval"] = lapse_interval
+        lapse_duration = _feature_seconds_text(lapse.get("duration", values.get("timelapse_duration")))
+        if lapse_duration is not None:
+            changes[f"{prefix}timelapse_duration"] = lapse_duration
 
     collect(_camera_params_entry(cameras, 0))
     collect(_camera_params_entry(cameras, 1), "wide_")
@@ -352,6 +399,15 @@ def derive_activity(raw: dict[str, Any]) -> tuple[str, str]:
     if raw.get("dark_state") == "running":
         progress = raw.get("dark_progress")
         return "dark", f"{int(progress)}%" if progress is not None else "RUNNING"
+    if raw.get("burst_state") == "running":
+        count = _as_int(raw.get("burst_count"))
+        return "burst", f"{count} SHOTS" if count else "RUNNING"
+    if raw.get("timelapse_state") == "running":
+        elapsed = int(raw.get("timelapse_elapsed_s") or 0)
+        total = int(raw.get("timelapse_total_s") or 0)
+        if total:
+            return "timelapse", f"{_clock_text(elapsed)} / {_clock_text(total)}"
+        return "timelapse", _clock_text(elapsed)
     if raw.get("capture_active") or raw.get("capture_state") == "running":
         current = _capture_frame_count(raw)
         total = raw.get("capture_total")
@@ -363,8 +419,7 @@ def derive_activity(raw: dict[str, Any]) -> tuple[str, str]:
             detail = "STACKING"
         return "imaging", detail
     if raw.get("record_state") == "running":
-        seconds = int(raw.get("record_seconds") or 0)
-        return "record", f"{seconds // 60:02d}:{seconds % 60:02d}"
+        return "record", _clock_text(int(raw.get("record_seconds") or 0))
     return "", ""
 
 
@@ -603,6 +658,13 @@ class AlertEngine:
                 add("info", "Capture ended", " · ".join(detail_parts) or "No frames stacked", toast=False)
         if changed("dark_state") and current["dark_state"] in ("stopped", "idle") and previous.get("dark_state") == "running":
             add("success", "Dark frames complete", "")
+        if changed("burst_state") and current["burst_state"] in ("stopped", "idle") and previous.get("burst_state") == "running":
+            count = current.get("burst_count", previous.get("burst_count"))
+            add("success", "Burst complete", f"{int(count)} shots" if count else "")
+        if changed("timelapse_state") and current["timelapse_state"] in ("stopped", "idle") and previous.get("timelapse_state") == "running":
+            add("success", "Timelapse complete", "")
+        if changed("record_state") and current["record_state"] in ("stopped", "idle") and previous.get("record_state") == "running":
+            add("success", "Recording complete", "")
         # Power / host
         if changed("power_off") and current.get("power_off"):
             add("error", "Telescope is powering off", "The connection will drop")

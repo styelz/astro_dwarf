@@ -588,7 +588,12 @@ Item {
                     && (!liveFilter.visible || liveFilter.appliedValue === "" || liveFilter.currentText === liveFilter.appliedValue)
                 function comboIndex(items, value) {
                     let wanted = String(value || "").trim()
-                    if (wanted.toLowerCase().endsWith("s") && wanted.indexOf("/") < 0)
+                    const lower = wanted.toLowerCase()
+                    if (lower.indexOf("min") >= 0) {
+                        const mins = Number(lower.replace("minutes", "").replace("minute", "").replace("mins", "").replace("min", "").trim())
+                        if (isFinite(mins))
+                            wanted = String(Math.round(mins * 60))
+                    } else if (wanted.toLowerCase().endsWith("s") && wanted.indexOf("/") < 0)
                         wanted = wanted.slice(0, -1).trim()
                     if (!wanted)
                         return -1
@@ -2224,6 +2229,20 @@ Item {
                                         : modelData.state !== "" && root.scopeActivity === modelData.state
                         readonly property string effectiveOperation: activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
                         readonly property bool photoPrimed: modelData.start === "photo" && root.scopeOnline && !!t.photo_primed && cameraPanel.photoMode
+                        readonly property int shootingTech: Number(t.shooting_tech || 0)
+                        readonly property bool capturePrimed: {
+                            if (!root.scopeOnline || !cameraPanel.photoMode || activeForState)
+                                return false
+                            if (modelData.start === "photo")
+                                return !!t.photo_primed
+                            if (modelData.start === "burst_start")
+                                return shootingTech === 3
+                            if (modelData.start === "record_start")
+                                return shootingTech === 4
+                            if (modelData.start === "timelapse_start")
+                                return shootingTech === 5
+                            return false
+                        }
                         readonly property bool stackTracking: !!t.tracking_active && root.scopeActivity !== "goto"
                         readonly property bool stackPrimed: modelData.start === "stack" && root.scopeOnline && cameraPanel.dsoMode && cameraPanel.stackParamsReady && stackTracking && !activeForState
                         readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop)
@@ -2276,7 +2295,7 @@ Item {
                                 if (controlPage.mosaicGridArmed)
                                     return controlPage.mosaicPaneText + " PANES"
                             }
-                            if (photoPrimed || stackPrimed)
+                            if (photoPrimed || stackPrimed || capturePrimed)
                                 return "PRIMED"
                             if (!cameraAllowed)
                                 return "TELE ONLY"
@@ -2310,6 +2329,10 @@ Item {
                                 return root.scopeActivityDetail || "RUNNING"
                             case "record":
                                 return "REC · " + (root.scopeActivityDetail || "00:00")
+                            case "burst":
+                                return root.scopeActivityDetail ? root.scopeActivityDetail + " · STOP" : "BURST · STOP"
+                            case "timelapse":
+                                return root.scopeActivityDetail ? root.scopeActivityDetail + " · STOP" : "LAPSE · STOP"
                             case "imaging":
                                 return t.capture_text ? "STACK · " + t.capture_text : "STACKING"
                             case "lights":
@@ -2334,12 +2357,14 @@ Item {
                                  : ""
                         activeState: trackingPad ? (slewingNow || trackingNow) : activeForState
                         pending: isPending
-                        primed: photoPrimed || stackPrimed
+                        primed: capturePrimed || stackPrimed
                         destructive: !!modelData.destructive
                         enabled: cameraAllowed && modeAllowed && root.commandEnabled(effectiveOperation)
                         Accessible.description: trackingPad && root.scopeStacking
                                                            ? "Tracking is required while stacking; press STACK to stop the capture"
-                                                           : photoPrimed ? "Photo capture primed for a fast shot"
+                                                           : capturePrimed ? (modelData.start === "photo"
+                                                                ? "Photo capture primed for a fast shot"
+                                                                : modelData.label + " is primed; tap to start")
                                                            : (modelData.start === "stack" && !stackTracking)
                                                              ? "Track a target before starting the stack"
                                                              : (modelData.start === "stack" && stackTracking && cameraPanel.stackSettingsText())

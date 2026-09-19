@@ -30,6 +30,8 @@ CMD_NOTIFY_PROGRASS_CAPTURE_RAW_LIVE_STACKING = 15209
 CMD_NOTIFY_STATE_ASTRO_CALIBRATION = 15210
 CMD_NOTIFY_STATE_ASTRO_GOTO = 15211
 CMD_NOTIFY_STATE_ASTRO_TRACKING = 15212
+CMD_NOTIFY_TELE_FUNCTION_STATE = 15215
+CMD_NOTIFY_WIDE_FUNCTION_STATE = 15216
 CMD_NOTIFY_RGB_STATE = 15221
 CMD_NOTIFY_POWER_IND_STATE = 15222
 CMD_NOTIFY_WS_HOST_SLAVE_MODE = 15223
@@ -47,9 +49,13 @@ CMD_NOTIFY_FOCUS_POSITION = 15257
 CMD_NOTIFY_BODY_STATUS = 15262
 CMD_NOTIFY_PROGRESS_CAPTURE_MOSAIC = 15263
 CMD_NOTIFY_GENERAL_INT_PARAM = 15264
+CMD_NOTIFY_PHOTO_STATE = 15273
+CMD_NOTIFY_BURST_STATE = 15274
 CMD_NOTIFY_RECORD_STATE = 15275
+CMD_NOTIFY_TIMELAPSE_STATE = 15276
 CMD_NOTIFY_ASTRO_AUTO_FOCUS_STATE = 15278
 CMD_NOTIFY_ASTRO_AUTO_FOCUS_FAST_STATE = 15280
+CMD_NOTIFY_TIMELAPSE_OUT_TIME = 15287
 CMD_NOTIFY_LONG_EXP_PROGRESS = 15288
 CMD_NOTIFY_CMOS_TEMPERATURE = 15292
 
@@ -90,6 +96,16 @@ ASTRO_STATES = {0: "idle", 1: "running", 2: "stopping", 3: "stopped", 4: "solvin
 CHARGING_STATES = {0: "discharging", 1: "charging", 2: "full"}
 STREAM_TYPES = {0: "OFF", 1: "RTSP", 2: "JPEG"}
 BODY_STATUS = {1: "EQ", 2: "AZ"}
+_PHOTO_FUNCTION_KEYS = ("photo_state", "burst_state", "record_state", "timelapse_state")
+_PHOTO_FUNCTION_COMMANDS = {
+    CMD_NOTIFY_PHOTO_STATE: ("PhotoState", "photo_state"),
+    CMD_NOTIFY_BURST_STATE: ("BurstState", "burst_state"),
+    CMD_NOTIFY_RECORD_STATE: ("RecordState", "record_state"),
+    CMD_NOTIFY_TIMELAPSE_STATE: ("TimeLapseState", "timelapse_state"),
+    CMD_NOTIFY_TELE_FUNCTION_STATE: ("PhotoState", "photo_state"),
+    CMD_NOTIFY_WIDE_FUNCTION_STATE: ("PhotoState", "photo_state"),
+}
+_PHOTO_FUNCTION_FORCE = frozenset(_PHOTO_FUNCTION_COMMANDS) | {CMD_NOTIFY_TIMELAPSE_OUT_TIME}
 # BatteryInfo.percentage is the real SoC. CMD_NOTIFY_ELE and the SDK cache
 # (BatteryLevelDwarf) are the same remaining-% notify; the SDK only stores it
 # on 10% jumps, so a 22% BatteryInfo and a latched 20% cache fight and the
@@ -232,6 +248,28 @@ def _exposure_name(index: Any, model_id: str) -> str:
     except Exception:
         pass
     return str(index)
+
+
+def _photo_function_idle_changes(snapshot: dict[str, Any]) -> dict[str, Any]:
+    changes: dict[str, Any] = {}
+    for key in _PHOTO_FUNCTION_KEYS:
+        if snapshot.get(key) == "running":
+            changes[key] = "idle"
+            if key == "record_state":
+                changes["record_seconds"] = 0
+            elif key == "timelapse_state":
+                changes["timelapse_elapsed_s"] = 0
+    return changes
+
+
+def _photo_function_state_changes(key: str, state: str) -> dict[str, Any]:
+    changes: dict[str, Any] = {key: state}
+    if state != "running":
+        if key == "record_state":
+            changes["record_seconds"] = 0
+        elif key == "timelapse_state":
+            changes["timelapse_elapsed_s"] = 0
+    return changes
 
 
 def _stacking_progress_changes(message: Any, mosaic: bool = False) -> dict[str, Any]:
@@ -605,7 +643,7 @@ class TelemetryTap:
                 CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING,
                 CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING,
                 CMD_NOTIFY_POWER_OFF,
-            ))
+            ) or cmd in _PHOTO_FUNCTION_FORCE)
 
     def _record_response(self, cmd: int, data: bytes) -> None:
         try:
@@ -825,13 +863,23 @@ class TelemetryTap:
         if cmd in (CMD_NOTIFY_TELE_RECORD_TIME, CMD_NOTIFY_WIDE_RECORD_TIME):
             message = self._parse("RecordTime", data)
             return {"record_seconds": int(message.record_time)}
-        if cmd == CMD_NOTIFY_RECORD_STATE:
-            message = self._parse("RecordState", data)
+        if cmd in _PHOTO_FUNCTION_COMMANDS:
+            factory_name, key = _PHOTO_FUNCTION_COMMANDS[cmd]
+            message = self._parse(factory_name, data)
+            if message is None:
+                return {}
             state = OPERATION_STATES.get(int(message.state), str(message.state))
-            changes = {"record_state": state}
-            if state != "running":
-                changes["record_seconds"] = 0
-            return changes
+            return _photo_function_state_changes(key, state)
+        if cmd == CMD_NOTIFY_TIMELAPSE_OUT_TIME:
+            message = self._parse("TimeLapseOutTime", data)
+            if message is None:
+                return {}
+            return {
+                "timelapse_state": "running",
+                "timelapse_interval_s": int(message.interval),
+                "timelapse_elapsed_s": int(message.out_time),
+                "timelapse_total_s": int(message.total_time),
+            }
         if cmd in (
             CMD_NOTIFY_TELE_LONG_EXP_PROGRESS,
             CMD_NOTIFY_WIDE_LONG_EXP_PROGRESS,
@@ -957,14 +1005,18 @@ class TelemetryTap:
                     if not (hold and state == "running"):
                         changes["capture_state"] = state
                         changes["capture_active"] = state == "running"
-                elif which == "record_state":
-                    changes["record_state"] = OPERATION_STATES.get(int(exclusive.record_state.state), "idle")
+                    if state == "running":
+                        changes.update(_photo_function_idle_changes(self.snapshot()))
+                elif which in _PHOTO_FUNCTION_KEYS:
+                    state = OPERATION_STATES.get(int(getattr(exclusive, which).state), "idle")
+                    changes.update(_photo_function_state_changes(which, state))
                 elif which is None and prefix == "tele":
                     # Tracking owns the motors during stacking, so this oneof
                     # can be empty while capture notifications are still live.
                     snapshot = self.snapshot()
                     if snapshot.get("capture_state") != "running" and not snapshot.get("capture_active"):
                         changes["capture_active"] = False
+                        changes.update(_photo_function_idle_changes(snapshot))
         focus = getattr(message, "focus_motor_state_info", None)
         if focus is not None and message.HasField("focus_motor_state_info"):
             if focus.HasField("focus_position"):

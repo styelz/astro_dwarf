@@ -229,6 +229,7 @@ from .telemetry_view import (
     apply_mode_exposure_fields,
     exposure_seconds_from_text,
     format_telemetry,
+    photo_capture_seconds,
     stacked_capture_count,
     tracking_needs_calibration,
 )
@@ -528,6 +529,11 @@ _ACTIVITY_STOP = {
     "stop_astro": "imaging",
 }
 _ACTIVITY_CLEAR = {"stop_all", "stop_session", "reboot", "power_down", "go_live"}
+_PHOTO_ACTIVITY_STATES = {
+    "burst_state": "burst",
+    "timelapse_state": "timelapse",
+    "record_state": "record",
+}
 _STOP_ACTIONS = {"stop_all", "stop_session"}
 _CAPTURE_PREVIEW_STEPS = {
     "Start capture",
@@ -1975,6 +1981,14 @@ class AppBackend(QObject):
             wanted = _activity_for_session_step(session.current_step) if session else ""
             if wanted not in ("autofocus", "infinity"):
                 self._device_activity.pop(device_id, None)
+        for key, mode in _PHOTO_ACTIVITY_STATES.items():
+            if (
+                data.get(key) in ("idle", "stopped")
+                and self._device_activity.get(device_id) == mode
+                and not activity
+            ):
+                self._device_activity.pop(device_id, None)
+                break
         if data.get("power_off"):
             self._drop_device_link(device_id)
             return
@@ -6951,6 +6965,17 @@ class AppBackend(QObject):
                 self._clear_mosaic_preview()
             self._skip_manual_history.discard(device_id)
             payload = {"args": [camera]}
+        elif operation == "burst_start":
+            telemetry = self._device_telemetry.get(device_id) or {}
+            count = telemetry.get("burst_count")
+            if count in (None, "", "—") and device is not None:
+                count = device.control_settings.burst_count
+            try:
+                shots = int(count)
+            except (TypeError, ValueError):
+                shots = 0
+            if shots > 0:
+                payload = {"args": [shots]}
         if operation == "stop_astro":
             live = self._live_mosaic.get(device_id)
             if self._live_mosaic_running(device_id, live):
@@ -7853,11 +7878,20 @@ class AppBackend(QObject):
             elif name == "burst_count":
                 operation, args = "set_burst_count", [int(value)]
             elif name == "burst_interval":
-                operation, args = "set_burst_interval", [value]
+                seconds = photo_capture_seconds(value)
+                if seconds is None:
+                    raise ValueError("burst interval")
+                operation, args = "set_burst_interval", [seconds]
             elif name == "timelapse_interval":
-                operation, args = "set_timelapse_interval", [value]
+                seconds = photo_capture_seconds(value)
+                if seconds is None:
+                    raise ValueError("timelapse interval")
+                operation, args = "set_timelapse_interval", [seconds]
             elif name == "timelapse_duration":
-                operation, args = "set_timelapse_duration", [value]
+                seconds = photo_capture_seconds(value)
+                if seconds is None:
+                    raise ValueError("timelapse duration")
+                operation, args = "set_timelapse_duration", [seconds]
             elif name == "stack_format":
                 operation, args = "set_stack_format", [int(value)]
             elif name == "count":
