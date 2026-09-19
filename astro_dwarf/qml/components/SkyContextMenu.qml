@@ -12,11 +12,13 @@ HudMenu {
     property bool dblclickTrack: false
     property bool trackEnabled: false
     property bool hasTarget: false
+    property bool atlasMenuAvailable: false
 
     signal overlayToggled()
     signal previewToggled()
     signal dblclickTrackToggled()
     signal trackSelected()
+    signal atlasMenuRequested()
 
     HudMenuItem {
         text: skyMenu.overlayEnabled ? "Hide live stream on FOV" : "Overlay live stream on FOV"
@@ -60,5 +62,17 @@ HudMenu {
                                  ? "Connect the telescope and wait until it is idle"
                                  : "Slew the telescope to the selected sky-map target and start tracking"
         onTriggered: skyMenu.trackSelected()
+    }
+    HudMenuSeparator {
+        visible: skyMenu.atlasMenuAvailable
+        height: visible ? implicitHeight : 0
+    }
+    HudMenuItem {
+        objectName: "openAtlasMenuItem"
+        visible: skyMenu.atlasMenuAvailable
+        text: "Open atlas menu"
+        glyph: "\uE8EC"
+        accessibleDescription: "Open the Aladin Lite atlas tools at the clicked sky position"
+        onTriggered: skyMenu.atlasMenuRequested()
     }
 }

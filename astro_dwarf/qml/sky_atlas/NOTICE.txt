@@ -1,0 +1,5 @@
+Aladin Lite is developed at CDS, Strasbourg, and is licensed under
+LGPL-3.0-or-later. Keep the Aladin logo and link visible in the atlas view.
+
+https://aladin.cds.unistra.fr/AladinLite/
+https://github.com/cds-astro/aladin-lite

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Aladin Lite</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background: #05070c;
+      overflow: hidden;
+    }
+    #aladin-lite-div {
+      width: 100%;
+      height: 100%;
+    }
+    .aladin-context-menu,
+    .aladin-lite-context-menu {
+      display: none !important;
+    }
+    html.astro-dwarf-atlas-menu .aladin-context-menu,
+    html.astro-dwarf-atlas-menu .aladin-lite-context-menu {
+      display: block !important;
+      z-index: 200 !important;
+      pointer-events: auto !important;
+      --bg-color: #05070c;
+      --text-color: #ececec;
+      --border-color: #8ad4c8;
+      --hover-color: #8ad4c8;
+      --error-color: #e66;
+      --border-size: 1px;
+      color: var(--text-color);
+      background-color: var(--bg-color);
+    }
+    html.astro-dwarf-atlas-menu .aladin-context-menu-item {
+      background-color: var(--bg-color);
+      color: var(--text-color);
+    }
+    .aladin-location,
+    .aladin-status-bar,
+    .aladin-fov {
+      z-index: 80 !important;
+      overflow: visible !important;
+    }
+    /* Target / Simbad sits in this rail, under the location box. Keep the
+       rail and its tooltips above that box and the FOV canvas. */
+    .aladin-widgets-toolbar,
+    .aladin-simbadPointer-control,
+    .aladin-tooltip-container,
+    .aladin-tooltip,
+    #aladin-tooltip-mouse {
+      z-index: 90 !important;
+      overflow: visible !important;
+    }
+    /* Aladin aims the target tooltip top-right, which lands under the
+       location box. Pin it to the right of the control instead. */
+    .aladin-tooltip-container.top .aladin-tooltip,
+    .aladin-tooltip-container.right.top .aladin-tooltip {
+      top: 0 !important;
+      left: 100% !important;
+      transform: none !important;
+    }
+  </style>
+  <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8"></script>
+</head>
+<body>
+  <div id="aladin-lite-div"></div>
+  <script>
+    window.__astroDwarfAtlas = window.__astroDwarfAtlas || {};
+    A.init.then(function() {
+      window.aladin = A.aladin("#aladin-lite-div", {
+        survey: "P/DSS2/color",
+        fov: 70,
+        projection: "STG",
+        cooFrame: "ICRSd",
+        showReticle: false,
+        showCooGridControl: true,
+        showSimbadPointerControl: true,
+        showProjectionControl: false,
+        showFullscreenControl: false,
+        showLayersControl: false,
+        showGotoControl: true,
+        showZoomControl: false,
+        showShareControl: false,
+        showContextMenu: true,
+        showFrame: false,
+        showCooGrid: true
+      });
+      if (typeof window.aladin.setProjection === "function")
+        window.aladin.setProjection("STG");
+      try {
+        if (typeof window.aladin.setCooGrid === "function")
+          window.aladin.setCooGrid({color: "#8ad4c8", opacity: 0.28, labelSize: 11, enabled: true});
+      } catch (err) {}
+    });
+  </script>
+</body>
+</html>

@@ -90,7 +90,9 @@ from .domain import (
     normalize_device_color,
     parse_mosaic_pa,
     history_record_for_run,
+    normalized_sky_map_provider,
     normalized_stellarium_url,
+    SKY_MAP_PROVIDER_STELLARIUM_WEB,
     session_from_dict,
     to_dict,
 )
@@ -140,6 +142,26 @@ from .services import (
     stagger_mosaic_sessions,
     store_local_iso,
     zoneinfo_from_name,
+)
+from .sky_atlas import (
+    atlas_page_url,
+    stop_atlas_server,
+    sky_atlas_context_poll_script,
+    sky_atlas_dblclick_poll_script,
+    sky_atlas_fov_script,
+    sky_atlas_harvest_script,
+    sky_atlas_live_script,
+    sky_atlas_lock_target_script,
+    sky_atlas_opacity_poll_script,
+    sky_atlas_open_menu_script,
+    sky_atlas_pane_script,
+    sky_atlas_boot_script,
+    sky_atlas_home_script,
+    sky_atlas_ready_script,
+    sky_atlas_site_script,
+    sky_atlas_view_poll_script,
+    sky_atlas_view_pos_script,
+    sky_atlas_view_script,
 )
 from .duration_suggest import suggest_hardware_profile
 from .location import has_site_coordinates, match_timezone, resolve_location, suggested_timezone, timezone_locations
@@ -2289,6 +2311,26 @@ class AppBackend(QObject):
         self._persist_app_settings()
         self._poll_stellarium_rc()
 
+    @Property(str, notify=appSettingsChanged)
+    def skyMapProvider(self) -> str:
+        return normalized_sky_map_provider(self._settings.sky_map_provider)
+
+    @Slot(str)
+    def setSkyMapProvider(self, provider: str) -> None:
+        value = normalized_sky_map_provider(provider)
+        if value == normalized_sky_map_provider(self._settings.sky_map_provider):
+            return
+        self._settings = replace(self._settings, sky_map_provider=value)
+        self._persist_app_settings()
+
+    @Property(bool, notify=appSettingsChanged)
+    def skyMapUsesStellariumWeb(self) -> bool:
+        return self.skyMapProvider == SKY_MAP_PROVIDER_STELLARIUM_WEB
+
+    @Property(str, notify=appSettingsChanged)
+    def skyAtlasUrl(self) -> str:
+        return atlas_page_url()
+
     @Property(bool, notify=stellariumRcChanged)
     def stellariumRcLive(self) -> bool:
         return self._stellarium_rc_live
@@ -2910,6 +2952,17 @@ class AppBackend(QObject):
             device.timezone_name,
             device.name,
         )
+
+    @Property(str, notify=selectedDeviceChanged)
+    def skyAtlasSiteScript(self) -> str:
+        device = self._schedule_device()
+        if device is None:
+            return sky_atlas_site_script(0.0, 0.0)
+        return sky_atlas_site_script(device.latitude, device.longitude)
+
+    @Property(str, constant=True)
+    def skyAtlasHomeScript(self) -> str:
+        return sky_atlas_home_script()
 
     @Property("QVariantMap", notify=skyTargetChanged)
     def skyTarget(self) -> dict[str, Any]:
@@ -3797,10 +3850,9 @@ class AppBackend(QObject):
         fov_h, fov_v, camera = self._sky_map_fov()
         return f"{camera.upper()} {fov_h:.2f}° × {fov_v:.2f}°"
 
-    @Slot("QVariant", int, int, float, str, float, result=str)
-    def skyWebFovScript(
+    def _sky_overlay_payload(
         self, web_raw: Any, columns: int, rows: int, overlap: float, color: str, position_angle: float = 0.0
-    ) -> str:
+    ) -> dict[str, Any]:
         south_up = self._mosaic_south_up()
         snapshot = self._snapshot_web_raw(web_raw)
         if isinstance(snapshot, str) and snapshot:
@@ -3873,7 +3925,7 @@ class AppBackend(QObject):
             if member_panes:
                 payload["panes"] = member_panes
                 payload["mode"] = "panes"
-                return sky_web_fov_script(payload)
+                return payload
             if session is not None and session.target.ra_hours is not None and session.target.dec_degrees is not None:
                 try:
                     payload["panes"] = mosaic_pane_footprints(
@@ -3887,7 +3939,7 @@ class AppBackend(QObject):
                         position_angle=payload["position_angle"],
                     )
                     payload["mode"] = "panes"
-                    return sky_web_fov_script(payload)
+                    return payload
                 except ValueError:
                     pass
         center = target
@@ -3925,7 +3977,71 @@ class AppBackend(QObject):
                 )
             except ValueError:
                 payload["mode"] = "center"
-        return sky_web_fov_script(payload)
+        return payload
+
+    @Slot("QVariant", int, int, float, str, float, result=str)
+    def skyWebFovScript(
+        self, web_raw: Any, columns: int, rows: int, overlap: float, color: str, position_angle: float = 0.0
+    ) -> str:
+        return sky_web_fov_script(self._sky_overlay_payload(web_raw, columns, rows, overlap, color, position_angle))
+
+    @Slot("QVariant", int, int, float, str, float, result=str)
+    def skyAtlasFovScript(
+        self, web_raw: Any, columns: int, rows: int, overlap: float, color: str, position_angle: float = 0.0
+    ) -> str:
+        return sky_atlas_fov_script(self._sky_overlay_payload(web_raw, columns, rows, overlap, color, position_angle))
+
+    @Property(str, constant=True)
+    def skyAtlasHarvestScript(self) -> str:
+        return sky_atlas_harvest_script()
+
+    @Property(str, constant=True)
+    def skyAtlasReadyScript(self) -> str:
+        return sky_atlas_ready_script()
+
+    @Property(str, constant=True)
+    def skyAtlasBootScript(self) -> str:
+        return sky_atlas_boot_script()
+
+    @Property(str, constant=True)
+    def skyAtlasViewPollScript(self) -> str:
+        return sky_atlas_view_poll_script()
+
+    @Property(str, constant=True)
+    def skyAtlasContextPollScript(self) -> str:
+        return sky_atlas_context_poll_script()
+
+    @Property(str, constant=True)
+    def skyAtlasDblclickPollScript(self) -> str:
+        return sky_atlas_dblclick_poll_script()
+
+    @Property(str, constant=True)
+    def skyAtlasOpacityPollScript(self) -> str:
+        return sky_atlas_opacity_poll_script()
+
+    @Slot("QVariantMap", result=str)
+    def skyAtlasViewScript(self, payload: Any = None) -> str:
+        return sky_atlas_view_script(payload if isinstance(payload, dict) else {})
+
+    @Slot("QVariantMap", result=str)
+    def skyAtlasLockTargetScript(self, payload: Any = None) -> str:
+        return sky_atlas_lock_target_script(payload if isinstance(payload, dict) else {})
+
+    @Slot(float, float, result=str)
+    def skyAtlasViewPosScript(self, ra_hours: float, dec_degrees: float) -> str:
+        return sky_atlas_view_pos_script(ra_hours, dec_degrees)
+
+    @Slot(str, bool, float, int, result=str)
+    def skyAtlasLiveScript(self, data_url: str, enabled: bool, opacity: float = 0.65, live_pane: int = 0) -> str:
+        return sky_atlas_live_script(data_url, enabled, opacity, live_pane)
+
+    @Slot("QVariantMap", result=str)
+    def skyAtlasPaneScript(self, pane_urls: Any = None) -> str:
+        return sky_atlas_pane_script(pane_urls if isinstance(pane_urls, dict) else self._mosaic_pane_urls)
+
+    @Slot(float, float, result=str)
+    def skyAtlasOpenMenuScript(self, x: float = 0.0, y: float = 0.0) -> str:
+        return sky_atlas_open_menu_script(x, y)
 
     @Slot("QVariant")
     def pushSkyToDesktop(self, web_raw: Any) -> None:
@@ -9876,6 +9992,10 @@ class AppBackend(QObject):
         if self._shut_down:
             return
         self._shut_down = True
+        try:
+            stop_atlas_server()
+        except Exception:
+            pass
         try:
             self._screen_color.cancel()
         except RuntimeError:

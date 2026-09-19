@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     lock.add_argument("ra_hours", type=float)
     lock.add_argument("dec_degrees", type=float)
     menu = sub.add_parser("sky-menu")
-    menu.add_argument("action", choices=("overlay", "preview", "dblclick", "track"))
+    menu.add_argument("action", choices=("overlay", "preview", "dblclick", "track", "atlas"))
 
     action = sub.add_parser("action", help="Device command: power_down, calibrate, …")
     action.add_argument("operation")

@@ -689,6 +689,7 @@ class TestHarness:
                 "locked": bool(sky.get("locked")),
                 "ra_hours": sky.get("ra_hours"),
                 "dec_degrees": sky.get("dec_degrees"),
+                "provider": str(getattr(backend, "skyMapProvider", "") or ""),
             },
             "toast": dict(self.last_toast),
             "media": {
@@ -749,6 +750,13 @@ class TestHarness:
         return {"clicked": query}
 
     def set_value(self, query: str, value: Any) -> dict[str, Any]:
+        key = str(query or "").strip()
+        if key in {"sky_map_provider", "skyMapProvider"}:
+            setter = getattr(self.backend, "setSkyMapProvider", None)
+            if not callable(setter):
+                raise RuntimeError("sky map provider is not available")
+            setter(str(value or ""))
+            return {"set": key, "value": str(getattr(self.backend, "skyMapProvider", "") or "")}
         set_object(self._resolved(query), value)
         return {"set": query, "value": value}
 

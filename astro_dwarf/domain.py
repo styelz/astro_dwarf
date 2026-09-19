@@ -841,12 +841,17 @@ DEFAULT_OBSERVING_DAY_CUTOFF_HOUR = 12
 DEFAULT_EXPOSURE_SECONDS = 15.0
 DEFAULT_GAIN = 40
 DEFAULT_FRAME_COUNT = 60
+SKY_MAP_PROVIDER_ALADIN = "aladin"
+SKY_MAP_PROVIDER_STELLARIUM_WEB = "stellarium_web"
+DEFAULT_SKY_MAP_PROVIDER = SKY_MAP_PROVIDER_ALADIN
+SKY_MAP_PROVIDERS = frozenset({SKY_MAP_PROVIDER_ALADIN, SKY_MAP_PROVIDER_STELLARIUM_WEB})
 
 
 @dataclass(slots=True)
 class AppSettings:
     observing_day_cutoff_hour: int = DEFAULT_OBSERVING_DAY_CUTOFF_HOUR
     stellarium_url: str = DEFAULT_STELLARIUM_URL
+    sky_map_provider: str = DEFAULT_SKY_MAP_PROVIDER
     last_device_id: str = ""
 
 
@@ -1388,11 +1393,25 @@ def normalized_stellarium_url(value: Any, default: str = DEFAULT_STELLARIUM_URL)
     return text or default
 
 
+def normalized_sky_map_provider(value: Any, default: str = DEFAULT_SKY_MAP_PROVIDER) -> str:
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        SKY_MAP_PROVIDER_ALADIN: SKY_MAP_PROVIDER_ALADIN,
+        "aladin_lite": SKY_MAP_PROVIDER_ALADIN,
+        "atlas": SKY_MAP_PROVIDER_ALADIN,
+        SKY_MAP_PROVIDER_STELLARIUM_WEB: SKY_MAP_PROVIDER_STELLARIUM_WEB,
+        "stellarium": SKY_MAP_PROVIDER_STELLARIUM_WEB,
+        "stellariumweb": SKY_MAP_PROVIDER_STELLARIUM_WEB,
+    }
+    return aliases.get(text, default if default in SKY_MAP_PROVIDERS else DEFAULT_SKY_MAP_PROVIDER)
+
+
 def app_settings_from_dict(data: dict[str, Any]) -> AppSettings:
     data = dict(data or {})
     return AppSettings(
         observing_day_cutoff_hour=clamp_cutoff_hour(data.get("observing_day_cutoff_hour")),
         stellarium_url=normalized_stellarium_url(data.get("stellarium_url")),
+        sky_map_provider=normalized_sky_map_provider(data.get("sky_map_provider")),
         last_device_id=str(data.get("last_device_id") or "").strip(),
     )
 

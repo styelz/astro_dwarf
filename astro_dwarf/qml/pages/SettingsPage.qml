@@ -23,7 +23,7 @@ Item {
         { key: "import", title: "IMPORT", hint: "Legacy sessions", glyph: "⇩", device: true, group: "TELESCOPE" },
         { key: "interface", title: "INTERFACE", hint: "Layout · theme", glyph: "◫", device: false, group: "APP" },
         { key: "image", title: "IMAGE", hint: "Enhance filters", glyph: "▦", device: false, group: "APP" },
-        { key: "calendar", title: "CALENDAR", hint: "Night cutoff · Stellarium", glyph: "◑", device: false, group: "APP" }
+        { key: "calendar", title: "CALENDAR", hint: "Night cutoff · sky map", glyph: "◑", device: false, group: "APP" }
     ]
     readonly property var categoryKeys: ({
         device: ["name", "model", "color", "camera", "timezone_name", "latitude", "longitude", "mosaic_pa"],
@@ -207,6 +207,7 @@ Item {
         mosaicPaField.text = settingsPage.mosaicPaTextFromDevice(d)
         timezoneField.setFromName(d.timezone_name || "")
         stellariumField.text = backend.stellariumUrl || "http://localhost:8090"
+        skyMapField.currentIndex = backend.skyMapUsesStellariumWeb ? 1 : 0
         wifiModeField.currentIndex = Math.max(0, ["auto", "ap", "sta"].indexOf(d.wifi_mode || "auto"))
         ssidField.text = d.wifi_ssid || ""
         wifiField.text = d.wifi_password || ""
@@ -254,6 +255,8 @@ Item {
                 stellariumField.text = backend.stellariumUrl || "http://localhost:8090"
             if (!cutoffField.activeFocus)
                 cutoffField.value = backend.observingDayCutoffHour
+            if (!skyMapField.activeFocus)
+                skyMapField.currentIndex = backend.skyMapUsesStellariumWeb ? 1 : 0
         }
         function onDurationSuggestionChanged() {
             if (settingsPage.sectionDirtyByKey("timing"))
@@ -649,6 +652,17 @@ Item {
                         }
                         SettingGroup {
                             title: "INTEGRATIONS"
+                            FieldLabel { text: "SKY MAP" }
+                            HudCombo {
+                                id: skyMapField
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                model: ["Aladin Lite", "Stellarium Web"]
+                                accessibleName: "Sky map provider"
+                                onActivated: backend.setSkyMapProvider(currentIndex === 1 ? "stellarium_web" : "aladin")
+                            }
+                            FieldHint {
+                                text: "SKY uses Aladin Lite by default, shown as a horizon view from this telescope's site (drag to look around, N E S W on the horizon). Stellarium Web stays available if you want the hosted planetarium. Changing this reloads the map only."
+                            }
                             FieldLabel { text: "STELLARIUM" }
                             HudField {
                                 id: stellariumField
@@ -660,7 +674,7 @@ Item {
                             FieldHint { text: "Address of Stellarium's Remote Control plugin. Sessions can pull the selected object from here, and SKY can push the current target, site, time, and FOV to the desktop app." }
                         }
                         FieldHint {
-                            text: "SKY loads Stellarium Web (stellarium-web.org). Astro Dwarf is unofficial and not affiliated with DwarfLab or Stellarium Labs."
+                            text: "Aladin Lite is an open CDS atlas. Stellarium Web (stellarium-web.org) is optional. Astro Dwarf is unofficial and not affiliated with DwarfLab or Stellarium Labs."
                         }
                     }
 

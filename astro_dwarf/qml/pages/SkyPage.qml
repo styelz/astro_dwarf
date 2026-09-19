@@ -126,7 +126,12 @@ Item {
             const dec = Number(isFinite(Number(liveView.dec_degrees)) ? liveView.dec_degrees : skyStore.viewDecDegrees)
             if (isFinite(ra) && isFinite(dec) && (isFinite(Number(liveView.ra_hours)) || skyStore.viewSaved)) {
                 const decText = (dec >= 0 ? "+" : "") + dec.toFixed(3) + "°"
-                return "FOV centre  ·  RA " + ra.toFixed(3) + "h  DEC " + decText + "  ·  " + fov
+                const az = Number(liveView.az)
+                const alt = Number(liveView.alt)
+                const horizon = (isFinite(az) && isFinite(alt))
+                    ? "  ·  AZ " + Math.round(((az % 360) + 360) % 360) + "°  ALT " + (alt >= 0 ? "+" : "") + Math.round(alt) + "°"
+                    : ""
+                return "FOV centre  ·  RA " + ra.toFixed(3) + "h  DEC " + decText + horizon + "  ·  " + fov
             }
             const clickHint = skyStore.dblclickTrack
                 ? "Select a target. Double-click to GOTO it and start tracking."
@@ -159,15 +164,26 @@ Item {
             backend.trackSkyTarget(raw)
     }
     property double lastSkyMenuAt: 0
+    property real lastSkyMenuX: 0
+    property real lastSkyMenuY: 0
     function openSkyMenu(x, y) {
         const now = Date.now()
         if (now - skyPage.lastSkyMenuAt < 250)
             return
         skyPage.lastSkyMenuAt = now
-        if (x === undefined || y === undefined)
+        if (x === undefined || y === undefined) {
             skyMenu.popup()
-        else
-            skyMenu.popup(mapLoader, x, y)
+            return
+        }
+        skyPage.lastSkyMenuX = x
+        skyPage.lastSkyMenuY = y
+        skyMenu.popup(mapLoader, x, y)
+    }
+    function openAtlasMenu() {
+        const map = mapLoader.item
+        if (!map || typeof map.openAtlasMenu !== "function")
+            return
+        map.openAtlasMenu(skyPage.lastSkyMenuX, skyPage.lastSkyMenuY)
     }
     function lockToTrackedTarget() {
         const tracked = backend.trackedSkyTarget || ({})
@@ -216,7 +232,11 @@ Item {
     }
     function harnessSetView(raHours, decDegrees) {
         const map = mapLoader.item
-        if (!map || typeof map.runJavaScript !== "function")
+        if (!map)
+            return "no-map"
+        if (typeof map.setView === "function")
+            return map.setView(raHours, decDegrees)
+        if (typeof map.runJavaScript !== "function")
             return "no-map"
         map.runJavaScript(backend.skyWebViewPosScript(Number(raHours), Number(decDegrees)))
         return "ok"
@@ -231,6 +251,8 @@ Item {
             skyMenu.dblclickTrackToggled()
         else if (key === "track")
             skyMenu.trackSelected()
+        else if (key === "atlas")
+            skyPage.openAtlasMenu()
         else
             return "unknown"
         return key
@@ -258,6 +280,9 @@ Item {
         }
         function onSkyLockRequested(payload) {
             skyPage.queueSkyLock(payload)
+        }
+        function onAppSettingsChanged() {
+            skyPage.webFailed = false
         }
     }
 
@@ -492,7 +517,7 @@ Item {
                     return mapSlot.mapToItem(root.contentItem, 0, 0).y
                 }
                 active: skyPage.webReady && root.skyToolsEnabled && (skyPage.mapLive || skyPage.mapKeepAlive)
-                source: Qt.resolvedUrl("SkyWebView.qml")
+                source: Qt.resolvedUrl(backend.skyMapUsesStellariumWeb ? "SkyWebView.qml" : "SkyAtlasView.qml")
                 onLoaded: {
                     skyPage.mapKeepAlive = true
                     const map = mapLoader.item
@@ -526,9 +551,13 @@ Item {
                 anchors.centerIn: parent
                 mode: "unavailable"
                 glyph: "✧"
-                text: backend.skyWebBlockedByGpu
-                      ? "Stellarium Web cannot run inside this window. This session has no OpenGL, which is typical on Hyper-V. Open it in a browser, then import the target here."
-                      : "Stellarium Web is not available in this window. Open it in a browser to find a target, then come back if the map loads."
+                text: backend.skyMapUsesStellariumWeb
+                      ? (backend.skyWebBlockedByGpu
+                         ? "Stellarium Web cannot run inside this window. This session has no OpenGL, which is typical on Hyper-V. Open it in a browser, then import the target here."
+                         : "Stellarium Web is not available in this window. Open it in a browser to find a target, then come back if the map loads.")
+                      : (backend.skyWebBlockedByGpu
+                         ? "Aladin Lite cannot run inside this window. This session has no OpenGL, which is typical on Hyper-V. Open the atlas in a browser, then import the target here."
+                         : "Aladin Lite is not available in this window. Open it in a browser to find a target, then come back if the map loads.")
             }
 
             HudButton {
@@ -536,8 +565,10 @@ Item {
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 16
-                text: "OPEN STELLARIUM WEB"
-                onClicked: backend.openExternalUrl(backend.stellariumWebUrl)
+                text: backend.skyMapUsesStellariumWeb ? "OPEN STELLARIUM WEB" : "OPEN ALADIN LITE"
+                onClicked: backend.openExternalUrl(backend.skyMapUsesStellariumWeb
+                                                   ? backend.stellariumWebUrl
+                                                   : "https://aladin.cds.unistra.fr/AladinLite/")
             }
 
             Connections {
@@ -574,6 +605,7 @@ Item {
                 overlayOpacity: skyPage.clampOpacity(skyStore.liveFovOpacity)
                 dblclickTrack: skyStore.dblclickTrack
                 hasTarget: skyPage.mapHasTarget
+                atlasMenuAvailable: !backend.skyMapUsesStellariumWeb && skyPage.webReady
                 trackEnabled: !!(backend.selectedDevice && backend.selectedDevice.connected)
                               && root.scopePending === ""
                               && !root.scopeImaging
@@ -582,6 +614,7 @@ Item {
                               && root.scopeTelemetry.goto_state !== "stopping"
                               && (root.scopeActivity === "" || root.scopeActivity === "goto"
                                   || !!root.scopeTelemetry.tracking_active)
+                onAtlasMenuRequested: skyPage.openAtlasMenu()
                 onOverlayToggled: {
                     skyStore.liveFovOverlay = !skyStore.liveFovOverlay
                     if (skyStore.liveFovOverlay && !backend.previewActive && backend.selectedDevice.connected)
@@ -617,7 +650,7 @@ Item {
                     anchors.centerIn: parent
                     mode: "loading"
                     glyph: "✧"
-                    text: "Loading Stellarium Web…"
+                    text: backend.skyMapUsesStellariumWeb ? "Loading Stellarium Web…" : "Loading Aladin Lite…"
                 }
             }
         }
