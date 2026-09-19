@@ -624,11 +624,12 @@ Item {
                     skyMenu.refreshClipboard()
                     if (!skyMenu.clipboardValid)
                         return
-                    skyPage.queueSkyLock({
-                        name: skyMenu.clipboardText,
-                        ra_hours: skyMenu.clipboardRaHours,
-                        dec_degrees: skyMenu.clipboardDecDegrees
-                    })
+                    const map = mapLoader.item
+                    if (!map || typeof map.setView !== "function")
+                        return
+                    if (typeof map.beginViewHold === "function")
+                        map.beginViewHold()
+                    map.setView(skyMenu.clipboardRaHours, skyMenu.clipboardDecDegrees)
                 }
                 onOverlayToggled: {
                     skyStore.liveFovOverlay = !skyStore.liveFovOverlay

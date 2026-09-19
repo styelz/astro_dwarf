@@ -103,6 +103,7 @@ from .services import (
     SKY_WEB_HARVEST_JS,
     StellariumClient,
     generate_mosaic_plan,
+    templates_from_mosaic_panes,
     import_telescopius,
     MAX_MOSAIC_AXIS,
     is_mosaic_pane_name,
@@ -132,6 +133,7 @@ from .services import (
     SKY_WEB_OPACITY_POLL_JS,
     SKY_WEB_VIEW_POLL_JS,
     sky_web_fov_script,
+    sky_web_center_view_script,
     sky_web_lock_target_script,
     sky_web_view_pos_script,
     sky_web_view_script,
@@ -2914,6 +2916,10 @@ class AppBackend(QObject):
     @Slot(float, float, result=str)
     def skyWebViewPosScript(self, ra_hours: float, dec_degrees: float) -> str:
         return sky_web_view_pos_script(ra_hours, dec_degrees)
+
+    @Slot(float, float, result=str)
+    def skyWebCenterViewScript(self, ra_hours: float, dec_degrees: float) -> str:
+        return sky_web_center_view_script(ra_hours, dec_degrees)
 
     @Slot(str, bool, float, int, result=str)
     def skyWebLiveScript(self, data_url: str, enabled: bool, opacity: float = 0.65, live_pane: int = 0) -> str:
@@ -9427,21 +9433,33 @@ class AppBackend(QObject):
     ) -> None:
         payload = self._snapshot_web_raw(web_raw)
         pa = float(position_angle) % 360.0
+        fov_h, fov_v, _camera = self._mosaic_fov()
+        cached = self._cached_sky_preview_panes(columns, rows, overlap, pa, fov_h, fov_v)
+        south_up = self._mosaic_south_up()
 
         def work() -> dict[str, Any]:
             target = self._resolve_stellarium_target(payload)
-            fov_h, fov_v, _camera = self._mosaic_fov()
             extra = sky_web_template_notes(payload)
-            templates = generate_mosaic_plan(
-                target,
-                columns,
-                rows,
-                fov_h,
-                fov_v,
-                overlap,
-                south_up=self._mosaic_south_up(),
-                position_angle=pa,
-            )
+            if cached:
+                templates = templates_from_mosaic_panes(
+                    target,
+                    cached,
+                    overlap=overlap,
+                    fov_h=fov_h,
+                    fov_v=fov_v,
+                    position_angle=pa,
+                )
+            else:
+                templates = generate_mosaic_plan(
+                    target,
+                    columns,
+                    rows,
+                    fov_h,
+                    fov_v,
+                    overlap,
+                    south_up=south_up,
+                    position_angle=pa,
+                )
             if extra:
                 templates = [
                     replace(item, notes="  ·  ".join(part for part in (extra, item.notes) if part))

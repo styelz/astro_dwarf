@@ -177,7 +177,8 @@ ATLAS_ASTRO_JS = r"""
 (function(){
   var box = window.__astroDwarfAtlas = window.__astroDwarfAtlas || {};
   if (box.astro && typeof box.astro.labelOnFov === "function" && typeof box.astro.drawScreenMosaic === "function"
-      && typeof box.astro.drawPaneMedia === "function" && typeof box.astro.bindLiveOpacityWheel === "function")
+      && typeof box.astro.drawPaneMedia === "function" && typeof box.astro.bindLiveOpacityWheel === "function"
+      && typeof box.astro.paneCenterXY === "function")
     return box.astro;
   function deg(value) {
     return ((Number(value) % 360) + 360) % 360;
@@ -455,6 +456,10 @@ ATLAS_ASTRO_JS = r"""
     ctx.stroke();
     ctx.setLineDash([]);
   }
+  function paneCenterXY(aladin, pane) {
+    if (!aladin || !pane) return null;
+    return project(aladin, Number(pane.ra_hours) * 15, Number(pane.dec_degrees));
+  }
   function paneQuad(aladin, pane) {
     var corners = pane && pane.corners;
     if (!aladin || !corners || corners.length < 4) return null;
@@ -470,17 +475,35 @@ ATLAS_ASTRO_JS = r"""
     if (!aladin || !panes || !panes.length) return [];
     var out = [];
     for (var i = 0; i < panes.length; i++) {
-      var quad = paneQuad(aladin, panes[i]);
-      if (!quad) return [];
-      out.push({quad: quad, index: Number(panes[i].index || (i + 1))});
+      var center = paneCenterXY(aladin, panes[i]);
+      if (!center) continue;
+      out.push({
+        quad: paneQuad(aladin, panes[i]),
+        center: center,
+        index: Number(panes[i].index || (i + 1))
+      });
     }
     return out;
   }
+  function northIsDown(aladin) {
+    if (!aladin || typeof aladin.getRaDec !== "function") return false;
+    var pos = aladin.getRaDec();
+    if (!pos) return false;
+    var a = project(aladin, pos[0], pos[1]);
+    var b = project(aladin, pos[0], Math.min(90, Number(pos[1]) + Math.max(0.2, viewFov(aladin) * 0.05)));
+    return !!(a && b && b[1] > a[1]);
+  }
   function outerQuad(items) {
     if (!items || !items.length) return [];
-    if (items.length === 1) return items[0].quad;
     var all = [];
-    for (var i = 0; i < items.length; i++) all = all.concat(items[i].quad);
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].quad && items[i].quad.length)
+        all = all.concat(items[i].quad);
+      else if (items[i].center)
+        all.push(items[i].center);
+    }
+    if (!all.length) return [];
+    if (all.length === 1) return [all[0], all[0], all[0], all[0]];
     var xs = all.map(function(pt) { return pt[0]; });
     var ys = all.map(function(pt) { return pt[1]; });
     var left = Math.min.apply(null, xs), right = Math.max.apply(null, xs);
@@ -565,6 +588,7 @@ ATLAS_ASTRO_JS = r"""
     var totalW = stepX * (cols - 1) + w, totalH = stepY * (rows - 1) + h;
     var pa = Number(box.pa) || 0;
     var col1OnRight = !(pa > 90 && pa < 270);
+    var row1AtTop = !northIsDown(aladinRef());
     ctx.save();
     ctx.translate(width / 2, height / 2);
     ctx.rotate(tilt);
@@ -573,7 +597,7 @@ ATLAS_ASTRO_JS = r"""
       for (var col = 1; col <= cols; col++) {
         index += 1;
         var x = -totalW / 2 + (col1OnRight ? (cols - col) : (col - 1)) * stepX;
-        var y = -totalH / 2 + (row - 1) * stepY;
+        var y = -totalH / 2 + (row1AtTop ? (row - 1) : (rows - row)) * stepY;
         drawPaneMedia(ctx, index, null, x, y, w, h);
         ctx.strokeStyle = "rgba(5,8,14,0.85)";
         ctx.lineWidth = 4;
@@ -639,18 +663,26 @@ ATLAS_ASTRO_JS = r"""
     var panes = (box.fovPanes && box.fovPanes.length) ? box.fovPanes : [];
     var mosaic = cols > 1 || rows > 1 || panes.length > 1;
     var projected = collectProjected(aladin, panes);
-    if (projected.length && (!mosaic || projected.length === cols * rows)) {
+    if (projected.length) {
       for (var i = 0; i < projected.length; i++) {
-        drawPaneMedia(ctx, projected[i].index, projected[i].quad, 0, 0, 0, 0);
-        strokeQuad(ctx, projected[i].quad, color, false);
+        if (projected[i].quad) {
+          drawPaneMedia(ctx, projected[i].index, projected[i].quad, 0, 0, 0, 0);
+          strokeQuad(ctx, projected[i].quad, color, false);
+        }
         if (mosaic) {
-          var q = projected[i].quad, px = 0, py = 0;
-          for (var n = 0; n < q.length; n++) { px += q[n][0]; py += q[n][1]; }
-          ctx.fillStyle = color;
-          ctx.font = "12px sans-serif";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText(String(projected[i].index), px / q.length, py / q.length);
+          var loc = projected[i].center;
+          if (!loc && projected[i].quad) {
+            var q = projected[i].quad, px = 0, py = 0;
+            for (var n = 0; n < q.length; n++) { px += q[n][0]; py += q[n][1]; }
+            loc = [px / q.length, py / q.length];
+          }
+          if (loc) {
+            ctx.fillStyle = color;
+            ctx.font = "12px sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(String(projected[i].index), loc[0], loc[1]);
+          }
         }
       }
       var outer = outerQuad(projected);
@@ -859,6 +891,7 @@ ATLAS_ASTRO_JS = r"""
     drawHorizon: drawHorizon,
     paintFov: paintFov,
     project: project,
+    paneCenterXY: paneCenterXY,
     hudInsets: hudInsets,
     labelOnFov: labelOnFov,
     drawScreenMosaic: drawScreenMosaic,

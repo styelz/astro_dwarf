@@ -42,7 +42,7 @@ HudMenu {
         glyph: "\uE707"
         trailingText: skyMenu.clipboardText
         trailingMaxWidth: 168
-        accessibleDescription: "Center the sky map on the RA and Dec currently in the clipboard, "
+        accessibleDescription: "Center the sky map on the clipboard RA and Dec without changing the selected mosaic target, "
                                + skyMenu.clipboardText
         onTriggered: skyMenu.clipboardGotoRequested()
     }

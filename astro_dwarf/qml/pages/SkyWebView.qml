@@ -99,6 +99,13 @@ Item {
         map.holdView = false
         map.persistView = true
     }
+    function setView(raHours, decDegrees) {
+        if (!map.pageReady)
+            return "loading"
+        map.beginViewHold()
+        map.runJavaScript(backend.skyWebCenterViewScript(Number(raHours), Number(decDegrees)))
+        return "ok"
+    }
     function lockTarget(payload, callback) {
         if (!map.pageReady) {
             if (typeof callback === "function")

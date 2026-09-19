@@ -90,6 +90,7 @@ Item {
         view.runJavaScript(script, callback)
     }
     function setView(raHours, decDegrees) {
+        map.beginViewHold()
         map.runJavaScript(backend.skyAtlasViewPosScript(Number(raHours), Number(decDegrees)))
         return "ok"
     }

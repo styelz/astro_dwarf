@@ -1103,6 +1103,15 @@ SKY_WEB_FOV_JS = r"""
     // Pane 1 is camera-right. Stellarium and stacked JPEGs are N-up, so that
     // is the right edge at PA 0°. Near PA 180° camera-right is east / left.
     var col1OnRight = !(pa > 90 && pa < 270);
+    var northPt = null, centerPt = null;
+    try {
+      var pointing = currentPointing(p, stel) || viewCenter(stel);
+      if (pointing) {
+        centerPt = projectPoint(stel, pointing.ra_hours, pointing.dec_degrees, box);
+        northPt = projectPoint(stel, pointing.ra_hours, pointing.dec_degrees + 0.25, box);
+      }
+    } catch (err) {}
+    var row1AtTop = !(centerPt && northPt && northPt.y > centerPt.y);
     var svg = "";
     var labels = "";
     var index = 0;
@@ -1110,7 +1119,7 @@ SKY_WEB_FOV_JS = r"""
       for (var col = 1; col <= cols; col++) {
         index += 1;
         var x = originX + (col1OnRight ? (cols - col) : (col - 1)) * stepX;
-        var y = originY + (row - 1) * stepY;
+        var y = originY + (row1AtTop ? (row - 1) : (rows - row)) * stepY;
         svg += paneFillRect(x, y, size.w, size.h, index);
         svg += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + size.w.toFixed(1)
           + '" height="' + size.h.toFixed(1) + '" fill="' + color + '" fill-opacity="0.05" '
@@ -1138,12 +1147,18 @@ SKY_WEB_FOV_JS = r"""
     var drawn = [];
     for (var i = 0; i < panes.length; i++) {
       var pts = projectCorners(stel, panes[i].corners, box);
-      if (!pts) continue;
-      var points = pts.map(function(pt) { return pt.x.toFixed(1) + "," + pt.y.toFixed(1); }).join(" ");
+      var center = projectPoint(stel, panes[i].ra_hours, panes[i].dec_degrees, box);
+      if (!pts && !center) continue;
+      var points = pts ? pts.map(function(pt) { return pt.x.toFixed(1) + "," + pt.y.toFixed(1); }).join(" ") : "";
       var cx = 0, cy = 0;
-      pts.forEach(function(pt) { cx += pt.x; cy += pt.y; });
-      cx /= pts.length;
-      cy /= pts.length;
+      if (center) {
+        cx = center.x;
+        cy = center.y;
+      } else {
+        pts.forEach(function(pt) { cx += pt.x; cy += pt.y; });
+        cx /= pts.length;
+        cy /= pts.length;
+      }
       var tick = "";
       var quad = [];
       var corners = panes[i].corners || [];
@@ -1177,8 +1192,9 @@ SKY_WEB_FOV_JS = r"""
       svg += liveImageQuad(drawn[0].quad);
     }
     drawn.forEach(function(item) {
-      svg += '<polygon points="' + item.points + '" fill="' + color
-        + '" fill-opacity="0.05" ' + paneStroke(color, mosaic) + '/>';
+      if (item.points)
+        svg += '<polygon points="' + item.points + '" fill="' + color
+          + '" fill-opacity="0.05" ' + paneStroke(color, mosaic) + '/>';
       if (!mosaic)
         svg += item.tick || "";
     });
@@ -1264,8 +1280,6 @@ SKY_WEB_FOV_JS = r"""
           return projected;
         }
       } catch (err) {}
-      ctl.lastStatus = "error";
-      return "error";
     }
     ctl.lastStatus = drawScreenGrid(el, box, p, stel);
     return ctl.lastStatus;
@@ -1816,22 +1830,35 @@ SKY_WEB_LOCK_TARGET_JS = r"""
     if (!isFinite(raHours) || !isFinite(decDeg)) return false;
     var ra = (((raHours % 24) + 24) % 24) * Math.PI / 12;
     var dec = decDeg * Math.PI / 180;
-    var cdec = Math.cos(dec);
-    var xyz = [cdec * Math.cos(ra), cdec * Math.sin(ra), Math.sin(dec), 0];
+    var xyz = null;
+    if (typeof stel.s2c === "function") {
+      try { xyz = stel.s2c(ra, dec); } catch (err) {}
+    }
+    if (!xyz) {
+      var cdec = Math.cos(dec);
+      xyz = [cdec * Math.cos(ra), cdec * Math.sin(ra), Math.sin(dec), 0];
+    }
+    if (xyz.length < 4) xyz = [xyz[0], xyz[1], xyz[2], 0];
     var frames = ["OBSERVED", "HORIZONTAL", "CIRS", "JNOW"];
-    if (typeof stel.convertFrame !== "function" || typeof stel.c2s !== "function")
+    if (typeof stel.convertFrame !== "function")
       return false;
+    var lookFn = stel.lookat || stel.lookAt;
     for (var i = 0; i < frames.length; i++) {
       try {
         var observed = stel.convertFrame(stel.observer, "ICRF", frames[i], xyz);
+        if (!observed) continue;
+        try { stel.core.lock = null; } catch (err) {}
+        if (typeof lookFn === "function") {
+          try { lookFn.call(stel, observed, 0); return true; } catch (err) {}
+        }
+        if (typeof stel.c2s !== "function") continue;
         var sph = stel.c2s(observed);
         var yaw = Number(sph && sph[0]), pitch = Number(sph && sph[1]);
         if (!isFinite(yaw) || !isFinite(pitch)) continue;
-        try { stel.core.lock = null; } catch (err) {}
-        stel.core.yaw = yaw;
-        stel.core.pitch = pitch;
         stel.observer.yaw = yaw;
         stel.observer.pitch = pitch;
+        stel.core.yaw = yaw;
+        stel.core.pitch = pitch;
         return true;
       } catch (err) {}
     }
@@ -1878,6 +1905,64 @@ def sky_web_lock_target_script(payload: dict[str, Any] | None = None) -> str:
         body["ra_hours"] = ra
         body["dec_degrees"] = dec
     return f"{SKY_WEB_LOCK_TARGET_JS}({json.dumps(body)})"
+
+
+SKY_WEB_CENTER_VIEW_JS = r"""
+(function(raHours, decDeg) {
+  function lookAtIcrf(stel, raHours, decDeg) {
+    if (!stel || !stel.core || !stel.observer) return false;
+    raHours = Number(raHours);
+    decDeg = Number(decDeg);
+    if (!isFinite(raHours) || !isFinite(decDeg)) return false;
+    var ra = (((raHours % 24) + 24) % 24) * Math.PI / 12;
+    var dec = decDeg * Math.PI / 180;
+    var xyz = null;
+    if (typeof stel.s2c === "function") {
+      try { xyz = stel.s2c(ra, dec); } catch (err) {}
+    }
+    if (!xyz) {
+      var cdec = Math.cos(dec);
+      xyz = [cdec * Math.cos(ra), cdec * Math.sin(ra), Math.sin(dec), 0];
+    }
+    if (xyz.length < 4) xyz = [xyz[0], xyz[1], xyz[2], 0];
+    var frames = ["OBSERVED", "HORIZONTAL", "CIRS", "JNOW"];
+    if (typeof stel.convertFrame !== "function")
+      return false;
+    var lookFn = stel.lookat || stel.lookAt;
+    for (var i = 0; i < frames.length; i++) {
+      try {
+        var observed = stel.convertFrame(stel.observer, "ICRF", frames[i], xyz);
+        if (!observed) continue;
+        try { stel.core.lock = null; } catch (err) {}
+        if (typeof lookFn === "function") {
+          try { lookFn.call(stel, observed, 0); return true; } catch (err) {}
+        }
+        if (typeof stel.c2s !== "function") continue;
+        var sph = stel.c2s(observed);
+        var yaw = Number(sph && sph[0]), pitch = Number(sph && sph[1]);
+        if (!isFinite(yaw) || !isFinite(pitch)) continue;
+        stel.observer.yaw = yaw;
+        stel.observer.pitch = pitch;
+        stel.core.yaw = yaw;
+        stel.core.pitch = pitch;
+        return true;
+      } catch (err) {}
+    }
+    return false;
+  }
+  try {
+    var stel = window._stel;
+    if (!stel || !stel.core) return "loading";
+    return lookAtIcrf(stel, raHours, decDeg) ? "ok" : "missing";
+  } catch (err) {
+    return "error";
+  }
+})
+"""
+
+
+def sky_web_center_view_script(ra_hours: float, dec_degrees: float) -> str:
+    return f"{SKY_WEB_CENTER_VIEW_JS}({float(ra_hours)}, {float(dec_degrees)})"
 
 
 _GAIA_SOURCE_RE = re.compile(r"(?:gaia\s*(?:e?dr[123])?\s*)(\d{15,19})", re.IGNORECASE)
@@ -2594,31 +2679,75 @@ def mosaic_pane_footprints(
     return panes
 
 
-def generate_mosaic_plan(
+def templates_from_mosaic_panes(
     target: Target,
-    columns: int,
-    rows: int,
-    fov_h: float,
-    fov_v: float,
+    panes: list[dict[str, Any]],
     overlap: float = 0.2,
-    south_up: bool = False,
+    fov_h: float = 0.0,
+    fov_v: float = 0.0,
     position_angle: Any = None,
 ) -> list[SessionTemplate]:
-    """Build Telescopius-shaped pane templates around an equatorial target."""
-    pa = mosaic_position_angle(south_up, position_angle)
-    panes = mosaic_pane_footprints(
-        target, columns, rows, fov_h, fov_v, overlap, south_up=south_up, position_angle=pa
-    )
-    grid_rows = max(item["row"] for item in panes)
-    grid_columns = max(item["column"] for item in panes)
+    """Turn already-computed overlay panes into session templates.
+
+    SKY draws the mosaic from these coordinates. Saving them as-is keeps
+    copied RA/Dec on the same points as the numbered overlay panes.
+    """
+    pa = mosaic_position_angle(False, position_angle)
+    cleaned: list[dict[str, Any]] = []
+    for pane in panes:
+        if not isinstance(pane, dict):
+            continue
+        try:
+            index = max(1, int(pane.get("index") or 0))
+            ra = float(pane["ra_hours"])
+            dec = float(pane["dec_degrees"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if ra != ra or dec != dec:
+            continue
+        try:
+            row = int(pane.get("row") or 0)
+            column = int(pane.get("column") or 0)
+        except (TypeError, ValueError):
+            row = column = 0
+        cleaned.append(
+            {
+                "index": index,
+                "ra_hours": round(((ra % 24.0) + 24.0) % 24.0, 6),
+                "dec_degrees": round(max(-90.0, min(90.0, dec)), 6),
+                "row": row,
+                "column": column,
+            }
+        )
+    if not cleaned:
+        raise ValueError("Mosaic panes are missing")
+    cleaned.sort(key=lambda item: int(item["index"]))
+    grid_columns = max(int(item["column"] or 0) for item in cleaned)
+    grid_rows = max(int(item["row"] or 0) for item in cleaned)
+    if grid_columns < 1 or grid_rows < 1:
+        count = len(cleaned)
+        grid_columns = max(1, int(count**0.5 + 0.5))
+        grid_rows = max(1, (count + grid_columns - 1) // grid_columns)
+        for item in cleaned:
+            idx = int(item["index"]) - 1
+            item["row"] = idx // grid_columns + 1
+            item["column"] = idx % grid_columns + 1
+            grid_rows = max(grid_rows, int(item["row"]))
+            grid_columns = max(grid_columns, int(item["column"]))
     group_id = f"{_mosaic_group_slug(target.name)}-{new_id()[:8]}"
     heading = "S-up" if 90.0 < (pa % 360.0) < 270.0 else "N-up"
+    fov_text = ""
+    try:
+        if float(fov_h) > 0 and float(fov_v) > 0:
+            fov_text = f"FOV {float(fov_h):.2f}° × {float(fov_v):.2f}°, "
+    except (TypeError, ValueError):
+        fov_text = ""
     notes = (
-        f"Generated mosaic {grid_columns}×{grid_rows}, {overlap:.0%} overlap, "
-        f"FOV {float(fov_h):.2f}° × {float(fov_v):.2f}°, {heading}, PA {pa:.1f}° E"
+        f"Generated mosaic {grid_columns}×{grid_rows}, {float(overlap):.0%} overlap, "
+        f"{fov_text}{heading}, PA {pa:.1f}° E"
     )
     templates: list[SessionTemplate] = []
-    for pane in panes:
+    for pane in cleaned:
         templates.append(
             SessionTemplate(
                 name=f"{target.name} pane {pane['index']}",
@@ -2640,6 +2769,26 @@ def generate_mosaic_plan(
             )
         )
     return templates
+
+
+def generate_mosaic_plan(
+    target: Target,
+    columns: int,
+    rows: int,
+    fov_h: float,
+    fov_v: float,
+    overlap: float = 0.2,
+    south_up: bool = False,
+    position_angle: Any = None,
+) -> list[SessionTemplate]:
+    """Build Telescopius-shaped pane templates around an equatorial target."""
+    pa = mosaic_position_angle(south_up, position_angle)
+    panes = mosaic_pane_footprints(
+        target, columns, rows, fov_h, fov_v, overlap, south_up=south_up, position_angle=pa
+    )
+    return templates_from_mosaic_panes(
+        target, panes, overlap=overlap, fov_h=fov_h, fov_v=fov_v, position_angle=pa
+    )
 
 
 def stagger_mosaic_sessions(sessions: list[Session], start: datetime, profile: HardwareProfile) -> list[Session]:
