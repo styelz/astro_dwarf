@@ -395,50 +395,6 @@ def write_stretch_preview(
     return dest
 
 
-def make_fits_bytes(width: int, height: int, values) -> bytes:
-    """Minimal 16-bit FITS used by offline tests. RGB may be (3, H, W) or (H, W, 3)."""
-    if np is None:
-        raise RuntimeError("numpy is required")
-    arr = np.asarray(values, dtype=np.int16)
-    planes = 0
-    if arr.ndim == 2:
-        if arr.shape != (height, width):
-            raise ValueError("values must be height x width")
-        image = arr
-    elif arr.ndim == 3:
-        if arr.shape == (height, width, 3):
-            image = np.moveaxis(arr, -1, 0)
-        elif arr.shape == (3, height, width):
-            image = arr
-        else:
-            raise ValueError("RGB values must be 3 x height x width")
-        planes = 3
-    else:
-        raise ValueError("values must be height x width")
-    naxis = 3 if planes else 2
-    cards = [
-        "SIMPLE  =                    T",
-        "BITPIX  =                   16",
-        f"NAXIS   = {naxis:20d}",
-        f"NAXIS1  = {width:20d}",
-        f"NAXIS2  = {height:20d}",
-    ]
-    if planes:
-        cards.append(f"NAXIS3  = {planes:20d}")
-    cards.extend(
-        [
-            "BSCALE  =                    1",
-            "BZERO   =                    0",
-            "END",
-        ]
-    )
-    header = "".join(card.ljust(80) for card in cards).encode("ascii")
-    pad = (_FITS_BLOCK - (len(header) % _FITS_BLOCK)) % _FITS_BLOCK
-    payload = np.asarray(image, dtype=">i2").tobytes()
-    data_pad = (_FITS_BLOCK - (len(payload) % _FITS_BLOCK)) % _FITS_BLOCK
-    return header + (b" " * pad) + payload + (b"\x00" * data_pad)
-
-
 class MediaPreviewSignals(QObject):
     finished = Signal(str)
 

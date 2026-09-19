@@ -2178,11 +2178,6 @@ def _sky_catalog_headers() -> dict[str, str]:
     return {"User-Agent": f"AstroDwarf/{__version__}"}
 
 
-def gaia_source_id(name: str) -> int | None:
-    candidates = gaia_source_candidates(name)
-    return candidates[0] if candidates else None
-
-
 def gaia_source_candidates(name: str) -> list[int]:
     """Possible Gaia source ids encoded in a firmware target name."""
     text = str(name or "").strip()
@@ -2247,10 +2242,6 @@ def _catalog_hit(name: str, ra_deg: float, dec_deg: float, aliases: list[str] | 
         "aliases": extra[:16],
         "source": "catalog",
     }
-
-
-def _gaia_lookup(source_id: int) -> dict[str, Any] | None:
-    return _gaia_lookup_many([source_id])
 
 
 def _gaia_lookup_many(source_ids: list[int]) -> dict[str, Any] | None:

@@ -6,9 +6,8 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import unquote
 
-from PySide6.QtCore import QEventLoop, QObject, QSize, Qt, QThreadPool, QTimer, QUrl, QRunnable, Signal
+from PySide6.QtCore import QEventLoop, QObject, Qt, QTimer, QUrl, QRunnable, Signal
 from PySide6.QtGui import QImage, QImageReader
-from PySide6.QtQuick import QQuickAsyncImageProvider, QQuickImageResponse, QQuickTextureFactory
 
 try:
     import numpy as np
@@ -305,83 +304,6 @@ def _load_http_qt(parsed: QUrl) -> QImage:
     finally:
         reply.deleteLater()
         manager.deleteLater()
-
-
-def parse_enhance_id(identity: str) -> tuple[str, str]:
-    text = unquote(str(identity or "").lstrip("/"))
-    for prefix, profile in (("deep--", "deep"), ("std--", "standard"), ("deep/", "deep"), ("std/", "standard")):
-        if text.startswith(prefix):
-            rest = unquote(text[len(prefix) :])
-            return profile, rest
-    return "standard", text
-
-
-class _EnhanceSignals(QObject):
-    finished = Signal(object, str)
-
-
-class _EnhanceJob(QRunnable):
-    def __init__(self, url: str, requested_size: QSize, profile: str, signals: _EnhanceSignals):
-        super().__init__()
-        self._url = url
-        self._requested_size = requested_size
-        self._profile = profile
-        self._signals = signals
-        self.setAutoDelete(True)
-
-    def run(self) -> None:
-        try:
-            image = load_image(canonical_image_url(self._url) or self._url)
-            if image.isNull():
-                self._signals.finished.emit(None, "Could not load image")
-                return
-            size = self._requested_size
-            if size.isValid() and size.width() > 0 and size.height() > 0:
-                if image.width() > size.width() or image.height() > size.height():
-                    image = image.scaled(
-                        size,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-            enhanced = enhance_image(image, denoise=True, profile=self._profile)
-            self._signals.finished.emit(enhanced, "")
-        except Exception as exc:
-            try:
-                self._signals.finished.emit(None, str(exc) or "Enhance failed")
-            except RuntimeError:
-                pass
-
-
-class EnhanceImageResponse(QQuickImageResponse):
-    def __init__(self, url: str, requested_size: QSize, profile: str = "standard"):
-        super().__init__()
-        self._image = QImage()
-        self._error = ""
-        self._signals = _EnhanceSignals(self)
-        self._signals.finished.connect(self._on_finished, Qt.ConnectionType.QueuedConnection)
-        QThreadPool.globalInstance().start(_EnhanceJob(url, requested_size, profile, self._signals))
-
-    def _on_finished(self, image: object, error: str) -> None:
-        if isinstance(image, QImage) and not image.isNull():
-            self._image = image
-            self._error = ""
-        else:
-            self._error = error or "Could not enhance image"
-        self.finished.emit()
-
-    def textureFactory(self):
-        return QQuickTextureFactory.textureFactoryForImage(self._image)
-
-    def errorString(self) -> str:
-        return self._error
-
-
-class EnhanceImageProvider(QQuickAsyncImageProvider):
-    """`image://enhance/std--<sha1>` or `image://enhance/deep--<sha1>`."""
-
-    def requestImageResponse(self, identity: str, requested_size: QSize) -> QQuickImageResponse:
-        profile, url = parse_enhance_id(identity)
-        return EnhanceImageResponse(url, requested_size, profile)
 
 
 class CacheEnhanceSignals(QObject):

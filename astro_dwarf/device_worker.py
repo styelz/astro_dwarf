@@ -404,7 +404,6 @@ FUNCTIONS = {
     "timelapse_stop": "perform_stop_timelapse_v3",
     "photo": "perform_takePhoto",
     "wide_photo": "perform_takeWidePhoto",
-    "photo_autofocus": "perform_auto_focus_v3",
     "set_wb": "perform_set_wb_v3",
     "set_wb_preset": "perform_set_wb_preset_by_name_v3",
     "set_brightness": "perform_set_brightness_v3",

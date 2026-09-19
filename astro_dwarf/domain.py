@@ -412,10 +412,6 @@ def album_is_fits_name(path: str = "", name: str = "") -> bool:
     return _album_suffix(path, name) in ALBUM_FITS_SUFFIXES
 
 
-def album_is_tiff_name(path: str = "", name: str = "") -> bool:
-    return _album_suffix(path, name) in ALBUM_TIFF_SUFFIXES
-
-
 def album_is_heavy_preview(path: str = "", name: str = "") -> bool:
     """TIFF/FITS are too large to decode as grid thumbnails."""
     return _album_suffix(path, name) in ALBUM_HEAVY_PREVIEW_SUFFIXES
@@ -719,10 +715,6 @@ def album_listing_entries(html_text: str) -> list[dict[str, Any]]:
             "modification_time": album_listing_mtime(match.group(2) if match.lastindex and match.lastindex >= 2 else ""),
         })
     return entries
-
-
-def album_listing_names(html_text: str) -> list[str]:
-    return [str(item.get("name") or "") for item in album_listing_entries(html_text) if not item.get("is_dir")]
 
 
 def album_preview_name(names: list[str] | None) -> str:

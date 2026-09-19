@@ -16,7 +16,6 @@ from PySide6.QtCore import QTimer, Qt, QUrl
 from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
 from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
 
-from .image_enhance import EnhanceImageProvider
 from .qt_backend import AppBackend
 from .runtime import (
     configure_qml_import_path,
@@ -234,7 +233,6 @@ def run() -> int:
     qmlRegisterType(LiveFrameItem, "AstroDwarf", 1, 0, "LiveFrameItem")
     qmlRegisterType(MosaicLiveItem, "AstroDwarf", 1, 0, "MosaicLiveItem")
     engine = QQmlApplicationEngine()
-    engine.addImageProvider("enhance", EnhanceImageProvider())
     engine.warnings.connect(lambda warnings: [print(warning.toString(), file=sys.stderr) for warning in warnings])
     engine.rootContext().setContextProperty("backend", backend)
     engine.load(QUrl.fromLocalFile(str(resources / "qml" / "Main.qml")))
