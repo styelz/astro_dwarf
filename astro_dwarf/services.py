@@ -5,7 +5,7 @@ import json
 import re
 import time
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from math import asin, atan2, ceil, cos, pi, radians, sin, tan
 from pathlib import Path
 from typing import Any
@@ -272,9 +272,145 @@ SKY_WEB_HARVEST_JS = r"""
 })()
 """
 
+# Stellarium Web jumps the clock to the next night on the first location
+# commit (Vue startTimeIsSet / setTimeAfterSunSet). That watcher is queued
+# after our inject, so setting observer.utc once is not enough.
+SKY_WEB_TIME_NOW_JS = r"""
+  function nowMjd(stel) {
+    try {
+      if (stel && typeof stel.date2MJD === "function")
+        return stel.date2MJD(new Date());
+    } catch (err) {}
+    return Date.now() / 86400000 + 40587.0;
+  }
+  function patchSunsetJump(obj) {
+    if (!obj) return;
+    try { if ("startTimeIsSet" in obj) obj.startTimeIsSet = true; } catch (err) {}
+    try {
+      if (typeof obj.setTimeAfterSunSet === "function")
+        obj.setTimeAfterSunSet = function() {};
+    } catch (err) {}
+  }
+  function visitVue(comp) {
+    if (!comp) return;
+    patchSunsetJump(comp.proxy);
+    patchSunsetJump(comp.ctx);
+    patchSunsetJump(comp.setupState);
+    patchSunsetJump(comp.data);
+    var sub = comp.subTree;
+    if (!sub) return;
+    if (sub.component) visitVue(sub.component);
+    var kids = sub.children;
+    if (!kids) return;
+    if (!Array.isArray(kids)) kids = [kids];
+    for (var i = 0; i < kids.length; i++) {
+      if (kids[i] && kids[i].component) visitVue(kids[i].component);
+    }
+  }
+  function silenceSunsetJump() {
+    try {
+      var app = document.getElementById("app");
+      if (app && app.__vue__) {
+        patchSunsetJump(app.__vue__);
+        var children = app.__vue__.$children || [];
+        for (var i = 0; i < children.length; i++) patchSunsetJump(children[i]);
+      }
+      var vue = app && app.__vue_app__;
+      if (vue && vue._instance) visitVue(vue._instance);
+      if (app && app.__vueParentComponent) visitVue(app.__vueParentComponent);
+    } catch (err) {}
+  }
+  function setSkyTimeNow(stel) {
+    var mjd = nowMjd(stel);
+    try {
+      if (stel && typeof stel._core_set_time === "function")
+        stel._core_set_time(mjd, 0);
+    } catch (err) {}
+    var observers = [stel && stel.observer, stel && stel.core && stel.core.observer];
+    for (var i = 0; i < observers.length; i++) {
+      if (!observers[i]) continue;
+      try { observers[i].utc = mjd; } catch (err) {}
+    }
+    if (stel && stel.core) {
+      try { stel.core.time_speed = 1; } catch (err) {}
+    }
+  }
+  function labelOf(el) {
+    return String(el && (el.innerText || el.textContent || "") || "").replace(/\s+/g, " ").trim();
+  }
+  function stellariumTimeButton() {
+    var nodes = document.querySelectorAll("button, .v-btn");
+    for (var i = 0; i < nodes.length; i++) {
+      if (/^\d{2}:\d{2}:\d{2}\s+\d{4}-\d{2}-\d{2}$/.test(labelOf(nodes[i])))
+        return nodes[i];
+    }
+    return null;
+  }
+  function stellariumHistoryButton() {
+    var icon = document.querySelector(".v-overlay--active .mdi-history")
+      || document.querySelector(".mdi-history");
+    return icon ? (icon.closest("button") || icon) : null;
+  }
+  function closeStellariumTimePicker() {
+    if (!document.querySelector(".v-overlay--active .mdi-history"))
+      return;
+    var time = stellariumTimeButton();
+    if (time) time.click();
+  }
+  function clickStellariumNow() {
+    var time = stellariumTimeButton();
+    if (time) {
+      var match = labelOf(time).match(/^(\d{2}):(\d{2}):(\d{2})/);
+      if (match) {
+        var shown = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+        var now = new Date();
+        var wall = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+        var delta = Math.abs(shown - wall);
+        if (delta > 43200) delta = 86400 - delta;
+        if (delta < 90) {
+          closeStellariumTimePicker();
+          return true;
+        }
+      }
+    }
+    var history = stellariumHistoryButton();
+    if (history) {
+      history.click();
+      setTimeout(closeStellariumTimePicker, 0);
+      return true;
+    }
+    if (!time) return false;
+    time.click();
+    history = stellariumHistoryButton();
+    if (history) {
+      history.click();
+      setTimeout(closeStellariumTimePicker, 0);
+      return true;
+    }
+    return false;
+  }
+  function keepSkyTimeNow(stel) {
+    silenceSunsetJump();
+    setSkyTimeNow(stel);
+    clickStellariumNow();
+    var delays = [0, 50, 250, 800, 1600];
+    for (var i = 0; i < delays.length; i++) {
+      (function(ms) {
+        setTimeout(function() {
+          silenceSunsetJump();
+          setSkyTimeNow(stel);
+          clickStellariumNow();
+        }, ms);
+      })(delays[i]);
+    }
+  }
+"""
+
+
 # Sync the selected telescope's site into Stellarium Web (engine uses radians).
 SKY_WEB_SITE_JS = r"""
 (function(p) {
+""" + SKY_WEB_TIME_NOW_JS + r"""
   try {
     var app = document.getElementById("app");
     var vue = app && app.__vue_app__;
@@ -287,12 +423,14 @@ SKY_WEB_SITE_JS = r"""
     var stel = window._stel;
     if (!stel || !stel.core || !stel.observer || typeof stel.setLocation !== "function")
       return "loading";
+    silenceSunsetJump();
     if (p.has_site)
       stel.setLocation(p.lat * Math.PI / 180, p.lon * Math.PI / 180, 0);
     if (p.timezone) stel.core.timezone = p.timezone;
     if (p.name) stel.core.location_name = p.name;
     if (store) {
       store.commit("setUseAutoLocation", false);
+      silenceSunsetJump();
       if (p.has_site) {
         store.commit("setCurrentLocation", {
           short_name: p.name,
@@ -305,6 +443,7 @@ SKY_WEB_SITE_JS = r"""
         });
       }
     }
+    keepSkyTimeNow(stel);
     return "ok";
   } catch (err) {
     return "error";
@@ -1708,51 +1847,57 @@ SKY_WEB_VIEW_POLL_JS = r"""
 
 SKY_WEB_VIEW_APPLY_JS = r"""
 (function(p) {
-  function setAngle(obj, key, value) {
-    if (!obj || !isFinite(value)) return;
-    try { obj[key] = value; } catch (err) {}
+""" + SKY_WEB_TIME_NOW_JS + r"""
+  function lookAtIcrf(stel, raHours, decDeg) {
+    if (!stel || !stel.core || !stel.observer) return false;
+    raHours = Number(raHours);
+    decDeg = Number(decDeg);
+    if (!isFinite(raHours) || !isFinite(decDeg)) return false;
+    var ra = (((raHours % 24) + 24) % 24) * Math.PI / 12;
+    var dec = decDeg * Math.PI / 180;
+    var xyz = null;
+    if (typeof stel.s2c === "function") {
+      try { xyz = stel.s2c(ra, dec); } catch (err) {}
+    }
+    if (!xyz) {
+      var cdec = Math.cos(dec);
+      xyz = [cdec * Math.cos(ra), cdec * Math.sin(ra), Math.sin(dec), 0];
+    }
+    if (xyz.length < 4) xyz = [xyz[0], xyz[1], xyz[2], 0];
+    if (typeof stel.convertFrame !== "function")
+      return false;
+    var frames = ["OBSERVED", "HORIZONTAL", "CIRS", "JNOW"];
+    var lookFn = stel.lookat || stel.lookAt;
+    for (var i = 0; i < frames.length; i++) {
+      try {
+        var observed = stel.convertFrame(stel.observer, "ICRF", frames[i], xyz);
+        if (!observed) continue;
+        try { stel.core.lock = null; } catch (err) {}
+        if (typeof lookFn === "function") {
+          try { lookFn.call(stel, observed, 0); return true; } catch (err) {}
+        }
+        if (typeof stel.c2s !== "function") continue;
+        var sph = stel.c2s(observed);
+        var yaw = Number(sph && sph[0]), pitch = Number(sph && sph[1]);
+        if (!isFinite(yaw) || !isFinite(pitch)) continue;
+        stel.observer.yaw = yaw;
+        stel.observer.pitch = pitch;
+        stel.core.yaw = yaw;
+        stel.core.pitch = pitch;
+        return true;
+      } catch (err) {}
+    }
+    return false;
   }
   try {
     var stel = window._stel;
     if (!stel || !stel.core || !stel.observer) return "loading";
+    keepSkyTimeNow(stel);
     var fov = Number(p && p.fov);
     if (fov > 0 && isFinite(fov))
       stel.core.fov = fov;
-    try { stel.core.lock = null; } catch (err) {}
-    var raHours = Number(p && p.ra_hours);
-    var decDeg = Number(p && p.dec_degrees);
-    var yaw = Number(p && p.yaw);
-    var pitch = Number(p && p.pitch);
-    var roll = Number(p && p.roll);
-    if (isFinite(raHours) && isFinite(decDeg) && (!isFinite(yaw) || !isFinite(pitch))) {
-      var ra = (((raHours % 24) + 24) % 24) * Math.PI / 12;
-      var dec = decDeg * Math.PI / 180;
-      var xyz = [Math.cos(dec) * Math.cos(ra), Math.cos(dec) * Math.sin(ra), Math.sin(dec), 0];
-      var frames = ["OBSERVED", "HORIZONTAL"];
-      if (typeof stel.convertFrame === "function" && typeof stel.c2s === "function") {
-        for (var i = 0; i < frames.length; i++) {
-          try {
-            var sph = stel.c2s(stel.convertFrame(stel.observer, "ICRF", frames[i], xyz));
-            var nextYaw = Number(sph && sph[0]), nextPitch = Number(sph && sph[1]);
-            if (isFinite(nextYaw) && isFinite(nextPitch)) {
-              yaw = nextYaw;
-              pitch = nextPitch;
-              break;
-            }
-          } catch (err) {}
-        }
-      }
-    }
-    if (!isFinite(yaw) || !isFinite(pitch))
+    if (!lookAtIcrf(stel, p && p.ra_hours, p && p.dec_degrees))
       return "pending";
-    setAngle(stel.core, "yaw", yaw);
-    setAngle(stel.core, "pitch", pitch);
-    setAngle(stel.observer, "yaw", yaw);
-    setAngle(stel.observer, "pitch", pitch);
-    if (isFinite(roll)) {
-      setAngle(stel.core, "roll", roll);
-      setAngle(stel.observer, "roll", roll);
-    }
     return "ok";
   } catch (err) {
     return "error";
@@ -1762,7 +1907,23 @@ SKY_WEB_VIEW_APPLY_JS = r"""
 
 
 def sky_web_view_script(payload: dict[str, Any]) -> str:
-    return f"{SKY_WEB_VIEW_APPLY_JS}({json.dumps(payload)})"
+    data = payload if isinstance(payload, dict) else {}
+    body: dict[str, Any] = {}
+    try:
+        ra = float(data.get("ra_hours"))
+        dec = float(data.get("dec_degrees"))
+    except (TypeError, ValueError):
+        ra = dec = float("nan")
+    if ra == ra and dec == dec:
+        body["ra_hours"] = ra
+        body["dec_degrees"] = dec
+    try:
+        fov = float(data.get("fov"))
+    except (TypeError, ValueError):
+        fov = 0.0
+    if fov == fov and fov > 0:
+        body["fov"] = fov
+    return f"{SKY_WEB_VIEW_APPLY_JS}({json.dumps(body)})"
 
 
 SKY_WEB_LOCK_TARGET_JS = r"""
@@ -2611,9 +2772,90 @@ def mosaic_position_angle(south_up: bool, position_angle: Any = None) -> float:
         return 180.0 if south_up else 0.0
 
 
-def device_mosaic_pa(latitude: Any, position_angle: Any = None) -> float:
-    """Resolved camera PA: stored offset, or 180° S-up / 0° N-up from site latitude."""
-    return mosaic_position_angle(mosaic_south_up(latitude), position_angle)
+def _julian_day(when: datetime) -> float:
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.timestamp() / 86400.0 + 2440587.5
+
+
+def gmst_deg(when: datetime | None = None) -> float:
+    """Greenwich mean sidereal time in degrees. Matches the Aladin atlas JS."""
+    instant = when or datetime.now(timezone.utc)
+    jd = _julian_day(instant)
+    centuries = (jd - 2451545.0) / 36525.0
+    gmst = (
+        280.46061837
+        + 360.98564736629 * (jd - 2451545.0)
+        + 0.000387933 * centuries * centuries
+        - centuries ** 3 / 38710000.0
+    )
+    return gmst % 360.0
+
+
+def lst_deg(longitude: Any, when: datetime | None = None) -> float:
+    try:
+        lon = float(longitude or 0)
+    except (TypeError, ValueError):
+        lon = 0.0
+    return (gmst_deg(when) + lon) % 360.0
+
+
+def parallactic_angle_deg(
+    ra_hours: Any,
+    dec_degrees: Any,
+    latitude: Any,
+    longitude: Any,
+    when: datetime | None = None,
+) -> float | None:
+    """Alt-az camera-up, east of north. Same atan2 as the Aladin atlas JS.
+
+    At hour angle 0 the zenith lies on the meridian, so q is 0° or 180°.
+    """
+    try:
+        ra_deg = (float(ra_hours) % 24.0 + 24.0) % 24.0 * 15.0
+        dec = float(dec_degrees)
+        phi = float(latitude)
+        lon = float(longitude)
+    except (TypeError, ValueError):
+        return None
+    ha = radians((lst_deg(lon, when) - ra_deg) % 360.0)
+    dec_r = radians(dec)
+    phi_r = radians(phi)
+    angle = atan2(sin(ha), tan(phi_r) * cos(dec_r) - sin(dec_r) * cos(ha))
+    return (angle * 180.0 / pi) % 360.0
+
+
+def device_mosaic_pa(
+    latitude: Any,
+    position_angle: Any = None,
+    *,
+    longitude: Any = None,
+    ra_hours: Any = None,
+    dec_degrees: Any = None,
+    mount_mode: Any = None,
+    when: datetime | None = None,
+) -> float:
+    """Camera PA used for mosaic ICRS centres, overlay, and GOTO.
+
+    A stored mosaic_pa is an explicit override (including 0°). Unset PA must
+    follow the real camera, not a sky-chart convention: alt-az is zenith-up,
+    so camera-up is the parallactic angle. EQ keeps the celestial 0°/180°
+    default. Without a target or site, fall back to that celestial default.
+    """
+    south_up = mosaic_south_up(latitude)
+    if position_angle is not None and position_angle != "":
+        return mosaic_position_angle(south_up, position_angle)
+    mode = str(mount_mode or "").strip().upper()
+    if mode != "EQ":
+        try:
+            has_site = abs(float(latitude or 0)) >= 1e-9 or abs(float(longitude or 0)) >= 1e-9
+        except (TypeError, ValueError):
+            has_site = False
+        if has_site and ra_hours is not None and dec_degrees is not None:
+            angle = parallactic_angle_deg(ra_hours, dec_degrees, latitude, longitude, when)
+            if angle is not None:
+                return angle
+    return mosaic_position_angle(south_up, None)
 
 
 def _mosaic_grid_args(
@@ -2755,6 +2997,85 @@ def mosaic_pane_footprints(
                 }
             )
     return panes
+
+
+def mosaic_panes_match_center(
+    panes: list[dict[str, Any]],
+    ra_hours: float,
+    dec_degrees: float,
+    fov_h: float,
+    fov_v: float,
+) -> bool:
+    """True when overlay pane barycentre is still the locked/tracked ICRS point."""
+    if not panes:
+        return False
+    ras: list[float] = []
+    decs: list[float] = []
+    for pane in panes:
+        if not isinstance(pane, dict):
+            continue
+        try:
+            ras.append(float(pane["ra_hours"]))
+            decs.append(float(pane["dec_degrees"]))
+        except (TypeError, ValueError, KeyError):
+            continue
+    if not ras:
+        return False
+    mean_ra = sum(ras) / len(ras)
+    mean_dec = sum(decs) / len(decs)
+    try:
+        centre_ra = float(ra_hours)
+        centre_dec = float(dec_degrees)
+        width = float(fov_h)
+        height = float(fov_v)
+    except (TypeError, ValueError):
+        return False
+    if centre_ra != centre_ra or centre_dec != centre_dec:
+        return False
+    dra_hours = ((mean_ra - centre_ra + 12.0) % 24.0) - 12.0
+    dra = dra_hours * 15.0 * cos(radians(centre_dec))
+    ddec = mean_dec - centre_dec
+    dist = (dra * dra + ddec * ddec) ** 0.5
+    # A quarter tele tile is ~0.4°. The previous 0.35×FOV (~1°) limit reused a
+    # view-centre overlay that was already a quarter pane off the locked star.
+    limit = max(0.05, 0.08 * min(max(width, 0.1), max(height, 0.1)))
+    return dist <= limit
+
+
+def named_mosaic_center(*candidates: Target | None) -> Target | None:
+    """First locked/tracked named ICRS point. Pane labels are not mosaic centres."""
+    for item in candidates:
+        if item is None:
+            continue
+        name = str(getattr(item, "name", None) or "").strip()
+        if not name or is_mosaic_pane_name(name):
+            continue
+        ra = getattr(item, "ra_hours", None)
+        dec = getattr(item, "dec_degrees", None)
+        if ra is None or dec is None:
+            continue
+        try:
+            ra_hours = float(ra)
+            dec_degrees = float(dec)
+        except (TypeError, ValueError):
+            continue
+        if ra_hours != ra_hours or dec_degrees != dec_degrees:
+            continue
+        return Target(name=name, ra_hours=ra_hours, dec_degrees=dec_degrees)
+    return None
+
+
+def live_mosaic_keep_sheet(
+    ok: bool,
+    stopped: bool,
+    columns: int,
+    rows: int,
+    images: Any,
+) -> bool:
+    """Keep the contact sheet after a finished or user-stopped mosaic with frames."""
+    if not (ok or stopped) or not images:
+        return False
+    return int(columns or 1) > 1 or int(rows or 1) > 1
 
 
 def templates_from_mosaic_panes(

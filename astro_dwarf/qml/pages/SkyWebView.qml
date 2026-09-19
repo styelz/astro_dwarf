@@ -273,32 +273,31 @@ Item {
         return map.viewsClose(data, map.savedView)
     }
     function viewsClose(a, b) {
-        const yaw = Number(a && a.yaw)
-        const pitch = Number(a && a.pitch)
-        const otherYaw = Number(b && b.yaw)
-        const otherPitch = Number(b && b.pitch)
-        if (isFinite(yaw) && isFinite(pitch) && isFinite(otherYaw) && isFinite(otherPitch)) {
-            const dYaw = Math.min(
-                Math.abs(yaw - otherYaw),
-                Math.abs(Math.abs(yaw - otherYaw) - 2 * Math.PI)
-            )
-            if (dYaw < 0.05 && Math.abs(pitch - otherPitch) < 0.05)
-                return true
-        }
         const ra = Number(a && a.ra_hours)
         const dec = Number(a && a.dec_degrees)
         const otherRa = Number(b && b.ra_hours)
         const otherDec = Number(b && b.dec_degrees)
-        if (!isFinite(ra) || !isFinite(dec) || !isFinite(otherRa) || !isFinite(otherDec))
+        if (isFinite(ra) && isFinite(dec) && isFinite(otherRa) && isFinite(otherDec)) {
+            const d1 = dec * Math.PI / 180
+            const d2 = otherDec * Math.PI / 180
+            const r1 = ra * Math.PI / 12
+            const r2 = otherRa * Math.PI / 12
+            const sep = Math.acos(Math.max(-1, Math.min(1,
+                Math.sin(d1) * Math.sin(d2) + Math.cos(d1) * Math.cos(d2) * Math.cos(r1 - r2)
+            ))) * 180 / Math.PI
+            return sep < 2.5
+        }
+        const yaw = Number(a && a.yaw)
+        const pitch = Number(a && a.pitch)
+        const otherYaw = Number(b && b.yaw)
+        const otherPitch = Number(b && b.pitch)
+        if (!isFinite(yaw) || !isFinite(pitch) || !isFinite(otherYaw) || !isFinite(otherPitch))
             return false
-        const d1 = dec * Math.PI / 180
-        const d2 = otherDec * Math.PI / 180
-        const r1 = ra * Math.PI / 12
-        const r2 = otherRa * Math.PI / 12
-        const sep = Math.acos(Math.max(-1, Math.min(1,
-            Math.sin(d1) * Math.sin(d2) + Math.cos(d1) * Math.cos(d2) * Math.cos(r1 - r2)
-        ))) * 180 / Math.PI
-        return sep < 2.5
+        const dYaw = Math.min(
+            Math.abs(yaw - otherYaw),
+            Math.abs(Math.abs(yaw - otherYaw) - 2 * Math.PI)
+        )
+        return dYaw < 0.05 && Math.abs(pitch - otherPitch) < 0.05
     }
     function restoreSavedView() {
         if (!map.pageReady || map.viewRestored || !map.savedViewReady)
@@ -330,6 +329,8 @@ Item {
                 if (map.holdView)
                     return
                 if (!map.savedViewReady)
+                    return
+                if (map.appliedSiteKey !== backend.skyWebSiteScript)
                     return
                 if (!map.hasSavedView()) {
                     map.viewRestored = true

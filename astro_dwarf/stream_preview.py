@@ -435,13 +435,23 @@ class MosaicFrames(QObject):
 
     def clear(self) -> None:
         with self._lock:
-            if not self._images and not self._frozen and not self._active and self._current == 0:
+            if (
+                not self._images
+                and not self._frozen
+                and not self._active
+                and self._current == 0
+                and self._columns <= 1
+                and self._rows <= 1
+                and not self._group
+            ):
                 return
             self._images = {}
             self._frozen = set()
             self._current = 0
             self._active = False
             self._group = ""
+            self._columns = 1
+            self._rows = 1
         self.changed.emit()
 
 

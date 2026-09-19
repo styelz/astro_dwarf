@@ -244,6 +244,19 @@ Item {
         map.runJavaScript(backend.skyWebViewPosScript(Number(raHours), Number(decDegrees)))
         return "ok"
     }
+    function harnessEval(script, callback) {
+        const map = mapLoader.item
+        if (!map || typeof map.runJavaScript !== "function") {
+            if (typeof callback === "function")
+                callback("no-map")
+            return "no-map"
+        }
+        map.runJavaScript(String(script || ""), result => {
+            if (typeof callback === "function")
+                callback(result)
+        })
+        return "pending"
+    }
     function harnessMenu(action) {
         const key = String(action || "")
         if (key === "overlay")
@@ -537,10 +550,7 @@ Item {
                     map.savedView = Qt.binding(() => skyStore.viewSaved ? ({
                         ra_hours: skyStore.viewRaHours,
                         dec_degrees: skyStore.viewDecDegrees,
-                        fov: skyStore.viewFov,
-                        yaw: skyStore.viewYaw,
-                        pitch: skyStore.viewPitch,
-                        roll: skyStore.viewRoll
+                        fov: skyStore.viewFov
                     }) : ({}))
                     map.savedViewReady = true
                     skyPage.applyPendingLock()

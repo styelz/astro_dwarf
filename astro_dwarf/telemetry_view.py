@@ -310,6 +310,12 @@ def _capture_frame_count(raw: dict[str, Any]) -> int | None:
     return _as_int(raw.get("capture_current"))
 
 
+def stacked_capture_count(raw: dict[str, Any]) -> int:
+    """Non-negative stacked frames, falling back to taken only if stacked is missing."""
+    value = _capture_frame_count(raw)
+    return max(0, int(value or 0))
+
+
 def tracking_needs_calibration(result: Any) -> bool:
     """True when a TRACK/GOTO failure is the uncalibrated-mount reject."""
     text = str(result or "").lower()
@@ -451,17 +457,13 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     view["exposure_elapsed_s"] = round(elapsed_s, 2)
     view["exposure_total_s"] = round(exposure_s, 3)
     view["exposure_progress"] = min(1.0, elapsed_s / exposure_s) if capturing and exposure_s > 0 else 0.0
-    # START_CAPTURE can report running before the first exposure. The HUD
-    # countdown waits for firmware long-exp progress or a taken/stacked frame.
-    # The STACK panel itself is shown from capture_active.
-    view["exposure_running"] = bool(
-        capturing
-        and (
-            elapsed_s > 0.05
-            or view["capture_current"] > 0
-            or view["capture_stacked"] > 0
-        )
-    )
+    # Firmware 0/0 or N/N starts a frame (exposure then processing). The
+    # synthetic zeros after START_CAPTURE must not start the ring — wait
+    # for a progress packet. Non-zero counts (join / 1/1) are also live.
+    seen = bool(raw.get("capture_progress_seen")) or view["capture_current"] > 0 or view["capture_stacked"] > 0
+    last_done = view["capture_total"] > 0 and view["capture_stacked"] >= view["capture_total"]
+    view["capture_progress_seen"] = bool(capturing and seen)
+    view["exposure_running"] = bool(capturing and seen and not last_done)
     view["capture_target"] = raw.get("capture_target") or ""
     view["tracking_active"] = raw.get("tracking_state") == "running"
     view["tracking_target"] = raw.get("tracking_target") or raw.get("goto_target") or ""

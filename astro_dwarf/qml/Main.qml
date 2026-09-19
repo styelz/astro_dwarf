@@ -87,7 +87,11 @@ ApplicationWindow {
         const s = String(status || "").toLowerCase()
         if (!s || previewStatusIsRetry(s))
             return false
-        return s.indexOf("fail") >= 0 || s.indexOf("could not") >= 0
+        return s.indexOf("fail") >= 0
+            || s.indexOf("could not") >= 0
+            || s.indexOf("no frames") >= 0
+            || s.indexOf("invalid data") >= 0
+            || s.indexOf("error opening") >= 0
     }
     readonly property bool previewFailed: previewStatusFailed(backend.previewStatus)
     readonly property bool previewStarting: backend.previewActive && !backend.previewPlaying && !previewFailed
@@ -316,9 +320,11 @@ ApplicationWindow {
 
     EditorClickAway { }
 
-    QtObject {
+        QtObject {
         id: testHarness
         objectName: "testHarness"
+        property string skyEvalResult: ""
+        property bool skyEvalDone: false
 
         function _byId(items, id) {
             const key = String(id || "")
@@ -493,6 +499,15 @@ ApplicationWindow {
 
         function skyMenu(action) {
             return skyPage.harnessMenu(String(action || ""))
+        }
+
+        function skyEval(script) {
+            testHarness.skyEvalDone = false
+            testHarness.skyEvalResult = ""
+            return skyPage.harnessEval(String(script || ""), result => {
+                testHarness.skyEvalResult = String(result ?? "")
+                testHarness.skyEvalDone = true
+            })
         }
 
         function confirmAction(action) {

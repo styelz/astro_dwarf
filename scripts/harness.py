@@ -120,6 +120,8 @@ def main(argv: list[str] | None = None) -> int:
     lock.add_argument("dec_degrees", type=float)
     menu = sub.add_parser("sky-menu")
     menu.add_argument("action", choices=("overlay", "preview", "dblclick", "track", "atlas", "clipboard"))
+    eval_js = sub.add_parser("sky-eval", help="Run JavaScript in the sky map and print the result")
+    eval_js.add_argument("script")
 
     action = sub.add_parser("action", help="Device command: power_down, calibrate, …")
     action.add_argument("operation")
@@ -186,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.cmd == "sky-menu":
         return _print(request(base, "POST", "/sky/menu", {"action": args.action}))
+    if args.cmd == "sky-eval":
+        return _print(request(base, "POST", "/sky/eval", {"script": args.script}))
     if args.cmd == "confirm":
         return _print(request(base, "POST", "/confirm", {"action": args.action}))
     parser.error(f"unknown command {args.cmd}")

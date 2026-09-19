@@ -17,6 +17,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -909,6 +910,22 @@ class TestHarness:
                 action = str(payload.get("action") or "")
                 result = self.call_hook("skyMenu", action)
                 return {"action": action, "result": result}
+            if method == "POST" and route == "/sky/eval":
+                script = str(payload.get("script") or payload.get("js") or "")
+                started = self.call_hook("skyEval", script)
+                hooks = self.hooks()
+                deadline = time.monotonic() + 4.0
+                from PySide6.QtCore import QCoreApplication, QEventLoop
+
+                while time.monotonic() < deadline:
+                    if bool(hooks.property("skyEvalDone")):
+                        break
+                    QCoreApplication.processEvents(QEventLoop.AllEvents, 50)
+                return {
+                    "started": started,
+                    "done": bool(hooks.property("skyEvalDone")),
+                    "result": str(hooks.property("skyEvalResult") or ""),
+                }
             if method == "POST" and route == "/confirm":
                 action = str(payload.get("action") or "accept")
                 result = self.call_hook("confirmAction", action)

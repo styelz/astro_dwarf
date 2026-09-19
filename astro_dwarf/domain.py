@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from fractions import Fraction
@@ -757,13 +757,23 @@ def camera_fov_plausible(
     fov_h: float,
     fov_v: float,
     camera: Camera | str | None = Camera.TELE,
+    model: DeviceModel | str | None = None,
 ) -> bool:
-    """True when firmware H×V degrees look like that lens, not a stub or swapped field."""
+    """True when firmware H×V degrees look like that lens, not a stub or swap.
+
+    Tele must stay landscape and close to the published field. A swapped
+    1.66×2.95 pair or a 1° stub would shrink mosaic pane spacing.
+    """
     if fov_h <= 0 or fov_v <= 0:
         return False
     if _as_camera(camera) == Camera.WIDE:
         return 15.0 <= fov_h <= 80.0 and 8.0 <= fov_v <= 50.0
-    return 0.5 <= fov_h <= 8.0 and 0.3 <= fov_v <= 5.0
+    if fov_h < fov_v:
+        return False
+    published_h, published_v = camera_fov(model, camera)
+    def _close(value: float, published: float) -> bool:
+        return abs(value - published) <= max(0.35, published * 0.2)
+    return _close(fov_h, published_h) and _close(fov_v, published_v)
 
 
 def sky_map_camera(
@@ -774,13 +784,24 @@ def sky_map_camera(
 ) -> Camera:
     """Lens used for the SKY map FOV rectangle.
 
-    The overlay follows the selected live camera, including mosaic panes.
-    Live stacking stays on tele so stack frames do not inflate.
+    The live FOV box follows the selected camera. Mosaic pane spacing and
+    STACK MOSAIC stay on tele so overlay numbers, RA/Dec, and GOTO match.
+    Live stacking frames also stay tele so JPEG previews do not inflate.
     """
-    _ = mosaic_grid
-    if stacking:
+    if stacking or mosaic_grid:
         return Camera.TELE
     return _as_camera(selected)
+
+
+def mosaic_stack_camera(selected: Camera | str | None = None) -> Camera:
+    """Lens used for mosaic pane spacing and MOSAIC STACK. Always tele.
+
+    The live-camera combo may be Wide so the 1×1 SKY FOV matches that lens.
+    A wide 2×2 would space panes ~45° apart, then stack 3° tele fields with
+    holes between them. Overlay footprints and GOTO share this tele grid.
+    """
+    _ = selected
+    return Camera.TELE
 
 
 def apply_camera_fov_defaults(telemetry: dict[str, Any], model: DeviceModel | str | None = None) -> dict[str, Any]:
@@ -793,7 +814,7 @@ def apply_camera_fov_defaults(telemetry: dict[str, Any], model: DeviceModel | st
             fov_v = float(telemetry.get(v_key) or 0)
         except (TypeError, ValueError):
             fov_h = fov_v = 0.0
-        if not camera_fov_plausible(fov_h, fov_v, camera):
+        if not camera_fov_plausible(fov_h, fov_v, camera, model):
             fov_h, fov_v = camera_fov(model, camera)
             telemetry[h_key] = fov_h
             telemetry[v_key] = fov_v
@@ -1635,3 +1656,108 @@ def history_record_for_run(
         } if hardware is not None else {},
         step_seconds={key: round(float(value), 1) for key, value in dict(step_seconds or {}).items()},
     )
+
+
+def iso_duration_seconds(started: str | None, ended: str | None) -> float:
+    if not started or not ended:
+        return 0.0
+    try:
+        start = datetime.fromisoformat(started)
+        end = datetime.fromisoformat(ended)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, (end - start).total_seconds())
+
+
+def capture_history_owner(
+    *,
+    session_active: bool,
+    mosaic_running: bool,
+    session_finalizing: bool = False,
+) -> str:
+    """Who should persist History for this capture: scheduled, live mosaic, or manual."""
+    if session_active or session_finalizing:
+        return "session"
+    if mosaic_running:
+        return "mosaic"
+    return "manual"
+
+
+def history_record_for_manual_stack(
+    *,
+    device_id: str,
+    target_name: str,
+    camera: CameraSettings,
+    started_at: str,
+    ended_at: str,
+    captured_frame_count: int,
+    outcome: str,
+    hardware: HardwareProfile | None = None,
+) -> HistoryRecord:
+    name = str(target_name or "").strip() or "Manual stack"
+    session = Session(
+        name=name,
+        target=Target(name=name),
+        device_id=device_id,
+        scheduled_start=started_at,
+        camera=camera,
+        actual_started_at=started_at,
+        actual_ended_at=ended_at,
+        outcome=outcome,
+    )
+    return history_record_for_run(
+        session,
+        actual_duration_seconds=iso_duration_seconds(started_at, ended_at),
+        captured_frame_count=max(0, int(captured_frame_count or 0)),
+        hardware=hardware,
+    )
+
+
+def history_records_for_live_mosaic(
+    members: list[Session],
+    captured: dict[Any, Any] | None,
+    *,
+    ok: bool,
+    stopped: bool,
+    current_index: int,
+    ended_at: str,
+    result: Any = None,
+    hardware: HardwareProfile | None = None,
+) -> list[HistoryRecord]:
+    """One History row per completed pane plus the pane that stopped or failed."""
+    last = max(0, int(current_index or 0))
+    if last < 1:
+        return []
+    counts = captured or {}
+    records: list[HistoryRecord] = []
+    for index, member in enumerate(members, start=1):
+        if index > last:
+            break
+        if index < last or ok:
+            outcome = "Completed"
+        elif stopped:
+            outcome = "Stopped by user"
+        else:
+            outcome = str(result or "Failed")
+        try:
+            frames = max(0, int(counts.get(index) or counts.get(str(index)) or 0))
+        except (TypeError, ValueError):
+            frames = 0
+        started = member.actual_started_at or member.scheduled_start
+        ended = member.actual_ended_at or ended_at
+        session = replace(
+            member,
+            status=SessionStatus.DONE if outcome == "Completed" else SessionStatus.ERROR,
+            outcome=outcome,
+            actual_started_at=started,
+            actual_ended_at=ended,
+        )
+        records.append(
+            history_record_for_run(
+                session,
+                actual_duration_seconds=iso_duration_seconds(started, ended),
+                captured_frame_count=frames,
+                hardware=hardware,
+            )
+        )
+    return records

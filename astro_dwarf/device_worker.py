@@ -61,6 +61,7 @@ from .domain import (
     device_name_model,
     firmware_binning,
     firmware_exposure_name,
+    mosaic_stack_camera,
     resolved_frame_count,
 )
 
@@ -2107,8 +2108,9 @@ def _capture_running(snapshot: dict[str, Any]) -> bool:
 def _mark_capture_started() -> None:
     """Show the STACK panel as soon as START_CAPTURE is accepted.
 
-    Firmware can sit in running for a full exposure before the first
-    ``current_count`` packet, which is what starts the countdown.
+    Firmware often sits in running for tens of seconds (preview switch)
+    before the first ``current_count >> 0 - stacked_count >> 0`` packet,
+    which is what starts the per-frame countdown.
     """
     if _tap is None:
         return
@@ -2214,19 +2216,25 @@ def _format_duration(seconds: float) -> str:
 
 
 def _capture_counts(snapshot: dict[str, Any]) -> tuple[int, int]:
+    """Stacked frames are the HUD / heartbeat counter; taken is a fallback."""
+    stacked = snapshot.get("capture_stacked")
+    current = snapshot.get("capture_current")
+    frames = 0
     try:
-        current = int(snapshot.get("capture_current") or 0)
+        if stacked is not None:
+            frames = int(stacked)
+        elif current is not None:
+            frames = int(current)
     except (TypeError, ValueError):
-        current = 0
-    try:
-        stacked = int(snapshot.get("capture_stacked") or 0)
-    except (TypeError, ValueError):
-        stacked = 0
+        try:
+            frames = int(current or 0)
+        except (TypeError, ValueError):
+            frames = 0
     try:
         total = int(snapshot.get("capture_total") or 0)
     except (TypeError, ValueError):
         total = 0
-    return max(current, stacked), total
+    return max(0, frames), total
 
 
 def _capture_wait_label(name: str, snapshot: dict[str, Any]) -> str:
@@ -4098,7 +4106,9 @@ def _stack_mosaic(
     global _session_phase, _stop_phase
     if not isinstance(panes, list) or not panes:
         raise RuntimeError("Mosaic has no panes")
-    operation, args = _prepare_manual_stack(camera)
+    if str(camera or "").strip().lower() == "wide":
+        log("Mosaic stack stays on the tele camera", "notice")
+    operation, args = _prepare_manual_stack(mosaic_stack_camera(camera).value)
     _stop.clear()
     _session_active.set()
     _session_phase = None

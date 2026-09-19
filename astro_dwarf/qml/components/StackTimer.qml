@@ -1,16 +1,20 @@
 import QtQuick
 import ".."
 
-// Per-frame exposure timer that reuses the MOTION pad geometry: ring, ticks,
-// and crosshair. Firmware long-exp progress is interpolated between packets;
-// if those packets never arrive, the ring still counts from the configured
-// exposure and resets when the stacked/taken count advances.
-// START_CAPTURE can report running before the first exposure. The STACK panel
-// is already visible then; hold the countdown at WAIT until firmware elapsed
-// or a taken/stacked frame proves exposing started.
+// Per-frame stack timer that reuses the MOTION pad geometry: ring, ticks,
+// and crosshair. Firmware progress packets from the logs:
+//   (armed, no packet)  START_CAPTURE accepted → WAIT
+//   0/0  first exposure starting → start the ring
+//   1/0  subframe captured, still processing → keep counting past exp
+//   1/1  stacked caught up, next exposure starting → reset and start
+//   N/N  last frame stacked → hold
+// Cycle time is exposure plus processing, so elapsed is not clamped to the
+// configured shutter. N/M still uses stacked. The ring fills over exposure
+// and stays full while the device processes the subframe.
 Item {
     id: timer
     property bool active: false
+    property bool progressSeen: false
     property real firmwareElapsed: 0
     property real exposureSeconds: 0
     property int current: 0
@@ -19,13 +23,20 @@ Item {
     property string target: ""
     property real padSize: Theme.fitPadSize(Math.min(width, height))
 
-    readonly property int frameKey: Math.max(timer.current, timer.stacked)
-    readonly property bool exposing: timer.active && (timer.haveFirmware || timer.frameKey > 0)
-    readonly property bool waiting: timer.active && !timer.exposing
+    readonly property int frameKey: timer.stacked
+    readonly property bool processing: timer.progressSeen && timer.current > timer.stacked
+    readonly property bool complete: timer.active && timer.progressSeen && timer.total > 0
+                                     && timer.stacked >= timer.total
+    readonly property bool exposing: timer.active && timer.progressSeen && !timer.complete
+    readonly property bool waiting: timer.active && !timer.progressSeen
     readonly property real elapsed: displayedElapsed
-    readonly property real progress: timer.exposureSeconds > 0
-        ? Math.min(1, timer.displayedElapsed / timer.exposureSeconds)
-        : 0
+    readonly property real progress: {
+        if (timer.complete)
+            return 1
+        if (timer.exposureSeconds > 0)
+            return Math.min(1, timer.displayedElapsed / timer.exposureSeconds)
+        return 0
+    }
     readonly property string secondsText: {
         if (timer.waiting)
             return "WAIT"
@@ -72,10 +83,7 @@ Item {
     }
 
     function clamped(seconds) {
-        const value = Math.max(0, Number(seconds) || 0)
-        if (timer.exposureSeconds > 0)
-            return Math.min(timer.exposureSeconds, value)
-        return Math.min(999, value)
+        return Math.min(999, Math.max(0, Number(seconds) || 0))
     }
 
     function tick() {
@@ -85,23 +93,43 @@ Item {
         ring.requestPaint()
     }
 
+    function freshElapsed() {
+        return timer.firmwareElapsed < 0.5 ? Math.max(0, timer.firmwareElapsed) : 0
+    }
+
     onActiveChanged: {
         timer.haveFirmware = false
         timer.lastFrame = -1
         if (timer.active && timer.firmwareElapsed > 0.05)
             timer.haveFirmware = true
-        timer.reanchor(timer.active && timer.exposing ? Math.max(0, timer.firmwareElapsed) : 0)
+        if (timer.active && timer.exposing)
+            timer.reanchor(timer.freshElapsed())
+        else
+            timer.reanchor(timer.complete ? timer.displayedElapsed : 0)
+    }
+    onProgressSeenChanged: {
+        if (!timer.active)
+            return
+        timer.haveFirmware = timer.firmwareElapsed > 0.05
+        timer.lastFrame = timer.frameKey
+        if (timer.exposing)
+            timer.reanchor(timer.freshElapsed())
+        else if (!timer.complete)
+            timer.reanchor(0)
     }
     onExposingChanged: {
         if (!timer.active)
             return
         if (timer.exposing)
-            timer.reanchor(timer.haveFirmware ? timer.firmwareElapsed : 0)
-        else
+            timer.reanchor(timer.freshElapsed())
+        else if (!timer.complete)
             timer.reanchor(0)
     }
     onFirmwareElapsedChanged: {
-        if (!timer.active)
+        // Long-exp packets are shutter time only. Ignore them while the
+        // device is processing a captured subframe so the ring can run past
+        // the configured exposure.
+        if (!timer.active || !timer.exposing || timer.processing)
             return
         if (timer.firmwareElapsed > 0.05)
             timer.haveFirmware = true
@@ -115,9 +143,18 @@ Item {
     onFrameKeyChanged: {
         if (!timer.active)
             return
-        if (timer.lastFrame >= 0 && timer.frameKey !== timer.lastFrame) {
-            if (!timer.haveFirmware || timer.firmwareElapsed < 0.5)
-                timer.reanchor(timer.firmwareElapsed)
+        if (timer.complete) {
+            timer.lastFrame = timer.frameKey
+            return
+        }
+        if (timer.lastFrame >= 0 && timer.frameKey > timer.lastFrame)
+            timer.reanchor(timer.freshElapsed())
+        else if (timer.lastFrame >= 0 && timer.frameKey < timer.lastFrame) {
+            timer.haveFirmware = timer.firmwareElapsed > 0.05
+            if (timer.exposing)
+                timer.reanchor(timer.freshElapsed())
+            else
+                timer.reanchor(0)
         }
         timer.lastFrame = timer.frameKey
     }
@@ -132,6 +169,10 @@ Item {
         }
         const frame = timer.total > 0 ? timer.stacked + " of " + timer.total + " stacked" : timer.framesText + " stacked"
         const taken = timer.current > timer.stacked ? ", " + timer.current + " taken" : ""
+        if (timer.complete)
+            return "Stack complete, " + frame + target
+        if (timer.processing)
+            return "Processing subframe, " + timer.secondsText + "s, " + frame + taken + target
         return "Exposure " + timer.secondsText + " of " + timer.exposureText + ", " + frame + taken + target
     }
 
@@ -239,7 +280,7 @@ Item {
                 id: secondsLabel
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: timer.secondsText
-                color: timer.waiting ? Theme.warning : Theme.textPrimary
+                color: (timer.waiting || timer.processing) ? Theme.warning : Theme.textPrimary
                 font.pixelSize: Math.max(14, Math.round(22 * analogPad.padScale))
                 font.family: Theme.fontMono
                 font.bold: true

@@ -251,6 +251,9 @@ def _stacking_progress_changes(message: Any, mosaic: bool = False) -> dict[str, 
         "capture_total": int(message.total_count),
         "capture_target": str(message.target_name or ""),
         "capture_active": True,
+        # Distinguish a firmware 0/0 (first exposure starting) from the
+        # synthetic zeros after START_CAPTURE is accepted.
+        "capture_progress_seen": True,
     }
     if mosaic:
         changes["mosaic_active"] = True
@@ -463,6 +466,7 @@ class TelemetryTap:
             "capture_shooting_s": 0,
             "capture_stacked_s": 0,
             "exposure_elapsed_s": 0,
+            "capture_progress_seen": False,
         }
         if total is not None:
             try:
@@ -485,7 +489,7 @@ class TelemetryTap:
         changes = _stacking_progress_changes(message, mosaic=mosaic)
         new_count = self._capture_count_peak(changes)
         if stale_peak > 1 and new_count >= stale_peak:
-            # Leftover packets from the previous stack; wait for a fresh 0/1.
+            # Leftover packets from the previous stack; wait for a fresh 0/0.
             return {}
         with self._lock:
             self._stale_capture_peak = 0
@@ -793,6 +797,7 @@ class TelemetryTap:
             if state in ("idle", "stopped"):
                 changes["capture_active"] = False
                 changes["exposure_elapsed_s"] = 0
+                changes["capture_progress_seen"] = False
             elif state == "running":
                 changes["capture_active"] = True
             return changes

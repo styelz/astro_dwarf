@@ -674,7 +674,7 @@ Item {
                     tooltip: (cameraPanel.miniBody
                         ? "Dwarf Mini has a single telephoto camera."
                         : "Camera for capture and settings.\nSWAP only rearranges the live panes; it does not change this.\nWide is fixed-focus; focus controls apply to Tele only.")
-                        + "\nSKY FOV and mosaic panes follow this camera (" + backend.skyFovText + ")."
+                        + "\nSKY FOV follows this camera (" + backend.skyFovText + "). Mosaic panes and MOSAIC STACK always use Tele."
                     model: cameraPanel.miniBody ? ["Tele"] : ["Tele", "Wide"]
                     function syncFromDevice() {
                         if (cameraPanel.miniBody && backend.selectedDevice.camera === "wide")
@@ -1078,7 +1078,12 @@ Item {
                     }
                     property bool mainWide: String((backend.selectedDevice && backend.selectedDevice.camera) || "tele") === "wide"
                     property bool pipEnabled: true
-                    readonly property bool pipAvailable: backend.previewTelePlaying && backend.previewWidePlaying && !backend.previewStacking
+                    readonly property bool pipAvailable: backend.previewTelePlaying && backend.previewWidePlaying
+                        && !backend.previewStacking
+                        && !(backend.mosaicPreview && backend.mosaicPreview.active)
+                        && !root.scopeTelemetry.capture_active
+                        && root.scopePending !== "stack"
+                        && !controlPage.mosaicRunning
                     readonly property bool mainIsWide: backend.previewStacking ? false : mainWide
                     readonly property bool displayWide: backend.previewStacking ? false : (pipAvailable ? mainWide : backend.previewWidePlaying)
                     readonly property bool mainPlaying: backend.previewResult || (displayWide ? backend.previewWidePlaying : backend.previewTelePlaying)
@@ -2393,8 +2398,8 @@ Item {
                 hot: motionPanel.stacking
                 readonly property bool captureArmed: root.scopeOnline && !!root.scopeTelemetry.capture_active
                 // Swap MOTION for STACK as soon as capture is armed (or the
-                // STACK command is in flight). The ring still waits for
-                // exposure_running before it starts counting.
+                // STACK command is in flight). The ring waits for a firmware
+                // count packet (0/0 or N/N) before it starts counting.
                 readonly property bool stacking: captureArmed
                     || (root.scopeOnline && root.scopePending === "stack")
                 SplitView.preferredHeight: 289
@@ -2707,6 +2712,7 @@ Item {
                         padSize: padHost.padSize
                         visible: motionPanel.stacking
                         active: motionPanel.stacking
+                        progressSeen: !!root.scopeTelemetry.capture_progress_seen
                         firmwareElapsed: Number(root.scopeTelemetry.exposure_elapsed_s) || 0
                         exposureSeconds: {
                             const tel = Number(root.scopeTelemetry.exposure_total_s)
