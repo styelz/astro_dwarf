@@ -50,6 +50,7 @@ from .domain import (
     WifiMode,
     Workflow,
     LOCAL_ALBUM_SUFFIXES,
+    PHOTO_MEDIA_TYPE,
     album_display_name,
     album_entry_preview_path,
     album_folder_parent,
@@ -8156,7 +8157,7 @@ class AppBackend(QObject):
                 "fileName": name,
                 "filePath": remote,
                 "thumbnailPath": thumb,
-                "mediaType": 0,
+                "mediaType": PHOTO_MEDIA_TYPE,
             },
             ip,
             local_files,
@@ -8881,6 +8882,7 @@ class AppBackend(QObject):
                 "fileName": str(item.get("album_name") or item.get("file_name") or ""),
                 "mediaType": item.get("media_type") or 0,
                 "subType": item.get("sub_type") or 0,
+                "isDir": bool(item.get("is_dir")),
             })
         if not entries:
             self._toast("Those files can't be deleted from the telescope", "warning")

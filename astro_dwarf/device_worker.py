@@ -29,19 +29,24 @@ from typing import Any
 from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_sdk_logging
 from .domain import (
     ALBUM_IMAGE_SUFFIXES,
+    ASTRO_LIST_MEDIA_TYPE,
     ASTRO_MEDIA_TYPE,
-    BURST_MEDIA_TYPE,
-    PANORAMA_MEDIA_TYPE,
-    VIDEO_MEDIA_TYPE,
+    PHOTO_MEDIA_TYPE,
     album_apply_listing_preview,
+    album_canonical_media_type,
     album_delete_payload,
+    album_is_astro_type,
     album_entry_key,
     album_entry_preview_path,
     album_folder_parent,
+    album_folder_preview_path,
     album_folder_root,
     album_http_path,
     album_http_url,
     album_is_astro_media,
+    album_is_astro_session_folder,
+    album_is_astronomy_category_folder,
+    album_is_category_name,
     album_is_media_file,
     album_is_skip_dir,
     album_sidecar_thumbnail_path,
@@ -3542,7 +3547,7 @@ def _album_media_types_for_camera(ip: str) -> list[int]:
                     count = int(item.get("count") or 0)
                 except (TypeError, ValueError):
                     continue
-                if count > 0 and media_type != ASTRO_MEDIA_TYPE:
+                if count > 0 and not album_is_astro_type(media_type):
                     types.append(media_type)
         if types:
             return types
@@ -3564,7 +3569,7 @@ def _ftp_camera_entries() -> list[dict[str, Any]]:
             "fileName": str(name),
             "filePath": remote,
             "thumbnailPath": thumb,
-            "mediaType": 0,
+            "mediaType": PHOTO_MEDIA_TYPE,
         })
     return entries
 
@@ -3572,7 +3577,12 @@ def _ftp_camera_entries() -> list[dict[str, Any]]:
 def astro_sessions_list() -> dict[str, Any]:
     ip = _device_ip()
     _album_model_matches()
-    sessions = _album_media_infos(ip, ASTRO_MEDIA_TYPE)
+    groups: list[list[dict[str, Any]]] = []
+    for media_type in (ASTRO_MEDIA_TYPE, ASTRO_LIST_MEDIA_TYPE):
+        try:
+            groups.append(_album_media_infos(ip, media_type))
+        except Exception as exc:
+            log(f"Album type-{media_type} astro list skipped: {exc}", "debug")
     extra: list[dict[str, Any]] = []
     try:
         extra = [
@@ -3585,7 +3595,7 @@ def astro_sessions_list() -> dict[str, Any]:
         ]
     except Exception as exc:
         log(f"Album type-0 astro scan skipped: {exc}", "debug")
-    sessions = _album_filter_model(_album_unique_entries([sessions, extra]))
+    sessions = _album_filter_model(_album_unique_entries([*groups, extra]))
     sessions = _album_resolve_session_previews(ip, sessions)
     log(f"Listed {len(sessions)} astro sessions on {ip}")
     return {"ip": ip, "sessions": sessions}
@@ -3628,16 +3638,62 @@ def album_camera_media_list() -> dict[str, Any]:
 
 
 def _album_folder_media_type(path: str, is_dir: bool) -> int:
-    text = album_http_path(path).upper()
-    if album_is_astro_media(path, ""):
-        return ASTRO_MEDIA_TYPE
-    if "/BURST" in text:
-        return BURST_MEDIA_TYPE
-    if "PANORAMA" in text:
-        return PANORAMA_MEDIA_TYPE
-    if "/VIDEO" in text or (not is_dir and album_is_media_file(path) and path.lower().endswith((".mp4", ".mov", ".m4v", ".mkv", ".avi"))):
-        return VIDEO_MEDIA_TYPE
-    return 0
+    return album_canonical_media_type(path, "", None, is_dir)
+
+
+def _album_astro_session_folder_entries() -> list[dict[str, Any]]:
+    ip = _device_ip()
+    groups: list[list[dict[str, Any]]] = []
+    for media_type in (ASTRO_LIST_MEDIA_TYPE, ASTRO_MEDIA_TYPE):
+        try:
+            groups.append(_album_media_infos(ip, media_type))
+        except Exception as exc:
+            log(f"Album type-{media_type} astro list skipped: {exc}", "debug")
+    sessions = _album_filter_model(_album_unique_entries(groups))
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in sessions:
+        remote = str(entry.get("filePath") or "").strip()
+        name = str(entry.get("fileName") or "").strip()
+        session = album_session_dir(remote or name)
+        if not session or session in seen or not album_is_astro_session_folder(session):
+            continue
+        seen.add(session)
+        session_name = name if name and not album_is_category_name(name) else session.rsplit("/", 1)[-1]
+        try:
+            modified = int(entry.get("modificationTime") or 0)
+        except (TypeError, ValueError):
+            modified = 0
+        try:
+            sub_type = int(entry.get("astroSubType") or entry.get("subType") or 0)
+        except (TypeError, ValueError):
+            sub_type = 0
+        thumb = str(entry.get("thumbnailPath") or "").strip() or album_folder_preview_path(session)
+        entries.append({
+            "fileName": session_name,
+            "filePath": session,
+            "thumbnailPath": thumb,
+            "mediaType": ASTRO_MEDIA_TYPE,
+            "astroSubType": sub_type,
+            "modificationTime": modified,
+            "isDir": True,
+            "fileAvailable": False,
+            "previewResolved": bool(thumb),
+        })
+    return entries
+
+
+def _album_synthetic_astronomy_folder(root: str) -> dict[str, Any]:
+    remote = album_join_path(root, "Astronomy")
+    return {
+        "fileName": "Astronomy",
+        "filePath": remote,
+        "thumbnailPath": "",
+        "mediaType": ASTRO_MEDIA_TYPE,
+        "modificationTime": 0,
+        "isDir": True,
+        "fileAvailable": False,
+    }
 
 
 def album_folder_list(folder: str = "") -> dict[str, Any]:
@@ -3649,9 +3705,40 @@ def album_folder_list(folder: str = "") -> dict[str, Any]:
     if not requested or not album_path_in_root(requested, root):
         requested = root
     listing = _album_dir_listing(ip, requested)
+    entries: list[dict[str, Any]] = []
+    if listing is None and album_is_astronomy_category_folder(requested):
+        entries = _album_astro_session_folder_entries()
+        log(f"Listed {len(entries)} astronomy sessions on {ip}")
+        return {
+            "ip": ip,
+            "directory": requested,
+            "parent": album_folder_parent(requested, root),
+            "root": root,
+            "sessions": entries,
+        }
+    if listing is None and album_is_astro_session_folder(requested):
+        name = requested.rsplit("/", 1)[-1]
+        stacked = album_join_path(requested, "stacked.jpg")
+        thumb = album_folder_preview_path(requested)
+        log(f"Listed astronomy session {requested} on {ip}")
+        return {
+            "ip": ip,
+            "directory": requested,
+            "parent": album_folder_parent(requested, root),
+            "root": root,
+            "sessions": [{
+                "fileName": name,
+                "filePath": stacked,
+                "thumbnailPath": thumb,
+                "mediaType": ASTRO_MEDIA_TYPE,
+                "modificationTime": 0,
+                "isDir": False,
+                "fileAvailable": True,
+                "previewResolved": bool(thumb),
+            }],
+        }
     if listing is None:
         raise RuntimeError(f"Could not list {requested} on the telescope")
-    entries: list[dict[str, Any]] = []
     for item in listing:
         name = str(item.get("name") or "").strip()
         is_dir = bool(item.get("is_dir"))
@@ -3676,6 +3763,9 @@ def album_folder_list(folder: str = "") -> dict[str, Any]:
             "isDir": is_dir,
             "fileAvailable": not is_dir,
         })
+    if album_http_path(requested).rstrip("/") == album_http_path(root).rstrip("/"):
+        if not any(album_is_astronomy_category_folder(str(entry.get("filePath") or ""), str(entry.get("fileName") or "")) for entry in entries):
+            entries.append(_album_synthetic_astronomy_folder(root))
     file_names = [str(entry.get("fileName") or "") for entry in entries if not entry.get("isDir")]
     pending_dirs = [entry for entry in entries if entry.get("isDir")]
     dir_resolved = _album_resolve_session_previews(ip, pending_dirs)

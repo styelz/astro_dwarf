@@ -96,10 +96,20 @@ def album_path_matches_model(path: str, model: DeviceModel | str) -> bool:
     return True
 
 
-ASTRO_MEDIA_TYPE = 6
+PHOTO_MEDIA_TYPE = 1
 VIDEO_MEDIA_TYPE = 2
 BURST_MEDIA_TYPE = 3
+ASTRO_MEDIA_TYPE = 4
 PANORAMA_MEDIA_TYPE = 5
+ASTRO_LIST_MEDIA_TYPE = 6
+_ALBUM_CANONICAL_MEDIA_TYPES = {
+    PHOTO_MEDIA_TYPE,
+    VIDEO_MEDIA_TYPE,
+    BURST_MEDIA_TYPE,
+    ASTRO_MEDIA_TYPE,
+    PANORAMA_MEDIA_TYPE,
+}
+_ASTRO_MEDIA_TYPES = {ASTRO_MEDIA_TYPE, ASTRO_LIST_MEDIA_TYPE}
 ALBUM_VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".avi"}
 ALBUM_FITS_SUFFIXES = {".fits", ".fit", ".fts"}
 ALBUM_TIFF_SUFFIXES = {".tif", ".tiff"}
@@ -178,6 +188,75 @@ def album_entry_key(entry: dict[str, Any] | None) -> str:
     return str(entry.get("filePath") or entry.get("thumbnailPath") or entry.get("fileName") or "").strip()
 
 
+def album_is_astro_type(media_type: Any) -> bool:
+    try:
+        return int(media_type) in _ASTRO_MEDIA_TYPES
+    except (TypeError, ValueError):
+        return False
+
+
+def album_canonical_media_type(
+    path: str = "",
+    name: str = "",
+    media_type: Any = None,
+    is_dir: bool = False,
+) -> int:
+    """Firmware album item type. 0 and list-filter 6 are ignored by /album/delete."""
+    try:
+        current = int(media_type)
+    except (TypeError, ValueError):
+        current = 0
+    if current == ASTRO_LIST_MEDIA_TYPE:
+        current = ASTRO_MEDIA_TYPE
+    if current in _ALBUM_CANONICAL_MEDIA_TYPES:
+        return current
+    text = album_http_path(path or name).upper()
+    if album_is_astro_media(path, name, media_type):
+        return ASTRO_MEDIA_TYPE
+    if "/BURST" in text:
+        return BURST_MEDIA_TYPE
+    if "PANORAMA" in text:
+        return PANORAMA_MEDIA_TYPE
+    suffix = _album_suffix(path, name)
+    if "/VIDEO" in text or (not is_dir and suffix in ALBUM_VIDEO_SUFFIXES):
+        return VIDEO_MEDIA_TYPE
+    return PHOTO_MEDIA_TYPE
+
+
+def album_delete_remote_path(path: str, media_type: int) -> str:
+    remote = album_http_path(path)
+    if media_type != ASTRO_MEDIA_TYPE:
+        return remote
+    session = album_session_dir(remote)
+    if not session or not album_is_astro_session_folder(session):
+        return remote
+    return album_join_path(session, _STACK_JPEG_NAMES[0]) or remote
+
+
+def album_delete_remote_name(path: str, name: str, media_type: int) -> str:
+    remote = album_http_path(path)
+    label = str(name or "").strip()
+    parts = [part for part in remote.replace("\\", "/").split("/") if part]
+    if media_type == PHOTO_MEDIA_TYPE:
+        if album_is_category_name(label):
+            return label
+        if len(parts) >= 2 and album_is_category_name(parts[-2]):
+            return parts[-2]
+        return label or (parts[-1] if parts else "")
+    if media_type == ASTRO_MEDIA_TYPE:
+        session = album_session_dir(remote)
+        session_name = PurePosixPath(session).name if session else ""
+        if session_name and not album_is_category_name(session_name):
+            return session_name
+        if label and not album_is_category_name(label):
+            return label
+    if label and not album_is_category_name(label):
+        return label
+    if not label:
+        return parts[-2] if len(parts) >= 2 else (parts[-1] if parts else "")
+    return label
+
+
 def album_delete_payload(items: list[dict[str, Any]] | None) -> dict[str, Any]:
     """Firmware album delete body. A bare array is ignored; wrap in `datas`."""
     datas: list[dict[str, Any]] = []
@@ -188,9 +267,6 @@ def album_delete_payload(items: list[dict[str, Any]] | None) -> dict[str, Any]:
         if not file_path:
             continue
         file_name = str(item.get("fileName") or item.get("file_name") or "").strip()
-        if not file_name:
-            parts = [part for part in file_path.replace("\\", "/").split("/") if part]
-            file_name = parts[-2] if len(parts) >= 2 else ""
         try:
             media_type = int(item.get("mediaType", item.get("media_type", 0)) or 0)
         except (TypeError, ValueError):
@@ -199,6 +275,10 @@ def album_delete_payload(items: list[dict[str, Any]] | None) -> dict[str, Any]:
             sub_type = int(item.get("subType", item.get("sub_type", 0)) or 0)
         except (TypeError, ValueError):
             sub_type = 0
+        is_dir = item.get("isDir", item.get("is_dir")) is True
+        media_type = album_canonical_media_type(file_path, file_name, media_type, is_dir)
+        file_path = album_delete_remote_path(file_path, media_type)
+        file_name = album_delete_remote_name(file_path, file_name, media_type)
         datas.append({
             "mediaType": media_type,
             "filePath": file_path,
@@ -309,6 +389,15 @@ def album_is_astro_session_folder(path: str = "", name: str = "") -> bool:
     if not directory or album_is_category_name(label) or album_is_skip_dir(label):
         return False
     return album_is_astro_media(directory, label)
+
+
+def album_is_astronomy_category_folder(path: str = "", name: str = "") -> bool:
+    """True for the Astronomy album category, not a session inside it."""
+    label = str(name or PurePosixPath(album_http_path(path).rstrip("/")).name).strip()
+    if not album_is_category_name(label):
+        return False
+    token = label.lower().replace("-", "_").replace(" ", "")
+    return token in {"astronomy", "astro"}
 
 
 def album_is_thumbnail_dir_name(name: str = "") -> bool:
@@ -456,11 +545,8 @@ def album_listing_mtime(stamp: str = "") -> int:
 
 
 def album_is_astro_media(path: str = "", name: str = "", media_type: Any = None) -> bool:
-    try:
-        if int(media_type) == ASTRO_MEDIA_TYPE:
-            return True
-    except (TypeError, ValueError):
-        pass
+    if album_is_astro_type(media_type):
+        return True
     text = f"{album_http_path(path)}/{name}".upper().replace("\\", "/")
     return any(marker in text for marker in _ASTRO_PATH_MARKERS)
 
