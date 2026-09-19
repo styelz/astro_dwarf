@@ -95,7 +95,15 @@ ApplicationWindow {
     }
     readonly property bool previewFailed: previewStatusFailed(backend.previewStatus)
     readonly property bool previewStarting: backend.previewActive && !backend.previewPlaying && !previewFailed
-    readonly property bool scopeOccupied: scopeImaging || scopePending !== "" || scopeActivity !== "" || previewStarting
+    readonly property bool scopeMosaicRunning: {
+        const mosaic = backend.mosaicPreview || ({})
+        return !!(mosaic.active && mosaic.phase)
+    }
+    readonly property bool scopeStacking: !!(scopeTelemetry && scopeTelemetry.capture_active)
+        || scopeMosaicRunning
+        || scopeActivity === "imaging"
+        || scopePending === "stack"
+    readonly property bool scopeOccupied: scopeImaging || scopePending !== "" || scopeActivity !== "" || previewStarting || scopeStacking
     readonly property bool scopeStopping: scopePending === "stop_all" || scopePending === "stop_session"
     readonly property bool cameraLiveEnabled: commandEnabled("set_exposure")
     readonly property bool motionEnabled: commandEnabled("joystick")
@@ -211,11 +219,13 @@ ApplicationWindow {
             return backend.currentSession.status === "running" && !root.scopeStopping
         const isStop = op === "stop_goto" || op.indexOf("stop_") === 0 || op.slice(-5) === "_stop"
         if (isStop) {
+            if (op === "stop_goto" && root.scopeStacking)
+                return false
             if (op === stopFor[pending] || op === stopFor[activity])
                 return true
             if (op === "stop_astro")
-                return !!root.scopeTelemetry.capture_active
-            return op === "stop_goto" && (!root.scopeOccupied || !!root.scopeTelemetry.tracking_active)
+                return !!root.scopeTelemetry.capture_active || root.scopeMosaicRunning
+            return op === "stop_goto" && !!root.scopeTelemetry.tracking_active
         }
         return !root.scopeOccupied
     }

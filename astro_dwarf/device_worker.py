@@ -4012,6 +4012,9 @@ def _prepare_manual_stack(camera: str = "") -> tuple[str, list[Any]]:
 
 def _start_manual_stack(camera: str = "") -> bool:
     """Start live stacking without waiting for the run to finish."""
+    snapshot = _tap.snapshot() if _tap is not None else {}
+    if _capture_running(snapshot):
+        raise RuntimeError("Stack is already running")
     operation, args = _prepare_manual_stack(camera)
     _start_capture("Stack", operation, args)
     return True

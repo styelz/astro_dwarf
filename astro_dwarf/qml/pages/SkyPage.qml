@@ -624,6 +624,7 @@ Item {
                 trackEnabled: !!(backend.selectedDevice && backend.selectedDevice.connected)
                               && root.scopePending === ""
                               && !root.scopeImaging
+                              && !root.scopeStacking
                               && root.scopeTelemetry.goto_state !== "running"
                               && root.scopeTelemetry.goto_state !== "solving"
                               && root.scopeTelemetry.goto_state !== "stopping"

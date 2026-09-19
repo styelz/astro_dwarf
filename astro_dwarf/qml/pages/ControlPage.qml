@@ -406,7 +406,7 @@ Item {
                         glow: locked || slewing
                         dim: !backend.selectedDevice.connected
                         TapHandler {
-                            enabled: lockBadge.tracking && !lockBadge.slewing && root.commandEnabled("stop_goto")
+                            enabled: lockBadge.tracking && !lockBadge.slewing && !root.scopeStacking && root.commandEnabled("stop_goto")
                             onTapped: root.requestDeviceAction("stop_goto", "EXIT TRACKING")
                         }
                     }
@@ -2218,9 +2218,9 @@ Item {
                             : modelData.state === "indicator"
                                 ? !!backend.selectedDevice.indicator_on
                                 : trackingPad
-                                    ? (slewingNow || trackingNow)
-                                    : modelData.state === "imaging" && controlPage.mosaicRunning
-                                        ? true
+                                    ? ((slewingNow || trackingNow) && !root.scopeStacking)
+                                    : modelData.start === "stack"
+                                        ? root.scopeStacking
                                         : modelData.state !== "" && root.scopeActivity === modelData.state
                         readonly property string effectiveOperation: activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
                         readonly property bool photoPrimed: modelData.start === "photo" && root.scopeOnline && !!t.photo_primed && cameraPanel.photoMode
@@ -2232,6 +2232,8 @@ Item {
                                 return "MOSAIC STACK"
                             if (!trackingPad)
                                 return modelData.label
+                            if (root.scopeStacking)
+                                return trackingNow ? "TRACKING" : modelData.label
                             if (slewingNow)
                                 return "STOP GOTO"
                             if (trackingNow)
@@ -2239,6 +2241,10 @@ Item {
                             return "TRACK"
                         }
                         function deviceDetail() {
+                            if (trackingPad && root.scopeStacking)
+                                return trackingNow
+                                    ? (t.tracking_target ? "HOLDING · " + t.tracking_target : "HOLDING FOR STACK")
+                                    : "NEEDED FOR STACK"
                             if (trackingPad && trackingNow && !slewingNow)
                                 return t.tracking_target ? "TRACKING · " + t.tracking_target : "TRACKING · TAP TO STOP"
                             if (trackingPad && !backend.selectedDevice.location_configured)
@@ -2321,15 +2327,19 @@ Item {
                         text: padLabel
                         glyph: modelData.glyph
                         detail: deviceDetail()
-                        tooltip: modelData.start === "stack" && stackTracking && cameraPanel.stackSettingsText()
+                        tooltip: trackingPad && root.scopeStacking
+                                 ? "Tracking stays on while stacking.\nPress STACK to stop the capture."
+                                 : modelData.start === "stack" && stackTracking && cameraPanel.stackSettingsText()
                                  ? cameraPanel.stackSettingsText()
                                  : ""
-                        activeState: activeForState
+                        activeState: trackingPad ? (slewingNow || trackingNow) : activeForState
                         pending: isPending
                         primed: photoPrimed || stackPrimed
                         destructive: !!modelData.destructive
                         enabled: cameraAllowed && modeAllowed && root.commandEnabled(effectiveOperation)
-                        Accessible.description: photoPrimed ? "Photo capture primed for a fast shot"
+                        Accessible.description: trackingPad && root.scopeStacking
+                                                           ? "Tracking is required while stacking; press STACK to stop the capture"
+                                                           : photoPrimed ? "Photo capture primed for a fast shot"
                                                            : (modelData.start === "stack" && !stackTracking)
                                                              ? "Track a target before starting the stack"
                                                              : (modelData.start === "stack" && stackTracking && cameraPanel.stackSettingsText())
@@ -2342,6 +2352,8 @@ Item {
                                                                  : stackPrimed ? "Sidereal tracking is running and stack settings match the telescope"
                                                                                : String(modelData.detail || modelData.label)
                         onClicked: {
+                            if (!pad.enabled)
+                                return
                             if (effectiveOperation === "stack")
                                 cameraPanel.applyPendingStackParams()
                             root.requestDeviceAction(effectiveOperation, padLabel)

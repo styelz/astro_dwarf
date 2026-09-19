@@ -695,6 +695,26 @@ def _preview_capture_running(telemetry: dict[str, Any] | None) -> bool:
     return bool(snap.get("capture_active") or snap.get("capture_state") == "running")
 
 
+_STACKING_BLOCKED_ACTIONS = {
+    "stack": "A stack is already running",
+    "track": "Stop the stack before changing tracking",
+    "sky_track": "Stop the stack before changing tracking",
+    "stop_goto": "Stop the stack before changing tracking",
+}
+
+
+def stacking_blocks_action(
+    operation: str,
+    *,
+    capturing: bool,
+    mosaic_running: bool,
+) -> str:
+    """Toast when a HUD action would start another stack or drop tracking under one."""
+    if not (capturing or mosaic_running):
+        return ""
+    return _STACKING_BLOCKED_ACTIONS.get(str(operation or ""), "")
+
+
 def preview_needs_rtsp_restart(telemetry: dict[str, Any] | None) -> bool:
     """True when leftover stacking JPEG is occupying the cameras.
 
@@ -6808,6 +6828,15 @@ class AppBackend(QObject):
         if operation == "autofocus" and shooting_mode not in {1, 2}:
             self._toast("Select PHOTO or DSO mode before focusing", "warning")
             return
+        blocked = stacking_blocks_action(
+            operation,
+            capturing=self._telemetry_capturing(device_id),
+            mosaic_running=self._live_mosaic_running(device_id),
+        )
+        if blocked:
+            self.add_log("warning", blocked, device_id)
+            self._toast(blocked, "warning")
+            return
         if operation == "sky_track":
             sky = self._sky_target
             if sky is None or sky.ra_hours is None or sky.dec_degrees is None:
@@ -6942,6 +6971,9 @@ class AppBackend(QObject):
             return
         if telemetry.get("capture_active") or telemetry.get("capture_state") == "running":
             self._toast("Telescope is capturing", "warning")
+            return
+        if self._live_mosaic_running(device_id):
+            self._toast("Stop the stack before changing tracking", "warning")
             return
         activity = self._device_activity.get(device_id) or ""
         if activity and activity != "goto":
