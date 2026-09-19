@@ -485,14 +485,6 @@ ATLAS_ASTRO_JS = r"""
     }
     return out;
   }
-  function northIsDown(aladin) {
-    if (!aladin || typeof aladin.getRaDec !== "function") return false;
-    var pos = aladin.getRaDec();
-    if (!pos) return false;
-    var a = project(aladin, pos[0], pos[1]);
-    var b = project(aladin, pos[0], Math.min(90, Number(pos[1]) + Math.max(0.2, viewFov(aladin) * 0.05)));
-    return !!(a && b && b[1] > a[1]);
-  }
   function outerQuad(items) {
     if (!items || !items.length) return [];
     var all = [];
@@ -587,8 +579,9 @@ ATLAS_ASTRO_JS = r"""
     var stepX = w * (1 - overlap), stepY = h * (1 - overlap);
     var totalW = stepX * (cols - 1) + w, totalH = stepY * (rows - 1) + h;
     var pa = Number(box.pa) || 0;
-    var col1OnRight = !(pa > 90 && pa < 270);
-    var row1AtTop = !northIsDown(aladinRef());
+    var southUp = !!(box.payload && box.payload.south_up);
+    var col1OnRight = (pa > 90 && pa < 270) === southUp;
+    var row1AtTop = (pa > 90 && pa < 270) === southUp;
     ctx.save();
     ctx.translate(width / 2, height / 2);
     ctx.rotate(tilt);
@@ -654,12 +647,14 @@ ATLAS_ASTRO_JS = r"""
     var overlap = Math.max(0, Math.min(0.8, Number(payload.overlap) || 0));
     var color = String(payload.color || "#7ee0d0");
     var pa = Number(box.pa) || 0;
+    var southUp = !!(payload.south_up);
+    var chartTilt = ((pa - (southUp ? 180 : 0)) % 360 + 360) % 360;
     var viewRot = 0;
     try {
       if (aladin && typeof aladin.getRotation === "function")
         viewRot = Number(aladin.getRotation()) || 0;
     } catch (err) {}
-    var tilt = (viewRot + pa) * Math.PI / 180;
+    var tilt = (viewRot + chartTilt) * Math.PI / 180;
     var panes = (box.fovPanes && box.fovPanes.length) ? box.fovPanes : [];
     var mosaic = cols > 1 || rows > 1 || panes.length > 1;
     var projected = collectProjected(aladin, panes);

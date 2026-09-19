@@ -2778,7 +2778,7 @@ class AppBackend(QObject):
         if device_id in self._resume_mosaic_attempted or self._active_sessions.get(device_id):
             return
         live = self._live_mosaic.get(device_id)
-        if not live or not live.get("phase") or live.get("worker_running"):
+        if not live or not live.get("phase") or live.get("worker_running") or live.get("stopping"):
             return
         worker = self._workers.get(device_id)
         if not worker or not worker.connected or worker.busy:
@@ -3515,12 +3515,15 @@ class AppBackend(QObject):
         return columns, rows, index, group
 
     def _mosaic_is_active(self, session: Session | None, members: list[Session]) -> bool:
-        if session is not None and any(
-            live.get("group") == (session.mosaic.group_id or "")
-            for live in self._live_mosaic.values()
-            if isinstance(live, dict)
-        ):
-            return True
+        if session is not None:
+            group = session.mosaic.group_id or ""
+            for live in self._live_mosaic.values():
+                if not isinstance(live, dict) or live.get("group") != group:
+                    continue
+                if live.get("stopping"):
+                    return False
+                if live.get("phase") or live.get("worker_running"):
+                    return True
         if session is None:
             return False
         columns, rows, _index, _group = self._mosaic_layout(session, members)
@@ -3529,12 +3532,6 @@ class AppBackend(QObject):
         if session.status == SessionStatus.RUNNING:
             return True
         if any(item.status == SessionStatus.RUNNING for item in members):
-            return True
-        if self.mosaic_frames.indexes() and (
-            self._preview_result
-            or self._preview_stack_mode
-            or any(item.status in {SessionStatus.DONE, SessionStatus.RUNNING} for item in members)
-        ):
             return True
         return False
 
@@ -3797,14 +3794,7 @@ class AppBackend(QObject):
             self._mosaic_seen_stack_reset = False
             self._stack_result_mosaic_pane = 0
         if not active:
-            if stored and not same_group:
-                self._clear_mosaic_preview()
-            elif stored:
-                before = self.mosaic_frames.snapshot()[:4]
-                self.mosaic_frames.set_layout(columns, rows, 0, False, stored)
-                self._backfill_mosaic_pane_urls(notify=False)
-                if before != self.mosaic_frames.snapshot()[:4]:
-                    self.mosaicPreviewChanged.emit()
+            self._clear_mosaic_preview()
             return
         before = self.mosaic_frames.snapshot()
         ready_before = self._mosaic_seen_stack_reset
@@ -3830,7 +3820,8 @@ class AppBackend(QObject):
             if not session.mosaic.imported_plan and session.mosaic.panes > 1:
                 phase = "stacking"
         return {
-            "active": bool(live and live.get("phase")) or (active and (columns > 1 or rows > 1)),
+            "active": bool(live and live.get("phase") and not live.get("stopping"))
+            or (active and (columns > 1 or rows > 1)),
             "columns": int((live or {}).get("columns") or columns),
             "rows": int((live or {}).get("rows") or rows),
             "current_index": int((live or {}).get("current_index") or current or 0),
@@ -5754,6 +5745,8 @@ class AppBackend(QObject):
         running_live = self._live_mosaic_running(device_id, live)
         if running_live:
             live["stopping"] = True
+            self._clear_mosaic_preview()
+            self.mosaicPreviewChanged.emit()
         session_id = self._active_sessions.get(device_id)
         if not session_id:
             if running_live:
@@ -5960,7 +5953,7 @@ class AppBackend(QObject):
 
     def _on_live_mosaic_progress(self, device_id: str, pane: int, total: int, step: str) -> None:
         live = self._live_mosaic.get(device_id)
-        if not live:
+        if not live or live.get("stopping"):
             return
         members = list(live.get("members") or [])
         index = max(1, int(pane or live.get("current_index") or 1))
@@ -6013,31 +6006,26 @@ class AppBackend(QObject):
         worker = self._workers.get(device_id)
         live = self._live_mosaic.get(device_id)
         stopped = bool(live and live.get("stopping")) or "stopped" in str(result or "").lower()
-        if live:
+        index = int((live or {}).get("current_index") or 0)
+        total = int((live or {}).get("total") or 0)
+        label = str((live or {}).get("label") or "mosaic")
+        if ok or stopped:
+            self._discard_live_mosaic(device_id)
+        elif live:
             live["worker_running"] = False
             live["stopping"] = False
-            if ok or stopped:
-                live["phase"] = ""
-                self.store.clear_live_mosaic(device_id)
-                if worker and worker.connected:
-                    self._schedule_control_restore(device_id, 500)
-            else:
-                self._persist_live_mosaic(device_id)
-                if worker and worker.connected:
-                    self._schedule_control_restore(device_id, 500)
+            self._persist_live_mosaic(device_id)
+            self._sync_mosaic_preview(device_id)
         else:
             self.store.clear_live_mosaic(device_id)
+            self._clear_mosaic_preview()
         if worker and device_id not in self._active_sessions:
             worker.busy = False
             worker.availabilityChanged.emit()
         self._complete_activity(device_id, "stack", bool(ok))
         self._set_activity(device_id, "")
-        index = int((live or {}).get("current_index") or 0)
-        total = int((live or {}).get("total") or 0)
-        label = str((live or {}).get("label") or "mosaic")
-        if index:
-            self._snapshot_mosaic_pane(index)
-        self._sync_mosaic_preview(device_id)
+        if worker and worker.connected:
+            self._schedule_control_restore(device_id, 500)
         self.mosaicPreviewChanged.emit()
         self.commandFeedback.emit(device_id, "stack", bool(ok))
         if ok:
@@ -6187,6 +6175,8 @@ class AppBackend(QObject):
             live = self._live_mosaic.get(device_id)
             if self._live_mosaic_running(device_id, live):
                 live["stopping"] = True
+                self._clear_mosaic_preview()
+                self.mosaicPreviewChanged.emit()
             elif live and live.get("phase"):
                 self._discard_live_mosaic(device_id)
         worker_operation = operation
@@ -6416,6 +6406,8 @@ class AppBackend(QObject):
         live = self._live_mosaic.get(device_id)
         if self._live_mosaic_running(device_id, live):
             live["stopping"] = True
+            self._clear_mosaic_preview()
+            self.mosaicPreviewChanged.emit()
         elif live and live.get("phase"):
             self._discard_live_mosaic(device_id)
         self._abort_active_session(device_id, reason)

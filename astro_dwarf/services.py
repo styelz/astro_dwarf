@@ -532,7 +532,23 @@ SKY_WEB_FOV_JS = r"""
     var ctl = window[CTL];
     if (ctl && ctl.zSign) return ctl.zSign;
     var sign = -1;
-    if (ctl) ctl.zSign = sign;
+    var probed = false;
+    try {
+      var center = viewCenter(stel);
+      if (center) {
+        var xyz = sphericalToCart(
+          stel,
+          ((Number(center.ra_hours) % 24) + 24) % 24 * Math.PI / 12,
+          Number(center.dec_degrees) * Math.PI / 180
+        );
+        var view = convertToView(stel, xyz);
+        if (view && isFinite(view[2]) && Math.abs(view[2]) > 1e-6) {
+          sign = view[2] > 0 ? 1 : -1;
+          probed = true;
+        }
+      }
+    } catch (err) {}
+    if (ctl && probed) ctl.zSign = sign;
     return sign;
   }
   function projectPoint(stel, raHours, decDeg, box) {
@@ -691,7 +707,7 @@ SKY_WEB_FOV_JS = r"""
     var fovH = Number(p.fov_h), fovV = Number(p.fov_v);
     if (!(fovH > 0) || !(fovV > 0) || !center) return [];
     var pa = Number(p.position_angle);
-    if (!isFinite(pa)) pa = 0;
+    if (!isFinite(pa)) pa = p.south_up ? 180 : 0;
     var stepX = fovH * (1 - overlap);
     var stepY = fovV * (1 - overlap);
     var panes = [];
@@ -929,7 +945,7 @@ SKY_WEB_FOV_JS = r"""
   function frameCaption(p, stel) {
     var head = String(p.label || "").replace(/\s*PA\s+[-+]?\d+(?:\.\d+)?°/i, "").replace(/\s+/g, " ").trim();
     var pa = Number(p && p.position_angle);
-    if (!isFinite(pa)) pa = 0;
+    if (!isFinite(pa)) pa = p && p.south_up ? 180 : 0;
     var spec = [];
     if (head) spec.push(head);
     spec.push("PA " + (((pa % 360) + 360) % 360).toFixed(0) + "°");
@@ -1048,13 +1064,23 @@ SKY_WEB_FOV_JS = r"""
   function framePa(p) {
     var pa = Number(p && p.position_angle);
     if (isFinite(pa)) return ((pa % 360) + 360) % 360;
-    return 0;
+    return p && p.south_up ? 180 : 0;
+  }
+  function chartTilt(p) {
+    var base = p && p.south_up ? 180 : 0;
+    return wrapDeg(framePa(p) - base);
   }
   function rotateGroup(box, p, inner) {
     var pa = framePa(p);
     var cx = (box.width / 2).toFixed(1);
     var cy = (box.height / 2).toFixed(1);
     return '<g transform="rotate(' + (-pa).toFixed(2) + " " + cx + " " + cy + ')">' + inner + "</g>";
+  }
+  function rotateChartGroup(box, p, inner) {
+    var tilt = chartTilt(p);
+    var cx = (box.width / 2).toFixed(1);
+    var cy = (box.height / 2).toFixed(1);
+    return '<g transform="rotate(' + (-tilt).toFixed(2) + " " + cx + " " + cy + ')">' + inner + "</g>";
   }
   function upTick(cx, top, color) {
     return '<line x1="' + cx.toFixed(1) + '" y1="' + top.toFixed(1) + '" x2="' + cx.toFixed(1)
@@ -1100,18 +1126,11 @@ SKY_WEB_FOV_JS = r"""
     var originY = (box.height - totalH) / 2;
     var color = String(p.color || "#7ee0d0");
     var pa = framePa(p);
-    // Pane 1 is camera-right. Stellarium and stacked JPEGs are N-up, so that
-    // is the right edge at PA 0°. Near PA 180° camera-right is east / left.
-    var col1OnRight = !(pa > 90 && pa < 270);
-    var northPt = null, centerPt = null;
-    try {
-      var pointing = currentPointing(p, stel) || viewCenter(stel);
-      if (pointing) {
-        centerPt = projectPoint(stel, pointing.ra_hours, pointing.dec_degrees, box);
-        northPt = projectPoint(stel, pointing.ra_hours, pointing.dec_degrees + 0.25, box);
-      }
-    } catch (err) {}
-    var row1AtTop = !(centerPt && northPt && northPt.y > centerPt.y);
+    var tilt = chartTilt(p);
+    // Pane 1 is camera-right. On a north-up chart that is the right edge;
+    // on a south-up chart it is only the right edge near PA 180°.
+    var col1OnRight = (pa > 90 && pa < 270) === !!p.south_up;
+    var row1AtTop = (pa > 90 && pa < 270) === !!p.south_up;
     var svg = "";
     var labels = "";
     var index = 0;
@@ -1125,8 +1144,8 @@ SKY_WEB_FOV_JS = r"""
           + '" height="' + size.h.toFixed(1) + '" fill="' + color + '" fill-opacity="0.05" '
           + paneStroke(color, cols * rows > 1) + '/>';
         if (cols * rows > 1) {
-          var pc = rotatePoint(box.width / 2, box.height / 2, x + size.w / 2, y + size.h / 2, pa);
-          labels += indexText(pc.x, pc.y, index, color, -pa, Math.min(size.w, size.h));
+          var pc = rotatePoint(box.width / 2, box.height / 2, x + size.w / 2, y + size.h / 2, tilt);
+          labels += indexText(pc.x, pc.y, index, color, -tilt, Math.min(size.w, size.h));
         }
       }
     }
@@ -1137,9 +1156,9 @@ SKY_WEB_FOV_JS = r"""
     if (!mosaicUsesPaneImages())
       svg += liveImageRect((box.width - size.w) / 2, (box.height - size.h) / 2, size.w, size.h);
     svg += upTick(box.width / 2, originY, color);
-    paintSvg(el, box, rotateGroup(box, p, svg)
+    paintSvg(el, box, rotateChartGroup(box, p, svg)
       + labels
-      + labelOnFrame(p, hudCorners(box.width / 2, box.height / 2, totalW, totalH, pa), stel, box));
+      + labelOnFrame(p, hudCorners(box.width / 2, box.height / 2, totalW, totalH, tilt), stel, box));
     return "grid";
   }
   function drawPanes(el, box, p, stel, panes) {
@@ -2500,16 +2519,16 @@ def mosaic_south_up(latitude: Any) -> bool:
 
 
 def mosaic_column_one_on_right(south_up: bool, position_angle: Any = None) -> bool:
-    """True when pane 1 belongs on the right of an N-up sky chart / contact sheet.
+    """True when pane 1 belongs on the right of a sky-chart sheet.
 
-    Pane 1 is camera-right. Stellarium and the stacked JPEGs are N-up, so west
-    is on the right at PA 0°. A south-up camera (PA near 180°) puts camera-right
-    on the east, which is the left edge of that N-up chart. Latitude does not
-    flip the sheet; south_up only remains for callers that still pass it.
+    Pane 1 is camera-right. A north-up chart has west on the right, so PA 0°
+    puts pane 1 there. A south-up chart has east on the right; that only
+    matches camera-right near PA 180°. Southern sites with a near-north PA
+    must draw pane 1 on the left or the GOTO lands under the opposite pane.
     """
     pa = mosaic_position_angle(south_up, position_angle)
     camera_right_is_east = 90.0 < pa < 270.0
-    return not camera_right_is_east
+    return camera_right_is_east == bool(south_up)
 
 
 def mosaic_sheet_column(index: int, columns: int, *, south_up: bool = False, position_angle: Any = None) -> int:
@@ -2521,20 +2540,55 @@ def mosaic_sheet_column(index: int, columns: int, *, south_up: bool = False, pos
     return raw
 
 
+def mosaic_sheet_row(
+    index: int,
+    columns: int,
+    rows: int,
+    *,
+    south_up: bool = False,
+    position_angle: Any = None,
+) -> int:
+    """0-based contact-sheet row for a 1-based pane index.
+
+    Row 1 is camera-up. That sits at the top of a matching sky chart when
+    camera-up is north on an N-up view or south on an S-up view.
+    """
+    cols = max(1, int(columns or 1))
+    row_count = max(1, int(rows or 1))
+    raw = (max(1, int(index or 1)) - 1) // cols
+    if raw >= row_count:
+        return row_count - 1
+    pa = mosaic_position_angle(south_up, position_angle)
+    camera_up_is_south = 90.0 < pa < 270.0
+    if camera_up_is_south == bool(south_up):
+        return raw
+    return (row_count - 1) - raw
+
+
+def mosaic_chart_tilt(south_up: bool, position_angle: Any = None) -> float:
+    """Screen-grid rotation after numbering is laid out for the matching chart.
+
+    PA 180° south-up (or PA 0° north-up) is already the chart orientation, so
+    the residual tilt is 0°. Rotating the numbered grid by the full PA as well
+    swaps 1↔4.
+    """
+    pa = mosaic_position_angle(south_up, position_angle)
+    base = 180.0 if south_up else 0.0
+    return ((pa - base) % 360.0 + 360.0) % 360.0
+
+
 def mosaic_position_angle(south_up: bool, position_angle: Any = None) -> float:
-    # Camera PA is east of celestial north. 0° is N-up in both hemispheres.
-    # south_up only orients the chart / contact sheet, not the camera default.
-    _ = south_up
+    # Unset PA follows the site: 0° N-up in the north, 180° S-up in the south.
     if position_angle is None or position_angle == "":
-        return 0.0
+        return 180.0 if south_up else 0.0
     try:
         return float(position_angle) % 360.0
     except (TypeError, ValueError):
-        return 0.0
+        return 180.0 if south_up else 0.0
 
 
 def device_mosaic_pa(latitude: Any, position_angle: Any = None) -> float:
-    """Resolved camera PA: stored offset, or 0° N-up when unset."""
+    """Resolved camera PA: stored offset, or 180° S-up / 0° N-up from site latitude."""
     return mosaic_position_angle(mosaic_south_up(latitude), position_angle)
 
 

@@ -13,7 +13,7 @@ from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPen
 from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
 
 from .runtime import PROCESS_CREATION_FLAGS, ffmpeg_mjpeg_command, ffmpeg_path, kill_pid_tree
-from .services import mosaic_sheet_column
+from .services import mosaic_sheet_column, mosaic_sheet_row
 
 _live_frames: LiveFrames | None = None
 _mosaic_frames: MosaicFrames | None = None
@@ -603,7 +603,13 @@ class MosaicLiveItem(QQuickPaintedItem):
             south_up=self._south_up,
             position_angle=self._position_angle,
         )
-        row = (index - 1) // columns
+        row = mosaic_sheet_row(
+            index,
+            columns,
+            rows,
+            south_up=self._south_up,
+            position_angle=self._position_angle,
+        )
         if row >= rows:
             return None
         return QRectF(

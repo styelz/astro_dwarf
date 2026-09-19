@@ -16,7 +16,7 @@ Item {
     property var pendingLockTarget: null
     property string pendingAction: ""
     property bool applyingPa: false
-    readonly property int defaultPa: 0
+    readonly property int defaultPa: backend.mosaicSouthUp ? 180 : 0
     Settings {
         id: skyStore
         category: "sky"
