@@ -773,8 +773,26 @@ class StreamPlayer(QObject):
         self._reconnect_timer.setSingleShot(True)
         self._reconnect_timer.timeout.connect(self._start_process)
 
+    def _stream_alive(self) -> bool:
+        if self._cancelled or not self._url:
+            return False
+        if self._http_mode:
+            return True
+        process = self._process
+        if process is None:
+            return False
+        return process.state() != QProcess.ProcessState.NotRunning
+
     @Slot(str)
     def openStream(self, url: str) -> None:
+        if (
+            url
+            and url == self._url
+            and url.startswith("rtsp://")
+            and not self._cancelled
+            and self._stream_alive()
+        ):
+            return
         self._stop_http()
         self._teardown()
         self._cancelled = False

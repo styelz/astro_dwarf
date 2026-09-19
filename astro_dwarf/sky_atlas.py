@@ -534,6 +534,16 @@ ATLAS_ASTRO_JS = r"""
     if (livePane !== 0 && livePane !== Number(index)) return null;
     return rememberImage("live", box.liveUrl);
   }
+  function mediaCanvas(width, height) {
+    var canvas = box.mediaCanvas;
+    if (!canvas) {
+      canvas = document.createElement("canvas");
+      box.mediaCanvas = canvas;
+    }
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+    return canvas;
+  }
   function drawImageIn(ctx, img, pts, opacity) {
     if (!img || !img.width || !pts || pts.length < 4) return;
     ctx.save();
@@ -554,26 +564,35 @@ ATLAS_ASTRO_JS = r"""
     ctx.restore();
   }
   function drawPaneMedia(ctx, index, pts, x, y, w, h) {
-    var pane = paneMedia(index);
     var live = liveMedia(index);
-    if (pane) {
-      if (pts) drawImageIn(ctx, pane, pts, 0.85);
-      else if (w > 1 && h > 1) {
-        ctx.save();
-        ctx.globalAlpha = 0.85;
-        ctx.drawImage(pane, x, y, w, h);
-        ctx.restore();
-      }
-    }
-    if (live) {
-      if (pts) drawImageIn(ctx, live, pts, liveOpacity());
-      else if (w > 1 && h > 1) {
-        ctx.save();
-        ctx.globalAlpha = liveOpacity();
-        ctx.drawImage(live, x, y, w, h);
-        ctx.restore();
-      }
-    }
+    var pane = live ? null : paneMedia(index);
+    var img = live || pane;
+    if (!img) return;
+    if (pts) drawImageIn(ctx, img, pts, 1);
+    else if (w > 1 && h > 1) ctx.drawImage(img, x, y, w, h);
+  }
+  function blitMosaicMedia(ctx, width, height, paint) {
+    var off = mediaCanvas(width, height);
+    var mctx = off.getContext("2d");
+    mctx.setTransform(1, 0, 0, 1, 0, 0);
+    mctx.globalCompositeOperation = "source-over";
+    mctx.clearRect(0, 0, width, height);
+    mctx.globalCompositeOperation = "lighten";
+    paint(mctx);
+    ctx.save();
+    ctx.globalAlpha = liveOpacity();
+    ctx.drawImage(off, 0, 0);
+    ctx.restore();
+  }
+  function strokePaneRect(ctx, x, y, w, h, color, dotted) {
+    ctx.strokeStyle = "rgba(5,8,14,0.85)";
+    ctx.lineWidth = dotted ? 2 : 4;
+    if (dotted) ctx.setLineDash([2, 3.5]);
+    ctx.strokeRect(x, y, w, h);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = dotted ? 1.2 : 2;
+    ctx.strokeRect(x, y, w, h);
+    ctx.setLineDash([]);
   }
   function drawScreenMosaic(ctx, width, height, w, h, cols, rows, overlap, tilt, color) {
     var stepX = w * (1 - overlap), stepY = h * (1 - overlap);
@@ -582,32 +601,39 @@ ATLAS_ASTRO_JS = r"""
     var southUp = !!(box.payload && box.payload.south_up);
     var col1OnRight = (pa > 90 && pa < 270) === southUp;
     var row1AtTop = (pa > 90 && pa < 270) === southUp;
-    ctx.save();
-    ctx.translate(width / 2, height / 2);
-    ctx.rotate(tilt);
+    var cells = [];
     var index = 0;
     for (var row = 1; row <= rows; row++) {
       for (var col = 1; col <= cols; col++) {
         index += 1;
-        var x = -totalW / 2 + (col1OnRight ? (cols - col) : (col - 1)) * stepX;
-        var y = -totalH / 2 + (row1AtTop ? (row - 1) : (rows - row)) * stepY;
-        drawPaneMedia(ctx, index, null, x, y, w, h);
-        ctx.strokeStyle = "rgba(5,8,14,0.85)";
-        ctx.lineWidth = 4;
-        ctx.strokeRect(x, y, w, h);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x, y, w, h);
-        if (cols * rows > 1) {
-          ctx.fillStyle = color;
-          ctx.font = "12px sans-serif";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText(String(index), x + w / 2, y + h / 2);
-        }
+        cells.push({
+          index: index,
+          x: -totalW / 2 + (col1OnRight ? (cols - col) : (col - 1)) * stepX,
+          y: -totalH / 2 + (row1AtTop ? (row - 1) : (rows - row)) * stepY
+        });
       }
     }
-    if (cols * rows > 1) {
+    blitMosaicMedia(ctx, width, height, function(mctx) {
+      mctx.translate(width / 2, height / 2);
+      mctx.rotate(tilt);
+      for (var i = 0; i < cells.length; i++)
+        drawPaneMedia(mctx, cells[i].index, null, cells[i].x, cells[i].y, w, h);
+    });
+    ctx.save();
+    ctx.translate(width / 2, height / 2);
+    ctx.rotate(tilt);
+    var dotted = cols * rows > 1;
+    for (var n = 0; n < cells.length; n++) {
+      strokePaneRect(ctx, cells[n].x, cells[n].y, w, h, color, dotted);
+      if (dotted) {
+        ctx.fillStyle = color;
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(cells[n].index), cells[n].x + w / 2, cells[n].y + h / 2);
+      }
+    }
+    if (dotted) {
       ctx.setLineDash([5, 4]);
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5;
@@ -659,11 +685,15 @@ ATLAS_ASTRO_JS = r"""
     var mosaic = cols > 1 || rows > 1 || panes.length > 1;
     var projected = collectProjected(aladin, panes);
     if (projected.length) {
-      for (var i = 0; i < projected.length; i++) {
-        if (projected[i].quad) {
-          drawPaneMedia(ctx, projected[i].index, projected[i].quad, 0, 0, 0, 0);
-          strokeQuad(ctx, projected[i].quad, color, false);
+      blitMosaicMedia(ctx, width, height, function(mctx) {
+        for (var i = 0; i < projected.length; i++) {
+          if (projected[i].quad)
+            drawPaneMedia(mctx, projected[i].index, projected[i].quad, 0, 0, 0, 0);
         }
+      });
+      for (var i = 0; i < projected.length; i++) {
+        if (projected[i].quad)
+          strokeQuad(ctx, projected[i].quad, color, mosaic);
         if (mosaic) {
           var loc = projected[i].center;
           if (!loc && projected[i].quad) {

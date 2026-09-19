@@ -603,6 +603,19 @@ Item {
                     }
                     return -1
                 }
+                function stackSettingsText() {
+                    const expRaw = liveExposure.text.trim()
+                    const gain = liveGain.text.trim()
+                    const count = liveStackCount.text.trim()
+                    const parts = []
+                    if (expRaw && expRaw !== "—")
+                        parts.push((expRaw.indexOf("/") >= 0 || /s$/i.test(expRaw)) ? expRaw : expRaw + "s")
+                    if (gain && gain !== "—")
+                        parts.push("G" + gain)
+                    if (count && count !== "—")
+                        parts.push("×" + count)
+                    return parts.join(" · ")
+                }
                 function applyPendingStackParams() {
                     const id = backend.selectedDeviceId
                     const exposure = liveExposure.text.trim()
@@ -2238,8 +2251,20 @@ Item {
                             }
                             if (modelData.start === "stack" && root.scopeOnline && cameraPanel.dsoMode && !stackTracking)
                                 return "TRACK FIRST"
-                            if (modelData.start === "stack" && controlPage.mosaicGridArmed)
-                                return controlPage.mosaicPaneText + " PANES"
+                            if (modelData.start === "stack" && stackTracking) {
+                                const settings = cameraPanel.stackSettingsText()
+                                const hasTarget = !!(String(t.tracking_target || t.capture_target || "").trim()
+                                    || (backend.skyTarget && backend.skyTarget.name)
+                                    || (backend.currentSession && backend.currentSession.target_name)
+                                    || controlPage.mosaicGridArmed)
+                                if (hasTarget && settings) {
+                                    if (controlPage.mosaicGridArmed)
+                                        return controlPage.mosaicPaneText + " · " + settings
+                                    return settings
+                                }
+                                if (controlPage.mosaicGridArmed)
+                                    return controlPage.mosaicPaneText + " PANES"
+                            }
                             if (photoPrimed || stackPrimed)
                                 return "PRIMED"
                             if (!cameraAllowed)
@@ -2291,6 +2316,9 @@ Item {
                         text: padLabel
                         glyph: modelData.glyph
                         detail: deviceDetail()
+                        tooltip: modelData.start === "stack" && stackTracking && cameraPanel.stackSettingsText()
+                                 ? cameraPanel.stackSettingsText()
+                                 : ""
                         activeState: activeForState
                         pending: isPending
                         primed: photoPrimed || stackPrimed
@@ -2299,10 +2327,15 @@ Item {
                         Accessible.description: photoPrimed ? "Photo capture primed for a fast shot"
                                                            : (modelData.start === "stack" && !stackTracking)
                                                              ? "Track a target before starting the stack"
-                                                             : (modelData.start === "stack" && (controlPage.mosaicGridArmed || controlPage.mosaicRunning))
-                                                               ? ("Mosaic stack " + controlPage.mosaicGridText + " panes")
-                                                               : stackPrimed ? "Sidereal tracking is running and stack settings match the telescope"
-                                                                             : String(modelData.detail || modelData.label)
+                                                             : (modelData.start === "stack" && stackTracking && cameraPanel.stackSettingsText())
+                                                               ? ("Current stack " + cameraPanel.stackSettingsText()
+                                                                  + (controlPage.mosaicGridArmed || controlPage.mosaicRunning
+                                                                     ? (" mosaic " + controlPage.mosaicGridText + " panes")
+                                                                     : ""))
+                                                               : (modelData.start === "stack" && (controlPage.mosaicGridArmed || controlPage.mosaicRunning))
+                                                                 ? ("Mosaic stack " + controlPage.mosaicGridText + " panes")
+                                                                 : stackPrimed ? "Sidereal tracking is running and stack settings match the telescope"
+                                                                               : String(modelData.detail || modelData.label)
                         onClicked: {
                             if (effectiveOperation === "stack")
                                 cameraPanel.applyPendingStackParams()
@@ -2359,11 +2392,15 @@ Item {
                 title: motionPanel.stacking ? "STACK" : "MOTION"
                 hot: motionPanel.stacking
                 readonly property bool captureArmed: root.scopeOnline && !!root.scopeTelemetry.capture_active
-                readonly property bool stacking: captureArmed && !!root.scopeTelemetry.exposure_running
+                // Swap MOTION for STACK as soon as capture is armed (or the
+                // STACK command is in flight). The ring still waits for
+                // exposure_running before it starts counting.
+                readonly property bool stacking: captureArmed
+                    || (root.scopeOnline && root.scopePending === "stack")
                 SplitView.preferredHeight: 289
                 SplitView.minimumHeight: 136
-                onCaptureArmedChanged: {
-                    if (captureArmed) {
+                onStackingChanged: {
+                    if (motionPanel.stacking) {
                         analogPad.clearKeys()
                         if (analogPad.moving)
                             analogPad.releaseStick()
@@ -2682,7 +2719,15 @@ Item {
                         }
                         current: Number(root.scopeTelemetry.capture_current) || 0
                         stacked: Number(root.scopeTelemetry.capture_stacked) || 0
-                        total: Number(root.scopeTelemetry.capture_total) || 0
+                        total: {
+                            const tel = Number(root.scopeTelemetry.capture_total)
+                            if (Number.isFinite(tel) && tel > 0)
+                                return tel
+                            const live = Number(liveStackCount.text)
+                            if (Number.isFinite(live) && live > 0)
+                                return live
+                            return 0
+                        }
                         target: String(root.scopeTelemetry.capture_target || "")
                     }
                 }
@@ -2733,12 +2778,14 @@ Item {
                     }
                     Text {
                         text: {
+                            if (stackTimer.waiting)
+                                return stackTimer.total > 0 ? stackTimer.framesText + " · WAIT" : "WAITING"
                             let label = stackTimer.framesText
                             if (stackTimer.current > stackTimer.stacked)
                                 label += " · " + stackTimer.current + " taken"
                             return label
                         }
-                        color: Theme.textPrimary
+                        color: stackTimer.waiting ? Theme.warning : Theme.textPrimary
                         font.pixelSize: 10
                         font.family: Theme.fontMono
                     }

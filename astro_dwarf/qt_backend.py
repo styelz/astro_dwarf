@@ -708,12 +708,86 @@ def preview_should_skip_go_live(
     return preview_should_preserve_shooting_mode(telemetry, persisted_mode)
 
 
-def preview_can_attach_rtsp(telemetry: dict[str, Any] | None) -> bool:
-    """True when the tele encoder is already advertising RTSP."""
+def _stream_type_name(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _preview_capture_running(telemetry: dict[str, Any] | None) -> bool:
     snap = telemetry or {}
-    if snap.get("capture_active") or snap.get("capture_state") == "running":
+    return bool(snap.get("capture_active") or snap.get("capture_state") == "running")
+
+
+def preview_rtsp_encoder_live(telemetry: dict[str, Any] | None, camera: str) -> bool:
+    """True when firmware is advertising RTSP for this camera."""
+    if _preview_capture_running(telemetry):
         return False
-    return str(snap.get("stream_type") or "").strip().upper() == "RTSP"
+    snap = telemetry or {}
+    key = "stream_type_wide" if camera == "wide" else "stream_type"
+    return _stream_type_name(snap.get(key)) == "RTSP"
+
+
+def preview_can_attach_rtsp(
+    telemetry: dict[str, Any] | None,
+    *,
+    preview_result: bool = False,
+    tele_playing: bool = False,
+    wide_playing: bool = False,
+) -> bool:
+    """True when live view should attach instead of opening cameras from scratch."""
+    if _preview_capture_running(telemetry):
+        return False
+    if preview_result or tele_playing or wide_playing:
+        return True
+    return preview_rtsp_encoder_live(telemetry, "tele") or preview_rtsp_encoder_live(telemetry, "wide")
+
+
+def preview_camera_needs_open(
+    telemetry: dict[str, Any] | None,
+    camera: str,
+    *,
+    playing: bool = False,
+    preview_result: bool = False,
+) -> bool:
+    """True when this camera still needs a firmware open command."""
+    if playing or preview_rtsp_encoder_live(telemetry, camera):
+        return False
+    if _preview_capture_running(telemetry) or preview_result:
+        return False
+    # Wide often comes back after a stack while tele stays dark.
+    if camera == "tele" and preview_rtsp_encoder_live(telemetry, "wide"):
+        return True
+    snap = telemetry or {}
+    key = "stream_type_wide" if camera == "wide" else "stream_type"
+    return _stream_type_name(snap.get(key)) == "OFF"
+
+
+def preview_should_reuse_player(current_url: str, target_url: str, playing: bool) -> bool:
+    """Keep an RTSP player that is already on the target URL.
+
+    HTTP stacking snapshots reuse the same URL across mosaic panes and must
+    be reopened. RTSP can stay connected.
+    """
+    if not playing or not target_url or current_url != target_url:
+        return False
+    return target_url.startswith("rtsp://")
+
+
+def mosaic_result_holds_sheet(
+    *,
+    preview_result: bool,
+    active: bool,
+    columns: int,
+    rows: int,
+    held: bool = False,
+) -> bool:
+    """Keep the mosaic contact sheet after capture until Dismiss or Start live view."""
+    if not active:
+        return False
+    try:
+        mosaic = int(columns or 1) > 1 or int(rows or 1) > 1
+    except (TypeError, ValueError):
+        return False
+    return mosaic and (preview_result or held)
 
 
 def mosaic_result_pane(current_index: int, phase: str) -> int:
@@ -805,6 +879,17 @@ def mosaic_pane_may_replace_frozen(enhance_on: bool) -> bool:
     pane (and later completed panes) showed enhance.
     """
     return bool(enhance_on)
+
+
+def mosaic_frozen_takes_dropped_enhance(*, continues: bool, capturing: bool, frozen: bool) -> bool:
+    """Apply a live enhance result to a completed mosaic cell after capture drops.
+
+    Between mosaic panes ``capture_active`` goes idle while the worker is still
+    running. Live overlay must not take that frame (it would paint pane N onto
+    N+1), but the frozen cell for pane N still needs the delayed enhance.
+    Without this, only pane 1 looked enhanced until Enhance was toggled.
+    """
+    return bool(continues and not capturing and frozen)
 
 
 def mosaic_finished_pane(stream_pane: int, result_pane: int) -> int:
@@ -1300,6 +1385,7 @@ class AppBackend(QObject):
         self._mosaic_stream_pane = 0
         self._mosaic_seen_stack_reset = False
         self._stack_result_mosaic_pane = 0
+        self._mosaic_result_held = False
         self._sky_mosaic_columns = 1
         self._sky_mosaic_rows = 1
         self._sky_mosaic_overlap = 0.2
@@ -1321,6 +1407,7 @@ class AppBackend(QObject):
         self._preview_hold_target = ""
         self._preview_tele_url = ""
         self._preview_wide_url = ""
+        self._preview_open_fallback = {"tele": False, "wide": False}
         self._preview_stack_mode = False
         self._preview_result = False
         self._preview_result_title = ""
@@ -1331,8 +1418,14 @@ class AppBackend(QObject):
         self._enhance_sky_crush = 1.0
         self._raw_preview_images = {"tele": QImage(), "wide": QImage()}
         self._enhance_job_token = {"tele": 0, "wide": 0}
+        self._preview_enhance_inflight = {"tele": False, "wide": False}
+        self._preview_enhance_latest: dict[str, QImage] = {}
+        self._mosaic_enhance_inflight: set[int] = set()
+        self._mosaic_enhance_latest: dict[int, QImage] = {}
         self._enhance_pool = QThreadPool(self)
         self._enhance_pool.setMaxThreadCount(1)
+        self._mosaic_enhance_pool = QThreadPool(self)
+        self._mosaic_enhance_pool.setMaxThreadCount(1)
         self._enhance_cache_pool = QThreadPool(self)
         self._enhance_cache_pool.setMaxThreadCount(1)
         self._preview_enhance_signals = PreviewEnhanceSignals(self)
@@ -3633,8 +3726,13 @@ class AppBackend(QObject):
         if not self._mosaic_live_frame_belongs(pane):
             return
         if raw:
-            if not self.mosaic_frames.frozen(pane):
+            frozen = self.mosaic_frames.frozen(pane)
+            missing = pane not in self._raw_mosaic_panes or self._raw_mosaic_panes[pane].isNull()
+            if not frozen:
                 self._raw_mosaic_panes[pane] = image.copy()
+            elif missing:
+                self._raw_mosaic_panes[pane] = image.copy()
+                self._finish_mosaic_pane_still(pane)
             return
         if self.mosaic_frames.frozen(pane):
             return
@@ -3686,18 +3784,21 @@ class AppBackend(QObject):
                     live = self.live_images.peek("wide")
                 capturing = self._telemetry_capturing(self._selected_device_id)
                 if not live.isNull() and (stored.isNull() or capturing):
-                    self._keep_mosaic_pane_raw(index)
-                    self._store_mosaic_pane_image(index, live)
+                    self._keep_mosaic_pane_raw(index, force=True)
+                    # Enhance-on stills already in the cell must not be replaced
+                    # by the raw HTTP placeholder that lives in live_images.
+                    if stored.isNull() or not mosaic_pane_may_replace_frozen(self._enhance_images):
+                        self._store_mosaic_pane_image(index, live)
             stored = self.mosaic_frames.peek(index)
             if not stored.isNull():
                 self.mosaic_frames.freeze(index)
                 self._publish_mosaic_pane_url(index)
         else:
             self._publish_mosaic_pane_url(index)
-        self._keep_mosaic_pane_raw(index)
+        self._keep_mosaic_pane_raw(index, force=True)
         self._finish_mosaic_pane_still(index)
 
-    def _keep_mosaic_pane_raw(self, index: int) -> None:
+    def _keep_mosaic_pane_raw(self, index: int, *, force: bool = False) -> None:
         if index < 1:
             return
         existing = self._raw_mosaic_panes.get(index)
@@ -3706,7 +3807,11 @@ class AppBackend(QObject):
         raw = self._raw_preview_images.get("tele") or QImage()
         if raw.isNull():
             return
-        if not self._mosaic_live_frame_belongs(index) and index != self._mosaic_stream_pane:
+        if (
+            not force
+            and not self._mosaic_live_frame_belongs(index)
+            and index != self._mosaic_stream_pane
+        ):
             return
         self._raw_mosaic_panes[index] = raw.copy()
 
@@ -3733,11 +3838,14 @@ class AppBackend(QObject):
         self.mosaic_frames.clear()
         self._mosaic_pane_urls = {}
         self._raw_mosaic_panes = {}
+        self._mosaic_enhance_inflight = set()
+        self._mosaic_enhance_latest = {}
         self._mosaic_firmware_pane = 1
         self._mosaic_firmware_stacked = 0
         self._mosaic_stream_pane = 0
         self._mosaic_seen_stack_reset = False
         self._stack_result_mosaic_pane = 0
+        self._mosaic_result_held = False
         if had:
             self.mosaicPreviewChanged.emit()
 
@@ -3794,6 +3902,15 @@ class AppBackend(QObject):
             self._mosaic_seen_stack_reset = False
             self._stack_result_mosaic_pane = 0
         if not active:
+            held_active, held_cols, held_rows, _held_current, _held_images = self.mosaic_frames.snapshot()
+            if mosaic_result_holds_sheet(
+                preview_result=self._preview_result,
+                active=held_active,
+                columns=held_cols,
+                rows=held_rows,
+                held=self._mosaic_result_held,
+            ):
+                return
             self._clear_mosaic_preview()
             return
         before = self.mosaic_frames.snapshot()
@@ -3821,7 +3938,14 @@ class AppBackend(QObject):
                 phase = "stacking"
         return {
             "active": bool(live and live.get("phase") and not live.get("stopping"))
-            or (active and (columns > 1 or rows > 1)),
+            or (active and (columns > 1 or rows > 1))
+            or mosaic_result_holds_sheet(
+                preview_result=self._preview_result,
+                active=active,
+                columns=columns,
+                rows=rows,
+                held=self._mosaic_result_held,
+            ),
             "columns": int((live or {}).get("columns") or columns),
             "rows": int((live or {}).get("rows") or rows),
             "current_index": int((live or {}).get("current_index") or current or 0),
@@ -4493,10 +4617,34 @@ class AppBackend(QObject):
             self.add_log("info", "Live view stays paused until this session starts capturing", device_id)
             self._refresh_preview_hold()
             return
-        if preview_can_attach_rtsp(self._device_telemetry.get(device_id)):
+        result_on_screen = bool(self._preview_result)
+        telemetry = self._device_telemetry.get(device_id)
+        if preview_can_attach_rtsp(
+            telemetry,
+            preview_result=result_on_screen,
+            tele_playing=self._preview_tele_playing,
+            wide_playing=self._preview_wide_playing,
+        ):
             self._clear_preview_hold()
+            need_tele = preview_camera_needs_open(
+                telemetry,
+                "tele",
+                playing=self._preview_tele_playing,
+                preview_result=result_on_screen,
+            )
+            need_wide = preview_camera_needs_open(
+                telemetry,
+                "wide",
+                playing=self._preview_wide_playing,
+                preview_result=result_on_screen,
+            )
             self.add_log("info", "Attaching to the live cameras already running on the telescope", device_id)
-            self._attach_preview_streams(device_id, "Attaching to live view…")
+            self._attach_preview_streams(
+                device_id,
+                "Attaching to live view…",
+                need_tele=need_tele,
+                need_wide=need_wide,
+            )
             return
         self._clear_preview_hold()
         token = self._arm_preview_ui("Starting live camera…")
@@ -4619,8 +4767,60 @@ class AppBackend(QObject):
 
         worker.send("enter_camera", callback=after_enter)
 
+    def _open_missing_preview_cameras(
+        self,
+        worker: Any,
+        device: Device,
+        token: int,
+        need_tele: bool,
+        need_wide: bool,
+    ) -> None:
+        """Open only the firmware cameras that are not already encoding."""
+        if not need_tele and not need_wide:
+            return
+
+        def after_wide(ok: bool, result: Any) -> None:
+            if token != self._preview_token:
+                return
+            if not ok:
+                self.add_log(
+                    "warning",
+                    f"Wide camera did not open for picture-in-picture: {result}",
+                    device.id,
+                )
+
+        if device.model not in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
+            if need_tele and need_wide:
+                self._open_legacy_preview_cameras(worker, device, token, lambda _ok, _result: None)
+                return
+            op = "open_camera" if need_tele else "open_wide_camera"
+
+            def after_legacy(ok: bool, result: Any) -> None:
+                if token != self._preview_token:
+                    return
+                if not ok:
+                    label = "Tele" if need_tele else "Wide"
+                    self.add_log("warning", f"{label} camera did not open: {result}", device.id)
+
+            worker.send(op, callback=after_legacy)
+            return
+
+        def after_enter(ok: bool, result: Any) -> None:
+            if token != self._preview_token:
+                return
+            if not ok:
+                self.add_log("warning", f"Tele camera did not open: {result}", device.id)
+            if need_wide:
+                worker.send("open_wide_camera", callback=after_wide)
+
+        if need_tele:
+            worker.send("enter_camera", callback=after_enter)
+        elif need_wide:
+            worker.send("open_wide_camera", callback=after_wide)
+
     def _arm_preview_ui(self, status: str) -> int:
         self._clear_preview_result()
+        self._preview_open_fallback = {"tele": False, "wide": False}
         if self._preview_active or self._preview_playing:
             self._closePreviewStreams.emit()
         self._preview_token += 1
@@ -4642,6 +4842,47 @@ class AppBackend(QObject):
         self.previewWidePlayingChanged.emit()
         return self._preview_token
 
+    def _ensure_preview_ui(self, status: str, tele_url: str, wide_url: str) -> int:
+        """Make preview active without tearing down players that already match."""
+        self._clear_preview_result()
+        reuse_tele = preview_should_reuse_player(self._preview_tele_url, tele_url, self._preview_tele_playing)
+        reuse_wide = preview_should_reuse_player(self._preview_wide_url, wide_url, self._preview_wide_playing)
+        if not reuse_tele and not reuse_wide:
+            if self._preview_active or self._preview_playing:
+                if not wide_url and (self._preview_wide_url or self._preview_wide_playing):
+                    self._closeWideStream.emit()
+                    if self._preview_tele_url != tele_url:
+                        self._closePreviewStreams.emit()
+                elif self._preview_tele_url != tele_url and self._preview_wide_url != wide_url:
+                    self._closePreviewStreams.emit()
+                elif self._preview_wide_url != wide_url:
+                    self._closeWideStream.emit()
+        elif not reuse_wide and (self._preview_wide_url or self._preview_wide_playing):
+            if not wide_url or self._preview_wide_url != wide_url:
+                self._closeWideStream.emit()
+        was_active = self._preview_active
+        was_playing = self._preview_playing
+        was_tele = self._preview_tele_playing
+        was_wide = self._preview_wide_playing
+        self._preview_token += 1
+        self._preview_active = True
+        if not reuse_tele:
+            self._preview_tele_playing = False
+        if not reuse_wide:
+            self._preview_wide_playing = False
+        self._preview_playing = self._preview_tele_playing or self._preview_wide_playing
+        self._set_preview_stack_mode(self._preview_stacking(self._selected_device_id))
+        self._set_preview_status(status)
+        if not was_active:
+            self.previewActiveChanged.emit()
+        if was_playing != self._preview_playing:
+            self.previewPlayingChanged.emit()
+        if was_tele != self._preview_tele_playing:
+            self.previewTelePlayingChanged.emit()
+        if was_wide != self._preview_wide_playing:
+            self.previewWidePlayingChanged.emit()
+        return self._preview_token
+
     def _begin_stream_wait(
         self,
         token: int,
@@ -4657,8 +4898,6 @@ class AppBackend(QObject):
         else:
             self.add_log("info", f"Opening {tele_url} in the background")
         self._set_preview_status(status or ("Waiting for stream " + tele_url))
-        self._preview_tele_url = tele_url
-        self._preview_wide_url = wide_url
         threading.Thread(
             target=self._wait_for_stream,
             args=(token, tele_url, wide_url, host, port, timeout),
@@ -4687,12 +4926,15 @@ class AppBackend(QObject):
     def _open_ready_stream(self, token: int, tele_url: str, wide_url: str) -> None:
         if token != self._preview_token:
             return
+        reuse_tele = preview_should_reuse_player(self._preview_tele_url, tele_url, self._preview_tele_playing)
+        reuse_wide = preview_should_reuse_player(self._preview_wide_url, wide_url, self._preview_wide_playing)
         self._preview_tele_url = tele_url
         self._preview_wide_url = wide_url
         if tele_url:
             self._set_preview_status(tele_url)
         if not wide_url:
-            self._openTeleStream.emit(tele_url)
+            if not reuse_tele:
+                self._openTeleStream.emit(tele_url)
             self._closeWideStream.emit()
             if self._preview_wide_playing:
                 self._preview_wide_playing = False
@@ -4701,18 +4943,28 @@ class AppBackend(QObject):
         device = self._device_by_id(self._selected_device_id)
         primary_wide = device.camera == Camera.WIDE
         if primary_wide:
-            self._openWideStream.emit(wide_url)
-            QTimer.singleShot(400, lambda: self._open_secondary_stream(token, "tele", tele_url))
+            if not reuse_wide:
+                self._openWideStream.emit(wide_url)
+            if not reuse_tele:
+                delay = 0 if reuse_wide else 400
+                QTimer.singleShot(delay, lambda: self._open_secondary_stream(token, "tele", tele_url))
         else:
-            self._openTeleStream.emit(tele_url)
-            QTimer.singleShot(400, lambda: self._open_secondary_stream(token, "wide", wide_url))
+            if not reuse_tele:
+                self._openTeleStream.emit(tele_url)
+            if not reuse_wide:
+                delay = 0 if reuse_tele else 400
+                QTimer.singleShot(delay, lambda: self._open_secondary_stream(token, "wide", wide_url))
 
     def _open_secondary_stream(self, token: int, camera: str, url: str) -> None:
         if token != self._preview_token or not self._preview_active or not url:
             return
         if camera == "wide":
+            if preview_should_reuse_player(self._preview_wide_url, url, self._preview_wide_playing):
+                return
             self._openWideStream.emit(url)
         else:
+            if preview_should_reuse_player(self._preview_tele_url, url, self._preview_tele_playing):
+                return
             self._openTeleStream.emit(url)
 
     @Slot()
@@ -4737,6 +4989,7 @@ class AppBackend(QObject):
         self._last_preview_ui.clear()
         self._preview_tele_url = ""
         self._preview_wide_url = ""
+        self._preview_open_fallback = {"tele": False, "wide": False}
         self._set_preview_stack_mode(False)
         self._set_preview_status("")
         self.previewActiveChanged.emit()
@@ -4814,12 +5067,33 @@ class AppBackend(QObject):
 
     def _clear_preview_result(self) -> None:
         self._cancel_stack_result_fetch()
+        held_active, held_cols, held_rows, _held_current, _held_images = self.mosaic_frames.snapshot()
+        drop_sheet = mosaic_result_holds_sheet(
+            preview_result=self._preview_result,
+            active=held_active,
+            columns=held_cols,
+            rows=held_rows,
+            held=self._mosaic_result_held,
+        )
         if not self._preview_result and not self._preview_result_title and not self._preview_result_detail:
             return
         self._preview_result = False
         self._preview_result_title = ""
         self._preview_result_detail = ""
         self.previewResultChanged.emit()
+        if drop_sheet:
+            self._clear_held_mosaic_result()
+
+    def _clear_held_mosaic_result(self) -> None:
+        """Drop a finished mosaic sheet once the completed-stack result leaves the preview."""
+        self._mosaic_result_held = False
+        live = self._live_mosaic_for() or {}
+        if live.get("phase") or live.get("worker_running"):
+            return
+        session, members = self._mosaic_context()
+        if self._mosaic_is_active(session, members):
+            return
+        self._clear_mosaic_preview()
 
     def _cancel_stack_result_fetch(self) -> None:
         self._stack_result_token += 1
@@ -4884,6 +5158,7 @@ class AppBackend(QObject):
         self._preview_wide_playing = False
         self._preview_tele_url = ""
         self._preview_wide_url = ""
+        self._preview_open_fallback = {"tele": False, "wide": False}
         self._set_preview_stack_mode(False)
         if was_open:
             self._closePreviewStreams.emit()
@@ -5163,8 +5438,6 @@ class AppBackend(QObject):
         tele_url, wide_url, timeout = pending
         self._preview_token += 1
         token = self._preview_token
-        self._preview_tele_url = tele_url
-        self._preview_wide_url = wide_url
         status = (
             "Switching to stacking preview…"
             if tele_url.startswith("http://")
@@ -5203,22 +5476,48 @@ class AppBackend(QObject):
                 return True
         return False
 
-    def _attach_preview_streams(self, device_id: str, status: str, timeout: float = 20) -> None:
+    def _attach_preview_streams(
+        self,
+        device_id: str,
+        status: str,
+        timeout: float = 20,
+        *,
+        need_tele: bool = False,
+        need_wide: bool = False,
+    ) -> None:
         if device_id != self._selected_device_id:
             return
         worker = self._workers.get(device_id)
         device = next((item for item in self._devices if item.id == device_id), None)
         if not worker or not worker.connected or device is None:
             return
-        token = self._arm_preview_ui(status)
         tele_url = self._stream_url(device, Camera.TELE)
         wide_url = self._stream_url(device, Camera.WIDE)
+        reuse_tele = preview_should_reuse_player(self._preview_tele_url, tele_url, self._preview_tele_playing)
+        reuse_wide = preview_should_reuse_player(self._preview_wide_url, wide_url, self._preview_wide_playing)
+        if reuse_tele and (reuse_wide or not wide_url) and not need_tele and not need_wide:
+            self._clear_preview_result()
+            self._preview_open_fallback = {"tele": False, "wide": False}
+            self._preview_active = True
+            self._set_preview_stack_mode(self._preview_stacking(device_id))
+            self._set_preview_status(tele_url or status)
+            self.previewActiveChanged.emit()
+            self.add_log("info", "Live view is already attached", device_id)
+            return
+        token = self._ensure_preview_ui(status, tele_url, wide_url)
         self._schedule_camera_param_refresh(device_id)
         if tele_url.startswith("http://"):
+            self._preview_open_fallback = {"tele": False, "wide": False}
             self.add_log("info", f"Opening {tele_url} in the background")
             self._set_preview_status(status)
             self._open_ready_stream(token, tele_url, wide_url)
             return
+        self._preview_open_fallback = {
+            "tele": bool(tele_url.startswith("rtsp://")) and not need_tele,
+            "wide": bool(wide_url.startswith("rtsp://")) and not need_wide,
+        }
+        if need_tele or need_wide:
+            self._open_missing_preview_cameras(worker, device, token, need_tele, need_wide)
         host = urlparse(tele_url).hostname or device.ip_address
         self._begin_stream_wait(
             token,
@@ -5286,16 +5585,34 @@ class AppBackend(QObject):
         return "deep" if self._deep_clean_images else "standard"
 
     def _queue_preview_enhance(self, camera: str, raw: QImage) -> None:
+        if raw is None or raw.isNull():
+            return
+        self._preview_enhance_latest[camera] = raw.copy()
+        if self._preview_enhance_inflight.get(camera):
+            return
+        self._start_preview_enhance(camera)
+
+    def _start_preview_enhance(self, camera: str) -> None:
+        raw = self._preview_enhance_latest.pop(camera, None) or QImage()
+        if raw.isNull() or self._shut_down or not self._should_enhance_preview():
+            self._preview_enhance_inflight[camera] = False
+            return
+        self._preview_enhance_inflight[camera] = True
         self._enhance_job_token[camera] = int(self._enhance_job_token.get(camera, 0)) + 1
         token = self._enhance_job_token[camera]
         job = PreviewEnhanceJob(
             token,
             camera,
-            raw.copy(),
+            raw,
             self._preview_enhance_profile(),
             self._preview_enhance_signals,
         )
         self._enhance_pool.start(job)
+
+    def _finish_preview_enhance_job(self, camera: str) -> None:
+        self._preview_enhance_inflight[camera] = False
+        if not self._shut_down and camera in self._preview_enhance_latest:
+            self._start_preview_enhance(camera)
 
     def _queue_mosaic_pane_enhance(self, pane: int, raw: QImage) -> None:
         try:
@@ -5304,53 +5621,88 @@ class AppBackend(QObject):
             return
         if pane < 1 or raw is None or raw.isNull() or not self._enhance_images:
             return
+        self._mosaic_enhance_latest[pane] = raw.copy()
+        if pane in self._mosaic_enhance_inflight:
+            return
+        self._start_mosaic_pane_enhance(pane)
+
+    def _start_mosaic_pane_enhance(self, pane: int) -> None:
+        raw = self._mosaic_enhance_latest.pop(pane, None) or QImage()
+        if pane < 1 or raw.isNull() or self._shut_down or not self._enhance_images:
+            self._mosaic_enhance_inflight.discard(pane)
+            return
+        self._mosaic_enhance_inflight.add(pane)
         self._mosaic_enhance_token[pane] = int(self._mosaic_enhance_token.get(pane, 0)) + 1
         token = self._mosaic_enhance_token[pane]
         job = PreviewEnhanceJob(
             token,
             "mosaic",
-            raw.copy(),
+            raw,
             self._preview_enhance_profile(),
             self._preview_enhance_signals,
             pane,
         )
-        self._enhance_pool.start(job)
+        self._mosaic_enhance_pool.start(job)
+
+    def _finish_mosaic_pane_enhance_job(self, pane: int) -> None:
+        self._mosaic_enhance_inflight.discard(pane)
+        if not self._shut_down and pane in self._mosaic_enhance_latest:
+            self._start_mosaic_pane_enhance(pane)
 
     def _on_mosaic_pane_enhanced(self, token: int, pane: int, image) -> None:
-        if self._shut_down:
-            return
         try:
             pane = int(pane or 0)
         except (TypeError, ValueError):
-            return
-        if pane < 1 or token != self._mosaic_enhance_token.get(pane):
-            return
-        if not isinstance(image, QImage) or image.isNull() or not self._enhance_images:
-            return
-        self._store_mosaic_pane_image(pane, image, replace_frozen=True)
+            pane = 0
+        try:
+            if self._shut_down:
+                return
+            if pane < 1 or token != self._mosaic_enhance_token.get(pane):
+                return
+            if not isinstance(image, QImage) or image.isNull() or not self._enhance_images:
+                return
+            self._store_mosaic_pane_image(pane, image, replace_frozen=True)
+        finally:
+            if pane >= 1:
+                self._finish_mosaic_pane_enhance_job(pane)
 
     def _on_preview_enhanced(self, token: int, camera: str, image) -> None:
-        if self._shut_down or not self._preview_can_enhance():
-            return
-        if token != self._enhance_job_token.get(camera):
-            return
-        if not isinstance(image, QImage) or image.isNull() or not self._should_enhance_preview():
-            return
-        if self._mosaic_capture_continues() and not self._telemetry_capturing(self._selected_device_id):
-            return
-        self.live_images.update(camera, image)
-        self._remember_mosaic_live_frame(camera, image)
-        if camera == "tele" and self._preview_result:
-            self._store_mosaic_pane_image(
-                self._stack_result_mosaic_pane or mosaic_finished_pane(
+        try:
+            if self._shut_down or not self._preview_can_enhance():
+                return
+            if token != self._enhance_job_token.get(camera):
+                return
+            if not isinstance(image, QImage) or image.isNull() or not self._should_enhance_preview():
+                return
+            continues = self._mosaic_capture_continues()
+            capturing = self._telemetry_capturing(self._selected_device_id)
+            if continues and not capturing:
+                pane = mosaic_finished_pane(
                     self._mosaic_stream_pane,
                     self._mosaic_result_pane_for(),
-                ),
-                image,
-                replace_frozen=True,
-            )
-        if preview_window_is_live(self._preview_window):
-            self.live_images.notify(camera)
+                )
+                if mosaic_frozen_takes_dropped_enhance(
+                    continues=continues,
+                    capturing=capturing,
+                    frozen=pane >= 1 and self.mosaic_frames.frozen(pane),
+                ):
+                    self._store_mosaic_pane_image(pane, image, replace_frozen=True)
+                return
+            self.live_images.update(camera, image)
+            self._remember_mosaic_live_frame(camera, image)
+            if camera == "tele" and self._preview_result:
+                self._store_mosaic_pane_image(
+                    self._stack_result_mosaic_pane or mosaic_finished_pane(
+                        self._mosaic_stream_pane,
+                        self._mosaic_result_pane_for(),
+                    ),
+                    image,
+                    replace_frozen=True,
+                )
+            if preview_window_is_live(self._preview_window):
+                self.live_images.notify(camera)
+        finally:
+            self._finish_preview_enhance_job(camera)
 
     def _refresh_preview_enhance(self) -> None:
         if self._preview_can_enhance():
@@ -5362,6 +5714,7 @@ class AppBackend(QObject):
                     self._queue_preview_enhance(camera, raw)
                     continue
                 self._enhance_job_token[camera] = int(self._enhance_job_token.get(camera, 0)) + 1
+                self._preview_enhance_latest.pop(camera, None)
                 self.live_images.update(camera, raw)
                 self.live_images.notify(camera)
         live_pane = self._current_mosaic_live_pane()
@@ -5374,6 +5727,7 @@ class AppBackend(QObject):
                 self._queue_mosaic_pane_enhance(pane, raw)
                 continue
             self._mosaic_enhance_token[pane] = int(self._mosaic_enhance_token.get(pane, 0)) + 1
+            self._mosaic_enhance_latest.pop(pane, None)
             self._store_mosaic_pane_image(pane, raw, replace_frozen=True)
 
     def _on_tele_frame(self, image) -> None:
@@ -5433,6 +5787,8 @@ class AppBackend(QObject):
         self._on_camera_preview_failed("wide", message)
 
     def _on_camera_preview_failed(self, camera: str, message: str) -> None:
+        if self._try_preview_open_fallback(camera):
+            return
         other_playing = self._preview_wide_playing if camera == "tele" else self._preview_tele_playing
         text = message or "Video preview failed"
         url = self._stream_url(self._device_by_id(self._selected_device_id), Camera(camera))
@@ -5449,6 +5805,37 @@ class AppBackend(QObject):
             return
         self.add_log("error", text)
         self._set_preview_status(text)
+
+    def _try_preview_open_fallback(self, camera: str) -> bool:
+        """Open only the camera whose attach failed, leaving the other player running."""
+        if not self._preview_open_fallback.get(camera):
+            return False
+        self._preview_open_fallback[camera] = False
+        device_id = self._selected_device_id
+        worker = self._workers.get(device_id)
+        device = self._device_by_id(device_id)
+        if not worker or not worker.connected or device is None:
+            return False
+        token = self._preview_token
+        url = self._stream_url(device, Camera(camera))
+        if not url or not url.startswith("rtsp://"):
+            return False
+        self.add_log("info", f"Live {camera} attach missed — opening that camera only", device_id)
+
+        def done(ok: bool, result: Any) -> None:
+            if token != self._preview_token:
+                return
+            if not ok:
+                self.add_log("warning", f"{camera} camera did not open: {result}", device_id)
+                return
+            self._open_secondary_stream(token, camera, url)
+
+        if camera == "tele":
+            op = "enter_camera" if device.model in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI) else "open_camera"
+        else:
+            op = "open_wide_camera"
+        worker.send(op, callback=done)
+        return True
 
     def _on_tele_status(self, message: str) -> None:
         self._on_camera_preview_status("tele", message)
@@ -6009,8 +6396,18 @@ class AppBackend(QObject):
         index = int((live or {}).get("current_index") or 0)
         total = int((live or {}).get("total") or 0)
         label = str((live or {}).get("label") or "mosaic")
+        keep_sheet = False
+        if ok and device_id == self._selected_device_id:
+            self._snapshot_mosaic_pane(index)
+            _active, columns, rows, _current, _images = self.mosaic_frames.snapshot()
+            keep_sheet = int(columns or 1) > 1 or int(rows or 1) > 1
+            if keep_sheet:
+                self._mosaic_result_held = True
         if ok or stopped:
-            self._discard_live_mosaic(device_id)
+            self._discard_live_mosaic(device_id, notify=not keep_sheet)
+            if keep_sheet:
+                self.mosaicPreviewChanged.emit()
+                self._notify_devices()
         elif live:
             live["worker_running"] = False
             live["stopping"] = False
@@ -10041,6 +10438,7 @@ class AppBackend(QObject):
         self._flush_control_settings()
         self.stopPreview()
         self._enhance_pool.waitForDone(1500)
+        self._mosaic_enhance_pool.waitForDone(1500)
         self._enhance_cache_pool.waitForDone(1500)
         self._media_preview_pool.waitForDone(1500)
         self._tele_player.abort()

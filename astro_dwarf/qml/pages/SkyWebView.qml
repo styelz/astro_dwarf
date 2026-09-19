@@ -203,11 +203,9 @@ Item {
             )
             map.runJavaScript(script, result => {
                 const status = String(result || "")
-                const overlayFov = (backend.previewStacking || backend.previewResult)
-                    ? backend.skyFovText
-                    : ((map.mosaicColumns > 1 || map.mosaicRows > 1)
-                        ? backend.mosaicFovText
-                        : backend.skyFovText)
+                const overlayFov = (map.mosaicColumns > 1 || map.mosaicRows > 1)
+                    ? backend.mosaicFovText
+                    : backend.skyFovText
                 if (status === "panes" || status === "center" || status === "grid" || status === "hidden")
                     map.overlayKey = [
                         map.mosaicColumns,

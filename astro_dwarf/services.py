@@ -745,12 +745,16 @@ SKY_WEB_FOV_JS = r"""
     var ctl = window[CTL];
     var href = ctl && ctl.liveEnabled ? String(ctl.liveUrl || "") : "";
     var op = clampLiveOpacity(ctl && ctl.liveOpacity);
+    var groups = el ? el.querySelectorAll("g.astro-dwarf-mosaic-media") : [];
+    for (var g = 0; g < groups.length; g++)
+      groups[g].setAttribute("opacity", String(op));
     var imgs = el ? el.querySelectorAll("image.astro-dwarf-live") : [];
     for (var i = 0; i < imgs.length; i++) {
       if (href) {
         imgs[i].setAttribute("href", href);
         try { imgs[i].setAttributeNS("http://www.w3.org/1999/xlink", "href", href); } catch (err) {}
-        imgs[i].setAttribute("opacity", String(op));
+        var grouped = imgs[i].closest && imgs[i].closest("g.astro-dwarf-mosaic-media");
+        imgs[i].setAttribute("opacity", grouped ? "1" : String(op));
       } else {
         imgs[i].removeAttribute("href");
       }
@@ -779,21 +783,29 @@ SKY_WEB_FOV_JS = r"""
   function imageOpacity() {
     return clampLiveOpacity(window[CTL] && window[CTL].liveOpacity);
   }
-  function liveImageRect(x, y, w, h) {
+  function mosaicMediaGroup(inner) {
+    if (!inner) return "";
+    return '<g class="astro-dwarf-mosaic-media" style="isolation:isolate" opacity="'
+      + imageOpacity() + '">' + inner + "</g>";
+  }
+  function mosaicImageStyle(blend) {
+    return blend ? ' opacity="1" style="mix-blend-mode:lighten"' : (' opacity="' + imageOpacity() + '"');
+  }
+  function liveImageRect(x, y, w, h, blend) {
     if (!liveEnabled() || !(w > 2) || !(h > 2)) return "";
     return '<image class="astro-dwarf-live" href="" x="' + Number(x).toFixed(1)
       + '" y="' + Number(y).toFixed(1) + '" width="' + Number(w).toFixed(1)
-      + '" height="' + Number(h).toFixed(1)
-      + '" opacity="' + imageOpacity() + '" preserveAspectRatio="xMidYMid slice"/>';
+      + '" height="' + Number(h).toFixed(1) + '"'
+      + mosaicImageStyle(blend) + ' preserveAspectRatio="xMidYMid slice"/>';
   }
-  function stillImageRect(x, y, w, h, href) {
+  function stillImageRect(x, y, w, h, href, blend) {
     if (!href || !(w > 2) || !(h > 2)) return "";
     return '<image class="astro-dwarf-pane" href="' + href + '" x="' + Number(x).toFixed(1)
       + '" y="' + Number(y).toFixed(1) + '" width="' + Number(w).toFixed(1)
-      + '" height="' + Number(h).toFixed(1)
-      + '" opacity="' + imageOpacity() + '" preserveAspectRatio="xMidYMid slice"/>';
+      + '" height="' + Number(h).toFixed(1) + '"'
+      + mosaicImageStyle(blend) + ' preserveAspectRatio="xMidYMid slice"/>';
   }
-  function imageMatrix(quad, cls, href) {
+  function imageMatrix(quad, cls, href, blend) {
     if (!quad || quad.length < 3) return "";
     var w = 100, h = 100;
     var p0 = quad[0], p1 = quad[1], p3 = quad[3] || quad[2];
@@ -801,29 +813,30 @@ SKY_WEB_FOV_JS = r"""
     var a = (p1.x - p0.x) / w, b = (p3.x - p0.x) / h, c = p0.x;
     var d = (p1.y - p0.y) / w, e = (p3.y - p0.y) / h, f = p0.y;
     return '<image class="' + cls + '" href="' + (href || "") + '" x="0" y="0" width="' + w
-      + '" height="' + h + '" opacity="' + imageOpacity() + '" preserveAspectRatio="none" transform="matrix('
+      + '" height="' + h + '"' + mosaicImageStyle(blend)
+      + ' preserveAspectRatio="none" transform="matrix('
       + a.toFixed(3) + " " + d.toFixed(3) + " " + b.toFixed(3) + " " + e.toFixed(3) + " "
       + c.toFixed(2) + " " + f.toFixed(2) + ')"/>';
   }
-  function liveImageQuad(quad) {
+  function liveImageQuad(quad, blend) {
     if (!liveEnabled() || !quad || quad.length < 3) return "";
-    return imageMatrix(quad, "astro-dwarf-live", "");
+    return imageMatrix(quad, "astro-dwarf-live", "", blend);
   }
-  function stillImageQuad(quad, href) {
+  function stillImageQuad(quad, href, blend) {
     if (!href || !quad || quad.length < 3) return "";
-    return imageMatrix(quad, "astro-dwarf-pane", href);
+    return imageMatrix(quad, "astro-dwarf-pane", href, blend);
   }
   function paneFillQuad(quad, index) {
     var live = livePaneIndex();
     if (live && index === live)
-      return liveImageQuad(quad);
-    return stillImageQuad(quad, paneImageHref(index));
+      return liveImageQuad(quad, true);
+    return stillImageQuad(quad, paneImageHref(index), true);
   }
   function paneFillRect(x, y, w, h, index) {
     var live = livePaneIndex();
     if (live && index === live)
-      return liveImageRect(x, y, w, h);
-    return stillImageRect(x, y, w, h, paneImageHref(index));
+      return liveImageRect(x, y, w, h, true);
+    return stillImageRect(x, y, w, h, paneImageHref(index), true);
   }
   function paintSvg(el, box, inner) {
     el.style.display = "block";
@@ -1131,17 +1144,20 @@ SKY_WEB_FOV_JS = r"""
     // on a south-up chart it is only the right edge near PA 180°.
     var col1OnRight = (pa > 90 && pa < 270) === !!p.south_up;
     var row1AtTop = (pa > 90 && pa < 270) === !!p.south_up;
-    var svg = "";
+    var media = "";
+    var frames = "";
     var labels = "";
     var index = 0;
+    var paneFill = mosaicUsesPaneImages() ? "none" : color;
+    var paneFillOp = mosaicUsesPaneImages() ? "0" : "0.05";
     for (var row = 1; row <= rows; row++) {
       for (var col = 1; col <= cols; col++) {
         index += 1;
         var x = originX + (col1OnRight ? (cols - col) : (col - 1)) * stepX;
         var y = originY + (row1AtTop ? (row - 1) : (rows - row)) * stepY;
-        svg += paneFillRect(x, y, size.w, size.h, index);
-        svg += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + size.w.toFixed(1)
-          + '" height="' + size.h.toFixed(1) + '" fill="' + color + '" fill-opacity="0.05" '
+        media += paneFillRect(x, y, size.w, size.h, index);
+        frames += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + size.w.toFixed(1)
+          + '" height="' + size.h.toFixed(1) + '" fill="' + paneFill + '" fill-opacity="' + paneFillOp + '" '
           + paneStroke(color, cols * rows > 1) + '/>';
         if (cols * rows > 1) {
           var pc = rotatePoint(box.width / 2, box.height / 2, x + size.w / 2, y + size.h / 2, tilt);
@@ -1149,6 +1165,7 @@ SKY_WEB_FOV_JS = r"""
         }
       }
     }
+    var svg = mosaicMediaGroup(media) + frames;
     if (cols * rows > 1) {
       svg += '<rect x="' + originX.toFixed(1) + '" y="' + originY.toFixed(1) + '" width="' + totalW.toFixed(1)
         + '" height="' + totalH.toFixed(1) + '" ' + outerStroke(color) + '/>';
@@ -1199,21 +1216,24 @@ SKY_WEB_FOV_JS = r"""
     }
     if (!drawn.length)
       return "";
-    var svg = "";
+    var media = "";
     var mosaic = drawn.length > 1;
     if (mosaic && mosaicUsesPaneImages()) {
       drawn.forEach(function(item) {
-        svg += paneFillQuad(item.quad, item.index);
+        media += paneFillQuad(item.quad, item.index);
       });
     } else if (mosaic) {
-      svg += liveImageQuad(mosaicCenterFovQuad(drawn));
+      media += liveImageQuad(mosaicCenterFovQuad(drawn));
     } else if (drawn[0] && drawn[0].quad) {
-      svg += liveImageQuad(drawn[0].quad);
+      media += liveImageQuad(drawn[0].quad);
     }
+    var svg = mosaicUsesPaneImages() ? mosaicMediaGroup(media) : media;
+    var paneFill = mosaicUsesPaneImages() ? "none" : color;
+    var paneFillOp = mosaicUsesPaneImages() ? "0" : "0.05";
     drawn.forEach(function(item) {
       if (item.points)
-        svg += '<polygon points="' + item.points + '" fill="' + color
-          + '" fill-opacity="0.05" ' + paneStroke(color, mosaic) + '/>';
+        svg += '<polygon points="' + item.points + '" fill="' + paneFill
+          + '" fill-opacity="' + paneFillOp + '" ' + paneStroke(color, mosaic) + '/>';
       if (!mosaic)
         svg += item.tick || "";
     });
@@ -1486,11 +1506,15 @@ SKY_WEB_LIVE_JS = r"""
     try { if (typeof ctl.draw === "function") ctl.draw(true); } catch (err) {}
     return on ? "shown" : "hidden";
   }
+  var groups = el ? el.querySelectorAll("g.astro-dwarf-mosaic-media") : [];
+  for (var g = 0; g < groups.length; g++)
+    groups[g].setAttribute("opacity", String(op));
   for (var i = 0; i < imgs.length; i++) {
     if (href) {
       imgs[i].setAttribute("href", href);
       try { imgs[i].setAttributeNS("http://www.w3.org/1999/xlink", "href", href); } catch (err) {}
-      imgs[i].setAttribute("opacity", String(op));
+      var grouped = imgs[i].closest && imgs[i].closest("g.astro-dwarf-mosaic-media");
+      imgs[i].setAttribute("opacity", grouped ? "1" : String(op));
     } else {
       imgs[i].removeAttribute("href");
     }

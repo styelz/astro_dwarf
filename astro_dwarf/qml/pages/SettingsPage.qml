@@ -23,7 +23,8 @@ Item {
         { key: "import", title: "IMPORT", hint: "Legacy sessions", glyph: "⇩", device: true, group: "TELESCOPE" },
         { key: "interface", title: "INTERFACE", hint: "Layout · theme", glyph: "◫", device: false, group: "APP" },
         { key: "image", title: "IMAGE", hint: "Enhance filters", glyph: "▦", device: false, group: "APP" },
-        { key: "calendar", title: "CALENDAR", hint: "Night cutoff · sky map", glyph: "◑", device: false, group: "APP" }
+        { key: "calendar", title: "CALENDAR", hint: "Night cutoff", glyph: "◑", device: false, group: "APP" },
+        { key: "integrations", title: "INTEGRATIONS", hint: "Sky map · Stellarium", glyph: "◎", device: false, group: "APP" }
     ]
     readonly property var categoryKeys: ({
         device: ["name", "model", "color", "camera", "timezone_name", "latitude", "longitude", "mosaic_pa"],
@@ -33,7 +34,8 @@ Item {
         import: [],
         interface: [],
         image: [],
-        calendar: []
+        calendar: [],
+        integrations: []
     })
     readonly property var currentCategory: settingsPage.categories[settingsPage.categoryIndex] || ({})
     readonly property string currentKey: settingsPage.currentCategory.key || ""
@@ -624,7 +626,7 @@ Item {
                         Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                         spacing: Theme.s3
                         FieldHint {
-                            text: "When an observing night starts, and where Stellarium is reached. Shared by every telescope and saved as soon as it is changed."
+                            text: "When an observing night starts. Shared by every telescope and saved as soon as it is changed."
                         }
                         SettingGroup {
                             title: "NIGHT"
@@ -650,9 +652,20 @@ Item {
                                       + String((cutoffField.value + 23) % 24).padStart(2, "0") + ":30 still belongs to the previous evening."
                             }
                         }
+                    }
+
+                    // INTEGRATIONS
+                    ColumnLayout {
+                        visible: settingsPage.currentKey === "integrations"
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop | Qt.AlignLeft
+                        spacing: Theme.s3
+                        FieldHint {
+                            text: "Which sky map SKY uses, and where desktop Stellarium is reached. Shared by every telescope and saved as soon as it is changed."
+                        }
                         SettingGroup {
-                            title: "INTEGRATIONS"
-                            FieldLabel { text: "SKY MAP" }
+                            title: "SKY MAP"
+                            FieldLabel { text: "PROVIDER" }
                             HudCombo {
                                 id: skyMapField
                                 Layout.preferredWidth: settingsPage.controlWidth
@@ -661,9 +674,12 @@ Item {
                                 onActivated: backend.setSkyMapProvider(currentIndex === 1 ? "stellarium_web" : "aladin")
                             }
                             FieldHint {
-                                text: "SKY uses Aladin Lite by default, shown as a horizon view from this telescope's site (drag to look around, N E S W on the horizon). Stellarium Web stays available if you want the hosted planetarium. Changing this reloads the map only."
+                                text: "SKY uses Stellarium Web by default (stellarium-web.org). Aladin Lite stays available as a horizon view from this telescope's site (drag to look around, N E S W on the horizon). Changing this reloads the map only."
                             }
-                            FieldLabel { text: "STELLARIUM" }
+                        }
+                        SettingGroup {
+                            title: "STELLARIUM"
+                            FieldLabel { text: "REMOTE CONTROL" }
                             HudField {
                                 id: stellariumField
                                 Layout.preferredWidth: settingsPage.controlWidth
@@ -674,7 +690,7 @@ Item {
                             FieldHint { text: "Address of Stellarium's Remote Control plugin. Sessions can pull the selected object from here, and SKY can push the current target, site, time, and FOV to the desktop app." }
                         }
                         FieldHint {
-                            text: "Aladin Lite is an open CDS atlas. Stellarium Web (stellarium-web.org) is optional. Astro Dwarf is unofficial and not affiliated with DwarfLab or Stellarium Labs."
+                            text: "Stellarium Web (stellarium-web.org) is the default sky map. Aladin Lite is an open CDS atlas. Astro Dwarf is unofficial and not affiliated with DwarfLab or Stellarium Labs."
                         }
                     }
 
@@ -755,7 +771,7 @@ Item {
                                 accessibleName: "Camera position angle east of north"
                                 placeholderText: "0"
                             }
-                            FieldHint { text: "Camera rotation east of north for SKY mosaics on this telescope. Blank is 0° north-up in both hemispheres. Set 180° only if the stacked image is south-up on the sky chart." }
+                            FieldHint { text: "Camera rotation east of north for SKY mosaics on this telescope. Blank follows the site: 0° north-up in the northern hemisphere, 180° south-up in the southern hemisphere, so pane 1 stays at the top-right of the sky view. Set 0° only if the stacked image is north-up on the sky chart." }
                         }
                     }
 

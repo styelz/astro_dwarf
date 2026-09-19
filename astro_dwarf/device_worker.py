@@ -2104,6 +2104,17 @@ def _capture_running(snapshot: dict[str, Any]) -> bool:
     return bool(snapshot.get("capture_active")) or snapshot.get("capture_state") == "running"
 
 
+def _mark_capture_started() -> None:
+    """Show the STACK panel as soon as START_CAPTURE is accepted.
+
+    Firmware can sit in running for a full exposure before the first
+    ``current_count`` packet, which is what starts the countdown.
+    """
+    if _tap is None:
+        return
+    _tap.update({"capture_active": True, "capture_state": "running"}, force=True)
+
+
 def _firmware_mosaic(session: dict[str, Any] | None) -> bool:
     mosaic = (session or {}).get("mosaic") or {}
     try:
@@ -2415,12 +2426,14 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
         # compare with == 0 directly because False == 0 in Python.
         code = result if isinstance(result, int) and not isinstance(result, bool) else None
         if result is True or code == 0:
+            _mark_capture_started()
             return
         if code is None and _tap is not None:
             code = _tap.response_after(command, since)
             if code == 0:
                 # Accepted, but the SDK gave up before the running notification.
                 if _capture_running(_tap.snapshot()):
+                    _mark_capture_started()
                     return
                 raise RuntimeError(f"{name} failed: the telescope accepted the request but never started capturing")
         if code is None:
@@ -2441,6 +2454,7 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
         if code in _CAPTURE_DARK_WARNINGS and not force_start:
             log(f"{name}: {_CAPTURE_DARK_WARNINGS[code]} ({_error_name(code)})", "warning")
             if _continue_shooting(name):
+                _mark_capture_started()
                 return
             log(f"{name}: retrying with a forced start", "warning")
             force_start = True

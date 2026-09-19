@@ -5,8 +5,9 @@ import ".."
 // and crosshair. Firmware long-exp progress is interpolated between packets;
 // if those packets never arrive, the ring still counts from the configured
 // exposure and resets when the stacked/taken count advances.
-// START_CAPTURE can report running before the first exposure; hold at idle
-// until firmware elapsed or a taken/stacked frame proves stacking started.
+// START_CAPTURE can report running before the first exposure. The STACK panel
+// is already visible then; hold the countdown at WAIT until firmware elapsed
+// or a taken/stacked frame proves exposing started.
 Item {
     id: timer
     property bool active: false
@@ -19,13 +20,15 @@ Item {
     property real padSize: Theme.fitPadSize(Math.min(width, height))
 
     readonly property int frameKey: Math.max(timer.current, timer.stacked)
+    readonly property bool exposing: timer.active && (timer.haveFirmware || timer.frameKey > 0)
+    readonly property bool waiting: timer.active && !timer.exposing
     readonly property real elapsed: displayedElapsed
     readonly property real progress: timer.exposureSeconds > 0
         ? Math.min(1, timer.displayedElapsed / timer.exposureSeconds)
         : 0
     readonly property string secondsText: {
-        if (timer.active && !timer.exposing)
-            return "—"
+        if (timer.waiting)
+            return "WAIT"
         const value = timer.displayedElapsed
         if (timer.exposureSeconds > 0 && timer.exposureSeconds < 1)
             return value.toFixed(2)
@@ -36,7 +39,7 @@ Item {
     readonly property string exposureText: {
         const total = timer.exposureSeconds
         if (!(total > 0))
-            return "EXP"
+            return timer.waiting ? "FIRST EXP" : "EXP"
         if (total < 1)
             return total.toFixed(2) + "s"
         if (Math.abs(total - Math.round(total)) < 0.05)
@@ -50,10 +53,10 @@ Item {
             return String(timer.stacked)
         if (timer.current > 0)
             return String(timer.current)
+        if (timer.waiting)
+            return "WAIT"
         return "—"
     }
-
-    readonly property bool exposing: timer.active && (timer.haveFirmware || timer.frameKey > 0)
 
     property real displayedElapsed: 0
     property real anchorElapsed: 0
@@ -122,9 +125,13 @@ Item {
 
     Accessible.role: Accessible.Indicator
     Accessible.name: {
+        const target = timer.target ? ", " + timer.target : ""
+        if (timer.waiting) {
+            const frames = timer.total > 0 ? ", " + timer.total + " frames" : ""
+            return "Stacking started, waiting for first exposure" + frames + target
+        }
         const frame = timer.total > 0 ? timer.stacked + " of " + timer.total + " stacked" : timer.framesText + " stacked"
         const taken = timer.current > timer.stacked ? ", " + timer.current + " taken" : ""
-        const target = timer.target ? ", " + timer.target : ""
         return "Exposure " + timer.secondsText + " of " + timer.exposureText + ", " + frame + taken + target
     }
 
@@ -229,12 +236,20 @@ Item {
             anchors.centerIn: parent
             spacing: -1
             Text {
+                id: secondsLabel
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: timer.secondsText
-                color: Theme.textPrimary
+                color: timer.waiting ? Theme.warning : Theme.textPrimary
                 font.pixelSize: Math.max(14, Math.round(22 * analogPad.padScale))
                 font.family: Theme.fontMono
                 font.bold: true
+                SequentialAnimation on opacity {
+                    running: timer.waiting
+                    loops: Animation.Infinite
+                    NumberAnimation { from: 1; to: 0.45; duration: 700; easing.type: Easing.InOutSine }
+                    NumberAnimation { from: 0.45; to: 1; duration: 700; easing.type: Easing.InOutSine }
+                    onRunningChanged: if (!running) secondsLabel.opacity = 1
+                }
             }
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
