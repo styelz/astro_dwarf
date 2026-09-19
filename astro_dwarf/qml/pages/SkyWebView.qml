@@ -69,6 +69,20 @@ Item {
             dec_degrees: dec
         }
     }
+    function applyCoordinateTarget(payload) {
+        const data = payload || ({})
+        const ra = Number(data.ra_hours)
+        const dec = Number(data.dec_degrees)
+        if (!isFinite(ra) || !isFinite(dec))
+            return false
+        const name = String(data.name || "").trim() || ("RA " + ra.toFixed(3) + "h  DEC "
+                     + (dec >= 0 ? "+" : "") + dec.toFixed(3) + "°")
+        map.hasSelectedTarget = true
+        map.selectedTarget = { name: name, ra_hours: ra, dec_degrees: dec }
+        map.selectedKey = name + "|" + ra.toFixed(5) + "|" + dec.toFixed(5)
+        backend.setSkyMapTarget(name, ra, dec)
+        return true
+    }
     function runJavaScript(script, callback) {
         const view = map.engineItem
         if (!view || typeof view.runJavaScript !== "function")
@@ -100,8 +114,12 @@ Item {
                 status = String((data && data.status) || "")
             } catch (err) {
             }
-            if (status === "locked" || status === "view")
-                map.readSelectedTarget()
+            if (status === "locked" || status === "view") {
+                map.readSelectedTarget(raw => {
+                    if (!map.parseHarvest(raw))
+                        map.applyCoordinateTarget(payload || ({}))
+                })
+            }
             if (typeof callback === "function")
                 callback(result)
         })
@@ -109,8 +127,8 @@ Item {
     function readSelectedTarget(callback) {
         map.runJavaScript(backend.skyWebHarvestScript, result => {
             const target = map.parseHarvest(result)
-            map.hasSelectedTarget = !!target
             if (target) {
+                map.hasSelectedTarget = true
                 map.selectedTarget = target
                 map.selectedKey = target.name + "|" + Number(target.ra_hours).toFixed(5) + "|"
                                   + Number(target.dec_degrees).toFixed(5)

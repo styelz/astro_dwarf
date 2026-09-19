@@ -36,6 +36,7 @@ Dialog {
     readonly property bool uniqueVisible: !bulkMode
     readonly property bool mosaicVisible: !bulkMode
     readonly property bool equatorialTarget: targetType.currentIndex === 0
+    readonly property string copiedCoordinates: Util.formatCoordinates(ra.text, dec.text)
     readonly property var focusedMosaic: {
         const item = templateMembers[paneIndex]
         return (item && item.mosaic) || null
@@ -766,12 +767,39 @@ Dialog {
                 FieldCaption { text: "RA HOURS" }
                 HudField { id: ra; objectName: "session-ra"; accessibleName: "Session RA hours"; Layout.fillWidth: true }
             }
-            ColumnLayout {
+            RowLayout {
                 visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget
-                spacing: 2
+                spacing: 6
                 Layout.fillWidth: true
-                FieldCaption { text: "DEC °" }
-                HudField { id: dec; objectName: "session-dec"; accessibleName: "Session DEC"; Layout.fillWidth: true }
+                ColumnLayout {
+                    spacing: 2
+                    Layout.fillWidth: true
+                    FieldCaption { text: "DEC °" }
+                    HudField { id: dec; objectName: "session-dec"; accessibleName: "Session DEC"; Layout.fillWidth: true }
+                }
+                HudButton {
+                    objectName: "copy-ra-dec"
+                    text: "\uE8C8"
+                    font.family: Theme.fontIcon
+                    font.pixelSize: 12
+                    font.letterSpacing: 0
+                    implicitWidth: Theme.compactControlHeight
+                    implicitHeight: Theme.compactControlHeight
+                    Layout.preferredWidth: Theme.compactControlHeight
+                    Layout.preferredHeight: Theme.compactControlHeight
+                    Layout.alignment: Qt.AlignBottom
+                    leftPadding: 0
+                    rightPadding: 0
+                    buttonColor: "transparent"
+                    foregroundColor: Theme.textSecondary
+                    tooltip: "Copy RA / Dec"
+                    accessibleDescription: "Copy the current right ascension and declination"
+                    Accessible.name: "Copy RA / Dec"
+                    busyText: "\uE73E"
+                    busyMs: 900
+                    enabled: sessionDialog.copiedCoordinates !== ""
+                    onClicked: backend.copyText(sessionDialog.copiedCoordinates)
+                }
             }
             FieldLabel { text: "START"; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }
             HudTimeField { id: startTime; objectName: "session-start"; accessibleName: "Session start"; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible && !sessionDialog.editingTemplate }

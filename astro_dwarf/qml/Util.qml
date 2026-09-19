@@ -224,13 +224,19 @@ QtObject {
             return "WAITING  ·  " + name + "  ·  due now"
         return "WAITING  ·  " + name + "  ·  " + Util.durationLabel(seconds)
     }
+    function formatCoordinates(raHours, decDegrees) {
+        const ra = Number(raHours)
+        const dec = Number(decDegrees)
+        if (!isFinite(ra) || !isFinite(dec))
+            return ""
+        return "RA " + ra.toFixed(3) + "h  DEC " + (dec >= 0 ? "+" : "") + dec.toFixed(3) + "°"
+    }
     function targetCoordinates(item) {
         const target = item && item.target ? item.target : null
         if (!target || target.ra_hours === undefined || target.ra_hours === null
                 || target.dec_degrees === undefined || target.dec_degrees === null)
             return ""
-        return "RA " + Number(target.ra_hours).toFixed(3) + "h  DEC "
-            + Number(target.dec_degrees).toFixed(3) + "°"
+        return Util.formatCoordinates(target.ra_hours, target.dec_degrees)
     }
     function groupHash(groupId) {
         const text = String(groupId || "")

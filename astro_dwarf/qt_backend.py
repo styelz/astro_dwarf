@@ -120,6 +120,8 @@ from .services import (
     next_free_start,
     observing_date,
     pane_sort_key,
+    format_coordinates,
+    parse_coordinate_text,
     device_mosaic_pa,
     sky_names_related,
     parse_sky_web_target,
@@ -2074,7 +2076,7 @@ class AppBackend(QObject):
         else:
             mosaic_text = "Single pane"
         if target.kind == TargetKind.EQUATORIAL and target.ra_hours is not None and target.dec_degrees is not None:
-            coords = f"RA {float(target.ra_hours):.3f}h  DEC {float(target.dec_degrees):+.3f}°"
+            coords = format_coordinates(float(target.ra_hours), float(target.dec_degrees))
         elif target.kind == TargetKind.SOLAR:
             coords = target.solar_name or target.name or "Solar"
         else:
@@ -3206,7 +3208,7 @@ class AppBackend(QObject):
         if coords is None:
             return ""
         ra, dec = coords
-        return f"RA {ra:.3f}h DEC {dec:+.3f}°"
+        return format_coordinates(ra, dec)
 
     def _set_live_pointing(self, device_id: str, ra_hours: float, dec_degrees: float) -> None:
         coords = self._target_coords({"ra_hours": ra_hours, "dec_degrees": dec_degrees})
@@ -6440,6 +6442,23 @@ class AppBackend(QObject):
     def copyText(self, text: str) -> None:
         QGuiApplication.clipboard().setText(text)
         self._toast("Copied to clipboard", "success")
+
+    @Slot(result="QVariantMap")
+    def clipboardCoordinates(self) -> dict[str, Any]:
+        try:
+            text = str(QGuiApplication.clipboard().text() or "")
+        except Exception:
+            text = ""
+        parsed = parse_coordinate_text(text)
+        if parsed is None:
+            return {"valid": False, "text": "", "ra_hours": None, "dec_degrees": None}
+        ra, dec = parsed
+        return {
+            "valid": True,
+            "text": format_coordinates(ra, dec),
+            "ra_hours": ra,
+            "dec_degrees": dec,
+        }
 
     def bindWindowFrame(self, hook) -> None:
         self._window_frame_hook = hook

@@ -2807,6 +2807,59 @@ class StellariumClient:
             self.set_fov(fov_degrees)
 
 
+def format_coordinates(ra_hours: float, dec_degrees: float) -> str:
+    ra = ((float(ra_hours) % 24.0) + 24.0) % 24.0
+    dec = max(-90.0, min(90.0, float(dec_degrees)))
+    return f"RA {ra:.3f}h  DEC {dec:+.3f}°"
+
+
+def parse_coordinate_text(text: str) -> tuple[float, float] | None:
+    raw = (
+        str(text or "")
+        .replace("\u2212", "-")
+        .replace("\u2013", "-")
+        .replace("\u00a0", " ")
+    )
+    raw = " ".join(raw.split())
+    if not raw:
+        return None
+    labeled = re.search(
+        r"ra(?:\s*hours?)?\s*[:=]?\s*(.+?)\s+dec(?:lination)?(?:\s*(?:deg(?:rees?)?|°))?\s*[:=]?\s*(.+)$",
+        raw,
+        re.IGNORECASE,
+    )
+    if labeled:
+        ra_text = labeled.group(1).strip(" ,;")
+        dec_text = labeled.group(2).strip(" ,;")
+    else:
+        parts = re.split(r"\s*[,;/]\s*", raw, maxsplit=1)
+        if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+            ra_text, dec_text = parts[0].strip(), parts[1].strip()
+        else:
+            split = re.search(r"(.+?)\s+([+-]\s*\d)", raw)
+            if split:
+                ra_text = split.group(1).strip()
+                dec_text = raw[split.start(2) :].strip()
+            else:
+                nums = re.findall(r"[+-]?\d+(?:\.\d+)?", raw)
+                if len(nums) < 2:
+                    return None
+                ra_text, dec_text = nums[0], nums[1]
+    try:
+        ra = _parse_ra(ra_text)
+        dec = _parse_dec(dec_text)
+    except (TypeError, ValueError):
+        return None
+    if ra != ra or dec != dec or abs(dec) > 90.0:
+        return None
+    if ra > 24.0:
+        if ra > 360.0:
+            return None
+        ra = ra / 15.0
+    ra = ((ra % 24.0) + 24.0) % 24.0
+    return ra, max(-90.0, min(90.0, dec))
+
+
 def _parse_ra(value: str) -> float:
     text = value.strip().lower().replace("hr", "").replace("hours", "")
     if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text):

@@ -171,6 +171,7 @@ Item {
         if (now - skyPage.lastSkyMenuAt < 250)
             return
         skyPage.lastSkyMenuAt = now
+        skyMenu.refreshClipboard()
         if (x === undefined || y === undefined) {
             skyMenu.popup()
             return
@@ -224,9 +225,11 @@ Item {
             if (status === "loading")
                 return
             skyPage.pendingLockTarget = null
-            if (status === "locked" || status === "view")
+            if (status === "locked" || status === "view") {
+                if (typeof map.applyCoordinateTarget === "function")
+                    map.applyCoordinateTarget(target)
                 map.applyFovOverlay()
-            else if (status === "missing" || status === "error")
+            } else if (status === "missing" || status === "error")
                 backend.reportSkyLockResult(status, String(target.name || ""))
         })
     }
@@ -253,6 +256,8 @@ Item {
             skyMenu.trackSelected()
         else if (key === "atlas")
             skyPage.openAtlasMenu()
+        else if (key === "clipboard")
+            skyMenu.clipboardGotoRequested()
         else
             return "unknown"
         return key
@@ -615,6 +620,16 @@ Item {
                               && (root.scopeActivity === "" || root.scopeActivity === "goto"
                                   || !!root.scopeTelemetry.tracking_active)
                 onAtlasMenuRequested: skyPage.openAtlasMenu()
+                onClipboardGotoRequested: {
+                    skyMenu.refreshClipboard()
+                    if (!skyMenu.clipboardValid)
+                        return
+                    skyPage.queueSkyLock({
+                        name: skyMenu.clipboardText,
+                        ra_hours: skyMenu.clipboardRaHours,
+                        dec_degrees: skyMenu.clipboardDecDegrees
+                    })
+                }
                 onOverlayToggled: {
                     skyStore.liveFovOverlay = !skyStore.liveFovOverlay
                     if (skyStore.liveFovOverlay && !backend.previewActive && backend.selectedDevice.connected)

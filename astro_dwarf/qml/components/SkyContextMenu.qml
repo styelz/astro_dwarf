@@ -5,7 +5,7 @@ HudMenu {
     id: skyMenu
     objectName: "skyContextMenu"
     popupType: Popup.Window
-    implicitWidth: 280
+    implicitWidth: 300
     property bool overlayEnabled: false
     property real overlayOpacity: 0.65
     readonly property int overlayOpacityPct: Math.round(Math.max(0, Math.min(1, overlayOpacity)) * 100)
@@ -13,13 +13,43 @@ HudMenu {
     property bool trackEnabled: false
     property bool hasTarget: false
     property bool atlasMenuAvailable: false
+    property bool clipboardValid: false
+    property string clipboardText: ""
+    property real clipboardRaHours: 0
+    property real clipboardDecDegrees: 0
 
     signal overlayToggled()
     signal previewToggled()
     signal dblclickTrackToggled()
     signal trackSelected()
     signal atlasMenuRequested()
+    signal clipboardGotoRequested()
 
+    function refreshClipboard() {
+        const coords = backend.clipboardCoordinates() || ({})
+        skyMenu.clipboardValid = !!coords.valid
+        skyMenu.clipboardText = String(coords.text || "")
+        skyMenu.clipboardRaHours = Number(coords.ra_hours)
+        skyMenu.clipboardDecDegrees = Number(coords.dec_degrees)
+    }
+
+    onAboutToShow: skyMenu.refreshClipboard()
+
+    HudMenuItem {
+        objectName: "clipboardGotoMenuItem"
+        visible: skyMenu.clipboardValid
+        text: "Go to clipboard"
+        glyph: "\uE707"
+        trailingText: skyMenu.clipboardText
+        trailingMaxWidth: 168
+        accessibleDescription: "Center the sky map on the RA and Dec currently in the clipboard, "
+                               + skyMenu.clipboardText
+        onTriggered: skyMenu.clipboardGotoRequested()
+    }
+    HudMenuSeparator {
+        visible: skyMenu.clipboardValid
+        height: visible ? implicitHeight : 0
+    }
     HudMenuItem {
         text: skyMenu.overlayEnabled ? "Hide live stream on FOV" : "Overlay live stream on FOV"
         glyph: "\uE8B9"

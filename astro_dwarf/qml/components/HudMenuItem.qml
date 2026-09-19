@@ -7,6 +7,7 @@ T.MenuItem {
     id: hudMenuItem
     property string glyph: ""
     property string trailingText: ""
+    property int trailingMaxWidth: 92
     property bool destructive: false
     property bool info: false
     property string accessibleDescription: ""
@@ -60,7 +61,7 @@ T.MenuItem {
             font.family: hudMenuItem.subMenu ? Theme.fontIcon : Theme.fontUi
             font.pixelSize: hudMenuItem.subMenu ? 12 : 11
             elide: Text.ElideMiddle
-            Layout.maximumWidth: 92
+            Layout.maximumWidth: hudMenuItem.trailingMaxWidth
             verticalAlignment: Text.AlignVCenter
         }
     }
