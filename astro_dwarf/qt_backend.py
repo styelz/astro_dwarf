@@ -229,6 +229,7 @@ from .stream_preview import (
     set_mosaic_frames,
     stream_port,
 )
+from .device_telemetry import link_telemetry
 from .telemetry_view import (
     AlertEngine,
     TRACKING_NEEDS_CALIBRATION_DETAIL,
@@ -938,7 +939,7 @@ def mosaic_result_pane(current_index: int, phase: str) -> int:
 
 
 def mosaic_live_pane(current_index: int, phase: str, active: bool = True) -> int:
-    """Only overlay live video on the pane that is actually stacking."""
+    """Stream/freeze owner: only the pane that is actually stacking."""
     if not active or str(phase or "").strip().lower() != "stacking":
         return 0
     try:
@@ -946,6 +947,57 @@ def mosaic_live_pane(current_index: int, phase: str, active: bool = True) -> int
     except (TypeError, ValueError):
         return 0
     return index if index >= 1 else 0
+
+
+def mosaic_slew_live_pane(current_index: int, phase: str, active: bool = True) -> int:
+    """Pane that may show camera RTSP while slewing or settling.
+
+    These frames must not be frozen into the contact sheet. Stacking JPEG
+    leftover must not use this path.
+    """
+    if not active or str(phase or "").strip().lower() != "goto":
+        return 0
+    try:
+        index = int(current_index or 0)
+    except (TypeError, ValueError):
+        return 0
+    return index if index >= 1 else 0
+
+
+def mosaic_overlay_live_pane(
+    *,
+    current_index: int,
+    phase: str,
+    active: bool = True,
+    stacking_preview: bool = False,
+    preview_playing: bool = False,
+    may_copy: bool = False,
+) -> int:
+    """Contact-sheet cell that paints live video.
+
+    Stacking JPEG only after that pane's own frames are accepted. Camera
+    RTSP may fill the pane during GOTO/settle until stacking starts.
+    Leftover stacked.jpg must not paint the next cell.
+    """
+    if may_copy:
+        return mosaic_live_pane(current_index, phase, active)
+    if stacking_preview or not preview_playing:
+        return 0
+    return mosaic_slew_live_pane(current_index, phase, active)
+
+
+def mosaic_slew_preview_should_restore(
+    *,
+    stacking: bool,
+    mosaic_continues: bool,
+    playing: bool,
+    stack_mode: bool,
+    opening: bool = False,
+) -> bool:
+    """Reopen camera RTSP between mosaic panes once HTTP stacking is detached."""
+    if stacking or stack_mode or playing or opening or not mosaic_continues:
+        return False
+    return True
 
 
 def mosaic_capture_continues(
@@ -974,6 +1026,8 @@ def mosaic_progress_phase(step: str) -> str:
         return ""
     if "fail" in lowered or "not calibrated" in lowered or "plate-solv" in lowered:
         return "failed"
+    if lowered.startswith("settling after"):
+        return "complete"
     if "goto" in lowered or lowered.startswith("settling") or "astro engine" in lowered:
         return "goto"
     if "complete" in lowered or lowered.startswith("closing"):
@@ -1995,6 +2049,12 @@ class AppBackend(QObject):
         ):
             return
         data = dict(data)
+        if data.get("power_off") and device_id in self._connecting_ids:
+            # Leftover POWER_OFF from the previous reboot must not drop a
+            # handshake that is still finishing.
+            data.pop("power_off", None)
+            if not data:
+                return
         if device_id in self._hold_session_capture:
             # Firmware often never sends a 0/0 reset — the first packet is
             # stacked=1. Release as soon as this session's capture starts.
@@ -4057,10 +4117,22 @@ class AppBackend(QObject):
         )
 
     def _published_mosaic_live_pane(self, device_id: str = "") -> int:
-        pane = self._current_mosaic_live_pane(device_id)
-        if pane < 1 or not self._mosaic_may_copy_live(pane, device_id):
-            return 0
-        return pane
+        owner = str(device_id or self._selected_device_id or "")
+        live = self._live_mosaic.get(owner) or {}
+        try:
+            index = int(live.get("current_index") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        stacking_pane = self._current_mosaic_live_pane(owner)
+        if stacking_pane >= 1 and self._mosaic_may_copy_live(stacking_pane, owner):
+            return stacking_pane
+        return mosaic_overlay_live_pane(
+            current_index=index or stacking_pane,
+            phase=str(live.get("phase") or ""),
+            active=bool(live.get("phase")),
+            stacking_preview=bool(self._preview_stack_mode),
+            preview_playing=bool(self._preview_playing or self._preview_tele_playing),
+        )
 
     def _mosaic_capture_continues(self, device_id: str = "") -> bool:
         owner = str(device_id or self._selected_device_id or "")
@@ -5863,6 +5935,9 @@ class AppBackend(QObject):
         device = self._device_by_id(device_id)
         tele_url = self._stream_url(device, Camera.TELE, stacking=stacking)
         wide_url = self._stream_url(device, Camera.WIDE, stacking=stacking)
+        mosaic_continues = self._mosaic_capture_continues(device_id)
+        if not stacking and not mosaic_preview_should_open_wide(mosaic_running=mosaic_continues):
+            wide_url = ""
         mode_changed = stacking != self._preview_stack_mode
         urls_changed = tele_url != self._preview_tele_url or wide_url != self._preview_wide_url
         live_pane = self._current_mosaic_live_pane(device_id)
@@ -5873,6 +5948,20 @@ class AppBackend(QObject):
             mode_changed,
             urls_changed,
         )
+        already_opening = (
+            bool(self._preview_tele_url)
+            and self._preview_tele_url == tele_url
+            and str(tele_url).startswith("rtsp://")
+        )
+        restore_slew = mosaic_slew_preview_should_restore(
+            stacking=stacking,
+            mosaic_continues=mosaic_continues,
+            playing=bool(self._preview_playing or self._preview_tele_playing),
+            stack_mode=self._preview_stack_mode,
+            opening=already_opening or bool(self._pending_retarget),
+        )
+        if restore_slew:
+            force_mosaic = True
         if not mode_changed and not self._preview_tele_url and not force_mosaic:
             return
         if mode_changed or urls_changed or force_mosaic:
@@ -5888,6 +5977,13 @@ class AppBackend(QObject):
                     if self._preview_result:
                         self._clear_preview_result()
                     self._detach_mosaic_stacking_preview()
+                    if mosaic_slew_preview_should_restore(
+                        stacking=False,
+                        mosaic_continues=mosaic_continues,
+                        playing=False,
+                        stack_mode=False,
+                    ):
+                        self._retarget_preview_streams(tele_url, wide_url)
                     return
                 self._freeze_stacking_preview_result(
                     device_id,
@@ -5941,12 +6037,17 @@ class AppBackend(QObject):
         self._preview_tele_playing = False
         self._preview_wide_playing = False
         self._preview_playing = False
+        self.live_images.update("tele", QImage())
+        self._raw_preview_images["tele"] = QImage()
+        self.live_images.notify("tele")
         if tele_playing:
             self.previewTelePlayingChanged.emit()
         if wide_playing:
             self.previewWidePlayingChanged.emit()
         if playing:
             self.previewPlayingChanged.emit()
+        if self._mosaic_keep_live_sheet():
+            self.mosaicPreviewChanged.emit()
 
     def _retarget_preview_streams(self, tele_url: str, wide_url: str, timeout: float = 20) -> None:
         """Switch stream URLs without clearing the last frame or sending go_live."""
@@ -6265,6 +6366,7 @@ class AppBackend(QObject):
             return
         if (
             camera == "tele"
+            and self._preview_stack_mode
             and self._mosaic_capture_continues()
             and not self._telemetry_capturing(self._selected_device_id)
         ):
@@ -6301,6 +6403,8 @@ class AppBackend(QObject):
                 self._preview_playing = True
                 self._set_preview_status(self.videoUrl)
                 self.previewPlayingChanged.emit()
+                if self._mosaic_keep_live_sheet():
+                    self.mosaicPreviewChanged.emit()
         if window_live:
             self.live_images.notify(camera)
 
@@ -6315,6 +6419,16 @@ class AppBackend(QObject):
             return
         other_playing = self._preview_wide_playing if camera == "tele" else self._preview_tele_playing
         text = message or "Video preview failed"
+        if (
+            camera == "tele"
+            and self._mosaic_capture_continues()
+            and not self._preview_stacking(self._selected_device_id)
+        ):
+            self._preview_tele_url = ""
+            self.add_log("warning", f"{camera} preview: {text}")
+            if self._mosaic_keep_live_sheet():
+                self.mosaicPreviewChanged.emit()
+            return
         url = self._stream_url(self._device_by_id(self._selected_device_id), Camera(camera))
         if not url:
             if other_playing:
@@ -6609,7 +6723,8 @@ class AppBackend(QObject):
                     parts.append(f"{int(telemetry.get('storage_free_gb') or 0)}/{int(telemetry['storage_total_gb'])} GB free")
                 detail = " · ".join(parts)
             self._toast(f"{device.name} connected", "success", detail)
-            if isinstance(telemetry, dict) and telemetry:
+            telemetry = link_telemetry(telemetry if isinstance(telemetry, dict) else None)
+            if telemetry:
                 self._on_telemetry(device_id, telemetry)
             self._maybe_resume_interrupted_session(device_id)
             self._maybe_resume_interrupted_mosaic(device_id)

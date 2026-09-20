@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_sdk_logging
+from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_sdk_logging, link_telemetry
 from .telemetry_view import photo_capture_seconds
 from .domain import (
     ALBUM_IMAGE_SUFFIXES,
@@ -1718,6 +1718,10 @@ def _claim_host() -> None:
 
 def _handshake() -> dict[str, Any] | None:
     _check_connect_cancelled()
+    if _tap is not None:
+        # Reboot/power-down POWER_OFF arrives after the disconnect reset.
+        # Start this link clean so a later connect does not replay it.
+        _tap.reset()
     _claim_host()
     _check_connect_cancelled()
     if sdk_call("time") is False:
@@ -1753,7 +1757,9 @@ def _handshake() -> dict[str, Any] | None:
         _tap.poll_client_status(status)
     _tap.publish_host_mode()
     _tap.flush()
-    return _tap.snapshot()
+    snapshot = link_telemetry(_tap.snapshot())
+    _tap.accept_power_off()
+    return snapshot
 
 
 def provision_bluetooth() -> str:

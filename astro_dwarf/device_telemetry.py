@@ -366,6 +366,13 @@ def _stacking_progress_changes(message: Any, mosaic: bool = False) -> dict[str, 
     return changes
 
 
+def link_telemetry(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    """Handshake telemetry for a live link. A completed connect is not a power-off."""
+    data = dict(snapshot or {})
+    data.pop("power_off", None)
+    return data
+
+
 class TelemetryTap:
     """Collects device telemetry from raw packets, the SDK cache and state dumps."""
 
@@ -394,6 +401,10 @@ class TelemetryTap:
         # host/slave until the handshake claims master so a default False
         # cannot toast "another client" while this app is connecting.
         self._publish_host_mode = False
+        # POWER_OFF after reboot/power-down arrives after the tap reset.
+        # Ignore it until the next handshake finishes or a later reconnect
+        # replays it and drops a live link.
+        self._accept_power_off = False
 
     # ------------------------------------------------------------------ setup
     def install(self, websockets_utils: Any) -> bool:
@@ -484,6 +495,12 @@ class TelemetryTap:
             self._stale_capture_peak = 0
             self._battery_source = ""
             self._publish_host_mode = False
+            self._accept_power_off = False
+
+    def accept_power_off(self) -> None:
+        """Treat later POWER_OFF notifies as a real drop of this live link."""
+        with self._lock:
+            self._accept_power_off = True
 
     def publish_host_mode(self) -> None:
         """Release held host/slave fields after the connect handshake settles."""
@@ -603,6 +620,10 @@ class TelemetryTap:
         changes = dict(changes)
         now = time.monotonic()
         with self._lock:
+            if "power_off" in changes and not self._accept_power_off:
+                changes.pop("power_off", None)
+                if not changes:
+                    return
             self._stamp_capture_clocks(changes)
             for key, value in changes.items():
                 if value is None:
@@ -837,6 +858,9 @@ class TelemetryTap:
             message = self._parse("BodyStatus", data)
             return {"mount_mode": BODY_STATUS.get(int(message.body_status), "")}
         if cmd == CMD_NOTIFY_POWER_OFF:
+            with self._lock:
+                if not self._accept_power_off:
+                    return {}
             return {"power_off": True}
         if cmd == CMD_NOTIFY_STATE_ASTRO_GOTO:
             changes = self._decode_named_state("AstroGotoState", data, "goto_state", "goto_target", ASTRO_STATES)

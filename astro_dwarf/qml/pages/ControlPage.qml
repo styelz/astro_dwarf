@@ -1157,7 +1157,7 @@ Item {
                     }
                     readonly property bool previewFailed: root.previewFailed
                     readonly property bool previewStartEnabled: backend.selectedDevice.connected && !root.scopeLinking && !root.scopeStopping && (!backend.previewActive || backend.previewPlaying || previewFailed)
-                    readonly property bool startBriefVisible: root.previewStarting && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack
+                    readonly property bool startBriefVisible: root.previewStarting && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicPreview
                     readonly property bool startBriefCompact: height < 280
                     readonly property string actionLabel: {
                         if (!backend.previewActive || backend.previewPlaying)
@@ -1625,7 +1625,7 @@ Item {
                         anchors.centerIn: parent
                         spacing: 10
                         width: Math.min(parent.width - 48, 520)
-                        visible: backend.previewHeld && !backend.previewPlaying && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack
+                        visible: backend.previewHeld && !backend.previewPlaying && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicPreview
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: "LIVE VIEW PAUSED"
@@ -1657,7 +1657,7 @@ Item {
                         z: 5
                         anchors.centerIn: parent
                         spacing: 8
-                        visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.startBriefVisible
+                        visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.startBriefVisible && !previewHost.mosaicPreview
                         Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: Theme.textPrimary; font.pixelSize: 16; font.letterSpacing: 3; font.bold: true }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter

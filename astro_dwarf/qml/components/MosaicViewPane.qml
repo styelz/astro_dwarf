@@ -9,11 +9,11 @@ Item {
     property bool playing: false
     property string camera: "tele"
     property color accent: Theme.accent
-    readonly property bool liveActive: String((backend.mosaicPreview && backend.mosaicPreview.phase) || "") === "stacking"
     readonly property int livePane: {
         const n = Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0)
         return isFinite(n) && n >= 1 ? n : 0
     }
+    readonly property bool liveActive: pane.livePane >= 1
 
     MosaicLiveItem {
         anchors.fill: pane
