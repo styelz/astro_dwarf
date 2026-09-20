@@ -655,13 +655,27 @@ SKY_WEB_FOV_JS = r"""
     }
     return out;
   }
+  function unitDir(xyz) {
+    if (!xyz) return null;
+    var n = Math.hypot(xyz[0], xyz[1], xyz[2]) || 1;
+    return [xyz[0] / n, xyz[1] / n, xyz[2] / n, 0];
+  }
   function convertToView(stel, xyz) {
     if (!xyz || !stel.observer || typeof stel.convertFrame !== "function") return null;
     var dir = [xyz[0], xyz[1], xyz[2], 0];
     var frames = ["ICRF", "CIRS", "JNOW"];
-    for (var i = 0; i < frames.length; i++) {
+    var i, view;
+    for (i = 0; i < frames.length; i++) {
       try {
-        var view = asVec(stel.convertFrame(stel.observer, frames[i], "VIEW", dir));
+        view = asVec(stel.convertFrame(stel.observer, frames[i], "VIEW", dir));
+        if (view) return view;
+      } catch (err) {}
+    }
+    dir = unitDir(xyz);
+    if (!dir) return null;
+    for (i = 0; i < frames.length; i++) {
+      try {
+        view = asVec(stel.convertFrame(stel.observer, frames[i], "VIEW", dir));
         if (view) return view;
       } catch (err) {}
     }
@@ -984,7 +998,9 @@ SKY_WEB_FOV_JS = r"""
     applyLiveImages(el);
   }
   function wrapDeg(deg) {
-    return ((Number(deg) % 360) + 360) % 360;
+    var n = Number(deg);
+    if (!isFinite(n)) return 0;
+    return ((n % 360) + 360) % 360;
   }
   function invertedAngle(deg) {
     var a = wrapDeg(deg);
@@ -1245,8 +1261,64 @@ SKY_WEB_FOV_JS = r"""
     var base = p && p.south_up ? 180 : 0;
     return wrapDeg(framePa(p) - base);
   }
-  function rotateChartGroup(box, p, inner) {
-    var tilt = chartTilt(p);
+  function angleDeg(value) {
+    var n = Number(value);
+    if (!isFinite(n)) return null;
+    return Math.abs(n) <= Math.PI + 0.02 ? n * 180 / Math.PI : n;
+  }
+  function observerLatLonDeg(stel) {
+    try {
+      var payload = window[CTL] && window[CTL].payload;
+      if (payload && payload.has_site) {
+        var plat = Number(payload.latitude), plon = Number(payload.longitude);
+        if (isFinite(plat) && isFinite(plon))
+          return {lat: plat, lon: plon};
+      }
+    } catch (err) {}
+    var o = stel && stel.observer;
+    if (!o) return null;
+    var lat = angleDeg(o.latitude != null ? o.latitude : o.phi);
+    var lon = angleDeg(o.longitude != null ? o.longitude : o.elong);
+    if (lat == null || lon == null) return null;
+    if (Math.abs(lat) < 1e-6 && Math.abs(lon) < 1e-6) return null;
+    return {lat: lat, lon: lon};
+  }
+  function gmstDeg() {
+    var jd = Date.now() / 86400000 + 2440587.5;
+    var centuries = (jd - 2451545.0) / 36525.0;
+    return (280.46061837 + 360.98564736629 * (jd - 2451545.0)
+      + 0.000387933 * centuries * centuries
+      - centuries * centuries * centuries / 38710000.0) % 360;
+  }
+  function parallacticDeg(raHours, decDeg, latDeg, lonDeg) {
+    var raDeg = ((Number(raHours) % 24) + 24) % 24 * 15;
+    var ha = (((gmstDeg() + Number(lonDeg) - raDeg) % 360) + 360) % 360 * Math.PI / 180;
+    var dec = Number(decDeg) * Math.PI / 180;
+    var phi = Number(latDeg) * Math.PI / 180;
+    return Math.atan2(
+      Math.sin(ha),
+      Math.tan(phi) * Math.cos(dec) - Math.sin(dec) * Math.cos(ha)
+    ) * 180 / Math.PI;
+  }
+  function viewRollDeg(stel, box) {
+    // Aladin zenithRotation: -parallactic. Added to chart tilt, then SVG
+    // rotate(-tilt). PA 0 rolls with the sky; alt-az parallactic PA stays
+    // zenith-up (chart tilt cancels this). Never project ICRS here.
+    try {
+      var c = viewCenter(stel);
+      var site = observerLatLonDeg(stel);
+      if (!c || !site) return 0;
+      var q = parallacticDeg(c.ra_hours, c.dec_degrees, site.lat, site.lon);
+      return isFinite(q) ? -q : 0;
+    } catch (err) {
+      return 0;
+    }
+  }
+  function hudTilt(p, stel, box) {
+    return wrapDeg(viewRollDeg(stel, box) + chartTilt(p));
+  }
+  function rotateChartGroup(box, p, stel, inner) {
+    var tilt = hudTilt(p, stel, box);
     var cx = (box.width / 2).toFixed(1);
     var cy = (box.height / 2).toFixed(1);
     return '<g transform="rotate(' + (-tilt).toFixed(2) + " " + cx + " " + cy + ')">' + inner + "</g>";
@@ -1270,8 +1342,8 @@ SKY_WEB_FOV_JS = r"""
     var color = String(p.color || "#7ee0d0");
     var left = (box.width - size.w) / 2;
     var top = (box.height - size.h) / 2;
-    var tilt = chartTilt(p);
-    paintSvg(el, box, rotateChartGroup(box, p,
+    var tilt = hudTilt(p, stel, box);
+    paintSvg(el, box, rotateChartGroup(box, p, stel,
       liveImageRect(left, top, size.w, size.h)
       + '<rect x="' + left.toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + size.w.toFixed(1)
       + '" height="' + size.h.toFixed(1) + '" fill="none" stroke="' + color
@@ -1296,7 +1368,7 @@ SKY_WEB_FOV_JS = r"""
     var originY = (box.height - totalH) / 2;
     var color = String(p.color || "#7ee0d0");
     var pa = framePa(p);
-    var tilt = chartTilt(p);
+    var tilt = hudTilt(p, stel, box);
     // Pane 1 is camera-right. On a north-up chart that is the right edge;
     // on a south-up chart it is only the right edge near PA 180°.
     var col1OnRight = (pa > 90 && pa < 270) === !!p.south_up;
@@ -1330,7 +1402,7 @@ SKY_WEB_FOV_JS = r"""
     if (!mosaicUsesPaneImages())
       svg += liveImageRect((box.width - size.w) / 2, (box.height - size.h) / 2, size.w, size.h);
     svg += upTick(box.width / 2, originY, color);
-    paintSvg(el, box, rotateChartGroup(box, p, svg)
+    paintSvg(el, box, rotateChartGroup(box, p, stel, svg)
       + labels
       + labelOnFrame(p, hudCorners(box.width / 2, box.height / 2, totalW, totalH, tilt), stel, box));
     return "grid";
@@ -1372,6 +1444,16 @@ SKY_WEB_FOV_JS = r"""
       });
     }
     if (!drawn.length)
+      return "";
+    var onScreen = drawn.some(function(item) {
+      if (item.cx >= -40 && item.cy >= -40 && item.cx <= box.width + 40 && item.cy <= box.height + 40)
+        return true;
+      if (!item.quad) return false;
+      return item.quad.some(function(pt) {
+        return pt.x >= -40 && pt.y >= -40 && pt.x <= box.width + 40 && pt.y <= box.height + 40;
+      });
+    });
+    if (!onScreen)
       return "";
     var media = "";
     var mosaic = drawn.length > 1;
@@ -1468,7 +1550,9 @@ SKY_WEB_FOV_JS = r"""
     var el = overlayFor(box);
     var panes = [];
     try { panes = resolvePanes(stel, p); } catch (err) { panes = []; }
-    if (panes.length) {
+    var mosaic = Math.max(1, Number(p.columns) || 1) > 1
+      || Math.max(1, Number(p.rows) || 1) > 1;
+    if (mosaic && panes.length) {
       try {
         var projected = drawPanes(el, box, p, stel, panes);
         if (projected) {
@@ -1477,7 +1561,11 @@ SKY_WEB_FOV_JS = r"""
         }
       } catch (err) {}
     }
-    ctl.lastStatus = drawScreenGrid(el, box, p, stel);
+    try {
+      ctl.lastStatus = drawScreenGrid(el, box, p, stel);
+    } catch (err) {
+      ctl.lastStatus = "error";
+    }
     return ctl.lastStatus;
   }
   function tick() {
@@ -1618,7 +1706,8 @@ SKY_WEB_FOV_JS = r"""
       p.panes && p.panes[0] && p.panes[0].ra_hours,
       p.panes && p.panes[0] && p.panes[0].dec_degrees,
       p.target_ra_hours, p.target_dec_degrees,
-      p.view_ra_hours, p.view_dec_degrees
+      p.view_ra_hours, p.view_dec_degrees,
+      p.has_site, p.latitude, p.longitude
     ].join("|");
     tick();
     return draw(true);
@@ -2777,8 +2866,31 @@ def mosaic_overlay_hud_tilt(south_up: bool, position_angle: Any = None) -> float
     Using full camera PA on 1×1 and chart tilt on 2×2 flipped the live JPEG
     180° at a southern site with PA 0. Numbered panes still use chart tilt so
     1↔4 do not swap; the live image must follow the same residual.
+
+    Live overlay JS adds ``overlay_view_roll_deg`` on top so the box follows
+    zenith-up field rotation as the sky pans. This residual stays camera-PA
+    only.
     """
     return mosaic_chart_tilt(south_up, position_angle)
+
+
+def overlay_view_roll_deg(
+    ra_hours: Any,
+    dec_degrees: Any,
+    latitude: Any,
+    longitude: Any,
+    when: datetime | None = None,
+) -> float:
+    """Rotation of a north-up overlay onto a zenith-up view.
+
+    Same value as Aladin ``zenithRotation``: ``-parallactic``. Stellarium's
+    SVG path adds ``+parallactic`` to chart tilt because it already draws
+    with ``rotate(-tilt)``.
+    """
+    angle = parallactic_angle_deg(ra_hours, dec_degrees, latitude, longitude, when)
+    if angle is None:
+        return 0.0
+    return (-float(angle)) % 360.0
 
 
 # _pane_corners: 0 right-up, 1 right-down, 2 left-down, 3 left-up.

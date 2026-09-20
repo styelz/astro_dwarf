@@ -1537,4 +1537,10 @@ ApplicationWindow {
     }
 
     SessionDialog { id: sessionDialog }
+    SkyRaDecDialog {
+        id: skyRaDecDialog
+        transientParent: root
+        hostActive: root.currentPage === root.skyPageIndex
+        onGotoRequested: (raHours, decDegrees) => skyPage.gotoRaDec(raHours, decDegrees)
+    }
 }

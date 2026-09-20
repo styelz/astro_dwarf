@@ -178,7 +178,7 @@ ATLAS_ASTRO_JS = r"""
   var box = window.__astroDwarfAtlas = window.__astroDwarfAtlas || {};
   if (box.astro && typeof box.astro.labelOnFov === "function" && typeof box.astro.drawScreenMosaic === "function"
       && typeof box.astro.drawPaneMedia === "function" && typeof box.astro.bindLiveOpacityWheel === "function"
-      && typeof box.astro.paneCenterXY === "function")
+      && typeof box.astro.paneCenterXY === "function" && typeof box.astro.overlayPixRoll === "function")
     return box.astro;
   function deg(value) {
     return ((Number(value) % 360) + 360) % 360;
@@ -235,6 +235,86 @@ ATLAS_ASTRO_JS = r"""
   }
   function zenithRotation(raDeg, decDeg, lat, lon, date) {
     return -parallacticDeg(raDeg, decDeg, lat, lon, date);
+  }
+  function offsetRaDec(raHours, decDeg, eastDeg, northDeg) {
+    var ra = ((Number(raHours) % 24) + 24) % 24 * Math.PI / 12;
+    var dec = Number(decDeg) * Math.PI / 180;
+    var eastT = Math.tan(eastDeg * Math.PI / 180);
+    var northT = Math.tan(northDeg * Math.PI / 180);
+    var cosDec = Math.cos(dec), sinDec = Math.sin(dec);
+    var cosRa = Math.cos(ra), sinRa = Math.sin(ra);
+    var x = cosDec * cosRa - eastT * sinRa - northT * sinDec * cosRa;
+    var y = cosDec * sinRa + eastT * cosRa - northT * sinDec * sinRa;
+    var z = sinDec + northT * cosDec;
+    var n = Math.hypot(x, y, z) || 1;
+    return {
+      ra_hours: ((Math.atan2(y / n, x / n) * 12 / Math.PI) % 24 + 24) % 24,
+      dec_degrees: Math.asin(Math.max(-1, Math.min(1, z / n))) * 180 / Math.PI
+    };
+  }
+  function offsetCamera(raHours, decDeg, rightDeg, upDeg, paDeg) {
+    var pa = (Number(paDeg) || 0) * Math.PI / 180;
+    var east = -rightDeg * Math.cos(pa) + upDeg * Math.sin(pa);
+    var north = rightDeg * Math.sin(pa) + upDeg * Math.cos(pa);
+    return offsetRaDec(raHours, decDeg, east, north);
+  }
+  function cameraCorners(raHours, decDeg, fovH, fovV, paDeg) {
+    var hw = Number(fovH) / 2, hh = Number(fovV) / 2;
+    var pa = Number(paDeg) || 0;
+    return [
+      offsetCamera(raHours, decDeg, hw, hh, pa),
+      offsetCamera(raHours, decDeg, hw, -hh, pa),
+      offsetCamera(raHours, decDeg, -hw, -hh, pa),
+      offsetCamera(raHours, decDeg, -hw, hh, pa)
+    ];
+  }
+  function liveGridPanes(raHours, decDeg, payload) {
+    var cols = Math.max(1, Number(payload && payload.columns) || 1);
+    var rows = Math.max(1, Number(payload && payload.rows) || 1);
+    var overlap = Math.max(0, Math.min(0.8, Number(payload && payload.overlap) || 0));
+    var fovH = Number(box.fovH), fovV = Number(box.fovV);
+    if (!(fovH > 0) || !(fovV > 0) || !isFinite(raHours) || !isFinite(decDeg)) return [];
+    var pa = Number(box.pa);
+    if (!isFinite(pa)) pa = payload && payload.south_up ? 180 : 0;
+    var stepX = fovH * (1 - overlap);
+    var stepY = fovV * (1 - overlap);
+    var panes = [];
+    var index = 0;
+    for (var row = 1; row <= rows; row++) {
+      var rowOffset = row - (rows + 1) / 2;
+      var up = -rowOffset * stepY;
+      for (var col = 1; col <= cols; col++) {
+        index += 1;
+        var colOffset = col - (cols + 1) / 2;
+        var right = -colOffset * stepX;
+        var centerPt = offsetCamera(raHours, decDeg, right, up, pa);
+        panes.push({
+          index: index,
+          ra_hours: centerPt.ra_hours,
+          dec_degrees: centerPt.dec_degrees,
+          corners: cameraCorners(centerPt.ra_hours, centerPt.dec_degrees, fovH, fovV, pa)
+        });
+      }
+    }
+    return panes;
+  }
+  function northPixAngle(aladin, raDeg, decDeg) {
+    var c = project(aladin, raDeg, decDeg);
+    var n = project(aladin, raDeg, decDeg + 0.2);
+    if (!c || !n) return null;
+    return Math.atan2(n[0] - c[0], c[1] - n[1]) * 180 / Math.PI;
+  }
+  function overlayPixRoll(aladin, pos) {
+    var viewRot = 0;
+    try {
+      if (aladin && typeof aladin.getRotation === "function")
+        viewRot = Number(aladin.getRotation()) || 0;
+    } catch (err) {}
+    if (!isFinite(viewRot) || Math.abs(viewRot) < 0.4) return 0;
+    var north = northPixAngle(aladin, pos[0], pos[1]);
+    // world2pix already includes map rotation when north is not screen-up.
+    if (north == null || Math.abs(north) > 12) return 0;
+    return viewRot;
   }
   function facingName(az) {
     var names = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
@@ -684,7 +764,20 @@ ATLAS_ASTRO_JS = r"""
     var panes = (box.fovPanes && box.fovPanes.length) ? box.fovPanes : [];
     var mosaic = cols > 1 || rows > 1 || panes.length > 1;
     var projected = collectProjected(aladin, panes);
-    if (projected.length) {
+    var hasQuads = false;
+    for (var qi = 0; qi < projected.length; qi++) {
+      if (projected[qi].quad) { hasQuads = true; break; }
+    }
+    if (mosaic && hasQuads) {
+      var pos = null;
+      try { pos = aladin && typeof aladin.getRaDec === "function" ? aladin.getRaDec() : null; } catch (err) {}
+      var extra = pos ? overlayPixRoll(aladin, pos) : 0;
+      ctx.save();
+      if (Math.abs(extra) > 0.4) {
+        ctx.translate(width / 2, height / 2);
+        ctx.rotate(extra * Math.PI / 180);
+        ctx.translate(-width / 2, -height / 2);
+      }
       blitMosaicMedia(ctx, width, height, function(mctx) {
         for (var i = 0; i < projected.length; i++) {
           if (projected[i].quad)
@@ -713,6 +806,7 @@ ATLAS_ASTRO_JS = r"""
       var outer = outerQuad(projected);
       if (mosaic) strokeQuad(ctx, outer, color, true);
       labelOnFov(ctx, outer, color);
+      ctx.restore();
       return;
     }
     var frame = drawScreenMosaic(ctx, width, height, w, h, cols, rows, overlap, tilt, color);
@@ -921,6 +1015,7 @@ ATLAS_ASTRO_JS = r"""
     labelOnFov: labelOnFov,
     drawScreenMosaic: drawScreenMosaic,
     drawPaneMedia: drawPaneMedia,
+    overlayPixRoll: overlayPixRoll,
     horizonOf: function(raDeg, decDeg) {
       if (!box.hasSite) return null;
       return radecToAltaz(raDeg, decDeg, box.lat, box.lon, new Date());

@@ -4444,6 +4444,17 @@ class AppBackend(QObject):
             "panes": [],
             "mode": "center",
         }
+        device = self._schedule_device()
+        if device is not None:
+            try:
+                lat = float(device.latitude or 0)
+                lon = float(device.longitude or 0)
+            except (TypeError, ValueError):
+                lat = lon = 0.0
+            payload["has_site"] = has_site_coordinates(lat, lon)
+            if payload["has_site"]:
+                payload["latitude"] = lat
+                payload["longitude"] = lon
         payload.update(mosaic_overlay_pa_fields(pa_state))
         if grid_ok:
             payload["columns"] = columns_n

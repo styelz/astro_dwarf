@@ -5,7 +5,7 @@ import QtQuick.Window
 import ".."
 import "../components"
 
-Dialog {
+Window {
     id: dialog
     objectName: "skyRaDecDialog"
     property int formatIndex: 0
@@ -16,30 +16,21 @@ Dialog {
     property string formatHint: ""
     property string errorText: ""
     signal gotoRequested(real raHours, real decDegrees)
-
-    // Same native window path as HudMenu / the sky right-click menu so
-    // WebView2 cannot paint over the dialog and the map can stay visible.
-    popupType: Popup.Window
-    modal: true
-    dim: false
-    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-    header: null
-    footer: null
-    width: 420
-    height: body.implicitHeight + padding * 2
-    padding: Theme.s4
-    background: DialogFrame {}
-    onAboutToShow: dialog.placeCentered()
-
-    function placeCentered() {
-        const win = dialog.Window.window
-        const host = dialog.parent
-        if (!win || !host)
-            return
-        const origin = host.mapToItem(null, 0, 0)
-        dialog.x = Math.round((win.width - dialog.width) / 2 - origin.x)
-        dialog.y = Math.round((win.height - dialog.height) / 2 - origin.y)
+    property bool hostActive: true
+    onHostActiveChanged: {
+        if (!dialog.hostActive && dialog.visible)
+            dialog.close()
     }
+
+    // Frameless HUD panel that can take keyboard focus. Popup.Window uses
+    // Qt.Popup flags, which Windows will not type into. Qt.Dialog adds a
+    // title-bar close. Do not put this on appModalOpen; that blanks the map.
+    flags: Qt.Tool | Qt.FramelessWindowHint
+    modality: Qt.NonModal
+    color: "transparent"
+    visible: false
+    width: 420
+    height: body.implicitHeight + Theme.s4 * 2
 
     component IconBtn: HudButton {
         implicitWidth: Theme.controlHeight
@@ -53,6 +44,25 @@ Dialog {
         font.letterSpacing: 0
         buttonColor: "transparent"
         foregroundColor: Theme.textSecondary
+    }
+
+    function placeCentered() {
+        const host = dialog.transientParent
+        if (!host)
+            return
+        dialog.x = Math.round(host.x + (host.width - dialog.width) / 2)
+        dialog.y = Math.round(host.y + (host.height - dialog.height) / 2)
+    }
+
+    function open() {
+        dialog.visible = true
+        dialog.placeCentered()
+        dialog.raise()
+        dialog.requestActivate()
+    }
+
+    function close() {
+        dialog.visible = false
     }
 
     function applyInfo(info, fillFields) {
@@ -114,6 +124,23 @@ Dialog {
         backend.copyText(text)
     }
 
+    function pasteClipboard() {
+        const coords = backend.clipboardCoordinates() || ({})
+        if (coords.valid) {
+            dialog.raHours = Number(coords.ra_hours)
+            dialog.decDegrees = Number(coords.dec_degrees)
+            dialog.hasCoords = isFinite(dialog.raHours) && isFinite(dialog.decDegrees)
+            dialog.errorText = ""
+            dialog.applyFormatToFields()
+            return
+        }
+        const field = raField.activeFocus ? raField : decField
+        if (field.activeFocus)
+            field.paste()
+        else
+            dialog.errorText = "Clipboard is not a valid RA / Dec."
+    }
+
     function applyGoto() {
         if (!dialog.commitFields()) {
             dialog.errorText = "Enter a valid RA and Dec in the current format."
@@ -124,36 +151,49 @@ Dialog {
         dialog.close()
     }
 
-    onOpened: {
-        dialog.applyFormatToFields()
-        raField.forceActiveFocus()
-        raField.selectAll()
+    onVisibleChanged: {
+        if (!dialog.visible)
+            return
+        dialog.placeCentered()
+        Qt.callLater(() => {
+            dialog.placeCentered()
+            dialog.requestActivate()
+            raField.forceActiveFocus()
+            raField.selectAll()
+        })
+    }
+    onWidthChanged: if (dialog.visible) dialog.placeCentered()
+    onHeightChanged: if (dialog.visible) dialog.placeCentered()
+
+    Shortcut {
+        sequence: "Escape"
+        enabled: dialog.visible
+        onActivated: dialog.close()
+    }
+    Shortcut {
+        sequences: [ StandardKey.Paste ]
+        enabled: dialog.visible
+        onActivated: dialog.pasteClipboard()
     }
 
-    contentItem: ColumnLayout {
+    DialogFrame {
+        anchors.fill: parent
+    }
+
+    ColumnLayout {
         id: body
+        anchors.fill: parent
+        anchors.margins: Theme.s4
         spacing: Theme.s3
         Accessible.name: "Enter RA and Dec"
         Accessible.description: "Center the sky map on right ascension and declination"
 
-        RowLayout {
+        Text {
+            text: "ENTER RA / DEC"
+            color: Theme.accent
+            font.pixelSize: Theme.fontLg
+            font.letterSpacing: Theme.tracking2
             Layout.fillWidth: true
-            spacing: Theme.s2
-            Text {
-                text: "ENTER RA / DEC"
-                color: Theme.accent
-                font.pixelSize: Theme.fontLg
-                font.letterSpacing: Theme.tracking2
-                Layout.fillWidth: true
-            }
-            HudButton {
-                objectName: "skyRaDecClose"
-                text: "×"
-                implicitWidth: 40
-                tooltip: "Close"
-                accessibleDescription: "Close the RA and Dec dialog"
-                onClicked: dialog.close()
-            }
         }
 
         Text {
@@ -224,6 +264,13 @@ Dialog {
         RowLayout {
             Layout.fillWidth: true
             spacing: Theme.s2
+            HudButton {
+                objectName: "skyRaDecPaste"
+                text: "PASTE"
+                tooltip: "Paste RA and Dec from the clipboard"
+                accessibleDescription: "Fill both fields from copied session or template coordinates"
+                onClicked: dialog.pasteClipboard()
+            }
             HudButton {
                 objectName: "skyRaDecChangeFormat"
                 text: "CHANGE FORMAT"

@@ -3,12 +3,15 @@ import QtQuick.Layouts
 import QtCore
 import ".."
 import "../components"
-import "../dialogs"
 
 Item {
     id: skyPage
     objectName: "skyPage"
     readonly property bool mapLive: root.currentPage === root.skyPageIndex
+    onMapLiveChanged: {
+        if (!skyPage.mapLive && skyMenu.visible)
+            skyMenu.close()
+    }
     readonly property bool targetLocked: !!(backend.skyTarget && backend.skyTarget.locked)
     readonly property bool webReady: backend.webViewAvailable && !skyPage.webFailed
     property bool webFailed: false
@@ -197,12 +200,12 @@ Item {
         return null
     }
     function openRaDecDialog() {
-        raDecDialog.formatIndex = skyPage.clampInt(skyStore.coordFormatIndex, 0, 3, 0)
+        skyRaDecDialog.formatIndex = skyPage.clampInt(skyStore.coordFormatIndex, 0, 3, 0)
         const center = skyPage.currentMapCenter()
         if (center)
-            raDecDialog.openAt(center.ra_hours, center.dec_degrees)
+            skyRaDecDialog.openAt(center.ra_hours, center.dec_degrees)
         else
-            raDecDialog.openAt(Number.NaN, Number.NaN)
+            skyRaDecDialog.openAt(Number.NaN, Number.NaN)
     }
     function gotoRaDec(raHours, decDegrees) {
         const map = mapLoader.item
@@ -715,9 +718,10 @@ Item {
         }
     }
 
-    SkyRaDecDialog {
-        id: raDecDialog
-        onFormatIndexChanged: skyStore.coordFormatIndex = skyPage.clampInt(formatIndex, 0, 3, 0)
-        onGotoRequested: (raHours, decDegrees) => skyPage.gotoRaDec(raHours, decDegrees)
+    Connections {
+        target: skyRaDecDialog
+        function onFormatIndexChanged() {
+            skyStore.coordFormatIndex = skyPage.clampInt(skyRaDecDialog.formatIndex, 0, 3, 0)
+        }
     }
 }

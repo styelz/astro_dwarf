@@ -37,22 +37,24 @@ HudMenu {
     onAboutToShow: skyMenu.refreshClipboard()
 
     HudMenuItem {
+        objectName: "clipboardGotoMenuItem"
+        text: "Go to clipboard"
+        glyph: "\uE707"
+        enabled: skyMenu.clipboardValid
+        trailingText: skyMenu.clipboardValid ? skyMenu.clipboardText : ""
+        trailingMaxWidth: 168
+        accessibleDescription: skyMenu.clipboardValid
+                               ? "Center the sky map on the clipboard RA and Dec without changing the selected mosaic target, "
+                                 + skyMenu.clipboardText
+                               : "Copy RA and Dec from a session or template first"
+        onTriggered: skyMenu.clipboardGotoRequested()
+    }
+    HudMenuItem {
         objectName: "enterRaDecMenuItem"
         text: "Enter RA / Dec"
         glyph: "\uE70F"
         accessibleDescription: "Open a dialog to type right ascension and declination and center the sky map"
         onTriggered: skyMenu.enterRaDecRequested()
-    }
-    HudMenuItem {
-        objectName: "clipboardGotoMenuItem"
-        visible: skyMenu.clipboardValid
-        text: "Go to clipboard"
-        glyph: "\uE707"
-        trailingText: skyMenu.clipboardText
-        trailingMaxWidth: 168
-        accessibleDescription: "Center the sky map on the clipboard RA and Dec without changing the selected mosaic target, "
-                               + skyMenu.clipboardText
-        onTriggered: skyMenu.clipboardGotoRequested()
     }
     HudMenuSeparator {
     }
