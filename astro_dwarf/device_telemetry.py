@@ -23,6 +23,7 @@ CMD_NOTIFY_ELE = 15201
 CMD_NOTIFY_CHARGE = 15202
 CMD_NOTIFY_SDCARD_INFO = 15203
 CMD_NOTIFY_TELE_RECORD_TIME = 15204
+CMD_NOTIFY_TELE_TIMELAPSE_OUT_TIME = 15205
 CMD_NOTIFY_STATE_CAPTURE_RAW_DARK = 15206
 CMD_NOTIFY_PROGRASS_CAPTURE_RAW_DARK = 15207
 CMD_NOTIFY_STATE_CAPTURE_RAW_LIVE_STACKING = 15208
@@ -38,7 +39,10 @@ CMD_NOTIFY_WS_HOST_SLAVE_MODE = 15223
 CMD_NOTIFY_CPU_MODE = 15227
 CMD_NOTIFY_POWER_OFF = 15229
 CMD_NOTIFY_STREAM_TYPE = 15234
+CMD_NOTIFY_WIDE_TIMELAPSE_OUT_TIME = 15226
 CMD_NOTIFY_WIDE_RECORD_TIME = 15235
+CMD_NOTIFY_TELE_BURST_PROGRESS = 15218
+CMD_NOTIFY_WIDE_BURST_PROGRESS = 15220
 CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING = 15236
 CMD_NOTIFY_PROGRASS_WIDE_CAPTURE_RAW_LIVE_STACKING = 15237
 CMD_NOTIFY_EQ_SOLVING_STATE = 15239
@@ -55,6 +59,8 @@ CMD_NOTIFY_RECORD_STATE = 15275
 CMD_NOTIFY_TIMELAPSE_STATE = 15276
 CMD_NOTIFY_ASTRO_AUTO_FOCUS_STATE = 15278
 CMD_NOTIFY_ASTRO_AUTO_FOCUS_FAST_STATE = 15280
+CMD_NOTIFY_BURST_PROGRESS = 15285
+CMD_NOTIFY_RECORD_TIME = 15286
 CMD_NOTIFY_TIMELAPSE_OUT_TIME = 15287
 CMD_NOTIFY_LONG_EXP_PROGRESS = 15288
 CMD_NOTIFY_CMOS_TEMPERATURE = 15292
@@ -105,7 +111,25 @@ _PHOTO_FUNCTION_COMMANDS = {
     CMD_NOTIFY_TELE_FUNCTION_STATE: ("PhotoState", "photo_state"),
     CMD_NOTIFY_WIDE_FUNCTION_STATE: ("PhotoState", "photo_state"),
 }
-_PHOTO_FUNCTION_FORCE = frozenset(_PHOTO_FUNCTION_COMMANDS) | {CMD_NOTIFY_TIMELAPSE_OUT_TIME}
+_RECORD_TIME_COMMANDS = frozenset(
+    (CMD_NOTIFY_TELE_RECORD_TIME, CMD_NOTIFY_WIDE_RECORD_TIME, CMD_NOTIFY_RECORD_TIME)
+)
+_TIMELAPSE_OUT_COMMANDS = frozenset(
+    (
+        CMD_NOTIFY_TELE_TIMELAPSE_OUT_TIME,
+        CMD_NOTIFY_WIDE_TIMELAPSE_OUT_TIME,
+        CMD_NOTIFY_TIMELAPSE_OUT_TIME,
+    )
+)
+_BURST_PROGRESS_COMMANDS = frozenset(
+    (CMD_NOTIFY_TELE_BURST_PROGRESS, CMD_NOTIFY_WIDE_BURST_PROGRESS, CMD_NOTIFY_BURST_PROGRESS)
+)
+_PHOTO_FUNCTION_FORCE = (
+    frozenset(_PHOTO_FUNCTION_COMMANDS)
+    | _RECORD_TIME_COMMANDS
+    | _TIMELAPSE_OUT_COMMANDS
+    | _BURST_PROGRESS_COMMANDS
+)
 # BatteryInfo.percentage is the real SoC. CMD_NOTIFY_ELE and the SDK cache
 # (BatteryLevelDwarf) are the same remaining-% notify; the SDK only stores it
 # on 10% jumps, so a 22% BatteryInfo and a latched 20% cache fight and the
@@ -257,8 +281,12 @@ def _photo_function_idle_changes(snapshot: dict[str, Any]) -> dict[str, Any]:
             changes[key] = "idle"
             if key == "record_state":
                 changes["record_seconds"] = 0
+                changes["record_started_at"] = 0
             elif key == "timelapse_state":
                 changes["timelapse_elapsed_s"] = 0
+                changes["timelapse_started_at"] = 0
+            elif key == "burst_state":
+                changes["burst_completed"] = 0
     return changes
 
 
@@ -267,8 +295,12 @@ def _photo_function_state_changes(key: str, state: str) -> dict[str, Any]:
     if state != "running":
         if key == "record_state":
             changes["record_seconds"] = 0
+            changes["record_started_at"] = 0
         elif key == "timelapse_state":
             changes["timelapse_elapsed_s"] = 0
+            changes["timelapse_started_at"] = 0
+        elif key == "burst_state":
+            changes["burst_completed"] = 0
     return changes
 
 
@@ -552,11 +584,26 @@ class TelemetryTap:
             if self._state.get(key) != value or key not in self._state:
                 self._pending[key] = value
 
+    def _stamp_capture_clocks(self, incoming: dict[str, Any]) -> None:
+        """Anchor HUD elapsed clocks when a photo capture actually starts."""
+        now = time.time()
+        merged = {**self._state, **self._pending}
+        if incoming.get("record_state") == "running" and merged.get("record_state") != "running":
+            have = int(incoming.get("record_seconds") or merged.get("record_seconds") or 0)
+            incoming.setdefault("record_started_at", now - max(0, have))
+        if incoming.get("timelapse_state") == "running" and merged.get("timelapse_state") != "running":
+            have = int(incoming.get("timelapse_elapsed_s") or merged.get("timelapse_elapsed_s") or 0)
+            incoming.setdefault("timelapse_started_at", now - max(0, have))
+        if incoming.get("burst_state") == "running" and merged.get("burst_state") != "running":
+            incoming.setdefault("burst_completed", int(merged.get("burst_completed") or 0))
+
     def update(self, changes: dict[str, Any], force: bool = False) -> None:
         if not changes:
             return
+        changes = dict(changes)
         now = time.monotonic()
         with self._lock:
+            self._stamp_capture_clocks(changes)
             for key, value in changes.items():
                 if value is None:
                     continue
@@ -860,9 +907,25 @@ class TelemetryTap:
                 "dark_progress": int(message.progress),
                 "dark_remaining_s": int(message.remaining_time),
             }
-        if cmd in (CMD_NOTIFY_TELE_RECORD_TIME, CMD_NOTIFY_WIDE_RECORD_TIME):
+        if cmd in _RECORD_TIME_COMMANDS:
             message = self._parse("RecordTime", data)
-            return {"record_seconds": int(message.record_time)}
+            if message is None:
+                return {}
+            return {"record_seconds": int(message.record_time), "record_state": "running"}
+        if cmd in _BURST_PROGRESS_COMMANDS:
+            message = self._parse("BurstProgress", data)
+            if message is None:
+                return {}
+            completed = int(message.completed_count)
+            total = int(message.total_count)
+            changes = {
+                "burst_state": "running",
+                "burst_completed": completed,
+            }
+            if total:
+                changes["burst_total"] = total
+                changes["burst_count"] = total
+            return changes
         if cmd in _PHOTO_FUNCTION_COMMANDS:
             factory_name, key = _PHOTO_FUNCTION_COMMANDS[cmd]
             message = self._parse(factory_name, data)
@@ -870,13 +933,14 @@ class TelemetryTap:
                 return {}
             state = OPERATION_STATES.get(int(message.state), str(message.state))
             return _photo_function_state_changes(key, state)
-        if cmd == CMD_NOTIFY_TIMELAPSE_OUT_TIME:
+        if cmd in _TIMELAPSE_OUT_COMMANDS:
             message = self._parse("TimeLapseOutTime", data)
             if message is None:
                 return {}
             return {
                 "timelapse_state": "running",
                 "timelapse_interval_s": int(message.interval),
+                "timelapse_out_s": int(message.out_time),
                 "timelapse_elapsed_s": int(message.out_time),
                 "timelapse_total_s": int(message.total_time),
             }

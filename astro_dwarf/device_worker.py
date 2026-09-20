@@ -1003,7 +1003,17 @@ def sdk_call(operation: str, *args: Any) -> Any:
             if operation in _PHOTO_CAPTURE_STARTS:
                 _photo_capture_camera = "wide" if module_id == 2 else "tele"
                 if _tap is not None and state_key:
-                    _tap.update({state_key: "running"}, force=True)
+                    running: dict[str, Any] = {state_key: "running"}
+                    if state_key == "record_state":
+                        running["record_seconds"] = 0
+                    elif state_key == "timelapse_state":
+                        running["timelapse_elapsed_s"] = 0
+                        seconds = photo_capture_seconds(_tap.snapshot().get("timelapse_duration"))
+                        if seconds:
+                            running["timelapse_total_s"] = int(seconds)
+                    elif state_key == "burst_state":
+                        running["burst_completed"] = 0
+                    _tap.update(running, force=True)
             elif operation in _PHOTO_CAPTURE_STOPS:
                 _photo_capture_camera = ""
                 if _tap is not None and state_key:
@@ -1012,6 +1022,8 @@ def sdk_call(operation: str, *args: Any) -> Any:
                         idle["record_seconds"] = 0
                     elif state_key == "timelapse_state":
                         idle["timelapse_elapsed_s"] = 0
+                    elif state_key == "burst_state":
+                        idle["burst_completed"] = 0
                     _tap.update(idle, force=True)
         return ok
     if _device.get("model") in ("Dwarf 3", "Dwarf Mini"):
@@ -2082,6 +2094,7 @@ CMD_ASTRO_CONTINUE_SHOOTING = 11050
 CODE_CAMERA_TELE_CLOSED = -10501
 CODE_ASTRO_FUNCTION_BUSY = -11501
 CODE_ASTRO_DARK_NOT_FOUND = -11503
+CODE_ASTRO_GOTO_FAILED = -11505
 CODE_ASTRO_GOTO_RUNNING = -11508
 CODE_ASTRO_NEED_CALIBRATION = -11511
 CODE_ASTRO_NEED_GOTO = -11513
@@ -2712,6 +2725,56 @@ def _goto_never_started_error(exc: BaseException) -> bool:
 
 def _goto_solve_timeout_error(exc: BaseException) -> bool:
     return "while plate-solving" in str(exc).lower()
+
+
+def _goto_terminal_fail(exc: BaseException) -> bool:
+    """True when a pane GOTO cannot acquire the field and must not start a stack.
+
+    CODE_ASTRO_GOTO_FAILED (-11505) is usually not calibrated or a scene that
+    will not plate-solve. Busy / closed-camera replies are retried instead.
+    """
+    text = str(exc)
+    return any(
+        token in text
+        for token in (
+            "GOTO_FAILED",
+            str(CODE_ASTRO_GOTO_FAILED),
+            "NEED_CALIBRATION",
+            str(CODE_ASTRO_NEED_CALIBRATION),
+            "while plate-solving",
+            "will not plate-solve",
+            "not calibrated",
+        )
+    )
+
+
+def _goto_fail_reason(exc: BaseException) -> str:
+    text = str(exc)
+    if "NEED_CALIBRATION" in text or str(CODE_ASTRO_NEED_CALIBRATION) in text:
+        return "not calibrated"
+    if "GOTO_FAILED" in text or str(CODE_ASTRO_GOTO_FAILED) in text:
+        return "not calibrated or this scene will not plate-solve"
+    if "while plate-solving" in text.lower() or "will not plate-solve" in text.lower():
+        return "will not plate-solve"
+    return text.strip() or "GOTO failed"
+
+
+def mosaic_pane_goto_fail_message(
+    *,
+    pane: int,
+    total: int,
+    ra: float,
+    dec: float,
+    name: str,
+    error: BaseException,
+) -> str:
+    """Operator-facing reason a mosaic pane GOTO stopped without stacking."""
+    reason = _goto_fail_reason(error)
+    label = str(name or f"Pane {pane}").strip() or f"Pane {pane}"
+    return (
+        f"Mosaic pane {pane}/{total} GOTO failed · RA {ra:.4f}h Dec {dec:+.3f}° "
+        f"({label}) · {reason}. Not stacking this pane."
+    )
 
 
 def _goto_needs_camera_reopen(exc: BaseException) -> bool:
@@ -4251,6 +4314,8 @@ def _goto_target(
                 )
                 _wait_seconds(_CAPTURE_BUSY_RETRY_S, "Waiting for the astro engine")
                 continue
+            if _goto_terminal_fail(exc):
+                raise RuntimeError(f"{name} failed: {_goto_fail_reason(exc)}") from exc
             raise
 
 
@@ -4329,14 +4394,29 @@ def _stack_mosaic(
             report(index, f"GOTO pane {index}/{total}")
             log(f"Mosaic pane {index}/{total} → RA {ra:.4f}h Dec {dec:+.3f}° ({name})")
             _session_phase = "goto"
-            _goto_target(
-                f"GOTO pane {index}",
-                ra,
-                dec,
-                name,
-                v3_model=v3_model,
-                release_stack=stacked_previous,
-            )
+            try:
+                _goto_target(
+                    f"GOTO pane {index}",
+                    ra,
+                    dec,
+                    name,
+                    v3_model=v3_model,
+                    release_stack=stacked_previous,
+                )
+            except InterruptedError:
+                raise
+            except RuntimeError as exc:
+                message = mosaic_pane_goto_fail_message(
+                    pane=index,
+                    total=total,
+                    ra=ra,
+                    dec=dec,
+                    name=name,
+                    error=exc,
+                )
+                log(message, "error")
+                report(index, f"GOTO pane {index}/{total} failed")
+                raise RuntimeError(message) from exc
             _wait_for_capture_slot(lambda text, pane=index, **_k: report(pane, text))
             _reset_session_capture({
                 "camera": {"frame_count": _device.get("frame_count")},

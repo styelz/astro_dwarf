@@ -54,10 +54,8 @@ Item {
         overlapBox.value = skyPage.clampInt(skyStore.mosaicOverlap, 0, 80, 20)
         const stored = backend.selectedDevice.mosaic_pa
         const hasDevicePa = stored !== undefined && stored !== null && stored !== ""
-        if (!hasDevicePa && skyStore.mosaicPaSet) {
-            backend.setMosaicPa(((skyPage.clampInt(skyStore.mosaicPa, 0, 359, skyPage.defaultPa) % 360) + 360) % 360)
+        if (!hasDevicePa)
             skyStore.mosaicPaSet = false
-        }
         skyPage.applyDevicePa()
         backend.setSkyMosaicGrid(columnsBox.value, rowsBox.value, overlapBox.value / 100)
     }
@@ -68,6 +66,8 @@ Item {
         backend.setSkyMosaicGrid(columnsBox.value, rowsBox.value, overlapBox.value / 100)
     }
     function applyDevicePa() {
+        if (paBox.activeFocus)
+            return
         const next = ((skyPage.clampInt(backend.mosaicPa, 0, 359, skyPage.defaultPa) % 360) + 360) % 360
         if (paBox.value === next)
             return
@@ -296,6 +296,9 @@ Item {
         function onSelectedDeviceChanged() {
             skyPage.applyDevicePa()
         }
+        function onMosaicPaChanged() {
+            skyPage.applyDevicePa()
+        }
         function onSkyLockRequested(payload) {
             skyPage.queueSkyLock(payload)
         }
@@ -424,7 +427,7 @@ Item {
                     implicitWidth: 78
                     Layout.preferredWidth: 78
                     accessibleName: "Camera position angle east of north"
-                    tooltip: "Camera position angle, east of north, stored on this telescope. 0° is N-up. Use 180° only if the stacked image is south-up on the sky chart."
+                    tooltip: "Camera position angle east of north, as used for overlay, cache, STACK, and save. The box shows the resolved angle. Changing it stores that value on this telescope. Unset follows EQ 0°/180° or alt-az zenith of the locked target."
                     textFromValue: (value, locale) => String(value) + "°"
                     valueFromText: (text, locale) => {
                         const n = parseInt(String(text).replace("°", "").trim(), 10)
@@ -440,7 +443,7 @@ Item {
                     Layout.alignment: Qt.AlignVCenter
                 }
                 HudChip {
-                    label: backend.mosaicSouthUp ? "S-UP" : "N-UP"
+                    label: backend.mosaicPaChip
                     tone: Theme.accent
                     Layout.alignment: Qt.AlignVCenter
                 }

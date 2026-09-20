@@ -165,6 +165,7 @@ ApplicationWindow {
         return pending === "stop_all" || pending === "stop_session"
     }
     function scopeActivityText() {
+        backend.clockText
         if (root.scopeStopping)
             return (root.scopePendingDetail || "Stopping").toUpperCase()
         if (root.scopePending)

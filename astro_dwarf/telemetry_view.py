@@ -131,7 +131,28 @@ def _feature_seconds_text(value: Any) -> str | None:
 
 def _clock_text(seconds: int) -> str:
     value = max(0, int(seconds))
-    return f"{value // 60:02d}:{value % 60:02d}"
+    hours = value // 3600
+    minutes = (value % 3600) // 60
+    secs = value % 60
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _running_elapsed_s(raw: dict[str, Any], seconds_key: str, started_key: str, now: float) -> int:
+    """Firmware seconds, interpolated from the start stamp so HUD clocks tick."""
+    firmware = int(raw.get(seconds_key) or 0)
+    started = _as_float(raw.get(started_key)) or 0.0
+    local = int(max(0.0, now - started)) if started > 1_000_000_000 else 0
+    return max(firmware, local)
+
+
+def _timelapse_total_s(raw: dict[str, Any]) -> int:
+    """Use the HUD duration; firmware total can be leftover minutes or output length."""
+    configured = photo_capture_seconds(raw.get("timelapse_duration")) or 0
+    if configured > 0:
+        return configured
+    return int(raw.get("timelapse_total_s") or 0)
 
 
 def _camera_params_entry(cameras: Any, index: int) -> dict[str, Any]:
@@ -374,8 +395,9 @@ def tracking_needs_calibration(result: Any) -> bool:
     )
 
 
-def derive_activity(raw: dict[str, Any]) -> tuple[str, str]:
+def derive_activity(raw: dict[str, Any], now: float | None = None) -> tuple[str, str]:
     """Return (activity, detail) as reported by the device, or ("", "")."""
+    now = time.time() if now is None else now
     if raw.get("power_off"):
         return "poweroff", "POWERING OFF"
     calibration = raw.get("calibration_state")
@@ -400,14 +422,27 @@ def derive_activity(raw: dict[str, Any]) -> tuple[str, str]:
         progress = raw.get("dark_progress")
         return "dark", f"{int(progress)}%" if progress is not None else "RUNNING"
     if raw.get("burst_state") == "running":
-        count = _as_int(raw.get("burst_count"))
-        return "burst", f"{count} SHOTS" if count else "RUNNING"
-    if raw.get("timelapse_state") == "running":
-        elapsed = int(raw.get("timelapse_elapsed_s") or 0)
-        total = int(raw.get("timelapse_total_s") or 0)
+        completed = _as_int(raw.get("burst_completed"))
+        total = _as_int(raw.get("burst_total")) or _as_int(raw.get("burst_count"))
+        if completed is not None and total:
+            return "burst", f"{completed}/{total}"
         if total:
-            return "timelapse", f"{_clock_text(elapsed)} / {_clock_text(total)}"
-        return "timelapse", _clock_text(elapsed)
+            return "burst", f"{total} SHOTS"
+        return "burst", "RUNNING"
+    if raw.get("timelapse_state") == "running":
+        elapsed = _running_elapsed_s(raw, "timelapse_elapsed_s", "timelapse_started_at", now)
+        total = _timelapse_total_s(raw)
+        out_s = int(raw.get("timelapse_out_s") or raw.get("timelapse_elapsed_s") or 0)
+        if total:
+            detail = f"{_clock_text(elapsed)} / {_clock_text(total)}"
+        else:
+            detail = _clock_text(elapsed)
+        # Firmware out_time is the assembled video length, not capture elapsed.
+        if out_s > 0 and out_s + 2 < elapsed:
+            detail = f"{detail} · OUT {_clock_text(out_s)}"
+        return "timelapse", detail
+    if raw.get("record_state") == "running":
+        return "record", _clock_text(_running_elapsed_s(raw, "record_seconds", "record_started_at", now))
     if raw.get("capture_active") or raw.get("capture_state") == "running":
         current = _capture_frame_count(raw)
         total = raw.get("capture_total")
@@ -418,8 +453,6 @@ def derive_activity(raw: dict[str, Any]) -> tuple[str, str]:
         else:
             detail = "STACKING"
         return "imaging", detail
-    if raw.get("record_state") == "running":
-        return "record", _clock_text(int(raw.get("record_seconds") or 0))
     return "", ""
 
 
@@ -548,7 +581,7 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     else:
         view["eq_azi_text"] = ""
         view["eq_alt_text"] = ""
-    activity, detail = derive_activity(raw)
+    activity, detail = derive_activity(raw, now)
     view["activity"] = activity
     view["activity_detail"] = detail
     age = (now - updated_at) if updated_at else -1.0

@@ -192,6 +192,15 @@ QtObject {
             ? hours + "h " + String(minutes).padStart(2, "0") + "m"
             : minutes > 0 ? minutes + "m " + String(secs).padStart(2, "0") + "s" : secs + "s"
     }
+    function clockLabel(seconds) {
+        const value = Math.max(0, Math.floor(Number(seconds) || 0))
+        const hours = Math.floor(value / 3600)
+        const minutes = Math.floor((value % 3600) / 60)
+        const secs = value % 60
+        if (hours > 0)
+            return hours + ":" + String(minutes).padStart(2, "0") + ":" + String(secs).padStart(2, "0")
+        return String(minutes).padStart(2, "0") + ":" + String(secs).padStart(2, "0")
+    }
     function sessionStepLabel(session, nowMs) {
         const step = String((session && session.current_step) || "")
         if (!session || String(session.status || "") !== "running" || !step)

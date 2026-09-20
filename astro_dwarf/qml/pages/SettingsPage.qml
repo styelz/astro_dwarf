@@ -771,7 +771,7 @@ Item {
                                 accessibleName: "Camera position angle east of north"
                                 placeholderText: "0"
                             }
-                            FieldHint { text: "Camera rotation east of north for SKY mosaics on this telescope. Blank follows the site: 0° north-up in the northern hemisphere, 180° south-up in the southern hemisphere, so pane 1 stays at the top-right of the sky view. Set 0° only if the stacked image is north-up on the sky chart." }
+                            FieldHint { text: "Camera rotation east of north for mosaics on this telescope. Blank is unset: EQ uses 0° north-up, or 180° south-up in the south; alt-az uses the locked target's zenith-up (parallactic) angle. Stored 0° is explicit N-up even at a southern site." }
                         }
                     }
 

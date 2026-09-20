@@ -4,7 +4,7 @@ import csv
 import json
 import re
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from math import asin, atan2, ceil, cos, pi, radians, sin, tan
 from pathlib import Path
@@ -1189,6 +1189,29 @@ SKY_WEB_FOV_JS = r"""
       {x: cx - ux + vx, y: cy - uy + vy}
     ];
   }
+  function imageQuadOrder() {
+    return [3, 0, 1, 2];
+  }
+  function projectedImageQuad(stel, corners, box) {
+    if (!corners || corners.length < 4) return null;
+    var order = imageQuadOrder();
+    var quad = [];
+    for (var q = 0; q < 4; q++) {
+      var cpt = projectPoint(stel, corners[order[q]].ra_hours, corners[order[q]].dec_degrees, box);
+      if (!cpt) return null;
+      quad.push(cpt);
+    }
+    return quad;
+  }
+  function livePointingCorners(p, stel) {
+    var pos = currentPointing(p, stel);
+    var fovH = Number(p && p.fov_h), fovV = Number(p && p.fov_v);
+    if (!pos || !(fovH > 0) || !(fovV > 0)) return [];
+    return cameraCorners(pos.ra_hours, pos.dec_degrees, fovH, fovV, framePa(p));
+  }
+  function livePointingQuad(p, stel, box) {
+    return projectedImageQuad(stel, livePointingCorners(p, stel), box);
+  }
   function paneSpan(quad) {
     if (!quad || quad.length < 4) return 0;
     var w = Math.hypot(quad[1].x - quad[0].x, quad[1].y - quad[0].y);
@@ -1222,12 +1245,6 @@ SKY_WEB_FOV_JS = r"""
     var base = p && p.south_up ? 180 : 0;
     return wrapDeg(framePa(p) - base);
   }
-  function rotateGroup(box, p, inner) {
-    var pa = framePa(p);
-    var cx = (box.width / 2).toFixed(1);
-    var cy = (box.height / 2).toFixed(1);
-    return '<g transform="rotate(' + (-pa).toFixed(2) + " " + cx + " " + cy + ')">' + inner + "</g>";
-  }
   function rotateChartGroup(box, p, inner) {
     var tilt = chartTilt(p);
     var cx = (box.width / 2).toFixed(1);
@@ -1253,13 +1270,14 @@ SKY_WEB_FOV_JS = r"""
     var color = String(p.color || "#7ee0d0");
     var left = (box.width - size.w) / 2;
     var top = (box.height - size.h) / 2;
-    paintSvg(el, box, rotateGroup(box, p,
+    var tilt = chartTilt(p);
+    paintSvg(el, box, rotateChartGroup(box, p,
       liveImageRect(left, top, size.w, size.h)
       + '<rect x="' + left.toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + size.w.toFixed(1)
       + '" height="' + size.h.toFixed(1) + '" fill="none" stroke="' + color
       + '" stroke-width="1.25" stroke-opacity="0.9"/>'
       + upTick(box.width / 2, top, color))
-      + labelOnFrame(p, hudCorners(box.width / 2, box.height / 2, size.w, size.h, framePa(p)), stel, box));
+      + labelOnFrame(p, hudCorners(box.width / 2, box.height / 2, size.w, size.h, tilt), stel, box));
     return "center";
   }
   function drawScreenGrid(el, box, p, stel) {
@@ -1341,7 +1359,7 @@ SKY_WEB_FOV_JS = r"""
         var upA = projectPoint(stel, corners[3].ra_hours, corners[3].dec_degrees, box);
         var upB = projectPoint(stel, corners[0].ra_hours, corners[0].dec_degrees, box);
         tick = edgeTick(upA, upB, color);
-        var order = [3, 0, 1, 2];
+        var order = imageQuadOrder();
         for (var q = 0; q < 4; q++) {
           var cpt = projectPoint(stel, corners[order[q]].ra_hours, corners[order[q]].dec_degrees, box);
           if (cpt) quad.push(cpt);
@@ -1361,10 +1379,12 @@ SKY_WEB_FOV_JS = r"""
       drawn.forEach(function(item) {
         media += paneFillQuad(item.quad, item.index);
       });
-    } else if (mosaic) {
-      media += liveImageQuad(mosaicCenterFovQuad(drawn));
-    } else if (drawn[0] && drawn[0].quad) {
-      media += liveImageQuad(drawn[0].quad);
+    } else {
+      media += liveImageQuad(
+        livePointingQuad(p, stel, box)
+        || (!mosaic && drawn[0] && drawn[0].quad)
+        || mosaicCenterFovQuad(drawn)
+      );
     }
     var svg = mosaicUsesPaneImages() ? mosaicMediaGroup(media) : media;
     var paneFill = mosaicUsesPaneImages() ? "none" : color;
@@ -1399,9 +1419,7 @@ SKY_WEB_FOV_JS = r"""
     var panes = (p && p.panes) || [];
     if (panes.length)
       return panes;
-    if (String(p.mode || "") === "center")
-      return [];
-    var center = viewCenter(stel);
+    var center = payloadPointing(p) || viewCenter(stel) || payloadView(p);
     if (!center) return [];
     return gridPanes(center, p);
   }
@@ -2753,6 +2771,54 @@ def mosaic_chart_tilt(south_up: bool, position_angle: Any = None) -> float:
     return ((pa - base) % 360.0 + 360.0) % 360.0
 
 
+def mosaic_overlay_hud_tilt(south_up: bool, position_angle: Any = None) -> float:
+    """1×1 HUD box and mosaic screen-grid share this tilt.
+
+    Using full camera PA on 1×1 and chart tilt on 2×2 flipped the live JPEG
+    180° at a southern site with PA 0. Numbered panes still use chart tilt so
+    1↔4 do not swap; the live image must follow the same residual.
+    """
+    return mosaic_chart_tilt(south_up, position_angle)
+
+
+# _pane_corners: 0 right-up, 1 right-down, 2 left-down, 3 left-up.
+# JPEG top-left is camera left-up so the overlay warp matches Control live view.
+MOSAIC_IMAGE_QUAD_ORDER = (3, 0, 1, 2)
+
+
+def overlay_north_up_xy(
+    ra_hours: float,
+    dec_degrees: float,
+    ra0_hours: float,
+    dec0_degrees: float,
+) -> tuple[float, float]:
+    """Fake N-up chart: east on the left, north toward -y (screen up)."""
+    dra_hours = ((float(ra_hours) - float(ra0_hours) + 12.0) % 24.0) - 12.0
+    east = dra_hours * 15.0 * cos(radians(float(dec0_degrees)))
+    north = float(dec_degrees) - float(dec0_degrees)
+    return -east, -north
+
+
+def mosaic_image_quad_xy(
+    corners: list[dict[str, Any]],
+    ra0_hours: float,
+    dec0_degrees: float,
+) -> list[tuple[float, float]]:
+    """Screen points for JPEG TL, TR, BR, BL from ICRS pane corners."""
+    by_index = list(corners)
+    if len(by_index) < 4:
+        raise ValueError("Pane corners are missing")
+    return [
+        overlay_north_up_xy(
+            float(by_index[index]["ra_hours"]),
+            float(by_index[index]["dec_degrees"]),
+            ra0_hours,
+            dec0_degrees,
+        )
+        for index in MOSAIC_IMAGE_QUAD_ORDER
+    ]
+
+
 def mosaic_position_angle(south_up: bool, position_angle: Any = None) -> float:
     # Unset PA follows the site: 0° N-up in the north, 180° S-up in the south.
     if position_angle is None or position_angle == "":
@@ -2816,6 +2882,78 @@ def parallactic_angle_deg(
     return (angle * 180.0 / pi) % 360.0
 
 
+MOSAIC_PA_STORED = "stored"
+MOSAIC_PA_PARALLACTIC = "parallactic"
+MOSAIC_PA_DEFAULT = "default"
+
+
+@dataclass(frozen=True)
+class MosaicPa:
+    """Camera-up used by overlay, cache, STACK, and save."""
+
+    degrees: float
+    source: str
+    south_up: bool = False
+    mount_mode: str = ""
+
+
+def mosaic_pa_chip(source: str, degrees: float) -> str:
+    """SKY HUD chip: zenith-up alt-az, otherwise N-up / S-up from camera PA."""
+    if str(source or "") == MOSAIC_PA_PARALLACTIC:
+        return "ZENITH"
+    try:
+        pa = float(degrees) % 360.0
+    except (TypeError, ValueError):
+        pa = 0.0
+    return "S-UP" if 90.0 < pa < 270.0 else "N-UP"
+
+
+def mosaic_overlay_pa_fields(resolved: MosaicPa) -> dict[str, Any]:
+    return {
+        "position_angle": float(resolved.degrees),
+        "pa_source": resolved.source,
+        "south_up": bool(resolved.south_up),
+    }
+
+
+def resolve_device_mosaic_pa(
+    latitude: Any,
+    position_angle: Any = None,
+    *,
+    longitude: Any = None,
+    ra_hours: Any = None,
+    dec_degrees: Any = None,
+    mount_mode: Any = None,
+    when: datetime | None = None,
+) -> MosaicPa:
+    """Camera PA for overlay, cache, STACK, and save.
+
+    Stored mosaic_pa is an explicit override, including 0°. Unset EQ keeps the
+    celestial 0° N / 180° S default. Unset alt-az uses the parallactic angle of
+    the locked target (caller must not pass the view centre). Without a target
+    or site, fall back to the celestial default.
+    """
+    south_up = mosaic_south_up(latitude)
+    mode = str(mount_mode or "").strip().upper()
+    if position_angle is not None and position_angle != "":
+        return MosaicPa(
+            mosaic_position_angle(south_up, position_angle),
+            MOSAIC_PA_STORED,
+            south_up,
+            mode,
+        )
+    if mode != "EQ":
+        try:
+            has_site = abs(float(latitude or 0)) >= 1e-9 or abs(float(longitude or 0)) >= 1e-9
+        except (TypeError, ValueError):
+            has_site = False
+        if has_site and ra_hours is not None and dec_degrees is not None:
+            angle = parallactic_angle_deg(ra_hours, dec_degrees, latitude, longitude, when)
+            if angle is not None:
+                return MosaicPa(angle, MOSAIC_PA_PARALLACTIC, south_up, mode)
+    return MosaicPa(mosaic_position_angle(south_up, None), MOSAIC_PA_DEFAULT, south_up, mode)
+
+
 def device_mosaic_pa(
     latitude: Any,
     position_angle: Any = None,
@@ -2826,27 +2964,16 @@ def device_mosaic_pa(
     mount_mode: Any = None,
     when: datetime | None = None,
 ) -> float:
-    """Camera PA used for mosaic ICRS centres, overlay, and GOTO.
-
-    A stored mosaic_pa is an explicit override (including 0°). Unset PA must
-    follow the real camera, not a sky-chart convention: alt-az is zenith-up,
-    so camera-up is the parallactic angle. EQ keeps the celestial 0°/180°
-    default. Without a target or site, fall back to that celestial default.
-    """
-    south_up = mosaic_south_up(latitude)
-    if position_angle is not None and position_angle != "":
-        return mosaic_position_angle(south_up, position_angle)
-    mode = str(mount_mode or "").strip().upper()
-    if mode != "EQ":
-        try:
-            has_site = abs(float(latitude or 0)) >= 1e-9 or abs(float(longitude or 0)) >= 1e-9
-        except (TypeError, ValueError):
-            has_site = False
-        if has_site and ra_hours is not None and dec_degrees is not None:
-            angle = parallactic_angle_deg(ra_hours, dec_degrees, latitude, longitude, when)
-            if angle is not None:
-                return angle
-    return mosaic_position_angle(south_up, None)
+    """Camera PA used for mosaic ICRS centres, overlay, and GOTO."""
+    return resolve_device_mosaic_pa(
+        latitude,
+        position_angle,
+        longitude=longitude,
+        ra_hours=ra_hours,
+        dec_degrees=dec_degrees,
+        mount_mode=mount_mode,
+        when=when,
+    ).degrees
 
 
 def _mosaic_grid_args(

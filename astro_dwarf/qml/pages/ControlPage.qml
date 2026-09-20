@@ -165,7 +165,10 @@ Item {
                             spacing: 5
                             Text { text: root.scopePending ? "⇡" : root.scopeActivity !== "" ? "◈" : root.scopeImaging ? "●" : root.scopeOnline ? "◇" : "○"; color: activityBadge.tone; font.pixelSize: 9 }
                             Text {
-                                text: root.scopeActivityText()
+                                text: {
+                                    backend.clockText
+                                    return root.scopeActivityText()
+                                }
                                 color: activityBadge.tone
                                 font.pixelSize: 8; font.bold: true; font.letterSpacing: 1
                                 font.family: Theme.fontMono
@@ -1979,7 +1982,12 @@ Item {
                                     }
                                 }
                                 Text {
-                                    text: root.scopeActivity === "record" ? "REC " + root.scopeActivityDetail : "STACKING " + (recBadge.t.capture_text || "")
+                                    text: {
+                                        backend.clockText
+                                        return root.scopeActivity === "record"
+                                            ? "REC " + (root.scopeActivityDetail || "00:00")
+                                            : "STACKING " + (recBadge.t.capture_text || "")
+                                    }
                                     color: Theme.danger; font.pixelSize: 11; font.bold: true; font.family: Theme.fontMono
                                 }
                             }
@@ -2243,6 +2251,70 @@ Item {
                                 return shootingTech === 5
                             return false
                         }
+                        readonly property bool timedCapture: modelData.state === "record"
+                            || modelData.state === "timelapse"
+                            || modelData.state === "burst"
+                        property double captureStartedMs: 0
+                        readonly property double captureStartAt: Number(
+                            modelData.state === "record" ? (t.record_started_at || 0)
+                            : modelData.state === "timelapse" ? (t.timelapse_started_at || 0)
+                            : 0)
+                        function syncCaptureClock() {
+                            if (!activeForState || !timedCapture) {
+                                captureStartedMs = 0
+                                return
+                            }
+                            if (captureStartAt > 1000000000) {
+                                captureStartedMs = captureStartAt * 1000
+                                return
+                            }
+                            const firmware = modelData.state === "record" ? Number(t.record_seconds || 0) : 0
+                            captureStartedMs = Date.now() - Math.max(0, firmware) * 1000
+                        }
+                        onActiveForStateChanged: syncCaptureClock()
+                        onCaptureStartAtChanged: syncCaptureClock()
+                        readonly property int captureElapsedS: {
+                            backend.clockText
+                            if (!activeForState || !timedCapture)
+                                return 0
+                            if (modelData.state === "burst")
+                                return Number(t.burst_completed || 0)
+                            const local = captureStartedMs ? Math.floor((Date.now() - captureStartedMs) / 1000) : 0
+                            if (modelData.state === "record")
+                                return Math.max(Number(t.record_seconds || 0), local)
+                            const total = captureTotalS
+                            return total > 0 ? Math.min(Math.max(0, local), total) : Math.max(0, local)
+                        }
+                        readonly property int captureTotalS: {
+                            const configured = Number(t.timelapse_duration || 0)
+                            if (configured > 0)
+                                return configured
+                            return Number(t.timelapse_total_s || 0)
+                        }
+                        readonly property string liveClockText: {
+                            backend.clockText
+                            if (modelData.state === "record")
+                                return Util.clockLabel(captureElapsedS)
+                            if (modelData.state === "timelapse") {
+                                const total = captureTotalS
+                                const elapsed = captureElapsedS
+                                const outS = Number(t.timelapse_out_s || 0)
+                                let text = total > 0
+                                    ? Util.clockLabel(elapsed) + " / " + Util.clockLabel(total)
+                                    : Util.clockLabel(elapsed)
+                                if (outS > 0 && outS + 2 < elapsed)
+                                    text += " · OUT " + Util.clockLabel(outS)
+                                return text
+                            }
+                            if (modelData.state === "burst") {
+                                const done = Number(t.burst_completed || 0)
+                                const total = Number(t.burst_total || t.burst_count || 0)
+                                if (done || total)
+                                    return (done || 0) + "/" + (total || "?")
+                                return ""
+                            }
+                            return ""
+                        }
                         readonly property bool stackTracking: !!t.tracking_active && root.scopeActivity !== "goto"
                         readonly property bool stackPrimed: modelData.start === "stack" && root.scopeOnline && cameraPanel.dsoMode && cameraPanel.stackParamsReady && stackTracking && !activeForState
                         readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop || (root.scopePending === "cancel_prime" && (capturePrimed || stackPrimed)))
@@ -2328,11 +2400,11 @@ Item {
                                     return t.eq_azi_text || "ALIGN"
                                 return root.scopeActivityDetail || "RUNNING"
                             case "record":
-                                return "REC · " + (root.scopeActivityDetail || "00:00")
+                                return "REC · " + (pad.liveClockText || root.scopeActivityDetail || "00:00")
                             case "burst":
-                                return root.scopeActivityDetail ? root.scopeActivityDetail + " · STOP" : "BURST · STOP"
+                                return (pad.liveClockText || root.scopeActivityDetail || "BURST") + " · STOP"
                             case "timelapse":
-                                return root.scopeActivityDetail ? root.scopeActivityDetail + " · STOP" : "LAPSE · STOP"
+                                return (pad.liveClockText || root.scopeActivityDetail || "00:00") + " · STOP"
                             case "imaging":
                                 return t.capture_text ? "STACK · " + t.capture_text : "STACKING"
                             case "lights":
@@ -2349,7 +2421,15 @@ Item {
                         Layout.preferredHeight: 58
                         text: padLabel
                         glyph: modelData.glyph
-                        detail: deviceDetail()
+                        detail: {
+                            backend.clockText
+                            pad.liveClockText
+                            pad.captureElapsedS
+                            root.scopeActivityDetail
+                            t.capture_text
+                            t.focus_text
+                            pad.deviceDetail()
+                        }
                         tooltip: trackingPad && root.scopeStacking
                                  ? "Tracking stays on while stacking.\nPress STACK to stop the capture."
                                  : modelData.start === "stack" && stackTracking && cameraPanel.stackSettingsText()
