@@ -132,6 +132,9 @@ from .services import (
     observing_date,
     pane_sort_key,
     format_coordinates,
+    format_coordinate_fields,
+    coordinate_format_info,
+    parse_coordinate_fields,
     parse_coordinate_text,
     MOSAIC_PA_DEFAULT,
     MosaicPa,
@@ -7512,6 +7515,33 @@ class AppBackend(QObject):
             "ra_hours": ra,
             "dec_degrees": dec,
         }
+
+    @Slot(int, result="QVariantMap")
+    def skyCoordinateFormatInfo(self, format_index: int) -> dict[str, Any]:
+        return coordinate_format_info(format_index)
+
+    @Slot(float, float, int, result="QVariantMap")
+    def formatSkyCoordinateFields(
+        self, ra_hours: float, dec_degrees: float, format_index: int
+    ) -> dict[str, Any]:
+        return format_coordinate_fields(ra_hours, dec_degrees, format_index)
+
+    @Slot(str, str, int, result="QVariantMap")
+    def parseSkyCoordinateFields(
+        self, ra_text: str, dec_text: str, format_index: int
+    ) -> dict[str, Any]:
+        parsed = parse_coordinate_fields(ra_text, dec_text, format_index)
+        if parsed is None:
+            info = coordinate_format_info(format_index)
+            info["valid"] = False
+            info["text"] = ""
+            info["ra_hours"] = None
+            info["dec_degrees"] = None
+            return info
+        ra, dec = parsed
+        info = format_coordinate_fields(ra, dec, format_index)
+        info["text"] = format_coordinates(ra, dec)
+        return info
 
     def bindWindowFrame(self, hook) -> None:
         self._window_frame_hook = hook

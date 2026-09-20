@@ -3,6 +3,7 @@ import QtQuick.Layouts
 import QtCore
 import ".."
 import "../components"
+import "../dialogs"
 
 Item {
     id: skyPage
@@ -35,6 +36,7 @@ Item {
         property real viewYaw: 0
         property real viewPitch: 0
         property real viewRoll: 0
+        property int coordFormatIndex: 0
     }
     function clampInt(value, lo, hi, fallback) {
         const n = Number(value)
@@ -186,6 +188,30 @@ Item {
             return
         map.openAtlasMenu(skyPage.lastSkyMenuX, skyPage.lastSkyMenuY)
     }
+    function currentMapCenter() {
+        const live = (mapLoader.item && mapLoader.item.liveView) || {}
+        const ra = Number(isFinite(Number(live.ra_hours)) ? live.ra_hours : skyStore.viewRaHours)
+        const dec = Number(isFinite(Number(live.dec_degrees)) ? live.dec_degrees : skyStore.viewDecDegrees)
+        if (isFinite(ra) && isFinite(dec) && (isFinite(Number(live.ra_hours)) || skyStore.viewSaved))
+            return { ra_hours: ra, dec_degrees: dec }
+        return null
+    }
+    function openRaDecDialog() {
+        raDecDialog.formatIndex = skyPage.clampInt(skyStore.coordFormatIndex, 0, 3, 0)
+        const center = skyPage.currentMapCenter()
+        if (center)
+            raDecDialog.openAt(center.ra_hours, center.dec_degrees)
+        else
+            raDecDialog.openAt(Number.NaN, Number.NaN)
+    }
+    function gotoRaDec(raHours, decDegrees) {
+        const map = mapLoader.item
+        if (!map || typeof map.setView !== "function")
+            return
+        if (typeof map.beginViewHold === "function")
+            map.beginViewHold()
+        map.setView(raHours, decDegrees)
+    }
     function lockToTrackedTarget() {
         const tracked = backend.trackedSkyTarget || ({})
         if (!tracked.available)
@@ -271,6 +297,8 @@ Item {
             skyPage.openAtlasMenu()
         else if (key === "clipboard")
             skyMenu.clipboardGotoRequested()
+        else if (key === "radec")
+            skyPage.openRaDecDialog()
         else
             return "unknown"
         return key
@@ -634,6 +662,7 @@ Item {
                               && (root.scopeActivity === "" || root.scopeActivity === "goto"
                                   || !!root.scopeTelemetry.tracking_active)
                 onAtlasMenuRequested: skyPage.openAtlasMenu()
+                onEnterRaDecRequested: Qt.callLater(skyPage.openRaDecDialog)
                 onClipboardGotoRequested: {
                     skyMenu.refreshClipboard()
                     if (!skyMenu.clipboardValid)
@@ -684,5 +713,11 @@ Item {
                 }
             }
         }
+    }
+
+    SkyRaDecDialog {
+        id: raDecDialog
+        onFormatIndexChanged: skyStore.coordFormatIndex = skyPage.clampInt(formatIndex, 0, 3, 0)
+        onGotoRequested: (raHours, decDegrees) => skyPage.gotoRaDec(raHours, decDegrees)
     }
 }

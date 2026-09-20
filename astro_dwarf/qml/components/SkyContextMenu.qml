@@ -24,6 +24,7 @@ HudMenu {
     signal trackSelected()
     signal atlasMenuRequested()
     signal clipboardGotoRequested()
+    signal enterRaDecRequested()
 
     function refreshClipboard() {
         const coords = backend.clipboardCoordinates() || ({})
@@ -36,6 +37,13 @@ HudMenu {
     onAboutToShow: skyMenu.refreshClipboard()
 
     HudMenuItem {
+        objectName: "enterRaDecMenuItem"
+        text: "Enter RA / Dec"
+        glyph: "\uE70F"
+        accessibleDescription: "Open a dialog to type right ascension and declination and center the sky map"
+        onTriggered: skyMenu.enterRaDecRequested()
+    }
+    HudMenuItem {
         objectName: "clipboardGotoMenuItem"
         visible: skyMenu.clipboardValid
         text: "Go to clipboard"
@@ -47,8 +55,6 @@ HudMenu {
         onTriggered: skyMenu.clipboardGotoRequested()
     }
     HudMenuSeparator {
-        visible: skyMenu.clipboardValid
-        height: visible ? implicitHeight : 0
     }
     HudMenuItem {
         text: skyMenu.overlayEnabled ? "Hide live stream on FOV" : "Overlay live stream on FOV"

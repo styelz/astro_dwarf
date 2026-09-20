@@ -3479,14 +3479,144 @@ def format_coordinates(ra_hours: float, dec_degrees: float) -> str:
     return f"RA {ra:.3f}h  DEC {dec:+.3f}°"
 
 
-def parse_coordinate_text(text: str) -> tuple[float, float] | None:
-    raw = (
+COORDINATE_FIELD_FORMAT_COUNT = 4
+
+
+def coordinate_format_index(value: Any) -> int:
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return index % COORDINATE_FIELD_FORMAT_COUNT
+
+
+def coordinate_format_info(format_index: Any = 0) -> dict[str, Any]:
+    fmt = coordinate_format_index(format_index)
+    names = (
+        "HMS / DMS",
+        "HMS / DMS spaces",
+        "Decimal hours",
+        "Decimal degrees",
+    )
+    hints = (
+        "RA as hours minutes seconds with units; Dec as degrees minutes seconds",
+        "RA and Dec as space-separated sexagesimal values",
+        "RA in decimal hours; Dec in decimal degrees",
+        "RA and Dec in decimal degrees",
+    )
+    placeholders = (
+        ("11h 46m 37s", "-61° 11' 13\""),
+        ("11 46 37", "-61 11 13"),
+        ("11.77694", "-61.18694"),
+        ("176.65417", "-61.18694"),
+    )
+    return {
+        "format_index": fmt,
+        "format_name": names[fmt],
+        "format_hint": hints[fmt],
+        "ra_placeholder": placeholders[fmt][0],
+        "dec_placeholder": placeholders[fmt][1],
+    }
+
+
+def _sexagesimal_parts(value: float, *, wrap_hours: bool = False) -> tuple[int, int, int, int]:
+    sign = -1 if float(value) < 0 else 1
+    mag = abs(float(value))
+    total = int(round(mag * 3600.0))
+    if wrap_hours:
+        total %= 24 * 3600
+    units = total // 3600
+    minutes = (total % 3600) // 60
+    seconds = total % 60
+    if not wrap_hours and units > 90:
+        units, minutes, seconds = 90, 0, 0
+    return sign, units, minutes, seconds
+
+
+def format_coordinate_fields(
+    ra_hours: Any, dec_degrees: Any, format_index: Any = 0
+) -> dict[str, Any]:
+    info = coordinate_format_info(format_index)
+    try:
+        ra = float(ra_hours)
+        dec = float(dec_degrees)
+    except (TypeError, ValueError):
+        ra = float("nan")
+        dec = float("nan")
+    if ra != ra or dec != dec:
+        info["valid"] = False
+        info["ra_text"] = ""
+        info["dec_text"] = ""
+        info["ra_hours"] = None
+        info["dec_degrees"] = None
+        return info
+    ra = ((ra % 24.0) + 24.0) % 24.0
+    dec = max(-90.0, min(90.0, dec))
+    fmt = int(info["format_index"])
+    _, hh, mm, ss = _sexagesimal_parts(ra, wrap_hours=True)
+    sign, dd, dm, ds = _sexagesimal_parts(dec)
+    prefix = "-" if sign < 0 else "+"
+    if fmt == 0:
+        ra_text = f"{hh:02d}h {mm:02d}m {ss:02d}s"
+        dec_text = f"{prefix}{dd:02d}° {dm:02d}' {ds:02d}\""
+    elif fmt == 1:
+        ra_text = f"{hh:02d} {mm:02d} {ss:02d}"
+        dec_text = f"{prefix}{dd:02d} {dm:02d} {ds:02d}"
+    elif fmt == 2:
+        ra_text = f"{ra:.5f}"
+        dec_text = f"{dec:+.5f}"
+    else:
+        ra_text = f"{ra * 15.0:.5f}"
+        dec_text = f"{dec:+.5f}"
+    info["valid"] = True
+    info["ra_text"] = ra_text
+    info["dec_text"] = dec_text
+    info["ra_hours"] = ra
+    info["dec_degrees"] = dec
+    return info
+
+
+def _clean_coordinate_field(text: str) -> str:
+    return " ".join(
         str(text or "")
         .replace("\u2212", "-")
         .replace("\u2013", "-")
         .replace("\u00a0", " ")
+        .split()
     )
-    raw = " ".join(raw.split())
+
+
+def parse_coordinate_fields(
+    ra_text: Any, dec_text: Any, format_index: Any = 0
+) -> tuple[float, float] | None:
+    ra_raw = _clean_coordinate_field(str(ra_text or ""))
+    dec_raw = _clean_coordinate_field(str(dec_text or ""))
+    if not ra_raw or not dec_raw:
+        return None
+    fmt = coordinate_format_index(format_index)
+    ra_number = (
+        ra_raw.lower()
+        .replace("degrees", "")
+        .replace("degree", "")
+        .replace("deg", "")
+        .replace("°", "")
+        .strip()
+    )
+    if fmt == 3 and re.fullmatch(r"[+-]?\d+(?:\.\d+)?", ra_number):
+        try:
+            ra_deg = float(ra_number)
+            dec = _parse_dec(dec_raw)
+        except (TypeError, ValueError):
+            return None
+        if ra_deg != ra_deg or dec != dec or abs(dec) > 90.0 or abs(ra_deg) > 360.0:
+            return None
+        ra = ((ra_deg / 15.0) % 24.0 + 24.0) % 24.0
+        return ra, max(-90.0, min(90.0, dec))
+    return parse_coordinate_text(f"{ra_raw}, {dec_raw}")
+
+
+def parse_coordinate_text(text: str) -> tuple[float, float] | None:
+    raw = _clean_coordinate_field(text)
     if not raw:
         return None
     labeled = re.search(
