@@ -254,6 +254,26 @@ QtObject {
             return ""
         return Util.formatCoordinates(target.ra_hours, target.dec_degrees)
     }
+    function skyShowIsMosaic(item) {
+        const data = item || ({})
+        if (data.is_grouped || data.is_group)
+            return true
+        const mosaic = data.mosaic || ({})
+        const rows = Math.max(Number(mosaic.grid_rows) || 0, Number(mosaic.rows) || 0, Number(mosaic.row) || 0)
+        const columns = Math.max(Number(mosaic.grid_columns) || 0, Number(mosaic.columns) || 0, Number(mosaic.column) || 0)
+        return rows > 1 || columns > 1
+    }
+    function skyShowHasCoordinates(item) {
+        if (Util.targetCoordinates(item) !== "")
+            return true
+        const data = item || ({})
+        const members = data.group_members || data.members || []
+        for (let i = 0; i < members.length; i++) {
+            if (Util.targetCoordinates(members[i]) !== "")
+                return true
+        }
+        return false
+    }
     function groupHash(groupId) {
         const text = String(groupId || "")
         let hash = 2166136261

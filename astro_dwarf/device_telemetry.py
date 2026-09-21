@@ -99,6 +99,57 @@ _TRACKED_RESPONSES = {
 
 OPERATION_STATES = {0: "idle", 1: "running", 2: "stopping", 3: "stopped"}
 ASTRO_STATES = {0: "idle", 1: "running", 2: "stopping", 3: "stopped", 4: "solving"}
+# stop_goto often ends on ASTRO_STATE_STOPPING and never sends idle.
+# Keep a stop we just watched on screen briefly; a stopping state that
+# arrives on its own is leftover from an earlier slew and must not latch TRACK.
+GOTO_STOP_UNWIND_S = 12.0
+
+
+def settle_goto_changes(
+    changes: dict[str, Any],
+    *,
+    previous_state: str,
+    owned: bool,
+    stopping_since: float,
+    now: float,
+) -> tuple[dict[str, Any], bool, float]:
+    """Drop a stuck GOTO STOPPING so the HUD can leave tracking mode.
+
+    Returns ``(changes, owned, stopping_since)``. A slew this link actually
+    saw (running or solving, then stopping) stays stopping until
+    ``GOTO_STOP_UNWIND_S``. Any other stopping sample is leftover firmware
+    state from before this connection.
+    """
+    if "goto_state" not in changes:
+        return changes, owned, stopping_since
+    state = str(changes.get("goto_state") or "")
+    prev = str(previous_state or "")
+    if state in ("running", "solving"):
+        return changes, True, 0.0
+    if state != "stopping":
+        # A 12s unwind can land after the next slew has already started.
+        # Publishing that idle clears the live GOTO and a mosaic wait can
+        # treat the previous field as centred.
+        if changes.get("goto_released") and prev in ("running", "solving"):
+            dropped = dict(changes)
+            dropped.pop("goto_state", None)
+            dropped.pop("goto_released", None)
+            return dropped, owned, stopping_since
+        return changes, False, 0.0
+    watched = prev in ("running", "solving") or (owned and prev == "stopping")
+    since = stopping_since if prev == "stopping" and stopping_since else now
+    if watched and now - since < GOTO_STOP_UNWIND_S:
+        return changes, True, since
+    released = dict(changes)
+    if not watched and prev in ("", "idle", "stopped"):
+        # Already clear, or this link never saw the slew. Drop the sample
+        # so a reconnect does not republish tracking mode or the old target.
+        released.pop("goto_state", None)
+        released.pop("goto_target", None)
+        return released, False, 0.0
+    released["goto_state"] = "idle"
+    released["goto_released"] = True
+    return released, False, 0.0
 CHARGING_STATES = {0: "discharging", 1: "charging", 2: "full"}
 STREAM_TYPES = {0: "OFF", 1: "RTSP", 2: "JPEG"}
 BODY_STATUS = {1: "EQ", 2: "AZ"}
@@ -405,6 +456,9 @@ class TelemetryTap:
         # Ignore it until the next handshake finishes or a later reconnect
         # replays it and drops a live link.
         self._accept_power_off = False
+        self._goto_stop_owned = False
+        self._goto_stopping_since = 0.0
+        self._goto_unwind_timer: threading.Timer | None = None
 
     # ------------------------------------------------------------------ setup
     def install(self, websockets_utils: Any) -> bool:
@@ -496,6 +550,9 @@ class TelemetryTap:
             self._battery_source = ""
             self._publish_host_mode = False
             self._accept_power_off = False
+            self._goto_stop_owned = False
+            self._goto_stopping_since = 0.0
+            self._cancel_goto_unwind_locked()
 
     def accept_power_off(self) -> None:
         """Treat later POWER_OFF notifies as a real drop of this live link."""
@@ -614,12 +671,51 @@ class TelemetryTap:
         if incoming.get("burst_state") == "running" and merged.get("burst_state") != "running":
             incoming.setdefault("burst_completed", int(merged.get("burst_completed") or 0))
 
+    def _cancel_goto_unwind_locked(self) -> None:
+        timer = self._goto_unwind_timer
+        self._goto_unwind_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _arm_goto_unwind_locked(self) -> None:
+        timer = self._goto_unwind_timer
+        if timer is not None and timer.is_alive():
+            return
+        timer = threading.Timer(GOTO_STOP_UNWIND_S, self._release_stuck_goto_stop)
+        timer.daemon = True
+        self._goto_unwind_timer = timer
+        timer.start()
+
+    def _release_stuck_goto_stop(self) -> None:
+        with self._lock:
+            state = str(self._pending.get("goto_state") or self._state.get("goto_state") or "")
+            since = self._goto_stopping_since
+            owned = self._goto_stop_owned
+        if state != "stopping" or not owned:
+            return
+        if since and time.monotonic() - since < GOTO_STOP_UNWIND_S - 0.05:
+            return
+        self.update({"goto_state": "idle", "goto_released": True}, force=True)
+
     def update(self, changes: dict[str, Any], force: bool = False) -> None:
         if not changes:
             return
         changes = dict(changes)
         now = time.monotonic()
         with self._lock:
+            if "goto_state" in changes:
+                previous_state = str(self._pending.get("goto_state") or self._state.get("goto_state") or "")
+                changes, self._goto_stop_owned, self._goto_stopping_since = settle_goto_changes(
+                    changes,
+                    previous_state=previous_state,
+                    owned=self._goto_stop_owned,
+                    stopping_since=self._goto_stopping_since,
+                    now=now,
+                )
+                if self._goto_stop_owned and str(changes.get("goto_state") or "") == "stopping":
+                    self._arm_goto_unwind_locked()
+                else:
+                    self._cancel_goto_unwind_locked()
             if "power_off" in changes and not self._accept_power_off:
                 changes.pop("power_off", None)
                 if not changes:
@@ -640,6 +736,8 @@ class TelemetryTap:
             payload = self._pending
             self._pending = {}
             self._state.update(payload)
+            if payload.get("goto_released"):
+                self._state.pop("goto_released", None)
             self._last_flush = now
         self._emit({"event": "telemetry", "data": payload})
 

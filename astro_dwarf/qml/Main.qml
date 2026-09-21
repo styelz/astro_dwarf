@@ -74,6 +74,7 @@ ApplicationWindow {
     readonly property string scopeActivityDetail: String((backend.selectedDevice && backend.selectedDevice.activity_detail) || "")
     readonly property bool scopeActivityFromDevice: !!(backend.selectedDevice && backend.selectedDevice.activity_from_device)
     property int currentPage: 0
+    readonly property int controlPageIndex: 0
     readonly property int sessionsPageIndex: 2
     readonly property int mediaPageIndex: 4
     readonly property int skyPageIndex: 5

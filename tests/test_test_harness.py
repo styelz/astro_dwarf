@@ -196,6 +196,8 @@ def test_pad_query_aliases() -> None:
     _assert(pad_start_from_query("PHOTO") is None, "PHOTO stays a mode button")
     _assert(pad_start_from_query("pad-photo") == "photo", "explicit photo pad")
     _assert(pad_start_from_query("CONNECT") is None, "non-pad label")
+    _assert(pad_start_from_query("pad-stack-stop") == "stack-stop", "stack stop chip")
+    _assert(pad_start_from_query("pad-track-stop") == "track-stop", "track stop chip")
 
 
 def test_walk_includes_child_items() -> None:

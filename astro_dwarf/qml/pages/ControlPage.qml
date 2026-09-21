@@ -29,14 +29,18 @@ Item {
                 enabled: !!item.enabled,
                 visible: !!item.visible,
                 value: String(item.text || ""),
-                path: "controlPage/" + String(item.objectName || item.text || "")
+                path: "controlPage/" + String(item.objectName || item.text || ""),
+                showStop: !!item.showStop
             })
         }
         return rows
     }
     function harnessClickPad(start) {
         const raw = String(start || "")
-        const key = raw.indexOf("pad-") === 0 ? raw.slice(4) : raw
+        let key = raw.indexOf("pad-") === 0 ? raw.slice(4) : raw
+        const wantStop = key.endsWith("-stop")
+        if (wantStop)
+            key = key.slice(0, -5)
         const name = "pad-" + key
         if (!commandPads)
             return "missing"
@@ -46,6 +50,10 @@ Item {
                 continue
             const startId = item.modelData && item.modelData.start ? String(item.modelData.start) : ""
             if (item.objectName === name || startId === key) {
+                if (wantStop) {
+                    item.stopClicked()
+                    return (item.objectName || name) + "-stop"
+                }
                 item.clicked()
                 return item.objectName || name
             }
@@ -228,9 +236,47 @@ Item {
                         required property var modelData
                         Layout.fillWidth: true
                         spacing: Theme.px(6)
-                        Text { text: modelData.label; color: Theme.textSecondary; font.pixelSize: Theme.fontPx(9); font.bold: true; font.letterSpacing: 0.8; Layout.preferredWidth: Theme.px(72) }
-                        Rectangle { Layout.fillWidth: true; Layout.minimumWidth: Theme.s3; Layout.preferredHeight: Theme.px(1); color: Theme.outlineSoft; opacity: 0.7 }
-                        Text { text: modelData.value; color: modelData.tone; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; Layout.fillWidth: true; Layout.maximumWidth: implicitWidth }
+                        Text {
+                            text: modelData.label
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.fontPx(9)
+                            font.bold: true
+                            font.letterSpacing: 0.8
+                            Layout.preferredWidth: Theme.px(72)
+                            Layout.minimumWidth: Theme.px(72)
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            Layout.preferredWidth: 0
+                            Layout.preferredHeight: Theme.px(1)
+                            Layout.maximumHeight: Theme.px(1)
+                            Layout.alignment: Qt.AlignVCenter
+                            color: Theme.outlineSoft
+                            opacity: 0.7
+                        }
+                        Text {
+                            id: statusValue
+                            text: modelData.value
+                            color: modelData.tone
+                            font.pixelSize: Theme.fontSm
+                            font.family: Theme.fontMono
+                            elide: Text.ElideRight
+                            horizontalAlignment: Text.AlignRight
+                            // Text.implicitWidth follows the elided width, so binding the
+                            // layout maximum to it keeps the value truncated after the
+                            // leader has taken the spare room. Measure the full string.
+                            readonly property int naturalWidth: Math.ceil(statusValueMetrics.advanceWidth) + 2
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: naturalWidth
+                            Layout.maximumWidth: naturalWidth
+                            Layout.minimumWidth: 0
+                            TextMetrics {
+                                id: statusValueMetrics
+                                font: statusValue.font
+                                text: statusValue.text
+                            }
+                        }
                     }
                 }
             }
@@ -548,6 +594,21 @@ Item {
                         glyph: "\uE70F"
                         enabled: backend.currentSession.status !== "running"
                         onTriggered: sessionDialog.openExisting(backend.currentSession)
+                    }
+                    HudMenuItem {
+                        objectName: "showTargetOnSkyMenuItem"
+                        readonly property bool mosaic: Util.skyShowIsMosaic(backend.currentSession)
+                        text: mosaic ? "Show mosaic on sky" : "Show on sky"
+                        glyph: "\uE1D2"
+                        enabled: root.skyToolsEnabled && Util.skyShowHasCoordinates(backend.currentSession)
+                        accessibleDescription: !root.skyToolsEnabled
+                                               ? "Turn on sky tools in interface settings first"
+                                               : !Util.skyShowHasCoordinates(backend.currentSession)
+                                                 ? "This session has no equatorial coordinates"
+                                                 : mosaic
+                                                   ? "Open Sky and show this mosaic"
+                                                   : "Open Sky and center this target"
+                        onTriggered: skyPage.showScheduleOnSky(backend.currentSession)
                     }
                     HudMenuItem {
                         text: "Copy target name"
@@ -2349,18 +2410,25 @@ Item {
                         }
                         readonly property bool stackTracking: !!t.tracking_active && root.scopeActivity !== "goto"
                         readonly property bool stackPrimed: modelData.start === "stack" && root.scopeOnline && cameraPanel.dsoMode && cameraPanel.stackParamsReady && stackTracking && !activeForState
-                        readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop || (root.scopePending === "cancel_prime" && (capturePrimed || stackPrimed)))
+                        readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop || (root.scopePending === "cancel_prime" && capturePrimed))
+                        readonly property bool canStopNow: {
+                            if (modelData.state === "lights" || modelData.state === "indicator")
+                                return false
+                            if (capturePrimed)
+                                return root.commandEnabled("cancel_prime")
+                            if (activeForState && modelData.stop !== "")
+                                return root.commandEnabled(modelData.stop)
+                            return false
+                        }
                         readonly property string padLabel: {
                             if (modelData.start === "stack" && (controlPage.mosaicGridArmed || controlPage.mosaicRunning))
                                 return "MOSAIC STACK"
                             if (!trackingPad)
                                 return modelData.label
-                            if (root.scopeStacking)
-                                return trackingNow ? "TRACKING" : modelData.label
-                            if (slewingNow)
-                                return "STOP GOTO"
+                            if (slewingNow && !root.scopeStacking)
+                                return "GOTO"
                             if (trackingNow)
-                                return "EXIT TRACKING"
+                                return "TRACKING"
                             return "TRACK"
                         }
                         function deviceDetail() {
@@ -2368,8 +2436,10 @@ Item {
                                 return trackingNow
                                     ? (t.tracking_target ? "HOLDING · " + t.tracking_target : "HOLDING FOR STACK")
                                     : "NEEDED FOR STACK"
-                            if (trackingPad && trackingNow && !slewingNow)
-                                return t.tracking_target ? "TRACKING · " + t.tracking_target : "TRACKING · TAP TO STOP"
+                            if (trackingPad && slewingNow)
+                                return t.tracking_target ? "SLEWING · " + t.tracking_target : "SLEWING · STOP"
+                            if (trackingPad && trackingNow)
+                                return t.tracking_target ? "TRACKING · " + t.tracking_target : "TRACKING · STOP"
                             if (trackingPad && !backend.selectedDevice.location_configured)
                                 return "SET LOCATION FIRST"
                             if (trackingPad && backend.previewPlaying)
@@ -2380,8 +2450,8 @@ Item {
                                 if (controlPage.mosaicRunning)
                                     return t.capture_text
                                            ? controlPage.mosaicPaneText + " · " + t.capture_text
-                                           : controlPage.mosaicPaneText + " · TAP TO STOP"
-                                return t.capture_text ? "STACK · " + t.capture_text : "STACKING · TAP TO STOP"
+                                           : controlPage.mosaicPaneText + " · STOP"
+                                return t.capture_text ? "STACK · " + t.capture_text : "STACKING · STOP"
                             }
                             if (modelData.start === "stack" && root.scopeOnline && cameraPanel.dsoMode && !stackTracking)
                                 return "TRACK FIRST"
@@ -2463,18 +2533,22 @@ Item {
                             pad.deviceDetail()
                         }
                         tooltip: trackingPad && root.scopeStacking
-                                 ? "Tracking stays on while stacking.\nPress STACK to stop the capture."
+                                 ? "Tracking stays on while stacking.\nUse the stop on STACK to end the capture."
                                  : modelData.start === "stack" && stackTracking && cameraPanel.stackSettingsText()
                                  ? cameraPanel.stackSettingsText()
                                  : ""
                         activeState: trackingPad ? (slewingNow || trackingNow) : activeForState
                         pending: isPending
                         primed: capturePrimed || stackPrimed
-                        stopTooltip: stackPrimed ? "Stop tracking" : "Cancel primed capture"
+                        canStop: canStopNow
+                        stopTooltip: capturePrimed ? "Cancel primed capture"
+                                     : trackingPad ? (slewingNow ? "Stop GOTO" : "Stop tracking")
+                                     : modelData.start === "stack" ? (controlPage.mosaicRunning ? "Stop mosaic stack" : "Stop stacking")
+                                     : "Stop " + String(modelData.label || padLabel).toLowerCase()
                         destructive: !!modelData.destructive
                         enabled: cameraAllowed && modeAllowed && root.commandEnabled(effectiveOperation)
                         Accessible.description: trackingPad && root.scopeStacking
-                                                           ? "Tracking is required while stacking; press STACK to stop the capture"
+                                                           ? "Tracking is required while stacking; use the stop on STACK to end the capture"
                                                            : capturePrimed ? (modelData.start === "photo"
                                                                 ? "Photo capture primed for a fast shot. Use stop to cancel."
                                                                 : modelData.label + " is primed; tap to start, or use stop to cancel")
@@ -2487,7 +2561,7 @@ Item {
                                                                      : ""))
                                                                : (modelData.start === "stack" && (controlPage.mosaicGridArmed || controlPage.mosaicRunning))
                                                                  ? ("Mosaic stack " + controlPage.mosaicGridText + " panes")
-                                                                 : stackPrimed ? "Sidereal tracking is running and stack settings match the telescope. Use stop to cancel tracking."
+                                                                 : stackPrimed ? "Sidereal tracking is running and stack settings match the telescope. Stop tracking from TRACK, or press STACK to start capture."
                                                                                : String(modelData.detail || modelData.label)
                         onClicked: {
                             if (!pad.enabled || pad.stopPressed)
@@ -2497,10 +2571,10 @@ Item {
                             root.requestDeviceAction(effectiveOperation, padLabel)
                         }
                         onStopClicked: {
-                            if (stackPrimed)
-                                root.requestDeviceAction("stop_goto", "EXIT TRACKING")
-                            else if (capturePrimed)
+                            if (capturePrimed)
                                 root.requestDeviceAction("cancel_prime", padLabel)
+                            else if (modelData.stop !== "")
+                                root.requestDeviceAction(modelData.stop, padLabel)
                         }
                         Connections {
                             target: backend

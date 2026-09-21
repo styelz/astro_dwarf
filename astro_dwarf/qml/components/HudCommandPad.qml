@@ -8,14 +8,15 @@ Button {
     property string glyph: ""
     property string detail: ""
     property string tooltip: ""
-    property string stopTooltip: "Cancel primed command"
+    property string stopTooltip: "Stop"
     property bool activeState: false
     property bool pending: false
     property bool primed: false
+    property bool canStop: false
     property bool destructive: false
     property string flash: ""   // "", "success" or "error"
     readonly property color flashColor: flash === "error" ? Theme.danger : Theme.success
-    readonly property bool showStop: primed && !activeState && !pending
+    readonly property bool showStop: canStop && !pending
     property bool stopPressed: false
     signal stopClicked()
     hoverEnabled: enabled

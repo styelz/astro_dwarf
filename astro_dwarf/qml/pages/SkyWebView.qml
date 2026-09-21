@@ -33,6 +33,11 @@ Item {
         : (backend.selectedDevice.camera === "wide" ? "wide" : "tele")
     onLiveCameraChanged: if (map.pageReady) map.applyFovOverlay()
     property string overlayKey: ""
+    property string fovPushKey: ""
+    property bool fovEngineReady: false
+    property string liveInjectedKey: ""
+    property string paneInjectedKey: ""
+    property bool shown: true
     signal contextMenuRequested(real x, real y)
     signal trackRequested()
     readonly property string appReadyScript: "(function(){try{var stel=window._stel;if(!stel||!stel.core||!stel.observer)return\"loading\";var app=document.getElementById(\"app\");if(!app||!app.__vue_app__)return\"loading\";return\"ok\"}catch(e){return\"loading\"}})()"
@@ -82,6 +87,23 @@ Item {
         map.selectedKey = name + "|" + ra.toFixed(5) + "|" + dec.toFixed(5)
         backend.setSkyMapTarget(name, ra, dec)
         return true
+    }
+    function coordinateHarvest(result) {
+        if (map.parseHarvest(result))
+            return result
+        const selected = map.selectedTarget || ({})
+        const ra = Number(selected.ra_hours)
+        const dec = Number(selected.dec_degrees)
+        if (!map.hasSelectedTarget || !isFinite(ra) || !isFinite(dec))
+            return result
+        return JSON.stringify({
+            name: String(selected.name || "").trim() || "FOV centre",
+            ra_hours: ra,
+            dec_degrees: dec
+        })
+    }
+    function pinCoordinateTarget(payload) {
+        map.runJavaScript(backend.skyWebPinTargetScript(payload || ({})))
     }
     function runJavaScript(script, callback) {
         const view = map.engineItem
@@ -134,15 +156,21 @@ Item {
     function readSelectedTarget(callback) {
         map.runJavaScript(backend.skyWebHarvestScript, result => {
             const target = map.parseHarvest(result)
+            const previous = map.selectedKey
             if (target) {
-                map.hasSelectedTarget = true
-                map.selectedTarget = target
-                map.selectedKey = target.name + "|" + Number(target.ra_hours).toFixed(5) + "|"
-                                  + Number(target.dec_degrees).toFixed(5)
-                backend.setSkyMapTarget(target.name, Number(target.ra_hours), Number(target.dec_degrees))
+                const key = target.name + "|" + Number(target.ra_hours).toFixed(5) + "|"
+                            + Number(target.dec_degrees).toFixed(5)
+                if (key !== map.selectedKey) {
+                    map.hasSelectedTarget = true
+                    map.selectedTarget = target
+                    map.selectedKey = key
+                    backend.setSkyMapTarget(target.name, Number(target.ra_hours), Number(target.dec_degrees))
+                }
             }
             if (typeof callback === "function")
-                callback(result)
+                callback(map.coordinateHarvest(result))
+            else if (map.selectedKey !== previous)
+                map.applyFovOverlay()
         })
     }
     function applyObservingSite() {
@@ -189,10 +217,40 @@ Item {
         }
         return data
     }
+    function fovInputKey() {
+        const grid = map.mosaicColumns > 1 || map.mosaicRows > 1
+        const view = grid ? map.viewForOverlay() : ({})
+        const ra = Number(view.ra_hours)
+        const dec = Number(view.dec_degrees)
+        const viewPart = grid && isFinite(ra) && isFinite(dec)
+            ? ra.toFixed(3) + "," + dec.toFixed(2)
+            : ""
+        const overlayFov = grid ? backend.mosaicFovText : backend.skyFovText
+        return [
+            map.selectedKey,
+            viewPart,
+            map.mosaicColumns,
+            map.mosaicRows,
+            Number(map.mosaicOverlap).toFixed(3),
+            Number(map.mosaicPa).toFixed(1),
+            overlayFov,
+            backend.mosaicPaChip,
+            backend.mosaicPaSource,
+            String(Theme.accent),
+            map.liveOverlay ? "live" : "off",
+            Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0),
+            Object.keys(backend.skyMosaicPaneUrls || {}).join(",")
+        ].join("|")
+    }
     function applyFovOverlay() {
-        if (!map.pageReady)
+        if (!map.pageReady || !map.shown)
+            return
+        const key = map.fovInputKey()
+        if (map.fovEngineReady && key === map.fovPushKey)
             return
         map.readSelectedTarget(raw => {
+            if (!map.shown)
+                return
             const script = backend.skyWebFovScript(
                 map.overlayPayload(raw),
                 map.mosaicColumns,
@@ -203,24 +261,11 @@ Item {
             )
             map.runJavaScript(script, result => {
                 const status = String(result || "")
-                const overlayFov = (map.mosaicColumns > 1 || map.mosaicRows > 1)
-                    ? backend.mosaicFovText
-                    : backend.skyFovText
-                if (status === "panes" || status === "center" || status === "grid" || status === "hidden")
-                    map.overlayKey = [
-                        map.mosaicColumns,
-                        map.mosaicRows,
-                        map.mosaicOverlap,
-                        map.mosaicPa,
-                        overlayFov,
-                        backend.mosaicPaChip,
-                        backend.mosaicPaSource,
-                        String(Theme.accent),
-                        map.liveOverlay ? "live" : "off",
-                        Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0),
-                        Object.keys(backend.skyMosaicPaneUrls || {}).join(","),
-                        status
-                    ].join("|")
+                if (status === "panes" || status === "center" || status === "grid" || status === "hidden") {
+                    map.fovEngineReady = true
+                    map.fovPushKey = map.fovInputKey()
+                    map.overlayKey = map.fovPushKey + "|" + status
+                }
                 if (map.liveOverlay)
                     map.applyLiveOverlay()
                 map.applyMosaicPaneImages()
@@ -228,23 +273,66 @@ Item {
         })
     }
     function applyLiveOverlay() {
-        if (!map.pageReady)
+        if (!map.pageReady || !map.shown)
             return
         if (!map.liveOverlay) {
+            if (map.liveInjectedKey === "off")
+                return
+            map.liveInjectedKey = "off"
             map.runJavaScript(backend.skyWebLiveScript("", false, map.liveOpacity, 0))
             return
         }
-        map.runJavaScript(backend.skyWebLiveScript(
-            backend.skyLiveFrameDataUrl(map.liveCamera),
-            true,
-            map.liveOpacity,
-            Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0)
-        ))
+        const pane = Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0)
+        const key = [
+            backend.skyLiveFrameRevision(map.liveCamera),
+            pane,
+            Number(map.liveOpacity).toFixed(3)
+        ].join("|")
+        if (key === map.liveInjectedKey)
+            return
+        const url = backend.skyLiveFrameDataUrl(map.liveCamera)
+        if (!url)
+            return
+        map.liveInjectedKey = key
+        map.runJavaScript(backend.skyWebLiveScript(url, true, map.liveOpacity, pane))
     }
     function applyMosaicPaneImages() {
-        if (!map.pageReady)
+        if (!map.pageReady || !map.shown)
             return
+        const key = Object.keys(backend.skyMosaicPaneUrls || {}).join(",")
+        if (key === map.paneInjectedKey)
+            return
+        map.paneInjectedKey = key
         map.runJavaScript(backend.skyWebPaneScript(backend.skyMosaicPaneUrls))
+    }
+    function pauseSkyEngine() {
+        map.runJavaScript("(function(){var c=window.__astroDwarfFovCtl;if(!c)return \"\";c.paused=true;if(c.raf){cancelAnimationFrame(c.raf);c.raf=0}return \"ok\"})()")
+    }
+    function resumeSkyEngine() {
+        map.runJavaScript("(function(){var c=window.__astroDwarfFovCtl;if(!c)return \"\";c.paused=false;if(typeof c.tick===\"function\")c.tick();return \"ok\"})()")
+    }
+    function pointingMoved(previous, data) {
+        const ra = Number(data && data.ra_hours)
+        const dec = Number(data && data.dec_degrees)
+        const prevRa = Number(previous && previous.ra_hours)
+        const prevDec = Number(previous && previous.dec_degrees)
+        if (!isFinite(prevRa) || !isFinite(prevDec))
+            return true
+        if (Math.abs(prevRa - ra) > 0.0008 || Math.abs(prevDec - dec) > 0.008)
+            return true
+        const fov = Number(data && data.fov)
+        const prevFov = Number(previous && previous.fov)
+        if (isFinite(fov) && isFinite(prevFov) && Math.abs(fov - prevFov) > 0.05)
+            return true
+        const az = Number(data && data.az)
+        const prevAz = Number(previous && previous.az)
+        if (isFinite(az) && isFinite(prevAz) && Math.abs(az - prevAz) > 0.6)
+            return true
+        const alt = Number(data && data.alt)
+        const prevAlt = Number(previous && previous.alt)
+        if (isFinite(alt) && isFinite(prevAlt) && Math.abs(alt - prevAlt) > 0.6)
+            return true
+        return false
     }
     function pollContextMenu() {
         map.runJavaScript(backend.skyWebContextPollScript, result => {
@@ -315,7 +403,7 @@ Item {
         map.runJavaScript(backend.skyWebViewScript(map.savedView))
     }
     function pollView() {
-        if (!map.pageReady)
+        if (!map.pageReady || !map.shown)
             return
         map.runJavaScript(backend.skyWebViewPollScript, result => {
             const text = String(result || "").trim()
@@ -325,8 +413,9 @@ Item {
                 const data = JSON.parse(text)
                 if (!isFinite(Number(data.ra_hours)) || !isFinite(Number(data.dec_degrees)))
                     return
-                map.liveView = data
-                map.runJavaScript(backend.skyWebViewPosScript(Number(data.ra_hours), Number(data.dec_degrees)))
+                const moved = map.pointingMoved(map.liveView, data)
+                if (moved)
+                    map.liveView = data
                 if (map.holdView)
                     return
                 if (!map.savedViewReady)
@@ -353,7 +442,7 @@ Item {
                 }
                 if (map.viewRestored && !map.persistView && !map.viewsClose(data, map.restoreHoldView))
                     map.persistView = true
-                if (map.persistView)
+                if (map.persistView && moved)
                     map.viewChanged(data)
             } catch (err) {
             }
@@ -408,6 +497,9 @@ Item {
             map.documentReady = false
             map.appliedSiteKey = ""
             map.overlayKey = ""
+            map.fovPushKey = ""
+            map.fovEngineReady = false
+            map.paneInjectedKey = ""
             map.hasSelectedTarget = false
             map.selectedTarget = ({})
             map.selectedKey = ""
@@ -447,11 +539,27 @@ Item {
     onMosaicPaChanged: if (map.pageReady) map.applyFovOverlay()
     onLiveOverlayChanged: if (map.pageReady) map.applyLiveOverlay()
     onLiveOpacityChanged: if (map.pageReady && map.liveOverlay) map.applyLiveOverlay()
+    onShownChanged: {
+        if (!map.pageReady)
+            return
+        if (map.shown) {
+            map.fovPushKey = ""
+            map.resumeSkyEngine()
+            map.applyFovOverlay()
+            map.pollView()
+        } else {
+            map.pauseSkyEngine()
+        }
+    }
     onPageReadyChanged: {
         if (!map.pageReady) {
             map.hasSelectedTarget = false
             map.selectedTarget = ({})
             map.selectedKey = ""
+            map.liveInjectedKey = ""
+            map.fovPushKey = ""
+            map.fovEngineReady = false
+            map.paneInjectedKey = ""
             return
         }
         if (map.liveOverlay)
@@ -496,6 +604,10 @@ Item {
         id: engineLoader
         anchors.fill: parent
         source: Qt.resolvedUrl(Qt.platform.os === "linux" ? "SkyWebEngineItem.qml" : "SkyWebNativeItem.qml")
+        onLoaded: {
+            if (item)
+                item.shown = Qt.binding(() => map.shown)
+        }
         onStatusChanged: {
             if (status === Loader.Error && !map.initialLoadDone)
                 map.initialLoadFailed = true
@@ -523,7 +635,7 @@ Item {
     Timer {
         interval: 400
         repeat: true
-        running: map.documentReady && !map.initialLoadFailed
+        running: map.documentReady && map.shown && !map.initialLoadDone && !map.initialLoadFailed
         onTriggered: map.applyBootFixes()
     }
 
@@ -546,28 +658,35 @@ Item {
     Timer {
         interval: 1200
         repeat: true
-        running: map.pageReady && map.appliedSiteKey !== backend.skyWebSiteScript
+        running: map.pageReady && map.shown && map.appliedSiteKey !== backend.skyWebSiteScript
         onTriggered: map.applyObservingSite()
     }
 
     Timer {
-        interval: 700
+        interval: 1000
         repeat: true
-        running: map.pageReady
+        running: map.pageReady && map.shown
+        onTriggered: map.readSelectedTarget()
+    }
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: map.pageReady && map.shown
         onTriggered: map.applyFovOverlay()
     }
 
     Timer {
-        interval: 120
+        interval: 250
         repeat: true
-        running: map.pageReady && map.liveOverlay
+        running: map.pageReady && map.shown && map.liveOverlay
         onTriggered: map.applyLiveOverlay()
     }
 
     Timer {
-        interval: 80
+        interval: 200
         repeat: true
-        running: map.pageReady
+        running: map.pageReady && map.shown
         onTriggered: {
             map.pollContextMenu()
             map.pollTrackRequest()
@@ -585,14 +704,14 @@ Item {
     Timer {
         interval: 400
         repeat: true
-        running: map.pageReady && map.savedViewReady && !map.viewRestored && map.hasSavedView() && !map.holdView
+        running: map.pageReady && map.shown && map.savedViewReady && !map.viewRestored && map.hasSavedView() && !map.holdView
         onTriggered: map.restoreSavedView()
     }
 
     Timer {
-        interval: 120
+        interval: 300
         repeat: true
-        running: map.pageReady
+        running: map.pageReady && map.shown
         onTriggered: map.pollView()
     }
 }

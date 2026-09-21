@@ -120,6 +120,7 @@ from .services import (
     live_mosaic_scheduler_action,
     mosaic_group_title,
     mosaic_grid_size,
+    sky_show_plan,
     mosaic_pane_footprints,
     mosaic_panes_match_center,
     named_mosaic_center,
@@ -159,6 +160,7 @@ from .services import (
     sky_web_fov_script,
     sky_web_center_view_script,
     sky_web_lock_target_script,
+    sky_web_pin_target_script,
     sky_web_view_pos_script,
     sky_web_view_script,
     sky_web_live_script,
@@ -180,6 +182,7 @@ from .sky_atlas import (
     sky_atlas_harvest_script,
     sky_atlas_live_script,
     sky_atlas_lock_target_script,
+    sky_atlas_pin_target_script,
     sky_atlas_opacity_poll_script,
     sky_atlas_open_menu_script,
     sky_atlas_pane_script,
@@ -1831,6 +1834,7 @@ class AppBackend(QObject):
         self._center_tap_token: dict[str, int] = {}
         self._ui_busy = ""
         self._sky_target: Target | None = None
+        self._sky_browse_pointing: Target | None = None
         self._logged_overlay_pa: tuple[Any, ...] | None = None
         self._sky_lock_inflight = False
         self._sky_catalog_cache: dict[str, dict[str, Any]] = {}
@@ -2259,6 +2263,10 @@ class AppBackend(QObject):
         previous = dict(self._device_telemetry.get(device_id, {}))
         current = dict(previous)
         current.update(data)
+        # goto_released marks one synthetic idle after a stuck STOPPING.
+        # It must not stick and hide a later real GOTO completion.
+        if "goto_released" not in data:
+            current.pop("goto_released", None)
         aliases = apply_mode_exposure_fields(current)
         if aliases:
             current.update(aliases)
@@ -3060,6 +3068,8 @@ class AppBackend(QObject):
         sky = target
         if sky is None or sky.ra_hours is None or sky.dec_degrees is None:
             sky = self._sky_target
+        if sky is None or sky.ra_hours is None or sky.dec_degrees is None:
+            sky = self._sky_browse_pointing
         telemetry = self._device_telemetry.get(device.id) or {}
         return resolve_device_mosaic_pa(
             device.latitude,
@@ -3677,6 +3687,10 @@ class AppBackend(QObject):
     def skyWebLockTargetScript(self, payload: Any = None) -> str:
         return sky_web_lock_target_script(payload if isinstance(payload, dict) else {})
 
+    @Slot("QVariantMap", result=str)
+    def skyWebPinTargetScript(self, payload: Any = None) -> str:
+        return sky_web_pin_target_script(payload if isinstance(payload, dict) else {})
+
     @Slot(float, float, result=str)
     def skyWebViewPosScript(self, ra_hours: float, dec_degrees: float) -> str:
         return sky_web_view_pos_script(ra_hours, dec_degrees)
@@ -3700,18 +3714,24 @@ class AppBackend(QObject):
         device_id = str(self._selected_device_id or "")
         return bool(device_id) and self._preview_stacking(device_id)
 
-    @Slot(str, result=str)
-    def skyLiveFrameDataUrl(self, camera: str = "") -> str:
+    def _sky_live_frame_key(self, camera: str = "") -> str:
         if self._sky_live_uses_stack_frame():
-            return live_frame_data_url(self.live_images.peek("tele"))
+            return "tele"
         choice = str(camera or "").strip().lower()
         if choice not in ("tele", "wide"):
             _fov_h, _fov_v, choice = self._sky_map_fov()
-        image = self.live_images.peek(choice)
-        if image.isNull():
-            other = "wide" if choice == "tele" else "tele"
-            image = self.live_images.peek(other)
-        return live_frame_data_url(image)
+        if self.live_images.peek(choice).isNull():
+            choice = "wide" if choice == "tele" else "tele"
+        return choice
+
+    @Slot(str, result=int)
+    def skyLiveFrameRevision(self, camera: str = "") -> int:
+        """Increments when a new live JPEG is stored. The sky map uses this to skip re-encoding."""
+        return int(self.live_images.revision(self._sky_live_frame_key(camera)))
+
+    @Slot(str, result=str)
+    def skyLiveFrameDataUrl(self, camera: str = "") -> str:
+        return live_frame_data_url(self.live_images.peek(self._sky_live_frame_key(camera)))
 
     @Property(str, notify=selectedDeviceChanged)
     def skyWebSiteScript(self) -> str:
@@ -3749,6 +3769,20 @@ class AppBackend(QObject):
         }
 
     def _set_sky_target(self, target: Target | None) -> None:
+        previous = self._sky_target
+        if previous is None and target is None:
+            return
+        if previous is not None and target is not None:
+            try:
+                same = (
+                    str(previous.name or "") == str(target.name or "")
+                    and abs(float(previous.ra_hours) - float(target.ra_hours)) < 1e-5
+                    and abs(float(previous.dec_degrees) - float(target.dec_degrees)) < 1e-4
+                )
+            except (TypeError, ValueError):
+                same = False
+            if same:
+                return
         self._sky_target = target
         self.skyTargetChanged.emit()
         self.mosaicPaChanged.emit()
@@ -3770,6 +3804,20 @@ class AppBackend(QObject):
         if ra_h != ra_h or dec_d != dec_d:
             return None
         return ((ra_h % 24.0) + 24.0) % 24.0, max(-90.0, min(90.0, dec_d))
+
+    def _remember_sky_browse(self, target: Target | None) -> None:
+        """Pointing used for the alt-az chip while the chart has no locked target."""
+        previous = self._sky_browse_pointing
+        self._sky_browse_pointing = target
+
+        def key(item: Target | None) -> tuple[float, float] | None:
+            coords = self._target_coords(item)
+            if coords is None:
+                return None
+            return (round(coords[0], 3), round(coords[1], 2))
+
+        if key(previous) != key(target):
+            self.mosaicPaChanged.emit()
 
     def _remember_track_target(self, result: Any, fallback_name: str = "") -> None:
         data = result if isinstance(result, dict) else {}
@@ -4944,13 +4992,12 @@ class AppBackend(QObject):
             except (TypeError, ValueError):
                 view_ra = view_dec = float("nan")
         overlay_sky = self._overlay_pa_target(target)
-        if (
-            overlay_sky is None
-            and not mosaic_grid
-            and view_ra == view_ra
-            and view_dec == view_dec
-        ):
+        if overlay_sky is None and view_ra == view_ra and view_dec == view_dec:
+            # A free pan has no locked target. Alt-az still frames that sky
+            # point with the head upright, including a multi-pane mosaic.
             overlay_sky = Target(name="FOV centre", ra_hours=view_ra, dec_degrees=view_dec)
+        if self._overlay_pa_target(target) is None:
+            self._remember_sky_browse(overlay_sky)
         pa_state = self._resolved_mosaic_pa_state(overlay_sky, position_angle)
         self._log_overlay_mosaic_pa(pa_state)
         pa = pa_state.degrees
@@ -5104,6 +5151,10 @@ class AppBackend(QObject):
     @Slot("QVariantMap", result=str)
     def skyAtlasLockTargetScript(self, payload: Any = None) -> str:
         return sky_atlas_lock_target_script(payload if isinstance(payload, dict) else {})
+
+    @Slot("QVariantMap", result=str)
+    def skyAtlasPinTargetScript(self, payload: Any = None) -> str:
+        return sky_atlas_pin_target_script(payload if isinstance(payload, dict) else {})
 
     @Slot(float, float, result=str)
     def skyAtlasViewPosScript(self, ra_hours: float, dec_degrees: float) -> str:
@@ -8101,41 +8152,102 @@ class AppBackend(QObject):
         if dropping:
             self._drop_device_link(device_id)
 
-    @Slot("QVariant")
-    def trackSkyTarget(self, web_raw: Any) -> None:
+    def _sky_show_members(self, item: dict[str, Any]) -> list[dict[str, Any]]:
+        for key in ("group_members", "members"):
+            raw = item.get(key)
+            if not isinstance(raw, list) or len(raw) < 2:
+                continue
+            cleaned = [dict(entry) for entry in raw if isinstance(entry, dict)]
+            if len(cleaned) > 1:
+                return cleaned
+        session_id = str(item.get("id") or "")
+        if session_id:
+            panes = self.sessionPanes(session_id)
+            if len(panes) > 1:
+                return panes
+        group_id = str(item.get("group_id") or "")
+        mosaic = item.get("mosaic") if isinstance(item.get("mosaic"), dict) else {}
+        if not group_id:
+            group_id = str(mosaic.get("group_id") or "")
+        if not group_id:
+            return []
+        device_id = str(item.get("device_id") or "")
+        sessions = [
+            session
+            for session in self.store.sessions.all()
+            if (session.mosaic.group_id or "") == group_id and (not device_id or session.device_id == device_id)
+        ]
+        if len(sessions) > 1:
+            return [self._session_dict(session) for session in sessions]
+        templates = [
+            template
+            for template in self.store.templates.all()
+            if (template.mosaic.group_id or "") == group_id
+        ]
+        if len(templates) > 1:
+            return [self._template_member_dict(template) for template in templates]
+        return []
+
+    def _sky_show_camera(self, item: dict[str, Any], members: list[dict[str, Any]]) -> str | None:
+        for source in (item, *members):
+            camera = source.get("camera") if isinstance(source, dict) else None
+            if isinstance(camera, dict):
+                name = str(camera.get("camera") or "").strip()
+                if name:
+                    return name
+            elif isinstance(camera, str) and camera.strip():
+                return camera.strip()
+        return None
+
+    @Slot("QVariant", result="QVariantMap")
+    def skyShowPlan(self, item: Any) -> dict[str, Any]:
+        data = dict(item) if isinstance(item, dict) else {}
+        members = self._sky_show_members(data)
+        fov_h, fov_v, _camera = self._device_fov(
+            str(data.get("device_id") or ""),
+            camera=self._sky_show_camera(data, members),
+        )
+        plan = sky_show_plan(data, members, fov_h=fov_h, fov_v=fov_v)
+        if not plan.get("ok"):
+            self._toast("This session has no equatorial coordinates", "warning")
+        return plan
+
+    @Slot("QVariant", result=bool)
+    def trackSkyTarget(self, web_raw: Any) -> bool:
         device_id = str(self._selected_device_id or "")
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
             self._toast("Connect a telescope before tracking a sky-map target", "warning")
-            return
+            return False
         if self._active_sessions.get(device_id):
             self._toast("A session is already running on this telescope", "warning")
-            return
+            return False
         telemetry = self._device_telemetry.get(device_id) or {}
         if self._pending_actions.get(device_id):
             self._toast("Telescope is busy", "warning")
-            return
+            return False
         if telemetry.get("goto_state") in ("running", "solving", "stopping"):
             self._toast("Telescope is already slewing", "warning")
-            return
+            return False
         if telemetry.get("capture_active") or telemetry.get("capture_state") == "running":
             self._toast("Telescope is capturing", "warning")
-            return
+            return False
         if self._live_mosaic_running(device_id):
             self._toast("Stop the stack before changing tracking", "warning")
-            return
+            return False
         activity = self._device_activity.get(device_id) or ""
         if activity and activity != "goto":
             self._toast("Telescope is busy", "warning")
-            return
+            return False
         try:
             target = parse_sky_web_target(self._snapshot_web_raw(web_raw))
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             message = str(exc) or "Select a target in the sky map"
             self._toast("Select a sky-map target first", "warning", message)
-            return
+            return False
         self._set_sky_target(target)
         self.deviceAction(device_id, "sky_track")
+        return True
 
     @Slot(str, float, float)
     def joystick(self, device_id: str, angle: float, speed: float) -> None:

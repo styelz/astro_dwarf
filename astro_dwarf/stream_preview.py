@@ -89,12 +89,14 @@ class LiveFrames(QObject):
         super().__init__(parent)
         self._lock = threading.Lock()
         self._images = {"tele": QImage(), "wide": QImage()}
+        self._revision = {"tele": 0, "wide": 0}
 
     def update(self, key: str, image: QImage) -> None:
         if key not in self._images:
             return
         with self._lock:
             self._images[key] = image
+            self._revision[key] = int(self._revision.get(key, 0)) + 1
 
     def notify(self, key: str = "*") -> None:
         self.frameChanged.emit(key)
@@ -103,12 +105,21 @@ class LiveFrames(QObject):
         with self._lock:
             return self._images.get(key) or QImage()
 
+    def revision(self, key: str) -> int:
+        with self._lock:
+            return int(self._revision.get(key, 0))
+
     def clear(self, key: str | None = None) -> None:
         with self._lock:
             if key in self._images:
                 self._images[key] = QImage()
+                self._revision[key] = int(self._revision.get(key, 0)) + 1
             else:
                 self._images = {"tele": QImage(), "wide": QImage()}
+                self._revision = {
+                    "tele": int(self._revision.get("tele", 0)) + 1,
+                    "wide": int(self._revision.get("wide", 0)) + 1,
+                }
         self.frameChanged.emit(key or "*")
 
     def frame_size(self, key: str = "wide") -> tuple[int, int]:
@@ -482,6 +493,7 @@ class MosaicLiveItem(QQuickPaintedItem):
     accentChanged = Signal()
     southUpChanged = Signal()
     positionAngleChanged = Signal()
+    zenithCameraChanged = Signal()
     fontPixelSizeChanged = Signal()
 
     def __init__(self, parent: Optional[QQuickItem] = None):
@@ -497,6 +509,7 @@ class MosaicLiveItem(QQuickPaintedItem):
         self._accent = QColor(126, 224, 208)
         self._south_up = False
         self._position_angle = 0.0
+        self._zenith_camera = False
         self._font_pixel_size = 11
         self._held_pane = 0
         self._held_image = QImage()
@@ -624,6 +637,19 @@ class MosaicLiveItem(QQuickPaintedItem):
 
     positionAngle = Property(float, getPositionAngle, setPositionAngle, notify=positionAngleChanged)
 
+    def getZenithCamera(self) -> bool:
+        return self._zenith_camera
+
+    def setZenithCamera(self, value: bool) -> None:
+        on = bool(value)
+        if on == self._zenith_camera:
+            return
+        self._zenith_camera = on
+        self.zenithCameraChanged.emit()
+        self.update()
+
+    zenithCamera = Property(bool, getZenithCamera, setZenithCamera, notify=zenithCameraChanged)
+
     def getFontPixelSize(self) -> int:
         return self._font_pixel_size
 
@@ -685,6 +711,7 @@ class MosaicLiveItem(QQuickPaintedItem):
             columns,
             south_up=self._south_up,
             position_angle=self._position_angle,
+            zenith_camera=self._zenith_camera,
         )
         row = mosaic_sheet_row(
             index,
@@ -692,6 +719,7 @@ class MosaicLiveItem(QQuickPaintedItem):
             rows,
             south_up=self._south_up,
             position_angle=self._position_angle,
+            zenith_camera=self._zenith_camera,
         )
         if row >= rows:
             return None
@@ -735,7 +763,11 @@ class MosaicLiveItem(QQuickPaintedItem):
         font.setPixelSize(max(1, int(self._font_pixel_size or 11)))
         font.setBold(True)
         painter.setFont(font)
-        flip = mosaic_camera_up_is_south(self._south_up, self._position_angle)
+        flip = (
+            False
+            if self._zenith_camera
+            else mosaic_camera_up_is_south(self._south_up, self._position_angle)
+        )
         count = columns * rows
         for index in range(1, count + 1):
             cell = self._cell_rect(columns, rows, index)

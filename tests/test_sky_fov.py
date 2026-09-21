@@ -84,10 +84,24 @@ def test_wide_selected_does_not_space_stack_panes_on_wide_fov() -> None:
             position_angle=0,
         )
     }
-    step_x = tele_h
+    step_x = tele_h * (1.0 - 0.2)
     east_hours = (panes[2]["ra_hours"] - panes[1]["ra_hours"]) * 15.0
-    _assert(abs(east_hours - step_x) < 0.05, "STACK 2×2 panes use the tele FOV")
+    _assert(abs(east_hours - step_x) < 0.05, "STACK 2×2 panes use the tele FOV with overlap")
     _assert(east_hours < wide_h * 0.5, "must not inherit the ~45° Wide grid")
+
+
+def test_stellarium_overlay_listens_once() -> None:
+    from astro_dwarf.services import SKY_WEB_FOV_JS
+
+    _assert("ctl.changeBound" in SKY_WEB_FOV_JS, "overlay must bind stel.change once")
+    _assert("live.draw(false)" in SKY_WEB_FOV_JS, "frame listener must use the cached redraw")
+    _assert("ctl.paused" in SKY_WEB_FOV_JS, "parked map must be able to stop the overlay loop")
+    _assert(SKY_WEB_FOV_JS.count("stel.change(function") == 1, "one listener")
+    start = SKY_WEB_FOV_JS.find("function viewKey")
+    end = SKY_WEB_FOV_JS.find("function writePosLabels")
+    body = SKY_WEB_FOV_JS[start:end]
+    _assert("viewCenter" in body, "cached redraw must notice the ICRS centre moving")
+    _assert("viewRollDeg" in body, "cached redraw must notice parallactic tilt")
 
 
 if __name__ == "__main__":
@@ -97,4 +111,5 @@ if __name__ == "__main__":
     test_dwarf3_wide_fov_is_much_larger_than_tele()
     test_implausible_firmware_fov_is_replaced()
     test_wide_selected_does_not_space_stack_panes_on_wide_fov()
+    test_stellarium_overlay_listens_once()
     print("ok")

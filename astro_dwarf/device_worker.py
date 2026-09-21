@@ -4201,6 +4201,36 @@ def _wait_goto_accepted(since: float) -> None:
         time.sleep(0.1)
 
 
+def _start_goto_for_tracking(ra: float, dec: float, name: str) -> None:
+    """Send a tracking GOTO, and retry once if a stuck STOPPING still owns the engine."""
+    started = time.monotonic()
+    if sdk_call("goto", ra, dec, name, False) is False:
+        raise RuntimeError("GOTO to start tracking failed")
+    try:
+        _wait_goto_accepted(started)
+    except RuntimeError as exc:
+        snapshot = _tap.snapshot() if _tap is not None else {}
+        if (
+            not _engine_busy_error(exc)
+            or _goto_started(snapshot.get("goto_state"))
+            or snapshot.get("tracking_state") == "running"
+        ):
+            raise
+        log(
+            "Leftover GOTO stop is still holding the astro engine; clearing it and retrying",
+            "warning",
+        )
+        try:
+            sdk_call("stop_goto")
+        except Exception as stop_exc:
+            log(f"Stop leftover GOTO skipped: {stop_exc}", "warning")
+        _wait_seconds(2.0, "Waiting after leftover GOTO stop")
+        started = time.monotonic()
+        if sdk_call("goto", ra, dec, name, False) is False:
+            raise RuntimeError("GOTO to start tracking failed")
+        _wait_goto_accepted(started)
+
+
 def _start_sky_track(ra_hours: float, dec_degrees: float, target_name: str = "") -> dict[str, Any]:
     """Slew to a sky-map RA/Dec and start sidereal tracking (goto_only=False)."""
     if _ensure_astro_mode(enter_camera=False) is False:
@@ -4217,10 +4247,7 @@ def _start_sky_track(ra_hours: float, dec_degrees: float, target_name: str = "")
         raise RuntimeError("Sky map target is missing RA/Dec")
     name = str(target_name or "").strip() or "Sky map target"
     log(f"TRACK from sky map → RA {ra:.4f}h Dec {dec:+.3f}° ({name})")
-    started = time.monotonic()
-    if sdk_call("goto", ra, dec, name, False) is False:
-        raise RuntimeError("GOTO to start tracking failed")
-    _wait_goto_accepted(started)
+    _start_goto_for_tracking(ra, dec, name)
     return {
         "ok": True,
         "ra_hours": ra,
@@ -4253,10 +4280,7 @@ def _start_tracking(target_name: str = "") -> dict[str, Any]:
         f"TRACK from pointing az={az:.2f}° alt={alt:.2f}° → "
         f"RA {ra_hours:.4f}h Dec {dec_degrees:+.3f}° ({name})"
     )
-    started = time.monotonic()
-    if sdk_call("goto", ra_hours, dec_degrees, name, False) is False:
-        raise RuntimeError("GOTO to start tracking failed")
-    _wait_goto_accepted(started)
+    _start_goto_for_tracking(ra_hours, dec_degrees, name)
     return {
         "ok": True,
         "ra_hours": ra_hours,

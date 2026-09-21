@@ -5,6 +5,7 @@ Item {
     id: root
     anchors.fill: parent
     signal loadState(string state)
+    property bool shown: true
     property int abortCount: 0
 
     function runJavaScript(script, callback) {

@@ -644,6 +644,7 @@ class AlertEngine:
                 state in ("stopped", "idle")
                 and previous_state in ("running", "solving", "stopping")
                 and not current.get("goto_error")
+                and not current.get("goto_released")
             ):
                 tracking = current.get("tracking_state") == "running"
                 detail = "Target centred; tracking engaged" if tracking else "Target centred"

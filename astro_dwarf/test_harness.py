@@ -381,6 +381,24 @@ def resolve_control(controls: list[dict[str, Any]], query: str) -> dict[str, Any
     return None
 
 
+def _popup_open(root: Any, name: str) -> bool:
+    menu = find_named(root, name)
+    if menu is None:
+        return False
+    return bool(_property(menu, "opened", False))
+
+
+def _spin_value(root: Any, name: str) -> Any:
+    obj = find_named(root, name)
+    if obj is None:
+        return None
+    value = _property(obj, "value", None)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
 def find_named(root: Any, name: str) -> Any | None:
     wanted = str(name or "")
     if not wanted:
@@ -532,6 +550,10 @@ def pointer_click_object(
 
 
 def click_object(obj: Any) -> None:
+    # MenuItem.click() emits clicked and leaves triggered alone, so the
+    # item's onTriggered handler never runs. Fire triggered for menu rows.
+    if _property(obj, "menu", None) is not None and _emit_or_call(obj, "triggered"):
+        return
     click = getattr(obj, "click", None)
     if callable(click):
         try:
@@ -803,6 +825,16 @@ class TestHarness:
                 "provider": str(getattr(backend, "skyMapProvider", "") or ""),
             },
             "toast": dict(self.last_toast),
+            "menus": {
+                "session": _popup_open(self.window, "sessionContextMenu"),
+                "sky": _popup_open(self.window, "skyContextMenu"),
+            },
+            "sky_grid": {
+                "columns": _spin_value(self.window, "skyColumns"),
+                "rows": _spin_value(self.window, "skyRows"),
+                "overlap": _spin_value(self.window, "skyOverlap"),
+                "pa": _spin_value(self.window, "skyPa"),
+            },
             "media": {
                 "source": str(getattr(backend, "mediaSource", "") or ""),
                 "folder": str(getattr(backend, "mediaFolder", "") or ""),
@@ -861,8 +893,14 @@ class TestHarness:
             obj = self._resolved(query)
         except RuntimeError:
             obj = find_named(self.window, query)
-            if obj is None:
+            if obj is None and str(button or "left").strip().lower() != "right":
                 raise
+        if str(button or "left").strip().lower() == "right" and not double:
+            via = self._click_fallbacks(query, double=double, button=button, ny=ny)
+            if via == "menu":
+                return {"clicked": query, "double": False, "button": "right", "via": via}
+            if obj is None:
+                raise RuntimeError(f"control not found: {query}")
         if double or str(button or "left").strip().lower() == "right":
             try:
                 pointer_click_object(obj, double=double, button=button, nx=nx, ny=ny)
@@ -896,7 +934,30 @@ class TestHarness:
             if callable(popup):
                 popup()
                 return "menu"
+        if str(button or "left").strip().lower() == "right" and name.startswith("session-"):
+            if self._open_session_menu(name[len("session-") :]):
+                return "menu"
+        if str(button or "left").strip().lower() == "right" and name == "skyPage":
+            page = find_named(self.window, "skyPage")
+            if page is not None:
+                try:
+                    width = float(_property(page, "width", 0) or 0)
+                    height = float(_property(page, "height", 0) or 0)
+                    invoke_qml(page, "openSkyMenu", width * 0.5, height * 0.55)
+                except Exception:
+                    return "pointer"
+                return "menu"
         return "pointer"
+
+    def _open_session_menu(self, session_id: str) -> bool:
+        page = find_named(self.window, "sessionsPage")
+        if page is None:
+            return False
+        try:
+            result = invoke_qml(page, "openListedSessionMenu", str(session_id or ""))
+        except Exception:
+            return False
+        return str(result or "") == "open"
 
     def drag(self, query: str, dx: float = 0, dy: float = 80, mode: str = "pointer") -> dict[str, Any]:
         _drag_trace(f"drag query={query} mode={mode}")

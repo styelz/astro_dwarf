@@ -83,7 +83,8 @@ def test_southern_site_defaults_to_south_up_pa() -> None:
     _assert(mosaic_position_angle(False) == 0.0, mosaic_position_angle(False))
     _assert(device_mosaic_pa(-37.81) == 180.0, device_mosaic_pa(-37.81))
     _assert(device_mosaic_pa(51.5) == 0.0, device_mosaic_pa(51.5))
-    _assert(device_mosaic_pa(-37.81, 0) == 0.0, "explicit 0 stays N-up")
+    _assert(device_mosaic_pa(-37.81, 0, mount_mode="EQ") == 0.0, "explicit 0 stays N-up on EQ")
+    _assert(device_mosaic_pa(-37.81, 0) == 180.0, "stored 0 does not force N-up before EQ")
 
 
 def test_stored_zero_stays_north_up_at_southern_site() -> None:
@@ -154,6 +155,12 @@ def test_unset_altaz_uses_locked_target_parallactic() -> None:
     view = resolve_device_mosaic_pa(lat, None, longitude=lon, mount_mode="AZ", when=when)
     _assert(view.source == "default", "no locked target must not use view-centre parallactic")
     _assert(view.degrees == 180.0, view.degrees)
+    _assert(mosaic_pa_chip(view.source, view.degrees) == "S-UP", "Melbourne idle chip")
+    stored_idle = resolve_device_mosaic_pa(lat, 0, longitude=lon, mount_mode="AZ", when=when)
+    _assert(stored_idle.source == "default", "alt-az idle ignores stored 0")
+    _assert(mosaic_pa_chip(stored_idle.source, stored_idle.degrees) == "S-UP", "stored 0 is not N-UP")
+    unknown = resolve_device_mosaic_pa(lat, 0, longitude=lon, mount_mode="", when=when)
+    _assert(mosaic_pa_chip(unknown.source, unknown.degrees) == "S-UP", "chip before mount telemetry")
 
 
 def test_overlay_payload_includes_pa_source() -> None:
@@ -199,8 +206,19 @@ def test_contact_sheet_matches_zenith_up_overlay() -> None:
     _assert(mosaic_sheet_row(1, 2, 2, south_up=True, position_angle=0) == 0, "PA 0 pane 1 top")
     _assert(mosaic_sheet_column(1, 2, south_up=False, position_angle=0) == 1, "N-up pane 1 right")
     _assert(mosaic_sheet_row(1, 2, 2, south_up=False, position_angle=0) == 0, "N-up pane 1 top")
+    # Alt-az PA is the parallactic angle. On the zenith-up chart that direction
+    # is the top, so pane 1 stays top-right even when q is near 180°.
+    _assert(
+        mosaic_sheet_column(1, 2, south_up=True, position_angle=180, zenith_camera=True) == 1,
+        "alt-az pane 1 right",
+    )
+    _assert(
+        mosaic_sheet_row(1, 2, 2, south_up=True, position_angle=180, zenith_camera=True) == 0,
+        "alt-az pane 1 top",
+    )
     preview = (ROOT / "astro_dwarf" / "stream_preview.py").read_text(encoding="utf-8")
     _assert("mosaic_camera_up_is_south" in preview, "PA 180 JPEGs rotate to match zenith-up")
+    _assert("zenith_camera" in preview, "alt-az contact sheet does not use the S-up flip")
     _assert("flipped(" in preview, "stacked frames flip with camera-up")
 
 
@@ -233,7 +251,12 @@ def test_atlas_overlay_labels_icrs_pane_centres() -> None:
     _assert("function haloInk" in SKY_WEB_FOV_JS, "stellarium FOV strokes need a dark halo on daytime sky")
     _assert("function framedOpen" in SKY_WEB_FOV_JS, "stellarium mosaic panes share the halo plus accent stroke")
     _assert("function haloLine" in SKY_WEB_FOV_JS, "stellarium up-tick uses a halo under the accent")
-    _assert("mosaic ? chartTilt : pa" in ATLAS_ASTRO_JS, "atlas 1×1 HUD uses camera PA on a zenith-up map")
+    _assert(
+        "mosaic && !zenithCamera ? chartTilt" in ATLAS_ASTRO_JS,
+        "atlas mosaic chart tilt is EQ and the celestial default; 1×1 uses camera PA",
+    )
+    _assert('pa_source || "") === "parallactic"' in SKY_WEB_FOV_JS, "alt-az screen grid is zenith-up")
+    _assert('pa_source || "") === "parallactic"' in ATLAS_ASTRO_JS, "atlas screen grid is zenith-up")
     _assert("liveQ" in ATLAS_ASTRO_JS, "atlas 1×1 alt-az uses live parallactic")
     _assert("if (mosaic && hasQuads)" in ATLAS_ASTRO_JS, "atlas mosaics still project ICRS quads")
     _assert("isFinite(q) ? -q : 0" in SKY_WEB_FOV_JS, "stellarium view roll matches Aladin zenithRotation")

@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
-from math import asin, atan2, ceil, cos, pi, radians, sin, tan
+from math import acos, asin, atan2, ceil, cos, pi, radians, sin, tan
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -267,6 +267,17 @@ SKY_WEB_HARVEST_JS = r"""
       || fromAny(core.selection, stel)
       || fromAny(core.lock, stel)
       || fromAny(gp && gp.$stel && gp.$stel.core && gp.$stel.core.selection, stel);
+    var pinned = window.__astroDwarfFovTarget;
+    var fovCtl = window.__astroDwarfFovCtl;
+    var pickedAfter = !!(pinned && fovCtl && Number(fovCtl.lastPickAt) > Number(pinned.at));
+    if (pinned && pinned.hold && !pickedAfter
+        && isFinite(Number(pinned.ra_hours)) && isFinite(Number(pinned.dec_degrees))) {
+      return JSON.stringify({
+        name: String(pinned.name || "FOV centre"),
+        ra_hours: Number(pinned.ra_hours),
+        dec_degrees: Number(pinned.dec_degrees)
+      });
+    }
     if (!result) return fail("Select a target in the sky map");
     return JSON.stringify(result);
   } catch (err) {
@@ -1298,20 +1309,23 @@ SKY_WEB_FOV_JS = r"""
   function overlayMountMode(p) {
     return String(p && p.mount_mode || "").toUpperCase();
   }
-  function isMosaicGrid(p) {
-    return Math.max(1, Number(p && p.columns) || 1) > 1
-      || Math.max(1, Number(p && p.rows) || 1) > 1;
+  function pastZenith(p) {
+    // DWARF II, DWARF 3, and DWARF Mini are the same kind of head: pan and nod,
+    // frame horizontal until the nod looks past straight up. Sky coordinates
+    // never exceed 90° altitude, so this only trips on a reported mechanical pitch.
+    var alt = Number(p && p.mechanical_altitude);
+    return isFinite(alt) && alt > 90 && alt < 270;
   }
   function liveCameraPa(p, stel) {
-    // Alt-az 1×1 is the real camera: zenith-up at this instant. Stored mosaic
-    // PA cannot rotate the mount. Mosaics and EQ keep payload PA.
-    if (!isMosaicGrid(p) && overlayMountMode(p) !== "EQ") {
+    // Alt-az camera-up is the zenith. A stored PA cannot rotate the head,
+    // including on a mosaic. EQ keeps the payload angle.
+    if (overlayMountMode(p) !== "EQ") {
       try {
         var pos = currentPointing(p, stel);
         var site = observerLatLonDeg(stel);
         if (pos && site) {
           var q = parallacticDeg(pos.ra_hours, pos.dec_degrees, site.lat, site.lon);
-          if (isFinite(q)) return wrapDeg(q);
+          if (isFinite(q)) return wrapDeg(q + (pastZenith(p) ? 180 : 0));
         }
       } catch (err) {}
     }
@@ -1433,11 +1447,14 @@ SKY_WEB_FOV_JS = r"""
     var originY = (box.height - totalH) / 2;
     var color = String(p.color || "#7ee0d0");
     var pa = framePa(p);
-    var tilt = mosaicGridTilt(p, stel, box);
-    // Pane 1 is camera-right. On a north-up chart that is the right edge;
-    // on a south-up chart it is only the right edge near PA 180°.
-    var col1OnRight = (pa > 90 && pa < 270) === !!p.south_up;
-    var row1AtTop = (pa > 90 && pa < 270) === !!p.south_up;
+    // Parallactic alt-az is already zenith-up, so pane 1 (camera up-right)
+    // stays top-right. EQ and the celestial default keep the chart formula
+    // plus chart tilt: PA − 180° in the south, pane 1 top-right of that chart.
+    var zenithCamera = overlayMountMode(p) !== "EQ" && String(p.pa_source || "") === "parallactic";
+    var tilt = zenithCamera ? cameraHudTilt(p, stel, box) : mosaicGridTilt(p, stel, box);
+    var chartEdge = (pa > 90 && pa < 270) === !!p.south_up;
+    var col1OnRight = zenithCamera || chartEdge;
+    var row1AtTop = zenithCamera || chartEdge;
     var media = "";
     var frames = "";
     var labels = "";
@@ -1569,12 +1586,24 @@ SKY_WEB_FOV_JS = r"""
     return gridPanes(center, p);
   }
   function viewKey(stel, box) {
+    // draw(false) skips the SVG when this key is unchanged. Alt-az keeps
+    // yaw/pitch fixed while time_speed moves the sky and the parallactic
+    // angle, so the ICRS centre and tilt have to be part of the key or the
+    // FOV box stays on the old field.
     var a = coreAngles(stel) || {};
     var o = stel.observer || {};
+    var center = null;
+    var tilt = NaN;
+    try { center = viewCenter(stel); } catch (err) { center = null; }
+    try { tilt = viewRollDeg(stel, box); } catch (err) { tilt = NaN; }
+    var ra = center && isFinite(center.ra_hours) ? Number(center.ra_hours).toFixed(3) : "";
+    var dec = center && isFinite(center.dec_degrees) ? Number(center.dec_degrees).toFixed(2) : "";
+    var roll = isFinite(tilt) ? Number(tilt).toFixed(1) : "";
     return [
       a.yaw, a.pitch, o.roll, stel.core && stel.core.fov,
       box && box.width, box && box.height,
-      nightModeOn() ? "N" : "D"
+      nightModeOn() ? "N" : "D",
+      ra, dec, roll
     ].join("|");
   }
   function writePosLabels(text) {
@@ -1631,10 +1660,10 @@ SKY_WEB_FOV_JS = r"""
   }
   function tick() {
     var ctl = window[CTL];
-    if (!ctl) return;
+    if (!ctl || ctl.paused) return;
     ctl.raf = requestAnimationFrame(function() {
       var next = window[CTL];
-      if (next && typeof next.tick === "function") next.tick();
+      if (next && !next.paused && typeof next.tick === "function") next.tick();
     });
     try { (ctl.draw || draw)(false); } catch (err) {}
   }
@@ -1749,12 +1778,16 @@ SKY_WEB_FOV_JS = r"""
     }
     ctl.draw = draw;
     ctl.tick = tick;
-    if (typeof stel.change === "function") {
+    // stel.change fires on every engine frame. Binding again on each inject
+    // stacked another full redraw per frame for as long as the map stayed open.
+    if (!ctl.changeBound && typeof stel.change === "function") {
       try {
         stel.change(function() {
           var live = window[CTL];
-          if (live && typeof live.draw === "function") live.draw(true);
+          if (!live || live.paused || typeof live.draw !== "function") return;
+          live.draw(false);
         });
+        ctl.changeBound = true;
       } catch (err) {}
     }
     bindDoubleClick(ctl);
@@ -1768,7 +1801,7 @@ SKY_WEB_FOV_JS = r"""
       p.panes && p.panes[0] && p.panes[0].dec_degrees,
       p.target_ra_hours, p.target_dec_degrees,
       p.view_ra_hours, p.view_dec_degrees,
-      p.has_site, p.latitude, p.longitude
+      p.has_site, p.latitude, p.longitude, p.mount_mode, p.pa_source
     ].join("|");
     tick();
     return draw(true);
@@ -2259,6 +2292,42 @@ SKY_WEB_LOCK_TARGET_JS = r"""
 """
 
 
+SKY_WEB_PIN_TARGET_JS = r"""
+(function(p){
+  try {
+    var ra = Number(p && p.ra_hours);
+    var dec = Number(p && p.dec_degrees);
+    if (!isFinite(ra) || !isFinite(dec)) return "missing";
+    window.__astroDwarfFovTarget = {
+      name: String((p && p.name) || "FOV centre"),
+      ra_hours: ((ra % 24) + 24) % 24,
+      dec_degrees: Math.max(-90, Math.min(90, dec)),
+      at: Date.now(),
+      hold: true
+    };
+    return "ok";
+  } catch (err) {
+    return "error";
+  }
+})
+"""
+
+
+def sky_web_pin_target_script(payload: dict[str, Any] | None = None) -> str:
+    data = payload if isinstance(payload, dict) else {}
+    name = str(data.get("name") or "").strip() or "FOV centre"
+    body: dict[str, Any] = {"name": name}
+    try:
+        ra = float(data.get("ra_hours"))
+        dec = float(data.get("dec_degrees"))
+    except (TypeError, ValueError):
+        ra = dec = float("nan")
+    if ra == ra and dec == dec:
+        body["ra_hours"] = ra
+        body["dec_degrees"] = dec
+    return f"{SKY_WEB_PIN_TARGET_JS}({json.dumps(body)})"
+
+
 def sky_web_lock_target_script(payload: dict[str, Any] | None = None) -> str:
     data = payload if isinstance(payload, dict) else {}
     name = str(data.get("name") or "").strip()
@@ -2700,6 +2769,214 @@ def insert_reorder_block(
     return rest[:insert_at] + list(moving) + rest[insert_at:]
 
 
+def _clamp_sky_overlap(value: float) -> float:
+    return min(0.8, max(0.0, float(value)))
+
+
+def _sky_show_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _sky_show_mosaic(item: dict[str, Any]) -> Mosaic:
+    raw = item.get("mosaic") if isinstance(item.get("mosaic"), dict) else {}
+
+    def number(key: str, default: float | int, cast: Any) -> Any:
+        if key not in raw or raw.get(key) is None:
+            return default
+        try:
+            return cast(raw.get(key))
+        except (TypeError, ValueError):
+            return default
+
+    return Mosaic(
+        rows=max(0, number("rows", 1, int)),
+        columns=max(0, number("columns", 1, int)),
+        rotation_degrees=float(number("rotation_degrees", 0.0, float)),
+        horizontal_scale=number("horizontal_scale", 150, int),
+        vertical_scale=number("vertical_scale", 150, int),
+        grid_rows=max(0, number("grid_rows", 0, int)),
+        grid_columns=max(0, number("grid_columns", 0, int)),
+        row=max(0, number("row", 0, int)),
+        column=max(0, number("column", 0, int)),
+    )
+
+
+def _sky_show_coords(item: dict[str, Any]) -> tuple[float, float] | None:
+    target = item.get("target") if isinstance(item.get("target"), dict) else {}
+    ra = target.get("ra_hours", item.get("ra_hours"))
+    dec = target.get("dec_degrees", item.get("dec_degrees"))
+    try:
+        ra_f = float(ra)
+        dec_f = float(dec)
+    except (TypeError, ValueError):
+        return None
+    if ra_f != ra_f or dec_f != dec_f:
+        return None
+    return ((ra_f % 24.0) + 24.0) % 24.0, max(-90.0, min(90.0, dec_f))
+
+
+def _sky_show_mean(points: list[tuple[float, float]]) -> tuple[float, float]:
+    if len(points) == 1:
+        return points[0]
+    east = 0.0
+    north = 0.0
+    dec_sum = 0.0
+    for ra_hours, dec in points:
+        angle = (ra_hours % 24.0) / 24.0 * 2.0 * pi
+        east += cos(angle)
+        north += sin(angle)
+        dec_sum += dec
+    ra_hours = (atan2(north, east) / (2.0 * pi) * 24.0) % 24.0
+    return ra_hours, max(-90.0, min(90.0, dec_sum / len(points)))
+
+
+def _sky_separation_deg(ra_a: float, dec_a: float, ra_b: float, dec_b: float) -> float:
+    ra1 = radians(ra_a * 15.0)
+    ra2 = radians(ra_b * 15.0)
+    dec1 = radians(dec_a)
+    dec2 = radians(dec_b)
+    cosine = sin(dec1) * sin(dec2) + cos(dec1) * cos(dec2) * cos(ra1 - ra2)
+    cosine = max(-1.0, min(1.0, cosine))
+    return acos(cosine) * 180.0 / pi
+
+
+def _sky_overlap_from_scale(mosaic: Mosaic) -> float:
+    fractions: list[float] = []
+    for scale in (mosaic.horizontal_scale, mosaic.vertical_scale):
+        try:
+            fractions.append(1.0 - float(scale) / 100.0)
+        except (TypeError, ValueError):
+            continue
+    if not fractions:
+        return 0.0
+    return _clamp_sky_overlap(sum(fractions) / len(fractions))
+
+
+def _sky_overlap_from_panes(
+    points: list[dict[str, float]],
+    fov_h: float,
+    fov_v: float,
+) -> float | None:
+    estimates: list[float] = []
+
+    def consider(separation: float, fov: float) -> None:
+        if fov <= 0 or separation <= 0:
+            return
+        estimates.append(_clamp_sky_overlap(1.0 - separation / fov))
+
+    for index, left in enumerate(points):
+        for right in points[index + 1 :]:
+            same_row = left["row"] >= 1 and left["row"] == right["row"] and abs(left["column"] - right["column"]) == 1
+            same_column = (
+                left["column"] >= 1 and left["column"] == right["column"] and abs(left["row"] - right["row"]) == 1
+            )
+            separation = _sky_separation_deg(left["ra"], left["dec"], right["ra"], right["dec"])
+            if same_row:
+                consider(separation, fov_h)
+            elif same_column:
+                consider(separation, fov_v)
+    if not estimates:
+        return None
+    return _clamp_sky_overlap(sum(estimates) / len(estimates))
+
+
+def _sky_show_label(item: dict[str, Any], mosaic: bool) -> str:
+    target = item.get("target") if isinstance(item.get("target"), dict) else {}
+    if mosaic:
+        group_id = str(item.get("group_id") or "")
+        if not group_id:
+            mosaic_map = item.get("mosaic") if isinstance(item.get("mosaic"), dict) else {}
+            group_id = str(mosaic_map.get("group_id") or "")
+        raw = str(item.get("group_title") or item.get("target_name") or target.get("name") or item.get("name") or "")
+        return mosaic_group_title(raw, group_id) or "Mosaic"
+    label = str(item.get("target_name") or target.get("name") or item.get("name") or "").strip()
+    return label or "Target"
+
+
+def sky_show_plan(
+    item: dict[str, Any] | None,
+    members: list[dict[str, Any]] | None = None,
+    *,
+    fov_h: float = 0.0,
+    fov_v: float = 0.0,
+) -> dict[str, Any]:
+    """Sky-map target or mosaic grid for a session or template row."""
+    source = _sky_show_mapping(item)
+    panes = [_sky_show_mapping(entry) for entry in (members or []) if _sky_show_mapping(entry)]
+    if not panes:
+        panes = [source] if source else []
+    mosaics = [_sky_show_mosaic(entry) for entry in panes] or [_sky_show_mosaic(source)]
+    rows, columns = mosaic_grid_size(*mosaics)
+    rows = max(1, min(MAX_MOSAIC_AXIS, rows))
+    columns = max(1, min(MAX_MOSAIC_AXIS, columns))
+    points: list[dict[str, float]] = []
+    for entry, mosaic in zip(panes, mosaics):
+        coords = _sky_show_coords(entry)
+        if coords is None:
+            continue
+        points.append(
+            {
+                "ra": coords[0],
+                "dec": coords[1],
+                "row": float(mosaic.row),
+                "column": float(mosaic.column),
+            }
+        )
+    try:
+        pane_count = int(source.get("pane_count") or 0)
+    except (TypeError, ValueError):
+        pane_count = 0
+    grouped = bool(source.get("is_grouped") or source.get("is_group") or pane_count > 1 or len(points) > 1)
+    mosaic = rows > 1 or columns > 1 or grouped
+    empty = {
+        "ok": False,
+        "mosaic": mosaic,
+        "name": "",
+        "ra_hours": None,
+        "dec_degrees": None,
+        "columns": 1,
+        "rows": 1,
+        "overlap": 0.0,
+        "position_angle": 0.0,
+    }
+    if not points:
+        return empty
+    if mosaic and len(points) > 1:
+        ra_hours, dec_degrees = _sky_show_mean([(point["ra"], point["dec"]) for point in points])
+    else:
+        ra_hours, dec_degrees = points[0]["ra"], points[0]["dec"]
+    if not mosaic:
+        rows, columns = 1, 1
+        overlap = 0.0
+        position_angle = 0.0
+    else:
+        try:
+            fov_h_f = float(fov_h)
+            fov_v_f = float(fov_v)
+        except (TypeError, ValueError):
+            fov_h_f = fov_v_f = 0.0
+        measured = _sky_overlap_from_panes(points, fov_h_f, fov_v_f) if len(points) > 1 else None
+        overlap = _sky_overlap_from_scale(mosaics[0]) if measured is None else measured
+        position_angle = 0.0
+        for entry in mosaics:
+            if abs(float(entry.rotation_degrees or 0.0)) > 1e-6:
+                position_angle = float(entry.rotation_degrees) % 360.0
+                break
+    return {
+        "ok": True,
+        "mosaic": mosaic,
+        "name": _sky_show_label(source or panes[0], mosaic),
+        "ra_hours": ra_hours,
+        "dec_degrees": dec_degrees,
+        "columns": columns,
+        "rows": rows,
+        "overlap": overlap,
+        "position_angle": position_angle,
+    }
+
+
 def mosaic_grid_size(*mosaics: Mosaic | None) -> tuple[int, int]:
     rows = 1
     columns = 1
@@ -2990,22 +3267,39 @@ def mosaic_camera_up_is_south(south_up: bool, position_angle: Any = None) -> boo
     return 90.0 < pa < 270.0
 
 
-def mosaic_column_one_on_right(south_up: bool, position_angle: Any = None) -> bool:
+def mosaic_column_one_on_right(
+    south_up: bool,
+    position_angle: Any = None,
+    *,
+    zenith_camera: bool = False,
+) -> bool:
     """True when pane 1 belongs on the right of the control contact sheet.
 
     The sheet matches Stellarium/Aladin: zenith-up, which is an N-up chart
     (east left, west right) for a southern-sky target. Pane 1 is camera-right,
     west at PA 0°, so it sits on the right. A south-up paper chart is 180°
     from that overlay (1↔4) and must not drive the HUD sheet.
+
+    Alt-az camera-up is the zenith, already the top of that chart, so pane 1
+    stays on the right even when the parallactic angle is near 180°.
     """
+    if zenith_camera:
+        return True
     return not mosaic_camera_up_is_south(south_up, position_angle)
 
 
-def mosaic_sheet_column(index: int, columns: int, *, south_up: bool = False, position_angle: Any = None) -> int:
+def mosaic_sheet_column(
+    index: int,
+    columns: int,
+    *,
+    south_up: bool = False,
+    position_angle: Any = None,
+    zenith_camera: bool = False,
+) -> int:
     """0-based contact-sheet column for a 1-based pane index."""
     cols = max(1, int(columns or 1))
     raw = (max(1, int(index or 1)) - 1) % cols
-    if mosaic_column_one_on_right(south_up, position_angle):
+    if mosaic_column_one_on_right(south_up, position_angle, zenith_camera=zenith_camera):
         return (cols - 1) - raw
     return raw
 
@@ -3017,21 +3311,23 @@ def mosaic_sheet_row(
     *,
     south_up: bool = False,
     position_angle: Any = None,
+    zenith_camera: bool = False,
 ) -> int:
     """0-based contact-sheet row for a 1-based pane index.
 
-    Row 1 is camera-up. The sheet is zenith-up / N-up like the SKY overlay,
-    so camera-up sits at the top when it is north and at the bottom when it
-    is south (PA ~180°).
+    Row 1 is camera-up. On an EQ or default celestial PA the sheet is the
+    N-up zenith-up chart, so camera-up sits at the top when it is north and
+    at the bottom when it is south (PA ~180°). Alt-az camera-up is the zenith,
+    so row 1 stays on top.
     """
     cols = max(1, int(columns or 1))
     row_count = max(1, int(rows or 1))
     raw = (max(1, int(index or 1)) - 1) // cols
     if raw >= row_count:
         return row_count - 1
-    if mosaic_camera_up_is_south(south_up, position_angle):
-        return (row_count - 1) - raw
-    return raw
+    if zenith_camera or not mosaic_camera_up_is_south(south_up, position_angle):
+        return raw
+    return (row_count - 1) - raw
 
 
 def mosaic_chart_tilt(south_up: bool, position_angle: Any = None) -> float:
@@ -3156,6 +3452,56 @@ def lst_deg(longitude: Any, when: datetime | None = None) -> float:
     return (gmst_deg(when) + lon) % 360.0
 
 
+def horizon_altitude_deg(
+    ra_hours: Any,
+    dec_degrees: Any,
+    latitude: Any,
+    longitude: Any,
+    when: datetime | None = None,
+) -> float | None:
+    """Astronomical altitude in degrees. Horizon 0, zenith 90. Never past zenith."""
+    try:
+        ra_deg = (float(ra_hours) % 24.0 + 24.0) % 24.0 * 15.0
+        dec = radians(float(dec_degrees))
+        phi = radians(float(latitude))
+        lon = float(longitude)
+    except (TypeError, ValueError):
+        return None
+    ha = radians((lst_deg(lon, when) - ra_deg) % 360.0)
+    sine = sin(dec) * sin(phi) + cos(dec) * cos(phi) * cos(ha)
+    return asin(max(-1.0, min(1.0, sine))) * 180.0 / pi
+
+
+def altaz_camera_pa(
+    ra_hours: Any,
+    dec_degrees: Any,
+    latitude: Any,
+    longitude: Any,
+    when: datetime | None = None,
+    mechanical_altitude: Any = None,
+) -> float | None:
+    """Alt-az camera-up for every supported telescope, east of north.
+
+    DWARF II, DWARF 3, and DWARF Mini only pan and nod. With the base level
+    the sensor stays horizontal and its top points at the zenith, which is
+    the parallactic angle. The frame turns over only after the altitude axis
+    passes 90° and looks behind the body. All three can reach that pose:
+    DWARF II pitches 120° either side of vertical, DWARF Mini's barrel
+    travels 225°, and DWARF 3 nods through 180° or more. A sky coordinate
+    cannot describe it: astronomical altitude stops at 90°.
+    """
+    angle = parallactic_angle_deg(ra_hours, dec_degrees, latitude, longitude, when)
+    if angle is None:
+        return None
+    try:
+        pitch = float(mechanical_altitude) if mechanical_altitude is not None and mechanical_altitude != "" else None
+    except (TypeError, ValueError):
+        pitch = None
+    if pitch is not None and 90.0 < pitch < 270.0:
+        angle = (float(angle) + 180.0) % 360.0
+    return angle
+
+
 def parallactic_angle_deg(
     ra_hours: Any,
     dec_degrees: Any,
@@ -3225,14 +3571,17 @@ def resolve_device_mosaic_pa(
     dec_degrees: Any = None,
     mount_mode: Any = None,
     when: datetime | None = None,
+    mechanical_altitude: Any = None,
 ) -> MosaicPa:
     """Camera PA for overlay, cache, STACK, and save.
 
-    Alt-az camera-up is the parallactic angle of the pointing; a stored mosaic
-    PA cannot rotate the mount, so it is ignored while a target and site exist.
-    EQ uses stored mosaic_pa as an explicit override, including 0°. Unset EQ
-    keeps the celestial 0° N / 180° S default. Without a target or site, fall
-    back to stored or the celestial default.
+    Alt-az camera-up is the parallactic angle of the pointing, so the frame
+    stays horizontal. A stored mosaic PA cannot rotate the head, including
+    while the chart has no target yet. The idle chip then uses the celestial
+    default (0° N / 180° S). The frame inverts only when mechanical altitude
+    is past 90°. EQ uses stored mosaic_pa as an explicit override, including
+    0°. Unset EQ keeps the same celestial default. An unknown mount follows
+    alt-az until telemetry reports EQ.
     """
     south_up = mosaic_south_up(latitude)
     mode = str(mount_mode or "").strip().upper()
@@ -3243,9 +3592,17 @@ def resolve_device_mosaic_pa(
         except (TypeError, ValueError):
             has_site = False
         if has_site and ra_hours is not None and dec_degrees is not None:
-            angle = parallactic_angle_deg(ra_hours, dec_degrees, latitude, longitude, when)
+            angle = altaz_camera_pa(
+                ra_hours,
+                dec_degrees,
+                latitude,
+                longitude,
+                when,
+                mechanical_altitude,
+            )
             if angle is not None:
                 return MosaicPa(angle, MOSAIC_PA_PARALLACTIC, south_up, mode)
+        return MosaicPa(mosaic_position_angle(south_up, None), MOSAIC_PA_DEFAULT, south_up, mode)
     if stored:
         return MosaicPa(
             mosaic_position_angle(south_up, position_angle),
@@ -3265,12 +3622,14 @@ def device_mosaic_pa(
     dec_degrees: Any = None,
     mount_mode: Any = None,
     when: datetime | None = None,
+    mechanical_altitude: Any = None,
 ) -> float:
     """Camera PA used for mosaic ICRS centres, overlay, and GOTO."""
     return resolve_device_mosaic_pa(
         latitude,
         position_angle,
         longitude=longitude,
+        mechanical_altitude=mechanical_altitude,
         ra_hours=ra_hours,
         dec_degrees=dec_degrees,
         mount_mode=mount_mode,

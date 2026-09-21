@@ -27,8 +27,6 @@ Item {
         property int mosaicColumns: 1
         property int mosaicRows: 1
         property int mosaicOverlap: 20
-        property int mosaicPa: 0
-        property bool mosaicPaSet: false
         property bool liveFovOverlay: false
         property real liveFovOpacity: 0.65
         property bool dblclickTrack: false
@@ -57,10 +55,6 @@ Item {
         columnsBox.value = skyPage.clampInt(skyStore.mosaicColumns, 1, 10, 1)
         rowsBox.value = skyPage.clampInt(skyStore.mosaicRows, 1, 10, 1)
         overlapBox.value = skyPage.clampInt(skyStore.mosaicOverlap, 0, 80, 20)
-        const stored = backend.selectedDevice.mosaic_pa
-        const hasDevicePa = stored !== undefined && stored !== null && stored !== ""
-        if (!hasDevicePa)
-            skyStore.mosaicPaSet = false
         skyPage.applyDevicePa()
         backend.setSkyMosaicGrid(columnsBox.value, rowsBox.value, overlapBox.value / 100)
     }
@@ -93,9 +87,15 @@ Item {
         const fov = Number(data.fov)
         if (!isFinite(ra) || !isFinite(dec))
             return
+        const fovStored = isFinite(fov) ? fov : 0
+        if (skyStore.viewSaved
+                && Math.abs(skyStore.viewRaHours - ra) < 0.0008
+                && Math.abs(skyStore.viewDecDegrees - dec) < 0.008
+                && Math.abs(skyStore.viewFov - fovStored) < 0.05)
+            return
         skyStore.viewRaHours = ra
         skyStore.viewDecDegrees = dec
-        skyStore.viewFov = isFinite(fov) ? fov : 0
+        skyStore.viewFov = fovStored
         const yaw = Number(data.yaw)
         const pitch = Number(data.pitch)
         const roll = Number(data.roll)
@@ -103,8 +103,21 @@ Item {
         skyStore.viewPitch = isFinite(pitch) ? pitch : skyStore.viewPitch
         skyStore.viewRoll = isFinite(roll) ? roll : skyStore.viewRoll
         skyStore.viewSaved = true
-        if (typeof skyStore.sync === "function")
-            skyStore.sync()
+        skyPage.viewPersistDirty = true
+        viewPersistTimer.restart()
+    }
+    property bool viewPersistDirty: false
+    Timer {
+        id: viewPersistTimer
+        interval: 1200
+        repeat: false
+        onTriggered: {
+            if (!skyPage.viewPersistDirty)
+                return
+            skyPage.viewPersistDirty = false
+            if (typeof skyStore.sync === "function")
+                skyStore.sync()
+        }
     }
     readonly property bool mosaicGrid: columnsBox.value > 1 || rowsBox.value > 1
     readonly property bool mapHasTarget: !!(mapLoader.item && mapLoader.item.hasSelectedTarget)
@@ -148,7 +161,8 @@ Item {
         const name = String(target.name || "").trim()
         const dec = Number(target.dec_degrees)
         const decText = (dec >= 0 ? "+" : "") + dec.toFixed(3) + "°"
-        return (name ? name + "  ·  " : "")
+        return "Selected target  ·  "
+               + (name ? name + "  ·  " : "")
                + "RA " + Number(target.ra_hours).toFixed(3) + "h  DEC " + decText
                + "  ·  " + fov
     }
@@ -160,13 +174,19 @@ Item {
         const action = skyPage.pendingAction
         skyPage.pendingAction = ""
         if (action === "mosaic")
-            backend.generateStellariumMosaic(raw, columnsBox.value, rowsBox.value, overlapBox.value / 100, paBox.value)
+            backend.generateStellariumMosaic(
+                raw, columnsBox.value, rowsBox.value, overlapBox.value / 100,
+                backend.mosaicPaManual ? paBox.value : backend.mosaicPa)
         else if (action === "import")
             backend.importStellariumSmart(raw)
         else if (action === "push")
             backend.pushSkyToDesktop(raw)
-        else if (action === "track")
-            backend.trackSkyTarget(raw)
+        else if (action === "track") {
+            const openControl = skyPage.trackOpensControl
+            skyPage.trackOpensControl = false
+            if (backend.trackSkyTarget(raw) && openControl)
+                root.goToPage(root.controlPageIndex)
+        }
     }
     property double lastSkyMenuAt: 0
     property real lastSkyMenuX: 0
@@ -199,6 +219,31 @@ Item {
             return { ra_hours: ra, dec_degrees: dec }
         return null
     }
+    readonly property var fovCenter: skyPage.currentMapCenter()
+    readonly property string fovCenterText: {
+        const center = skyPage.fovCenter
+        if (!center)
+            return ""
+        const dec = Number(center.dec_degrees)
+        const decText = (dec >= 0 ? "+" : "") + dec.toFixed(2) + "\u00b0"
+        return Number(center.ra_hours).toFixed(2) + "h  " + decText
+    }
+    function useFovCenterAsTarget() {
+        const center = skyPage.currentMapCenter()
+        const map = mapLoader.item
+        if (!center || !map || typeof map.applyCoordinateTarget !== "function")
+            return
+        const payload = {
+            name: "FOV centre",
+            ra_hours: Number(center.ra_hours),
+            dec_degrees: Number(center.dec_degrees)
+        }
+        map.applyCoordinateTarget(payload)
+        if (typeof map.pinCoordinateTarget === "function")
+            map.pinCoordinateTarget(payload)
+        if (typeof map.applyFovOverlay === "function")
+            map.applyFovOverlay()
+    }
     function openRaDecDialog() {
         skyRaDecDialog.formatIndex = skyPage.clampInt(skyStore.coordFormatIndex, 0, 3, 0)
         const center = skyPage.currentMapCenter()
@@ -214,6 +259,42 @@ Item {
         if (typeof map.beginViewHold === "function")
             map.beginViewHold()
         map.setView(raHours, decDegrees)
+    }
+    property bool trackOpensControl: false
+    function showScheduleOnSky(item) {
+        if (!root.skyToolsEnabled)
+            return
+        const plan = backend.skyShowPlan(item) || ({})
+        if (!plan.ok)
+            return
+        const columns = skyPage.clampInt(plan.columns, 1, 10, 1)
+        const rows = skyPage.clampInt(plan.rows, 1, 10, 1)
+        if (columnsBox.value !== columns)
+            columnsBox.value = columns
+        if (rowsBox.value !== rows)
+            rowsBox.value = rows
+        if (plan.mosaic) {
+            const overlapPct = skyPage.clampInt(Math.round(Number(plan.overlap) * 100), 0, 80, 0)
+            if (overlapBox.value !== overlapPct)
+                overlapBox.value = overlapPct
+            if (backend.mosaicPaManual && isFinite(Number(plan.position_angle))) {
+                const pa = ((Math.round(Number(plan.position_angle)) % 360) + 360) % 360
+                if (paBox.value !== pa) {
+                    skyPage.applyingPa = true
+                    paBox.value = pa
+                    skyPage.applyingPa = false
+                }
+            }
+        }
+        skyPage.saveSkyGrid()
+        skyPage.mapKeepAlive = true
+        if (root.currentPage !== root.skyPageIndex)
+            root.goToPage(root.skyPageIndex)
+        skyPage.queueSkyLock({
+            name: String(plan.name || ""),
+            ra_hours: Number(plan.ra_hours),
+            dec_degrees: Number(plan.dec_degrees)
+        })
     }
     function showDevicePointingOnSky() {
         if (!root.skyToolsEnabled)
@@ -308,6 +389,8 @@ Item {
             skyMenu.dblclickTrackToggled()
         else if (key === "track")
             skyMenu.trackSelected()
+        else if (key === "fov")
+            skyPage.useFovCenterAsTarget()
         else if (key === "atlas")
             skyPage.openAtlasMenu()
         else if (key === "clipboard")
@@ -318,9 +401,10 @@ Item {
             return "unknown"
         return key
     }
-    function withSkySources(action) {
+    function withSkySources(action, openControl) {
         if (backend.uiBusy !== "" || skyPage.harvestBusy)
             return
+        skyPage.trackOpensControl = String(action || "") === "track" && !!openControl
         skyPage.pendingAction = String(action || "")
         skyPage.harvestBusy = true
         const map = mapLoader.item
@@ -381,7 +465,7 @@ Item {
 
     readonly property string mosaicHint: "Pane preview is a Telescopius-style camera frame for "
                                          + backend.mosaicFovText
-                                         + " (PA east of north; default 0° N-up, or this telescope's stored camera offset)."
+                                         + ". EQ camera-up is east of north: unset is 0° N-up in the north and 180° S-up in the south. Alt-az follows the zenith."
 
     ColumnLayout {
         anchors.fill: parent
@@ -470,7 +554,7 @@ Item {
                     implicitWidth: Theme.px(78)
                     Layout.preferredWidth: Theme.px(78)
                     accessibleName: "Camera position angle east of north"
-                    tooltip: "Equatorial mosaic camera-up, east of north. Blank/unset in Settings is 0° N-up or 180° S-up. Alt-az hides this control: the live camera PA is the zenith-up chip."
+                    tooltip: "Equatorial camera-up, east of north. Unset is 0° N-up north of the equator and 180° S-up south of it. A stored 0° stays N-up. Alt-az hides this box and follows the zenith."
                     textFromValue: (value, locale) => String(value) + "°"
                     valueFromText: (text, locale) => {
                         const n = parseInt(String(text).replace("°", "").trim(), 10)
@@ -591,6 +675,7 @@ Item {
                     const map = mapLoader.item
                     if (!map)
                         return
+                    map.shown = Qt.binding(() => skyPage.mapLive && !root.appModalOpen)
                     map.mosaicColumns = Qt.binding(() => columnsBox.value)
                     map.mosaicRows = Qt.binding(() => rowsBox.value)
                     map.mosaicOverlap = Qt.binding(() => overlapBox.value / 100)
@@ -666,10 +751,13 @@ Item {
 
             SkyContextMenu {
                 id: skyMenu
+                objectName: "skyContextMenu"
                 overlayEnabled: skyStore.liveFovOverlay
                 overlayOpacity: skyPage.clampOpacity(skyStore.liveFovOpacity)
                 dblclickTrack: skyStore.dblclickTrack
                 hasTarget: skyPage.mapHasTarget
+                hasFovCenter: !!skyPage.fovCenter
+                fovCenterText: skyPage.fovCenterText
                 atlasMenuAvailable: !backend.skyMapUsesStellariumWeb && skyPage.webReady
                 trackEnabled: !!(backend.selectedDevice && backend.selectedDevice.connected)
                               && root.scopePending === ""
@@ -705,7 +793,8 @@ Item {
                         backend.startPreview(backend.selectedDeviceId)
                 }
                 onDblclickTrackToggled: skyStore.dblclickTrack = !skyStore.dblclickTrack
-                onTrackSelected: skyPage.withSkySources("track")
+                onFovTargetRequested: skyPage.useFovCenterAsTarget()
+                onTrackSelected: skyPage.withSkySources("track", true)
             }
 
             Rectangle {

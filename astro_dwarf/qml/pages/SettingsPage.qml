@@ -27,7 +27,7 @@ Item {
         { key: "integrations", title: "INTEGRATIONS", hint: "Sky map · Stellarium", glyph: "◎", device: false, group: "APP" }
     ]
     readonly property var categoryKeys: ({
-        device: ["name", "model", "color", "camera", "timezone_name", "latitude", "longitude", "mosaic_pa"],
+        device: ["name", "model", "color", "camera", "timezone_name", "latitude", "longitude"],
         connect: ["ip_address", "ble_enabled", "wifi_mode", "wifi_ssid", "wifi_password", "ble_password", "auto_start_preview"],
         capture: ["capture_defaults"],
         timing: ["slew_seconds", "settle_seconds", "calibration_seconds", "autofocus_seconds", "infinite_focus_seconds", "polar_seconds", "readout_seconds", "pane_slew_seconds", "startup_seconds"],
@@ -48,38 +48,6 @@ Item {
         const n = Number(t)
         return isFinite(n) ? n : null
     }
-    function mosaicPaNumber(text) {
-        const t = String(text).trim()
-        if (t === "")
-            return null
-        const n = Number(t)
-        if (!isFinite(n))
-            return null
-        return ((n % 360) + 360) % 360
-    }
-    function mosaicPaTextFromDevice(device) {
-        const stored = device && device.mosaic_pa
-        if (stored === undefined || stored === null || stored === "")
-            return ""
-        const n = Number(stored)
-        if (!isFinite(n))
-            return ""
-        return String(Math.round(((n % 360) + 360) % 360))
-    }
-    function applyMosaicPaFromDevice() {
-        if (mosaicPaField.activeFocus)
-            return
-        const next = settingsPage.mosaicPaTextFromDevice(backend.selectedDevice)
-        if (mosaicPaField.text === next)
-            return
-        mosaicPaField.text = next
-        try {
-            const snap = JSON.parse(settingsPage.loadedSnapshot || "{}")
-            snap.mosaic_pa = settingsPage.mosaicPaNumber(next)
-            settingsPage.loadedSnapshot = JSON.stringify(snap)
-        } catch (exc) {
-        }
-    }
     function currentPayload() {
         return {
             id: settingsPage.loadedDeviceId || backend.selectedDeviceId, name: nameField.text, model: modelField.currentText,
@@ -88,7 +56,6 @@ Item {
             ble_enabled: bleField.checked,
             auto_start_preview: autoPreviewField.checked,
             latitude: settingsPage.coordNumber(latField.text), longitude: settingsPage.coordNumber(lonField.text),
-            mosaic_pa: settingsPage.mosaicPaNumber(mosaicPaField.text),
             timezone_name: timezoneField.selectedName || timezoneField.editText,
             wifi_mode: ["auto", "ap", "sta"][wifiModeField.currentIndex],
             wifi_ssid: ssidField.text, wifi_password: wifiField.text,
@@ -206,7 +173,6 @@ Item {
         autoPreviewField.checked = !!d.auto_start_preview
         latField.text = d.latitude
         lonField.text = d.longitude
-        mosaicPaField.text = settingsPage.mosaicPaTextFromDevice(d)
         timezoneField.setFromName(d.timezone_name || "")
         stellariumField.text = backend.stellariumUrl || "http://localhost:8090"
         skyMapField.currentIndex = backend.skyMapUsesStellariumWeb ? 1 : 0
@@ -239,7 +205,6 @@ Item {
             if (settingsPage.loadedDeviceId === backend.selectedDeviceId) {
                 if (settingsPage.dirty && !ipField.text && backend.selectedDevice.ip_address)
                     ipField.text = backend.selectedDevice.ip_address
-                settingsPage.applyMosaicPaFromDevice()
                 return
             }
             if (!settingsPage.dirty) {
@@ -764,14 +729,6 @@ Item {
                             FieldLabel { text: "LONGITUDE" }
                             HudField { id: lonField; Layout.preferredWidth: settingsPage.controlWidth; accessibleName: "Site longitude"; placeholderText: "144.96" }
                             FieldHint { text: "Decimal degrees; west is negative." }
-                            FieldLabel { text: "MOSAIC PA" }
-                            HudField {
-                                id: mosaicPaField
-                                Layout.preferredWidth: settingsPage.numberWidth
-                                accessibleName: "Camera position angle east of north"
-                                placeholderText: "0"
-                            }
-                            FieldHint { text: "Camera rotation east of north for EQ mosaics on this telescope. Blank is unset: EQ uses 0° north-up, or 180° south-up in the south. Alt-az ignores this and uses the locked target's zenith-up (parallactic) angle, because the mount cannot choose a different camera PA. Stored 0° is explicit N-up for EQ even at a southern site." }
                         }
                     }
 

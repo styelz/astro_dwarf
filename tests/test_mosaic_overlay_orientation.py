@@ -8,16 +8,21 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from astro_dwarf.domain import Target
+from astro_dwarf.domain import DeviceModel, Target
 from astro_dwarf.services import (
     MOSAIC_IMAGE_QUAD_ORDER,
+    MOSAIC_PA_PARALLACTIC,
+    MOSAIC_PA_STORED,
     SKY_WEB_FOV_JS,
+    altaz_camera_pa,
+    horizon_altitude_deg,
     mosaic_chart_tilt,
     mosaic_image_quad_xy,
     mosaic_overlay_hud_tilt,
     mosaic_pane_footprints,
     overlay_view_roll_deg,
     parallactic_angle_deg,
+    resolve_device_mosaic_pa,
 )
 
 
@@ -117,6 +122,54 @@ def test_one_by_one_and_mosaic_centre_share_camera_up() -> None:
     _assert(abs(pane1[0][0] - one_quad[0][0]) > 0.1, "pane 1 is offset; live video must not use it")
 
 
+def test_altaz_stays_upright_on_both_sides_of_the_south_pole() -> None:
+    """Alt-az does not roll the frame when the chart crosses the pole.
+
+    DWARF II, DWARF 3, and DWARF Mini only pan and nod. Both of these fields
+    sit well below the zenith at a southern site, so camera-up stays toward
+    the zenith. A stored south-up angle points at the pole and turns over
+    on the far side.
+    """
+    when = datetime(2026, 9, 21, 20, 32, tzinfo=timezone.utc)
+    lat, lon = -37.81, 144.96
+    near = (19.278, -82.955)
+    far = (5.187, -86.292)
+    fixed = []
+    near_pa = None
+    for ra, dec in (near, far):
+        alt = horizon_altitude_deg(ra, dec, lat, lon, when)
+        _assert(alt is not None and alt < 80.0, (ra, dec, alt, "not looking past zenith"))
+        pa = resolve_device_mosaic_pa(
+            lat, 192.0, longitude=lon, ra_hours=ra, dec_degrees=dec, mount_mode="", when=when
+        )
+        _assert(pa.source == MOSAIC_PA_PARALLACTIC, pa)
+        if (ra, dec) == near:
+            near_pa = pa
+        roll = overlay_view_roll_deg(ra, dec, lat, lon, when)
+        upright = (roll + pa.degrees) % 360.0
+        _assert(upright < 1e-6 or abs(upright - 360.0) < 1e-6, (ra, dec, upright, pa.degrees))
+        fixed.append((roll + 192.0) % 360.0)
+    gap = min(abs(fixed[0] - fixed[1]), 360.0 - abs(fixed[0] - fixed[1]))
+    _assert(gap > 90.0, (fixed, "stored PA 192° flips across the pole"))
+    eq = resolve_device_mosaic_pa(
+        lat, 192.0, longitude=lon, ra_hours=near[0], dec_degrees=near[1], mount_mode="EQ", when=when
+    )
+    _assert(eq.source == MOSAIC_PA_STORED and abs(eq.degrees - 192.0) < 1e-6, eq)
+    over = altaz_camera_pa(near[0], near[1], lat, lon, when, mechanical_altitude=120.0)
+    level = altaz_camera_pa(near[0], near[1], lat, lon, when, mechanical_altitude=45.0)
+    _assert(over is not None and level is not None, (over, level))
+    _assert(abs(((over - level) % 360.0) - 180.0) < 1e-6, (over, level, "past 90° looks behind the body"))
+    _assert(
+        set(DeviceModel) == {DeviceModel.DWARF_II, DeviceModel.DWARF_3, DeviceModel.DWARF_MINI},
+        "II, 3, and Mini share one alt-az camera rule",
+    )
+    again = resolve_device_mosaic_pa(
+        lat, 192.0, longitude=lon, ra_hours=near[0], dec_degrees=near[1], mount_mode="AZ", when=when
+    )
+    _assert(near_pa is not None, "near-side alt-az angle")
+    _assert(again.source == near_pa.source and abs(again.degrees - near_pa.degrees) < 1e-6, (again, near_pa))
+
+
 def test_stellarium_js_unifies_one_by_one_and_mosaic_live() -> None:
     _assert("function livePointingQuad" in SKY_WEB_FOV_JS, "1×1 and mosaic share one live quad")
     _assert("return [3, 0, 1, 2];" in SKY_WEB_FOV_JS, "JPEG TL is camera left-up")
@@ -134,7 +187,9 @@ def test_stellarium_js_unifies_one_by_one_and_mosaic_live() -> None:
     _assert("function viewRollDeg" in SKY_WEB_FOV_JS, "screen HUD must pick up zenith-up field rotation")
     _assert("function hudTilt" in SKY_WEB_FOV_JS, "screen HUD tilt helper exists")
     _assert("function cameraHudTilt" in SKY_WEB_FOV_JS, "1×1 HUD is view roll plus live camera PA")
-    _assert("function liveCameraPa" in SKY_WEB_FOV_JS, "1×1 alt-az uses live parallactic, not stored PA")
+    _assert("function liveCameraPa" in SKY_WEB_FOV_JS, "alt-az uses live parallactic, not stored PA")
+    _assert("overlayMountMode(p) !== \"EQ\"" in SKY_WEB_FOV_JS, "mosaics on alt-az follow the zenith too")
+    _assert("pastZenith(p) ? 180 : 0" in SKY_WEB_FOV_JS, "frame inverts only past mechanical zenith")
     _assert("liveCameraPa(p, stel)" in SKY_WEB_FOV_JS, "live JPEG corners follow live camera PA")
     _assert("isFinite(q) ? -q : 0" in SKY_WEB_FOV_JS, "view roll is -parallactic like Aladin zenithRotation")
     _assert("var projected = drawPanes(el, box, p, stel, panes);" in SKY_WEB_FOV_JS, "1×1 and mosaics share ICRS drawPanes")
@@ -147,5 +202,6 @@ if __name__ == "__main__":
     test_overlay_view_roll_is_minus_parallactic()
     test_jpeg_top_is_camera_up_on_north_up_chart()
     test_one_by_one_and_mosaic_centre_share_camera_up()
+    test_altaz_stays_upright_on_both_sides_of_the_south_pole()
     test_stellarium_js_unifies_one_by_one_and_mosaic_live()
     print("ok")

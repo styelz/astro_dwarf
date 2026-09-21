@@ -25,6 +25,7 @@ Item {
         accent: pane.accent
         southUp: backend.mosaicSouthUp
         positionAngle: backend.mosaicPa
+        zenithCamera: backend.mosaicPaSource === "parallactic"
         fontPixelSize: Theme.fontPx(11)
     }
 }

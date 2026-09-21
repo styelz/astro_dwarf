@@ -9,7 +9,34 @@ import ".."
 import "../components"
 
 Item {
+    id: sessionsRoot
     objectName: "sessionsRoot"
+    function childNamed(item, name) {
+        if (!item)
+            return null
+        if (String(item.objectName || "") === name)
+            return item
+        const kids = item.children || []
+        for (let i = 0; i < kids.length; i++) {
+            const found = sessionsRoot.childNamed(kids[i], name)
+            if (found)
+                return found
+        }
+        return null
+    }
+    function openListedSessionMenu(id) {
+        sessionsTabs.currentIndex = 0
+        const key = String(id || "")
+        const list = backend.sessions || []
+        for (let i = 0; i < list.length; i++) {
+            if (String((list[i] && list[i].id) || "") !== key)
+                continue
+            const anchor = sessionsRoot.childNamed("session-" + key) || scheduledPage
+            scheduledPage.openSessionMenu(list[i], anchor)
+            return "open"
+        }
+        return "missing"
+    }
     function revealTemplates(ids) {
         const created = []
         if (Array.isArray(ids)) {
@@ -140,6 +167,7 @@ Item {
             Layout.preferredHeight: 0
             Item {
                 id: scheduledPage
+                objectName: "scheduledPage"
                 property var selectedIds: ({})
                 property string selectionAnchorId: ""
                 property var expandedGroups: ({})
@@ -258,9 +286,12 @@ Item {
                     return false
                 }
                 property var contextSession: ({})
-                function openSessionMenu(session) {
+                function openSessionMenu(session, anchor) {
                     contextSession = session || ({})
-                    sessionMenu.popup()
+                    if (anchor && anchor.width > 0 && anchor.height > 0)
+                        sessionMenu.popup(anchor, Math.round(anchor.width * 0.42), Math.round(anchor.height * 0.55))
+                    else
+                        sessionMenu.popup()
                 }
                 readonly property int rowInset: Theme.px(12)
                 readonly property int colGap: Theme.px(12)
@@ -702,6 +733,7 @@ Item {
                 }
                 SessionContextMenu {
                     id: sessionMenu
+                    objectName: "sessionContextMenu"
                     sessionData: scheduledPage.contextSession
                     selectionItems: backend.sessions
                     selectedMap: scheduledPage.selectedIds
@@ -888,6 +920,21 @@ Item {
                                         else
                                             sessionDialog.openTemplate(templateCard.modelData)
                                     }
+                                }
+                                HudMenuItem {
+                                    objectName: "showOnSkyMenuItem"
+                                    readonly property bool mosaic: Util.skyShowIsMosaic(templateCard.modelData)
+                                    text: mosaic ? "Show mosaic on sky" : "Show on sky"
+                                    glyph: "\uE1D2"
+                                    enabled: root.skyToolsEnabled && Util.skyShowHasCoordinates(templateCard.modelData)
+                                    accessibleDescription: !root.skyToolsEnabled
+                                                           ? "Turn on sky tools in interface settings first"
+                                                           : !Util.skyShowHasCoordinates(templateCard.modelData)
+                                                             ? "This template has no equatorial coordinates"
+                                                             : mosaic
+                                                               ? "Open Sky and show this mosaic"
+                                                               : "Open Sky and center this target"
+                                    onTriggered: skyPage.showScheduleOnSky(templateCard.modelData)
                                 }
                                 HudMenuItem {
                                     text: "Schedule"
