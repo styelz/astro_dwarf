@@ -2,15 +2,17 @@ import QtQuick
 import ".."
 
 // Per-frame stack timer that reuses the MOTION pad geometry: ring, ticks,
-// and crosshair. Firmware progress packets from the logs:
+// and crosshair. A 15s stack log is one shutter per exposure, exactly
+// exposure-seconds apart:
 //   (armed, no packet)  START_CAPTURE accepted → WAIT
-//   0/0  first exposure starting → start the ring
-//   1/0  subframe captured, still processing → keep counting past exp
-//   1/1  stacked caught up, next exposure starting → reset and start
-//   N/N  last frame stacked → hold
-// Cycle time is exposure plus processing, so elapsed is not clamped to the
-// configured shutter. N/M still uses stacked. The ring fills over exposure
-// and stays full while the device processes the subframe.
+//   0/0  first shutter opens → start
+//   1/0  next shutter opens → reset and start
+//   1/1  previous frame stacked, shutter still open → keep counting
+//   2/1  next shutter → reset and start
+//   5/4  last shutter closed (current == total) → hold full
+//   5/5  last frame stacked → hold
+// stacked catching up is mid-exposure and must not restart the ring.
+// N/M still uses stacked. The ring fills over the configured shutter.
 Item {
     id: timer
     property bool active: false
@@ -23,11 +25,15 @@ Item {
     property string target: ""
     property real padSize: Theme.fitPadSize(Math.min(width, height))
 
-    readonly property int frameKey: timer.stacked
-    readonly property bool processing: timer.progressSeen && timer.current > timer.stacked
+    readonly property int frameKey: timer.current
+    // current == total is the last subframe captured, not another shutter.
+    readonly property bool lastShutterClosed: timer.progressSeen && timer.total > 0
+                                               && timer.current >= timer.total
+                                               && timer.stacked < timer.total
     readonly property bool complete: timer.active && timer.progressSeen && timer.total > 0
                                      && timer.stacked >= timer.total
     readonly property bool exposing: timer.active && timer.progressSeen && !timer.complete
+                                     && !timer.lastShutterClosed
     readonly property bool waiting: timer.active && !timer.progressSeen
     readonly property real elapsed: displayedElapsed
     readonly property real progress: {
@@ -83,7 +89,15 @@ Item {
     }
 
     function clamped(seconds) {
-        return Math.min(999, Math.max(0, Number(seconds) || 0))
+        const value = Math.min(999, Math.max(0, Number(seconds) || 0))
+        if (timer.exposureSeconds > 0)
+            return Math.min(timer.exposureSeconds, value)
+        return value
+    }
+
+    function holdFull() {
+        if (timer.exposureSeconds > 0)
+            timer.reanchor(timer.exposureSeconds)
     }
 
     function tick() {
@@ -104,6 +118,8 @@ Item {
             timer.haveFirmware = true
         if (timer.active && timer.exposing)
             timer.reanchor(timer.freshElapsed())
+        else if (timer.active && timer.lastShutterClosed)
+            timer.holdFull()
         else
             timer.reanchor(timer.complete ? timer.displayedElapsed : 0)
     }
@@ -114,6 +130,8 @@ Item {
         timer.lastFrame = timer.frameKey
         if (timer.exposing)
             timer.reanchor(timer.freshElapsed())
+        else if (timer.lastShutterClosed)
+            timer.holdFull()
         else if (!timer.complete)
             timer.reanchor(0)
     }
@@ -122,14 +140,13 @@ Item {
             return
         if (timer.exposing)
             timer.reanchor(timer.freshElapsed())
+        else if (timer.lastShutterClosed)
+            timer.holdFull()
         else if (!timer.complete)
             timer.reanchor(0)
     }
     onFirmwareElapsedChanged: {
-        // Long-exp packets are shutter time only. Ignore them while the
-        // device is processing a captured subframe so the ring can run past
-        // the configured exposure.
-        if (!timer.active || !timer.exposing || timer.processing)
+        if (!timer.active || !timer.exposing)
             return
         if (timer.firmwareElapsed > 0.05)
             timer.haveFirmware = true
@@ -143,11 +160,15 @@ Item {
     onFrameKeyChanged: {
         if (!timer.active)
             return
-        if (timer.complete) {
+        if (timer.complete || timer.lastShutterClosed) {
+            if (timer.lastShutterClosed)
+                timer.holdFull()
             timer.lastFrame = timer.frameKey
             return
         }
-        if (timer.lastFrame >= 0 && timer.frameKey > timer.lastFrame)
+        // 1/0, 2/1, 3/2, … — current pulled ahead and another shutter opened.
+        if (timer.lastFrame >= 0 && timer.frameKey > timer.lastFrame
+                && (timer.total <= 0 || timer.current < timer.total))
             timer.reanchor(timer.freshElapsed())
         else if (timer.lastFrame >= 0 && timer.frameKey < timer.lastFrame) {
             timer.haveFirmware = timer.firmwareElapsed > 0.05
@@ -171,8 +192,8 @@ Item {
         const taken = timer.current > timer.stacked ? ", " + timer.current + " taken" : ""
         if (timer.complete)
             return "Stack complete, " + frame + target
-        if (timer.processing)
-            return "Processing subframe, " + timer.secondsText + "s, " + frame + taken + target
+        if (timer.lastShutterClosed)
+            return "Last subframe captured, " + frame + taken + target
         return "Exposure " + timer.secondsText + " of " + timer.exposureText + ", " + frame + taken + target
     }
 
@@ -280,7 +301,7 @@ Item {
                 id: secondsLabel
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: timer.secondsText
-                color: (timer.waiting || timer.processing) ? Theme.warning : Theme.textPrimary
+                color: (timer.waiting || timer.lastShutterClosed) ? Theme.warning : Theme.textPrimary
                 font.pixelSize: Math.max(14, Math.round(22 * analogPad.padScale))
                 font.family: Theme.fontMono
                 font.bold: true

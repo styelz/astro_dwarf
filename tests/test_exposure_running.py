@@ -63,7 +63,7 @@ def test_current_ahead_keeps_running() -> None:
         "capture_total": 10,
         "exposure_text": "15s",
     })
-    _assert(view["exposure_running"] is True, "1/0 keeps counting through processing")
+    _assert(view["exposure_running"] is True, "1/0 is an open shutter")
     _assert(view["capture_text"] == "0/10", "HUD still follows stacked frames")
     _assert(view["capture_progress_seen"] is True, "non-zero current counts as seen")
 
@@ -78,7 +78,7 @@ def test_stacked_caught_up_starts_next() -> None:
         "exposure_text": "15s",
         "exposure_elapsed_s": 15,
     })
-    _assert(view["exposure_running"] is True, "1/1 starts the next frame cycle")
+    _assert(view["exposure_running"] is True, "1/1 stays inside the exposure that opened at 1/0")
     _assert(view["capture_text"] == "1/10", "HUD shows the stacked frame")
 
 
@@ -91,7 +91,7 @@ def test_next_current_keeps_running() -> None:
         "capture_total": 10,
         "exposure_text": "15s",
     })
-    _assert(view["exposure_running"] is True, "2/1 is still in the frame cycle")
+    _assert(view["exposure_running"] is True, "2/1 is the next open shutter")
     _assert(view["capture_text"] == "1/10", "HUD stays on stacked frames")
 
 

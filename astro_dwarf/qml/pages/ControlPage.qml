@@ -2531,7 +2531,8 @@ Item {
                 readonly property bool captureArmed: root.scopeOnline && !!root.scopeTelemetry.capture_active
                 // Swap MOTION for STACK as soon as capture is armed (or the
                 // STACK command is in flight). The ring waits for a firmware
-                // count packet (0/0 or N/N) before it starts counting.
+                // count packet before it starts counting. The first shutter is
+                // 0/0; each later shutter is current one ahead of stacked.
                 readonly property bool stacking: captureArmed
                     || (root.scopeOnline && root.scopePending === "stack")
                 SplitView.preferredHeight: Theme.px(289)

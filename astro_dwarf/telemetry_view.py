@@ -545,9 +545,10 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     view["exposure_elapsed_s"] = round(elapsed_s, 2)
     view["exposure_total_s"] = round(exposure_s, 3)
     view["exposure_progress"] = min(1.0, elapsed_s / exposure_s) if capturing and exposure_s > 0 else 0.0
-    # Firmware 0/0 or N/N starts a frame (exposure then processing). The
-    # synthetic zeros after START_CAPTURE must not start the ring — wait
-    # for a progress packet. Non-zero counts (join / 1/1) are also live.
+    # The shutter opens on firmware 0/0, then each time current_count pulls
+    # ahead (1/0, 2/1, …). stacked_count catches up mid-exposure and does
+    # not start a frame. Synthetic zeros after START_CAPTURE are not a
+    # progress packet. Non-zero counts (join) are live. Last N/N holds.
     seen = bool(raw.get("capture_progress_seen")) or view["capture_current"] > 0 or view["capture_stacked"] > 0
     last_done = view["capture_total"] > 0 and view["capture_stacked"] >= view["capture_total"]
     view["capture_progress_seen"] = bool(capturing and seen)
