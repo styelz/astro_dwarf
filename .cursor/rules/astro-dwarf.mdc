@@ -26,6 +26,22 @@ alwaysApply: true
 - Keep unattended scheduling non-blocking. Hardware warnings that can be safely bypassed should be logged and surfaced without stalling an overnight run.
 - Reuse existing models, helpers, and QML components. Add an abstraction only to remove meaningful duplication or centralize behavior.
 
+## Supported telescopes
+
+DWARF II, DWARF 3, and DWARF Mini are the same kind of head: they only pan and nod. Mount mode is the body-status packet (`1` EQ, `2` AZ in `BODY_STATUS`). Until that packet arrives, treat the head as alt-az. A stored camera angle, including explicit 0° N-up at a southern site, applies only after the packet says EQ. The model does not rotate the frame. Tele and wide are on the same head, so switching lenses does not change camera-up.
+
+Published H×V degrees live in `camera_fov`. A live firmware `h_fov`/`v_fov` replaces them when `camera_fov_plausible` accepts the pair. That sizes panes. It does not rotate them.
+
+| Model | Tele | Wide |
+|---|---|---|
+| DWARF II | 3.20° × 1.80° | 43.58° × 24.51° |
+| DWARF 3 | 2.95° × 1.66° | 45.06° × 25.93° |
+| DWARF Mini | 2.14° × 1.20° | 45.06° × 25.93° |
+
+The frame stays horizontal, top toward the zenith, until the nod looks past straight up. Published travel that can pass the zenith: DWARF II pitch 240° (120° either side of vertical) and azimuth 340°; DWARF Mini barrel 225° with unlimited yaw; DWARF 3 nod through 180° or more. A sky coordinate stops at 90° altitude, so it cannot describe that pose. The overlay adds 180° only when `mechanical_altitude` is set and `90° < pitch < 270°`. That field is not filled from telemetry. Do not invent a motor id to supply it. CMD 14011 (`ReqMotorGetPosition`) returns degrees; current pointing uses id 1 as azimuth and id 2 as altitude, and that path is not the sky overlay. Polar-pose `motor_action` numbers are not those ids: DWARF 3 and Mini use 5, 6, 9, 7; DWARF II uses 5, 6, 2, 3.
+
+Sky-frame, pane-number, and PA rules: `.cursor/rules/sky-mosaic-astronomy.mdc`.
+
 ## Verified device behavior
 
 - DWARF 3 wide camera is fixed-focus. Autofocus, infinity focus, and manual focus operate the telephoto motor; hide or disable focus controls for Wide and reject unsupported backend requests.

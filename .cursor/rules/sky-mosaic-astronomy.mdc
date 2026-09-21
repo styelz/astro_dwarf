@@ -25,7 +25,10 @@ Standard sky charts: **N-up has east on the left** (west on the right). S-up has
 - PA is east of celestial north for **camera-up**.
 - **PA 0°**: camera-up = north, camera-right = **west**.
 - **PA 180°**: camera-up = south, camera-right = **east**.
-- Unset `device.mosaic_pa`: EQ uses `0°` if latitude ≥ 0, **`180°` if latitude < 0**. **Alt-az ignores stored PA** and uses the locked target's parallactic (zenith-up) angle — the mount cannot choose a different camera rotation. Stored `0` is explicit N-up for EQ even at a southern site.
+- Unset `device.mosaic_pa`: EQ uses `0°` if latitude ≥ 0, **`180°` if latitude < 0**. Stored `0` is explicit N-up for EQ even at a southern site. **Alt-az ignores stored PA** and uses the parallactic angle of the pointing (the locked target, or the view centre while panning), for a single frame and for a mosaic.
+- The rule is mount mode, not model. DWARF II, DWARF 3, and DWARF Mini only pan and nod. With the base level the frame stays horizontal, top toward the zenith. Mount mode is body status `1` EQ / `2` AZ. Until that packet arrives, all three follow alt-az, so a stored 0° cannot force N-up.
+- The frame inverts 180° only when mechanical altitude is past 90° (looking behind the body): `90° < pitch < 270°`. Published travel that can pass the zenith: DWARF II pitch 240° (120° either side of vertical) and azimuth 340°; DWARF Mini barrel 225° with unlimited yaw; DWARF 3 nod through 180° or more. Astronomical altitude stops at 90°, so a sky coordinate cannot describe that pose. Apply the flip only from a reported `mechanical_altitude`. Do not invent a motor id to fill it. CMD 14011 reads degrees (pointing uses id 1 azimuth, id 2 altitude) and is not the overlay path. Polar-pose actions are separate: 3 and Mini `5, 6, 9, 7`; II `5, 6, 2, 3`.
+- Model selects published FOV only. Tele and wide share the head, so switching lenses does not change camera-up. Live firmware `h_fov`/`v_fov` replaces the published pair when it is plausible and sizes the panes.
 - Stellarium and Aladin are **zenith-up**, not south-up charts. 1×1 live overlay = camera PA + view roll (`−q`). Mosaic screen-grid **fallback** still uses chart tilt (`PA − 180°` in the south). The ICRS overlay and control contact sheet follow zenith-up, so PA 180 pane 1 is bottom-left.
 - Do not put 1×1 on southern chart tilt. That makes the live JPEG match only when PA is stored as `q+180` (e.g. Atria ~295°), which then rotates mosaic ICRS 180° (1↔4).
 - A 1×1 live overlay that only matches after typing PA ≈ q (e.g. 120°) means stored mosaic_pa was still driving the box. Alt-az must use live parallactic.
@@ -56,10 +59,17 @@ Change the sign of `up` or `right` only when `mosaic_pane_footprints` places the
 - Draw numbers at projected **pane centres** (not densified-corner centroids, not screen-grid order).
 - Save templates from `_cached_sky_preview_panes` when it matches the on-screen mosaic. Do not recompute from a later Stellarium/catalog harvest (that ~0.2° LMC-style offset is not a row flip).
 - Clipboard **Go to** pans with `setView` / `skyWebCenterViewScript` / `skyAtlasViewPosScript`. Do not `queueSkyLock` / `applyCoordinateTarget` — that rebuilds the mosaic around the pane.
-- Screen-grid fallback uses `south_up` and PA (`col1OnRight = (pa>90 && pa<270) === south_up`). Do not invent `northIsDown` row flips on top of that.
-- Control contact sheet (`mosaic_sheet_column` / `mosaic_sheet_row`) matches the zenith-up overlay, not the S-up fallback. PA 180: pane 1 bottom-left. Rotate stacked JPEGs 180° when camera-up is south so tiles still meet at centre.
+- Screen-grid fallback for EQ and the celestial default uses `south_up` and PA (`col1OnRight = (pa>90 && pa<270) === south_up`) plus chart tilt. Do not invent `northIsDown` row flips on top of that.
+- Alt-az with `pa_source` `parallactic` is already zenith-up. That screen-grid fallback and the contact sheet keep pane 1 top-right, and the JPEGs are not flipped, even when the parallactic angle is near 180°. Do not run that path through the S-up chart formula.
+- Control contact sheet (`mosaic_sheet_column` / `mosaic_sheet_row`) matches the zenith-up overlay, not the S-up fallback. EQ / default PA 180: pane 1 bottom-left. Rotate stacked JPEGs 180° when EQ camera-up is south so tiles still meet at centre.
 
-FOV: published DWARF 3 tele `2.95° × 1.66°`, wide `45.06° × 25.93°`. Mosaic overlay follows the selected camera; stacking stays tele (`sky_map_camera`).
+Published FOV (`camera_fov`), H×V degrees. The 1×1 live box follows the selected camera. Mosaic pane spacing and stacking stay tele (`sky_map_camera` / `mosaic_stack_camera`).
+
+| Model | Tele | Wide |
+|---|---|---|
+| DWARF II | 3.20° × 1.80° | 43.58° × 24.51° |
+| DWARF 3 | 2.95° × 1.66° | 45.06° × 25.93° |
+| DWARF Mini | 2.14° × 1.20° | 45.06° × 25.93° |
 
 ## Symptom → likely cause
 
