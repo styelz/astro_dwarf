@@ -175,7 +175,7 @@ Item {
                         visible: text.length
                         width: visible ? Math.max(0, handleRow.width - grip.width - (grip.visible ? handleRow.spacing : 0)) : 0
                         color: panel.titleColor
-                        font.pixelSize: 11
+                        font.pixelSize: Theme.fontPx(11)
                         font.letterSpacing: 1.6
                         font.bold: true
                         elide: Text.ElideRight
@@ -210,7 +210,7 @@ Item {
                 }
                 HudToolTip {
                     visible: panel.movable && headerMove.containsMouse && !headerMove.pressed && !PanelSwap.active
-                    text: "Drag onto a panel to swap, or onto an edge to insert. Right-click to reset the layout."
+                    text: "Drag onto a panel to swap, onto a panel edge to insert, or onto a column edge to create a column. Right-click to reset the layout."
                 }
             }
             Row {
@@ -316,7 +316,7 @@ Item {
         }
         HudToolTip {
             visible: edgeHandle.visible && edgeMove.containsMouse && !edgeMove.pressed && !PanelSwap.active
-            text: "Drag onto a panel to swap, or onto an edge to insert. Right-click to reset the layout."
+            text: "Drag onto a panel to swap, onto a panel edge to insert, or onto a column edge to create a column. Right-click to reset the layout."
         }
     }
     Rectangle {

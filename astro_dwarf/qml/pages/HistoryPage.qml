@@ -13,7 +13,8 @@ Item {
     objectName: "historyRoot"
     property string query: ""
     property int outcomeFilter: 0
-    property string expandedId: ""
+    property var expandedIds: ({})
+    property var expandedGroups: ({})
     property var selectedIds: ({})
     property string selectionAnchorId: ""
     property bool showAllDevices: false
@@ -50,6 +51,67 @@ Item {
         selectedIds = result.map
         selectionAnchorId = result.anchor
     }
+    function selectRow(item, shift) {
+        if (item && item.group_collapsed && item.group_members && item.group_members.length) {
+            const members = item.group_members
+            let allOn = true
+            for (let i = 0; i < members.length; i++) {
+                if (!Util.idSetHas(historyPage.selectedIds, members[i].id)) {
+                    allOn = false
+                    break
+                }
+            }
+            const next = Object.assign({}, historyPage.selectedIds)
+            for (let i = 0; i < members.length; i++) {
+                const id = members[i] && members[i].id
+                if (!id)
+                    continue
+                if (allOn)
+                    delete next[id]
+                else
+                    next[id] = true
+            }
+            historyPage.selectedIds = next
+            historyPage.selectionAnchorId = String((members[0] && members[0].id) || "")
+            return
+        }
+        historyPage.selectClick(item && item.id, shift)
+    }
+    function rowSelected(item) {
+        if (item && item.group_collapsed && item.group_members) {
+            const members = item.group_members
+            if (!members.length)
+                return false
+            for (let i = 0; i < members.length; i++) {
+                if (!Util.idSetHas(historyPage.selectedIds, members[i].id))
+                    return false
+            }
+            return true
+        }
+        return Util.idSetHas(historyPage.selectedIds, item && item.id)
+    }
+    function rowDeleteTarget(item) {
+        if (item && item.group_collapsed && item.group_member_ids && item.group_member_ids.length)
+            return item.group_member_ids
+        return item && item.id
+    }
+    function toggleGroup(item) {
+        const key = Util.sessionGroupKey(item)
+        if (!key)
+            return
+        const next = Object.assign({}, historyPage.expandedGroups)
+        if (next[key])
+            delete next[key]
+        else
+            next[key] = true
+        historyPage.expandedGroups = next
+    }
+    function toggleRow(item) {
+        if (item && item.group_collapsed)
+            historyPage.toggleGroup(item)
+        else
+            historyPage.toggleExpanded(item && item.id)
+    }
     function clearSelection() {
         historyPage.selectedIds = ({})
         historyPage.selectionAnchorId = ""
@@ -82,6 +144,11 @@ Item {
         }
         return out
     }
+    readonly property var clusteredHistory: Util.clusterSessions(historyPage.filteredHistory)
+    readonly property var visibleHistory: Util.visibleClusteredHistory(historyPage.filteredHistory, historyPage.expandedGroups)
+    readonly property var mosaicGroupKeys: Util.mosaicGroupKeys(historyPage.clusteredHistory)
+    readonly property int groupedCount: mosaicGroupKeys.length
+    readonly property int expandedGroupCount: Util.expandedKeyCount(historyPage.expandedGroups, historyPage.mosaicGroupKeys)
     readonly property int filteredCount: filteredHistory.length
     readonly property int filteredOk: filteredHistory.filter(item => item.ok).length
     readonly property int filteredFailed: filteredCount - filteredOk
@@ -93,9 +160,27 @@ Item {
         const hours = Math.max(0, seconds) / 3600
         return hours >= 10 ? hours.toFixed(0) + "h" : hours.toFixed(1) + "h"
     }
+    readonly property int expandedVisibleCount: Util.idSetVisibleCount(historyPage.expandedIds, historyPage.filteredHistory)
+    readonly property bool canExpandAll: historyPage.groupedCount > 0
+                                         ? historyPage.expandedGroupCount < historyPage.groupedCount
+                                         : (historyPage.filteredCount > 0 && historyPage.expandedVisibleCount < historyPage.filteredCount)
+    readonly property bool canCollapseAll: historyPage.groupedCount > 0
+                                           ? historyPage.expandedGroupCount > 0
+                                           : historyPage.expandedVisibleCount > 0
     function toggleExpanded(id) {
-        const key = String(id || "")
-        historyPage.expandedId = (key && historyPage.expandedId === key) ? "" : key
+        historyPage.expandedIds = Util.idSetToggle(historyPage.expandedIds, id)
+    }
+    function expandAll() {
+        if (historyPage.groupedCount > 0)
+            historyPage.expandedGroups = Util.mosaicGroupKeyMap(historyPage.clusteredHistory)
+        else
+            historyPage.expandedIds = Util.idSetAll(historyPage.filteredHistory, true)
+    }
+    function collapseAll() {
+        if (historyPage.groupedCount > 0)
+            historyPage.expandedGroups = ({})
+        else
+            historyPage.expandedIds = ({})
     }
     Component.onCompleted: {
         historyPage.syncScopedDevice()
@@ -105,6 +190,15 @@ Item {
         target: backend
         function onHistoryChanged() {
             historyPage.selectedIds = Util.pruneIdSet(historyPage.selectedIds, backend.history)
+            historyPage.expandedIds = Util.pruneIdSet(historyPage.expandedIds, backend.history)
+            const keys = Util.mosaicGroupKeys(Util.clusterSessions(historyPage.filteredHistory))
+            const next = {}
+            const expanded = historyPage.expandedGroups || {}
+            for (let i = 0; i < keys.length; i++) {
+                if (expanded[keys[i]])
+                    next[keys[i]] = true
+            }
+            historyPage.expandedGroups = next
         }
         function onSelectedDeviceChanged() {
             historyPage.syncScopedDevice()
@@ -351,6 +445,19 @@ Item {
                             }
                         }
                     }
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        onTapped: historyExpandMenu.popup()
+                    }
+                    ExpandCollapseMenu {
+                        id: historyExpandMenu
+                        expandObjectName: "history-header-expand-all"
+                        collapseObjectName: "history-header-collapse-all"
+                        canExpandAll: historyPage.canExpandAll
+                        canCollapseAll: historyPage.canCollapseAll
+                        onExpandAllRequested: historyPage.expandAll()
+                        onCollapseAllRequested: historyPage.collapseAll()
+                    }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.outline }
                 ListView {
@@ -363,20 +470,31 @@ Item {
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: HiddenBar {}
                     ScrollBar.horizontal: HiddenBar {}
-                    model: historyPage.filteredHistory
+                    model: historyPage.visibleHistory
                     delegate: Rectangle {
                         id: historyRow
-                        objectName: "history-" + modelData.id
+                        objectName: !!(modelData && modelData.group_collapsed)
+                                     ? "history-group-" + (modelData.group_id || modelData.id)
+                                     : "history-" + modelData.id
                         required property var modelData
                         required property int index
-                        readonly property bool expanded: historyPage.expandedId !== "" && historyPage.expandedId === String(modelData.id || "")
+                        readonly property bool collapsedGroup: !!(modelData && modelData.group_collapsed)
+                        readonly property bool expanded: !historyRow.collapsedGroup && Util.idSetHas(historyPage.expandedIds, modelData.id)
+                        readonly property bool showHeader: {
+                            if (!modelData || !modelData.is_grouped || historyRow.collapsedGroup)
+                                return false
+                            if (index <= 0)
+                                return true
+                            const prev = historyPage.visibleHistory[index - 1]
+                            return !prev || String(prev.group_key || "") !== String(modelData.group_key || "")
+                        }
                         width: ListView.view.width
                         height: rowBody.implicitHeight
                         readonly property color outcomeTone: modelData.ok ? Theme.success : Theme.danger
                         readonly property real deltaSeconds: Number(modelData.delta_seconds || 0)
                         readonly property color deltaTone: Math.abs(deltaSeconds) < 60 ? Theme.textSecondary : (deltaSeconds > 0 ? Theme.warning : Theme.notice)
-                        color: expanded || Util.idSetHas(historyPage.selectedIds, modelData.id) ? Theme.hsl(0.036, 0.640, 0.196, 0.133) : (rowHover.hovered ? Theme.hsl(0.068, 0.517, 0.114, 0.094) : (index % 2 ? Theme.hsl(0.062, 0.524, 0.082, 0.078) : "transparent"))
-                        border.color: expanded ? Theme.outline : "transparent"
+                        color: expanded || historyPage.rowSelected(modelData) ? Theme.hsl(0.036, 0.640, 0.196, 0.133) : (rowHover.hovered ? Theme.hsl(0.068, 0.517, 0.114, 0.094) : (index % 2 ? Theme.hsl(0.062, 0.524, 0.082, 0.078) : "transparent"))
+                        border.color: expanded || historyRow.showHeader ? Theme.outline : "transparent"
                         Behavior on color { ColorAnimation { duration: Theme.quick } }
                         HoverHandler { id: rowHover }
                         Rectangle { x: 0; y: 0; width: 2; height: parent.height; color: historyRow.outcomeTone; opacity: historyRow.expanded ? 1 : 0.55 }
@@ -384,20 +502,42 @@ Item {
                             id: rowBody
                             width: parent.width
                             Item {
+                                visible: historyRow.showHeader
+                                width: parent.width
+                                height: visible ? 26 : 0
+                                Accessible.role: Accessible.Button
+                                Accessible.name: "Collapse " + String(historyRow.modelData.group_title || historyRow.modelData.target_name || "mosaic")
+                                TapHandler {
+                                    onTapped: historyPage.toggleGroup(historyRow.modelData)
+                                }
+                                Text {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: historyPage.gutterWidth + 4
+                                    text: "▾  " + String(historyRow.modelData.group_title || historyRow.modelData.target_name || "Mosaic")
+                                          + "  ·  " + String(historyRow.modelData.pane_count || 0)
+                                          + (Number(historyRow.modelData.pane_count || 0) === 1 ? " pane" : " panes")
+                                    color: Theme.accent
+                                    font.pixelSize: Theme.fontSm
+                                    font.bold: true
+                                    verticalAlignment: Text.AlignVCenter
+                                    elide: Text.ElideRight
+                                }
+                            }
+                            Item {
                                 width: parent.width
                                 height: 42
                                 activeFocusOnTab: true
                                 Accessible.role: Accessible.Button
                                 Accessible.name: (historyRow.modelData.date || "") + " " + (historyRow.modelData.target_name || "") + " " + (historyRow.modelData.outcome || "")
-                                Accessible.onPressAction: historyPage.toggleExpanded(historyRow.modelData.id)
+                                Accessible.onPressAction: historyPage.toggleRow(historyRow.modelData)
                                 Keys.onPressed: function (event) {
                                     if (event.key === Qt.Key_Space && (event.modifiers & Qt.ShiftModifier)) {
-                                        historyPage.selectClick(historyRow.modelData.id, true)
+                                        historyPage.selectRow(historyRow.modelData, true)
                                         event.accepted = true
                                         return
                                     }
                                     if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                                        historyPage.toggleExpanded(historyRow.modelData.id)
+                                        historyPage.toggleRow(historyRow.modelData)
                                         event.accepted = true
                                     }
                                 }
@@ -418,7 +558,7 @@ Item {
                                         Text {
                                             anchors.fill: parent
                                             anchors.leftMargin: 2
-                                            text: historyRow.expanded ? "▾" : "▸"
+                                            text: historyRow.collapsedGroup ? "▸" : (historyRow.expanded ? "▾" : "▸")
                                             color: Theme.accent
                                             font.pixelSize: Theme.fontSm
                                             horizontalAlignment: Text.AlignHCenter
@@ -431,21 +571,24 @@ Item {
                                             acceptedButtons: Qt.LeftButton
                                             preventStealing: true
                                             cursorShape: Qt.PointingHandCursor
-                                            onClicked: historyPage.toggleExpanded(historyRow.modelData.id)
+                                            onClicked: historyPage.toggleRow(historyRow.modelData)
                                         }
                                         SelectBox {
                                             id: historySelect
                                             anchors.centerIn: parent
                                             anchors.horizontalCenterOffset: 1
-                                            checked: Util.idSetHas(historyPage.selectedIds, historyRow.modelData.id)
+                                            checked: historyPage.rowSelected(historyRow.modelData)
                                             revealed: rowHover.hovered || historyPage.selectedCount > 0
-                                            onToggled: (shiftHeld) => historyPage.selectClick(historyRow.modelData.id, shiftHeld)
+                                            onToggled: (shiftHeld) => historyPage.selectRow(historyRow.modelData, shiftHeld)
                                         }
                                     }
                                     Repeater {
                                         model: [
                                             {text: historyRow.modelData.date, w: 0.12, color: Theme.textPrimary, mono: true},
-                                            {text: historyRow.modelData.target_name, w: 0.22, color: Theme.textPrimary, bold: true},
+                                            {text: historyRow.collapsedGroup
+                                                   ? ((historyRow.modelData.group_title || historyRow.modelData.target_name || "")
+                                                      + (historyRow.modelData.group_summary ? "  ·  " + historyRow.modelData.group_summary : ""))
+                                                   : historyRow.modelData.target_name, w: 0.22, color: Theme.textPrimary, bold: true},
                                             {text: historyRow.modelData.device_name, w: 0.12, color: Theme.textPrimary, dot: historyRow.modelData.device_color || Theme.accent},
                                             {text: historyRow.modelData.frame_text || String(historyRow.modelData.frame_count || 0), w: 0.11, color: Theme.textSecondary, mono: true},
                                             {text: historyRow.modelData.planned_text, w: 0.10, color: Theme.textSecondary, mono: true},
@@ -485,10 +628,10 @@ Item {
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: mouse => {
                                         if (mouse.modifiers & Qt.ShiftModifier) {
-                                            historyPage.selectClick(historyRow.modelData.id, true)
+                                            historyPage.selectRow(historyRow.modelData, true)
                                             return
                                         }
-                                        historyPage.toggleExpanded(historyRow.modelData.id)
+                                        historyPage.toggleRow(historyRow.modelData)
                                     }
                                 }
                                 TapHandler {
@@ -518,6 +661,21 @@ Item {
                                     }
                                     HudMenuSeparator {}
                                     HudMenuItem {
+                                        objectName: "history-expand-all"
+                                        text: "Expand all"
+                                        glyph: "\uE70D"
+                                        enabled: historyPage.canExpandAll
+                                        onTriggered: historyPage.expandAll()
+                                    }
+                                    HudMenuItem {
+                                        objectName: "history-collapse-all"
+                                        text: "Collapse all"
+                                        glyph: "\uE70E"
+                                        enabled: historyPage.canCollapseAll
+                                        onTriggered: historyPage.collapseAll()
+                                    }
+                                    HudMenuSeparator {}
+                                    HudMenuItem {
                                         text: "Select all"
                                         glyph: "\uE8A5"
                                         enabled: historyPage.filteredCount > 0
@@ -534,12 +692,12 @@ Item {
                                         text: "Remove"
                                         glyph: "\uE74D"
                                         destructive: true
-                                        onTriggered: root.confirmBulkDelete("deleteHistory", historyRow.modelData.id, "run")
+                                        onTriggered: root.confirmBulkDelete("deleteHistory", historyPage.rowDeleteTarget(historyRow.modelData), "run")
                                     }
                                 }
                             }
                             Item {
-                                visible: historyRow.expanded
+                                visible: historyRow.expanded && !historyRow.collapsedGroup
                                 width: parent.width
                                 height: visible ? detailCol.implicitHeight + 16 : 0
                                 ColumnLayout {
@@ -624,7 +782,7 @@ Item {
                                             busyText: "REMOVING…"
                                             buttonColor: Theme.fillDanger
                                             foregroundColor: Theme.danger
-                                            onClicked: root.confirmBulkDelete("deleteHistory", historyRow.modelData.id, "run")
+                                            onClicked: root.confirmBulkDelete("deleteHistory", historyPage.rowDeleteTarget(historyRow.modelData), "run")
                                         }
                                         Item { Layout.fillWidth: true }
                                     }

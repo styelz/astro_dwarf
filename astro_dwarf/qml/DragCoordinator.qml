@@ -43,6 +43,8 @@ QtObject {
         coord.refreshPreview(position)
     }
     function update(position) {
+        if (coord.pos.x === position.x && coord.pos.y === position.y)
+            return
         coord.pos = position
         coord.refreshPreview(position)
     }
@@ -82,9 +84,6 @@ QtObject {
     function listRowAt(list, index) {
         if (!list || index < 0 || index >= list.count)
             return null
-        const row = list.itemAtIndex(index)
-        if (row && row.modelData)
-            return row.modelData
         const model = list.model
         if (model && model[index])
             return model[index]
@@ -93,41 +92,18 @@ QtObject {
     function reorderFromInsert(list, insertIndex, source, observingDate) {
         if (!source || !source.id || insertIndex < 0)
             return
-        if (String(source.status || "").toLowerCase() !== "planned") {
+        const count = list ? list.count : 0
+        const rows = []
+        for (let i = 0; i < count; i++)
+            rows.push(coord.listRowAt(list, i))
+        const target = Util.reorderBeforeId(rows, insertIndex, source)
+        if (target.skip)
+            return
+        if (!Util.sessionDragPlanned(source)) {
             backend.reorderPlanned(String(source.id), "")
             return
         }
-        const count = list ? list.count : 0
-        let from = -1
-        for (let i = 0; i < count; i++) {
-            const row = coord.listRowAt(list, i)
-            if (row && String(row.id) === String(source.id)) {
-                from = i
-                break
-            }
-        }
-        if (from >= 0 && (insertIndex === from || insertIndex === from + 1) && count > 0)
-            return
-        let beforeId = ""
-        for (let i = Math.max(0, insertIndex); i < count; i++) {
-            const target = coord.listRowAt(list, i)
-            if (!target || String(target.id) === String(source.id))
-                continue
-            if (String(target.device_id) !== String(source.device_id))
-                continue
-            if (String(target.status || "").toLowerCase() !== "planned")
-                continue
-            beforeId = String(target.id)
-            break
-        }
-        let night = String(observingDate || "")
-        if (!beforeId) {
-            const prevIdx = Math.min(insertIndex, count) - 1
-            const neighbor = coord.listRowAt(list, prevIdx >= 0 ? prevIdx : 0)
-            if (neighbor && neighbor.observing_date)
-                night = String(neighbor.observing_date)
-        }
-        backend.reorderPlanned(String(source.id), beforeId, night)
+        backend.reorderPlanned(String(source.id), target.beforeId, String(observingDate || target.night || ""))
     }
     function dropAreaShown(item) {
         for (let node = item; node; node = node.parent) {
@@ -153,13 +129,14 @@ QtObject {
         coord.moveDrag(position)
         const source = coord.data
         const target = coord.listDropTarget(position)
-        if (target) {
-            coord.cancelDrag()
-            Qt.callLater(function() {
+        const sid = source && source.id ? String(source.id) : ""
+        const timeline = coord.timeline
+        coord.cancelDrag()
+        Qt.callLater(function() {
+            if (target)
                 coord.reorderFromInsert(target.list, target.index, source, target.observingDate)
-            })
-            return
-        }
-        coord.finishDrag()
+            else if (sid && timeline && timeline.applySessionDrop)
+                timeline.applySessionDrop(sid, source, position)
+        })
     }
 }

@@ -9,7 +9,7 @@ import "../dialogs"
 ColumnLayout {
     id: iface
     objectName: "interfaceSettings"
-    property int controlWidth: 320
+    property int controlWidth: Theme.px(320)
     property string tintRole: "accent"
     property string matchSourceKey: "surface"
     property bool naming: false
@@ -103,7 +103,7 @@ ColumnLayout {
     readonly property bool tintFixed: Theme.roleFixed(iface.tintRole)
     readonly property bool savedSlot: !Theme.isBuiltinId(Theme.activeThemeId)
     readonly property bool renameable: Theme.canRenameTheme(Theme.activeThemeId)
-    readonly property bool colourSplit: iface.width >= 620
+    readonly property bool colourSplit: iface.width >= Theme.px(620)
     readonly property string probeThemeId: Theme.activeThemeId
     readonly property string probeTintRole: iface.tintRole
     readonly property string probeAccentHex: {
@@ -181,6 +181,85 @@ ColumnLayout {
             accessibleName: "Navigation button position"
         }
         FieldHint { text: "Top sits under the device bar. Bottom keeps the header clear." }
+        FieldLabel { text: "UI SCALE" }
+        HudCombo {
+            Layout.preferredWidth: iface.controlWidth
+            model: Theme.uiScalePrefLabels
+            currentIndex: {
+                const i = Theme.uiScalePrefKeys.indexOf(Theme.uiScalePref)
+                return i >= 0 ? i : 0
+            }
+            onActivated: Theme.uiScalePref = Theme.uiScalePrefKeys[currentIndex] || "auto"
+            accessibleName: "UI scale"
+        }
+        FieldHint { text: "Auto follows this monitor so 2K and 4K chrome grow. 100% is the current laptop look." }
+        FieldLabel { text: "FONT SIZE" }
+        HudCombo {
+            Layout.preferredWidth: iface.controlWidth
+            model: Theme.fontSizePrefLabels
+            currentIndex: {
+                const i = Theme.fontSizePrefKeys.indexOf(Theme.fontSizePref)
+                return i >= 0 ? i : 1
+            }
+            onActivated: Theme.fontSizePref = Theme.fontSizePrefKeys[currentIndex] || "default"
+            accessibleName: "Font size"
+        }
+        FieldHint { text: "Type only. Default matches the current HUD. Large and extra large also grow controls that have to fit a line of text." }
+        FieldLabel { text: "ZOOM" }
+        HudSlider {
+            id: zoomSlider
+            objectName: "appZoom"
+            Layout.preferredWidth: iface.controlWidth
+            from: Theme.zoomMin
+            to: Theme.zoomMax
+            stepSize: 0.1
+            markerPosition: (1 - Theme.zoomMin) / (Theme.zoomMax - Theme.zoomMin)
+            valueText: Math.round(Theme.snapZoom(value) * 100) + "%"
+            accessibleName: "App zoom"
+            tooltip: "Whole-app zoom. The console resizes when you release so the slider stays under the pointer. Ctrl + and − step 10%. Ctrl+0 resets to 100%."
+            // Applying zoom live rescales Theme.px() and this panel, which drops
+            // mouse grab / hover after a single step. Keep the layout still until
+            // the drag ends or wheel / key input settles.
+            property bool editing: false
+            function commitZoom() {
+                zoomCommitTimer.stop()
+                Theme.zoom = Theme.snapZoom(value)
+                editing = false
+            }
+            onMoved: {
+                editing = true
+                if (pressed)
+                    return
+                zoomCommitTimer.restart()
+            }
+            onPressedChanged: {
+                if (pressed) {
+                    editing = true
+                    zoomCommitTimer.stop()
+                    return
+                }
+                commitZoom()
+            }
+            Component.onCompleted: value = Theme.zoomClamped
+            Component.onDestruction: {
+                if (editing)
+                    commitZoom()
+            }
+            Timer {
+                id: zoomCommitTimer
+                interval: Theme.slow
+                onTriggered: zoomSlider.commitZoom()
+            }
+            Connections {
+                target: Theme
+                function onZoomChanged() {
+                    if (zoomSlider.pressed || zoomSlider.editing)
+                        return
+                    zoomSlider.value = Theme.zoomClamped
+                }
+            }
+        }
+        FieldHint { text: "Ctrl + / − zoom the whole console. Ctrl+0 resets to 100%. Calendar Ctrl+wheel still zooms the night timeline." }
         FieldLabel { text: "SKY TOOLS" }
         HudCheck {
             Layout.preferredWidth: iface.controlWidth
@@ -435,7 +514,7 @@ ColumnLayout {
 
             GridLayout {
                 Layout.fillWidth: true
-                Layout.preferredWidth: iface.colourSplit ? 420 : -1
+                Layout.preferredWidth: iface.colourSplit ? Theme.px(420) : -1
                 Layout.minimumWidth: 240
                 Layout.alignment: Qt.AlignTop
                 enabled: !iface.tintFixed
@@ -480,7 +559,7 @@ ColumnLayout {
                     HudButton {
                         text: "\uEF3C"
                         font.family: Theme.fontIcon
-                        font.pixelSize: 15
+                        font.pixelSize: Theme.fontPx(15)
                         font.letterSpacing: 0
                         implicitWidth: Theme.controlHeight
                         implicitHeight: Theme.controlHeight

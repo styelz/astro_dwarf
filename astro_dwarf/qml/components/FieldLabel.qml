@@ -4,9 +4,9 @@ import ".."
 
 Text {
     color: Theme.textSecondary
-    font.pixelSize: 10
+    font.pixelSize: Theme.fontSm
     font.letterSpacing: 1.1
     font.bold: true
-    Layout.preferredWidth: 110
+    Layout.preferredWidth: Theme.px(110)
     Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
 }

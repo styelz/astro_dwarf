@@ -16,10 +16,12 @@ import requests
 from .version import __version__
 from .domain import (
     Camera,
+    CameraSettings,
     DeviceModel,
     HardwareProfile,
     Mosaic,
     Session,
+    SessionStatus,
     SessionTemplate,
     Target,
     TargetKind,
@@ -556,17 +558,42 @@ SKY_WEB_FOV_JS = r"""
   function resolvedColor(p) {
     return nightModeOn() ? "#ff2200" : String((p && p.color) || "#7ee0d0");
   }
+  function haloInk() {
+    return "rgba(6,18,15,0.88)";
+  }
   function paneStroke(color, dotted) {
-    return 'stroke="' + color + '" stroke-width="1.2" stroke-opacity="0.9"'
+    return 'stroke="' + color + '" stroke-width="1.2" stroke-opacity="0.95" stroke-linejoin="round"'
+      + (dotted ? ' stroke-dasharray="2 3.5" stroke-linecap="round"' : "");
+  }
+  function haloStroke(dotted, width) {
+    var w = width || (dotted ? 2.8 : 3.6);
+    return 'fill="none" stroke="' + haloInk() + '" stroke-width="' + w
+      + '" stroke-opacity="0.9" stroke-linejoin="round"'
       + (dotted ? ' stroke-dasharray="2 3.5" stroke-linecap="round"' : "");
   }
   function outerStroke(color) {
-    return 'fill="none" stroke="' + color + '" stroke-width="1.35" stroke-opacity="0.95"';
+    return 'fill="none" stroke="' + color + '" stroke-width="1.35" stroke-opacity="0.95" stroke-linejoin="round"';
+  }
+  function framedOpen(openTag, fill, fillOp, color, dotted) {
+    return openTag + " " + haloStroke(dotted) + "/>"
+         + openTag + ' fill="' + fill + '" fill-opacity="' + fillOp + '" ' + paneStroke(color, dotted) + "/>";
+  }
+  function framedEmpty(openTag, color, dotted) {
+    return openTag + " " + haloStroke(!!dotted) + "/>"
+         + openTag + ' fill="none" ' + (dotted ? paneStroke(color, true) : outerStroke(color)) + "/>";
+  }
+  function haloLine(x1, y1, x2, y2, color) {
+    return '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2
+      + '" stroke="' + haloInk() + '" stroke-width="3.2" stroke-linecap="round"/>'
+      + '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2
+      + '" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round"/>';
   }
   function viewFovRad(stel) {
     var fov = Number(stel && stel.core && stel.core.fov);
     if (!(fov > 0) || !isFinite(fov)) return 0;
-    return fov > Math.PI ? fov * Math.PI / 180 : fov;
+    // SWE stores TYPE_ANGLE radians (UI max 185° ≈ 3.23 rad). Values just
+    // above π are still radians; only > 2π cannot be a view FOV in radians.
+    return fov > 2 * Math.PI ? fov * Math.PI / 180 : fov;
   }
   function asVec(value) {
     if (!value) return null;
@@ -712,14 +739,21 @@ SKY_WEB_FOV_JS = r"""
     var view = convertToView(stel, xyz);
     if (!view) return null;
     var depth = zSign(stel) * view[2];
-    if (!(depth > 1e-6)) return null;
+    var n = Math.hypot(view[0], view[1], view[2]) || 1;
+    // Stereographic from the look direction (SWE default). Antipode is a pole.
+    var denom = n + depth;
+    if (!(denom > 1e-6)) return null;
     var fov = viewFovRad(stel);
     if (!(fov > 0)) return null;
-    var halfV = Math.tan(fov / 2);
-    if (!(halfV > 0)) return null;
+    // SWE: x' = 2x/(1-z), then perspective with fovy2 = 2*atan(2*tan(fovy/4)).
+    // ndc uses 2*tan(fov/4), which stays finite through the 185° UI max.
+    var halfV = 2 * Math.tan(fov / 4);
+    if (!(halfV > 0) || !isFinite(halfV)) return null;
     var halfH = halfV * (box.width / box.height);
-    var x = box.width * (0.5 + 0.5 * (view[0] / depth) / halfH);
-    var y = box.height * (0.5 - 0.5 * (view[1] / depth) / halfV);
+    var sx = 2 * view[0] / denom;
+    var sy = 2 * view[1] / denom;
+    var x = box.width * (0.5 + 0.5 * sx / halfH);
+    var y = box.height * (0.5 - 0.5 * sy / halfV);
     if (!isFinite(x) || !isFinite(y)) return null;
     return {x: x, y: y};
   }
@@ -1245,10 +1279,13 @@ SKY_WEB_FOV_JS = r"""
   function paneSize(box, p, stel) {
     var fov = viewFovRad(stel);
     if (!(fov > 0)) return null;
-    var fovV = fov * 180 / Math.PI;
-    var fovH = fovV * (box.width / box.height);
-    var w = (Number(p.fov_h) / fovH) * box.width;
-    var h = (Number(p.fov_v) / fovV) * box.height;
+    var halfV = 2 * Math.tan(fov / 4);
+    if (!(halfV > 0) || !isFinite(halfV)) return null;
+    var camH = Number(p.fov_h) * Math.PI / 180;
+    var camV = Number(p.fov_v) * Math.PI / 180;
+    if (!(camH > 0) || !(camV > 0)) return null;
+    var w = (2 * Math.tan(camH / 4) / (halfV * (box.width / box.height))) * box.width;
+    var h = (2 * Math.tan(camV / 4) / halfV) * box.height;
     if (!(w > 2) || !(h > 2)) return null;
     return {w: w, h: h};
   }
@@ -1324,8 +1361,7 @@ SKY_WEB_FOV_JS = r"""
     return '<g transform="rotate(' + (-tilt).toFixed(2) + " " + cx + " " + cy + ')">' + inner + "</g>";
   }
   function upTick(cx, top, color) {
-    return '<line x1="' + cx.toFixed(1) + '" y1="' + top.toFixed(1) + '" x2="' + cx.toFixed(1)
-      + '" y2="' + (top - 10).toFixed(1) + '" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round"/>';
+    return haloLine(cx.toFixed(1), top.toFixed(1), cx.toFixed(1), (top - 10).toFixed(1), color);
   }
   function edgeTick(a, b, color) {
     if (!a || !b) return "";
@@ -1333,8 +1369,7 @@ SKY_WEB_FOV_JS = r"""
     var dx = b.x - a.x, dy = b.y - a.y;
     var len = Math.hypot(dx, dy) || 1;
     var nx = -dy / len, ny = dx / len;
-    return '<line x1="' + mx.toFixed(1) + '" y1="' + my.toFixed(1) + '" x2="' + (mx + nx * 10).toFixed(1)
-      + '" y2="' + (my + ny * 10).toFixed(1) + '" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round"/>';
+    return haloLine(mx.toFixed(1), my.toFixed(1), (mx + nx * 10).toFixed(1), (my + ny * 10).toFixed(1), color);
   }
   function drawCenterBox(el, box, p, stel) {
     var size = paneSize(box, p, stel);
@@ -1345,9 +1380,8 @@ SKY_WEB_FOV_JS = r"""
     var tilt = hudTilt(p, stel, box);
     paintSvg(el, box, rotateChartGroup(box, p, stel,
       liveImageRect(left, top, size.w, size.h)
-      + '<rect x="' + left.toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + size.w.toFixed(1)
-      + '" height="' + size.h.toFixed(1) + '" fill="none" stroke="' + color
-      + '" stroke-width="1.25" stroke-opacity="0.9"/>'
+      + framedEmpty('<rect x="' + left.toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + size.w.toFixed(1)
+      + '" height="' + size.h.toFixed(1) + '"', color, false)
       + upTick(box.width / 2, top, color))
       + labelOnFrame(p, hudCorners(box.width / 2, box.height / 2, size.w, size.h, tilt), stel, box));
     return "center";
@@ -1385,9 +1419,8 @@ SKY_WEB_FOV_JS = r"""
         var x = originX + (col1OnRight ? (cols - col) : (col - 1)) * stepX;
         var y = originY + (row1AtTop ? (row - 1) : (rows - row)) * stepY;
         media += paneFillRect(x, y, size.w, size.h, index);
-        frames += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + size.w.toFixed(1)
-          + '" height="' + size.h.toFixed(1) + '" fill="' + paneFill + '" fill-opacity="' + paneFillOp + '" '
-          + paneStroke(color, cols * rows > 1) + '/>';
+        frames += framedOpen('<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + size.w.toFixed(1)
+          + '" height="' + size.h.toFixed(1) + '"', paneFill, paneFillOp, color, cols * rows > 1);
         if (cols * rows > 1) {
           var pc = rotatePoint(box.width / 2, box.height / 2, x + size.w / 2, y + size.h / 2, tilt);
           labels += indexText(pc.x, pc.y, index, color, -tilt, Math.min(size.w, size.h));
@@ -1396,8 +1429,8 @@ SKY_WEB_FOV_JS = r"""
     }
     var svg = mosaicMediaGroup(media) + frames;
     if (cols * rows > 1) {
-      svg += '<rect x="' + originX.toFixed(1) + '" y="' + originY.toFixed(1) + '" width="' + totalW.toFixed(1)
-        + '" height="' + totalH.toFixed(1) + '" ' + outerStroke(color) + '/>';
+      svg += framedEmpty('<rect x="' + originX.toFixed(1) + '" y="' + originY.toFixed(1) + '" width="' + totalW.toFixed(1)
+        + '" height="' + totalH.toFixed(1) + '"', color, false);
     }
     if (!mosaicUsesPaneImages())
       svg += liveImageRect((box.width - size.w) / 2, (box.height - size.h) / 2, size.w, size.h);
@@ -1473,17 +1506,16 @@ SKY_WEB_FOV_JS = r"""
     var paneFillOp = mosaicUsesPaneImages() ? "0" : "0.05";
     drawn.forEach(function(item) {
       if (item.points)
-        svg += '<polygon points="' + item.points + '" fill="' + paneFill
-          + '" fill-opacity="' + paneFillOp + '" ' + paneStroke(color, mosaic) + '/>';
+        svg += framedOpen('<polygon points="' + item.points + '"', paneFill, paneFillOp, color, mosaic);
       if (!mosaic)
         svg += item.tick || "";
     });
     if (mosaic) {
       var outer = mosaicOuterQuad(drawn);
       if (outer.length === 4) {
-        svg += '<polygon points="' + outer.map(function(pt) {
+        svg += framedEmpty('<polygon points="' + outer.map(function(pt) {
           return pt.x.toFixed(1) + "," + pt.y.toFixed(1);
-        }).join(" ") + '" ' + outerStroke(color) + '/>';
+        }).join(" ") + '"', color, false);
         svg += edgeTick(outer[0], outer[1], color);
       }
       drawn.forEach(function(item) {
@@ -2581,6 +2613,64 @@ def pane_sort_key(name: str) -> tuple[int, str]:
     return (int(match.group(1)) if match else 10**6, name or "")
 
 
+def _session_schedule_key(session: Session) -> tuple[str, tuple[int, str], str]:
+    return (session.scheduled_start, pane_sort_key(session.name), session.name)
+
+
+def mosaic_device_siblings(sessions, session: Session) -> list[Session]:
+    group_id = session.mosaic.group_id
+    if not group_id:
+        return [session]
+    return [
+        item
+        for item in sessions
+        if item.device_id == session.device_id and item.mosaic.group_id == group_id
+    ]
+
+
+def planned_reorder_block(sessions, session: Session) -> list[Session] | None:
+    """Planned mosaic panes moved as one block. None if any sibling is running."""
+    siblings = mosaic_device_siblings(sessions, session)
+    if any(item.status == SessionStatus.RUNNING for item in siblings):
+        return None
+    planned = [item for item in siblings if item.status == SessionStatus.PLANNED]
+    return sorted(planned, key=_session_schedule_key)
+
+
+def reorder_anchor_id(sessions, before: Session | None, moving_ids: set[str]) -> str:
+    """First planned row to insert before, snapping onto a mosaic's first pane."""
+    if before is None or before.id in moving_ids:
+        return ""
+    siblings = [
+        item
+        for item in mosaic_device_siblings(sessions, before)
+        if item.status == SessionStatus.PLANNED and item.id not in moving_ids
+    ]
+    if siblings:
+        return min(siblings, key=_session_schedule_key).id
+    if before.status == SessionStatus.PLANNED:
+        return before.id
+    return ""
+
+
+def insert_reorder_block(
+    queue: list[Session],
+    moving: list[Session],
+    before_id: str = "",
+) -> list[Session]:
+    """Place a mosaic (or single session) as one contiguous block in the night queue."""
+    moving_ids = {item.id for item in moving}
+    if before_id in moving_ids:
+        return list(queue)
+    rest = [item for item in queue if item.id not in moving_ids]
+    before = next((item for item in queue if item.id == before_id), None) if before_id else None
+    anchor_id = reorder_anchor_id(rest, before, moving_ids)
+    insert_at = len(rest)
+    if anchor_id:
+        insert_at = next((index for index, item in enumerate(rest) if item.id == anchor_id), len(rest))
+    return rest[:insert_at] + list(moving) + rest[insert_at:]
+
+
 def mosaic_grid_size(*mosaics: Mosaic | None) -> tuple[int, int]:
     rows = 1
     columns = 1
@@ -3400,6 +3490,122 @@ def templates_from_mosaic_panes(
     return templates
 
 
+def command_panel_workflow(*, goto: bool = False) -> Workflow:
+    """Skip alignment on a command-panel start; the operator already tracked."""
+    return Workflow(
+        calibrate=False,
+        autofocus=False,
+        infinite_focus=False,
+        polar_align=False,
+        goto=bool(goto),
+        wait_before_seconds=0.0,
+        wait_after_seconds=0.0,
+    )
+
+
+def sessions_for_command_stack(
+    *,
+    target: Target,
+    device_id: str,
+    scheduled_start: str,
+    camera: CameraSettings,
+    panes: list[dict[str, Any]] | None = None,
+    columns: int = 1,
+    rows: int = 1,
+    started_at: str | None = None,
+    group_id: str = "",
+) -> list[Session]:
+    """Calendar sessions for a STACK / MOSAIC STACK press.
+
+    Mosaic panes become an imported-plan group so overlay numbers, the
+    contact sheet, and session HUD share the same ICRS centres.
+    """
+    name = str(getattr(target, "name", "") or "").strip() or "Manual stack"
+    has_coords = getattr(target, "ra_hours", None) is not None and getattr(target, "dec_degrees", None) is not None
+    workflow = command_panel_workflow(goto=has_coords)
+    cleaned: list[dict[str, Any]] = []
+    for pane in panes or []:
+        if not isinstance(pane, dict):
+            continue
+        try:
+            index = max(1, int(pane.get("index") or 0))
+            ra = float(pane["ra_hours"])
+            dec = float(pane["dec_degrees"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if ra != ra or dec != dec:
+            continue
+        try:
+            row = int(pane.get("row") or 0)
+            column = int(pane.get("column") or 0)
+        except (TypeError, ValueError):
+            row = column = 0
+        cleaned.append(
+            {
+                "index": index,
+                "ra_hours": ra,
+                "dec_degrees": dec,
+                "row": row,
+                "column": column,
+                "name": str(pane.get("name") or "").strip(),
+            }
+        )
+    if len(cleaned) < 2:
+        return [
+            Session(
+                name=name,
+                target=target,
+                device_id=device_id,
+                scheduled_start=scheduled_start,
+                camera=camera,
+                workflow=workflow,
+                status=SessionStatus.PLANNED,
+                current_step="Waiting",
+            )
+        ]
+    cleaned.sort(key=lambda item: int(item["index"]))
+    grid_columns = max(int(columns or 0), max(int(item["column"] or 0) for item in cleaned))
+    grid_rows = max(int(rows or 0), max(int(item["row"] or 0) for item in cleaned))
+    if grid_columns < 1 or grid_rows < 1:
+        count = len(cleaned)
+        grid_columns = max(1, int(count**0.5 + 0.5))
+        grid_rows = max(1, (count + grid_columns - 1) // grid_columns)
+    group = str(group_id or "").strip() or f"{_mosaic_group_slug(name)}-{new_id()[:8]}"
+    parent = mosaic_group_title(name, group) or name
+    begun = str(started_at or "")
+    members: list[Session] = []
+    for pane in cleaned:
+        index = int(pane["index"])
+        pane_name = pane["name"] or f"{parent} pane {index}"
+        first = index == int(cleaned[0]["index"])
+        members.append(
+            Session(
+                name=pane_name,
+                target=Target(
+                    name=parent,
+                    kind=TargetKind.EQUATORIAL,
+                    ra_hours=float(pane["ra_hours"]),
+                    dec_degrees=float(pane["dec_degrees"]),
+                ),
+                device_id=device_id,
+                scheduled_start=scheduled_start,
+                camera=camera,
+                workflow=mosaic_pane_workflow(workflow, index - 1),
+                mosaic=Mosaic(
+                    group_id=group,
+                    grid_rows=grid_rows,
+                    grid_columns=grid_columns,
+                    row=int(pane["row"] or 0),
+                    column=int(pane["column"] or 0),
+                ),
+                status=SessionStatus.RUNNING if first and begun else SessionStatus.PLANNED,
+                current_step="Starting mosaic" if first and begun else "Waiting",
+                actual_started_at=begun if first and begun else None,
+            )
+        )
+    return members
+
+
 def generate_mosaic_plan(
     target: Target,
     columns: int,
@@ -3464,7 +3670,12 @@ def next_free_start(
         hit = next((block_end for block_start, block_end in blocks if cursor < block_end and block_start < end), None)
         if hit is None:
             return cursor
-        cursor = hit.replace(second=0, microsecond=0)
+        nxt = hit.replace(second=0, microsecond=0)
+        # A block that ends at 08:15:30 snaps to 08:15:00, which still overlaps
+        # that same block. Always move at least one minute forward.
+        if nxt <= cursor:
+            nxt = cursor + timedelta(minutes=1)
+        cursor = nxt
 
 
 class DurationEngine:

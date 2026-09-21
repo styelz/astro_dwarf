@@ -40,7 +40,7 @@ Window {
         leftPadding: 0
         rightPadding: 0
         font.family: Theme.fontIcon
-        font.pixelSize: 13
+        font.pixelSize: Theme.fontBase
         font.letterSpacing: 0
         buttonColor: "transparent"
         foregroundColor: Theme.textSecondary

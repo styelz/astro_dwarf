@@ -2107,6 +2107,16 @@ CODE_ASTRO_NEED_GOTO = -11513
 CODE_ASTRO_NEED_GOTO_DSO = -11518
 CODE_ASTRO_NEED_EQ = -11528
 CODE_ASTRO_DARK_TEMP_MISMATCH = -11530
+CODE_FOCUS_ASTRO_AUTO_FOCUS_SLOW_ERROR = -15100
+CODE_FOCUS_ASTRO_AUTO_FOCUS_FAST_ERROR = -15101
+CODE_FOCUS_EXP_TOO_LONG = -15106
+# Astro AF finished but did not lock. Overnight sessions keep going with
+# the current (or infinity) focus instead of aborting the mosaic.
+_FOCUS_SOFT_FAIL_CODES = {
+    CODE_FOCUS_ASTRO_AUTO_FOCUS_SLOW_ERROR,
+    CODE_FOCUS_ASTRO_AUTO_FOCUS_FAST_ERROR,
+    CODE_FOCUS_EXP_TOO_LONG,
+}
 _GOTO_ACCEPT_TIMEOUT_S = 8.0
 # The astro engine is still winding down GOTO/calibration; try again shortly.
 _CAPTURE_BUSY_CODES = {CODE_ASTRO_FUNCTION_BUSY, CODE_ASTRO_GOTO_RUNNING}
@@ -2128,6 +2138,8 @@ _CAPTURE_HEARTBEAT_S = 60.0
 # for the next pane to start, but finish quickly once the last pane ends.
 _MOSAIC_PANE_GAP_S = 90.0
 _MOSAIC_LAST_PANE_IDLE_S = 8.0
+# After GOTO, tracking needs a few seconds before the last live frame is on-target.
+_MOSAIC_TRACK_SETTLE_S = 5.0
 _RECOVERED_CAPTURE_WAIT_S = 6.0
 
 
@@ -2719,6 +2731,32 @@ def _camera_closed_error(exc: BaseException) -> bool:
     return "TELE_CLOSED" in text or str(CODE_CAMERA_TELE_CLOSED) in text
 
 
+def _focus_soft_fail(exc: BaseException) -> bool:
+    """True when astro AF ended without locking, and the session can continue."""
+    text = str(exc)
+    return any(
+        token in text
+        for token in (
+            "ASTRO_AUTO_FOCUS_SLOW_ERROR",
+            "ASTRO_AUTO_FOCUS_FAST_ERROR",
+            "FOCUS_EXP_TOO_LONG",
+            *(str(code) for code in _FOCUS_SOFT_FAIL_CODES),
+        )
+    )
+
+
+def _session_needs_infinity_after_autofocus(workflow: dict[str, Any], autofocus_failed: bool) -> bool:
+    """True when a failed AF step should try the stored infinity position next.
+
+    Polar alignment and an explicit infinity step already send that command.
+    """
+    return bool(
+        autofocus_failed
+        and not workflow.get("infinite_focus")
+        and not workflow.get("polar_align")
+    )
+
+
 def _goto_never_started_error(exc: BaseException) -> bool:
     """True only for the 30s idle-after-11002 case, not tracking timeouts.
 
@@ -2875,10 +2913,26 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     if workflow.get("calibrate") or workflow.get("polar_align"):
         step("Polar positioning", "polar_position")
     # Match astro_dwarf_session: focus, then EQ, then calibration (after stop_goto).
+    autofocus_failed = False
     if workflow.get("autofocus"):
-        _run_session_op("Auto focus", "autofocus", step, False)
+        try:
+            _run_session_op("Auto focus", "autofocus", step, False)
+        except RuntimeError as exc:
+            if not _focus_soft_fail(exc):
+                raise
+            autofocus_failed = True
+            log(
+                f"Auto focus did not lock ({exc}). "
+                "Continuing so calibration, GOTO, and stacking can still run.",
+                "warning",
+            )
     if workflow.get("infinite_focus"):
         _run_session_op("Infinity focus", "autofocus", step, True)
+    elif _session_needs_infinity_after_autofocus(workflow, autofocus_failed):
+        try:
+            _run_session_op("Infinity focus after autofocus failed", "autofocus", step, True)
+        except RuntimeError as exc:
+            log(f"Infinity focus fallback skipped: {exc}", "warning")
     if workflow.get("polar_align"):
         if not workflow.get("infinite_focus"):
             _run_session_op("Infinity focus before polar alignment", "autofocus", step, True)
@@ -4428,7 +4482,11 @@ def _stack_mosaic(
                 "camera": {"frame_count": _device.get("frame_count")},
                 "target": {"name": name},
             })
-            _wait_seconds(2, "Settling before stack", lambda text, pane=index, **_k: report(pane, text))
+            _wait_seconds(
+                _MOSAIC_TRACK_SETTLE_S,
+                "Settling before stack",
+                lambda text, pane=index, **_k: report(pane, text),
+            )
             report(index, f"Stacking pane {index}/{total}")
             _session_phase = operation
             _start_capture(f"Stack pane {index}", operation, args)

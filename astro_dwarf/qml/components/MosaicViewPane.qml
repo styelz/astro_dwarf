@@ -2,8 +2,9 @@ import QtQuick
 import AstroDwarf 1.0
 import ".."
 
-// Contact-sheet mosaic preview: live frame in the current pane, completed
-// stacks in the others. Painted on the GUI thread like LiveViewPane.
+// Contact-sheet mosaic preview: live frame in the current pane, last live
+// frame held until stacking JPEG starts, completed stacks in the others.
+// Painted on the GUI thread like LiveViewPane.
 Item {
     id: pane
     property bool playing: false
@@ -24,5 +25,6 @@ Item {
         accent: pane.accent
         southUp: backend.mosaicSouthUp
         positionAngle: backend.mosaicPa
+        fontPixelSize: Theme.fontPx(11)
     }
 }

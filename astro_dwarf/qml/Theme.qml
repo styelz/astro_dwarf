@@ -30,6 +30,9 @@ QtObject {
         property real enhanceSkyCrush: 1
         property bool hudBackground: true
         property real hudBackgroundOpacity: 0.42
+        property string uiScalePref: "auto"
+        property string fontSizePref: "default"
+        property real zoom: 1
     }
     property alias hue: appearanceStore.hue
     // -1 … 1; 0 is the stock look. Negative gives deep, saturated tints; positive lifts them.
@@ -45,6 +48,91 @@ QtObject {
     property alias enhanceSkyCrush: appearanceStore.enhanceSkyCrush
     property alias hudBackground: appearanceStore.hudBackground
     property alias hudBackgroundOpacity: appearanceStore.hudBackgroundOpacity
+    property alias uiScalePref: appearanceStore.uiScalePref
+    property alias fontSizePref: appearanceStore.fontSizePref
+    property alias zoom: appearanceStore.zoom
+
+    // Main binds this to the window's Screen.height so Auto follows the monitor.
+    property int screenHeight: 1080
+    readonly property real zoomMin: 0.8
+    readonly property real zoomMax: 2
+    readonly property var uiScalePrefKeys: ["auto", "1", "1.25", "1.5", "1.75", "2"]
+    readonly property var uiScalePrefLabels: ["Auto", "100%", "125%", "150%", "175%", "200%"]
+    readonly property var fontSizePrefKeys: ["small", "default", "large", "xl"]
+    readonly property var fontSizePrefLabels: ["Small", "Default", "Large", "Extra large"]
+
+    function autoScaleForHeight(h) {
+        const n = Number(h) || 0
+        if (n < 1300)
+            return 1
+        if (n < 1800)
+            return 1.25
+        if (n < 2400)
+            return 1.5
+        return 1.75
+    }
+
+    readonly property real autoScale: theme.autoScaleForHeight(theme.screenHeight)
+
+    readonly property real uiScaleChosen: {
+        const pref = String(theme.uiScalePref || "auto")
+        if (pref === "auto" || pref === "")
+            return theme.autoScale
+        const n = Number(pref)
+        return isFinite(n) && n > 0 ? n : 1
+    }
+
+    function snapZoom(value) {
+        const stepped = Math.round(Number(value) * 10) / 10
+        if (!isFinite(stepped))
+            return 1
+        return Math.max(theme.zoomMin, Math.min(theme.zoomMax, stepped))
+    }
+
+    readonly property real zoomClamped: theme.snapZoom(theme.zoom)
+    readonly property real uiScale: theme.uiScaleChosen * theme.zoomClamped
+
+    readonly property real fontSizeFactor: {
+        const pref = String(theme.fontSizePref || "default")
+        if (pref === "small")
+            return 0.9
+        if (pref === "large")
+            return 1.15
+        if (pref === "xl")
+            return 1.3
+        return 1
+    }
+
+    readonly property real fontScale: theme.uiScale * theme.fontSizeFactor
+
+    function px(n) {
+        const x = Number(n)
+        if (!isFinite(x) || x === 0)
+            return 0
+        const scaled = Math.round(x * theme.uiScale)
+        return x > 0 ? Math.max(1, scaled) : Math.min(-1, scaled)
+    }
+
+    function fontPx(n) {
+        const x = Number(n)
+        if (!isFinite(x) || x === 0)
+            return 0
+        return Math.max(1, Math.round(x * theme.fontScale))
+    }
+
+    function zoomIn() {
+        const tenths = Math.round(theme.zoomClamped * 10)
+        theme.zoom = theme.snapZoom((tenths + 1) / 10)
+    }
+
+    function zoomOut() {
+        const tenths = Math.round(theme.zoomClamped * 10)
+        theme.zoom = theme.snapZoom((tenths - 1) / 10)
+    }
+
+    function resetZoom() {
+        theme.zoom = 1
+    }
 
     readonly property var swatchGroups: [
         { title: "SEED", keys: [
@@ -954,27 +1042,27 @@ QtObject {
     readonly property string fontUi: "Segoe UI"
     readonly property string fontMono: "Cascadia Mono"
     readonly property string fontIcon: "Segoe MDL2 Assets"
-    readonly property int fontXs: 8
-    readonly property int fontSm: 10
-    readonly property int fontMd: 12
-    readonly property int fontBase: 13
-    readonly property int fontLg: 16
-    readonly property int fontXl: 22
+    readonly property int fontXs: theme.fontPx(8)
+    readonly property int fontSm: theme.fontPx(10)
+    readonly property int fontMd: theme.fontPx(12)
+    readonly property int fontBase: theme.fontPx(13)
+    readonly property int fontLg: theme.fontPx(16)
+    readonly property int fontXl: theme.fontPx(22)
     readonly property real tracking1: 0.6
     readonly property real tracking2: 1.2
     readonly property real tracking3: 2.4
 
     // Spacing and shape.
-    readonly property int s1: 4
-    readonly property int s2: 8
-    readonly property int s3: 12
-    readonly property int s4: 16
-    readonly property int s5: 20
-    readonly property int radius: 3
-    readonly property int notch: 11
-    readonly property int notchSmall: 5
-    readonly property int controlHeight: 34
-    readonly property int compactControlHeight: 24
+    readonly property int s1: theme.px(4)
+    readonly property int s2: theme.px(8)
+    readonly property int s3: theme.px(12)
+    readonly property int s4: theme.px(16)
+    readonly property int s5: theme.px(20)
+    readonly property int radius: theme.px(3)
+    readonly property int notch: theme.px(11)
+    readonly property int notchSmall: theme.px(5)
+    readonly property int controlHeight: theme.fontPx(34)
+    readonly property int compactControlHeight: theme.fontPx(24)
     readonly property real focusStroke: 1.5
 
     // Largest square pad that keeps ticks, nudges, and inset inside `box`.
@@ -982,7 +1070,7 @@ QtObject {
     function fitPadSize(box) {
         const span = Math.max(0, Number(box) || 0)
         const edge = Math.max(theme.s3, span * 0.125)
-        return Math.max(48, Math.min(0.75 * (span - 2 * edge), span - 2 * (theme.s4 + edge)))
+        return Math.max(theme.px(48), Math.min(0.75 * (span - 2 * edge), span - 2 * (theme.s4 + edge)))
     }
 
     // Motion.

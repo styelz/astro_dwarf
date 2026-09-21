@@ -14,10 +14,16 @@ import "dialogs"
 ApplicationWindow {
     id: root
     objectName: "astroWindow"
-    width: Math.min(1480, Screen.desktopAvailableWidth - 24)
-    height: Math.min(920, Screen.desktopAvailableHeight - 48)
-    minimumWidth: 1040
-    minimumHeight: 620
+    width: {
+        Theme.screenHeight = Screen.height
+        Math.min(Math.max(Theme.px(1480), Math.round(Screen.desktopAvailableWidth * 0.72)), Screen.desktopAvailableWidth - 24)
+    }
+    height: {
+        Theme.screenHeight = Screen.height
+        Math.min(Math.max(Theme.px(920), Math.round(Screen.desktopAvailableHeight * 0.80)), Screen.desktopAvailableHeight - 48)
+    }
+    minimumWidth: Theme.px(1040)
+    minimumHeight: Theme.px(620)
     visible: true
     title: "ASTRO DWARF"
     color: Theme.windowBase
@@ -351,6 +357,28 @@ ApplicationWindow {
             return null
         }
 
+        function sessionDrag(id, phase, dx, dy) {
+            const item = testHarness._byId(backend.upcomingSessions, id) || testHarness._byId(backend.sessions, id)
+            if (!item)
+                return "missing"
+            const start = Qt.point(420, 280)
+            const pos = Qt.point(start.x + Number(dx || 0), start.y + Number(dy || 80))
+            const step = String(phase || "all")
+            if (step === "reorder") {
+                backend.reorderPlanned(String(item.id), "", "")
+                return "reorder"
+            }
+            if (step === "start" || step === "all")
+                DragCoordinator.startDrag(item, start, 8)
+            if (step === "move" || step === "all")
+                DragCoordinator.moveDrag(pos)
+            if (step === "finish" || step === "all")
+                DragCoordinator.completeDrag(pos)
+            if (step === "cancel")
+                DragCoordinator.cancelDrag()
+            return step
+        }
+
         function goToNamedPage(name) {
             const key = String(name || "").toLowerCase()
             const index = key === "control" ? 0
@@ -576,7 +604,30 @@ ApplicationWindow {
         }
     }
 
+    Binding {
+        target: Theme
+        property: "screenHeight"
+        value: Screen.height
+    }
+
+    Shortcut {
+        sequences: [StandardKey.ZoomIn, "Ctrl+=", "Ctrl++"]
+        context: Qt.ApplicationShortcut
+        onActivated: Theme.zoomIn()
+    }
+    Shortcut {
+        sequences: [StandardKey.ZoomOut]
+        context: Qt.ApplicationShortcut
+        onActivated: Theme.zoomOut()
+    }
+    Shortcut {
+        sequences: [StandardKey.ZoomNative, "Ctrl+0"]
+        context: Qt.ApplicationShortcut
+        onActivated: Theme.resetZoom()
+    }
+
     Component.onCompleted: {
+        Theme.screenHeight = Screen.height
         // Break the startup size bindings so maximize / restore can own geometry.
         root.width = root.width
         root.height = root.height
@@ -694,11 +745,11 @@ ApplicationWindow {
 
             Rectangle {
             id: titleBar
-            readonly property bool compact: width < 1380
-            readonly property bool narrow: width < 1120
+            readonly property bool compact: width < Theme.px(1380)
+            readonly property bool narrow: width < Theme.px(1120)
             Layout.fillWidth: true
-            Layout.preferredHeight: 64
-            Layout.maximumHeight: 64
+            Layout.preferredHeight: Theme.px(64)
+            Layout.maximumHeight: Theme.px(64)
             Layout.fillHeight: false
             color: Theme.hsl(0.082, 0.565, 0.045, 0.753)
             border.color: Theme.outline
@@ -718,8 +769,8 @@ ApplicationWindow {
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: Theme.s4
-                anchors.rightMargin: 10
-                spacing: titleBar.compact ? Theme.s2 : 14
+                anchors.rightMargin: Theme.px(10)
+                spacing: titleBar.compact ? Theme.s2 : Theme.px(14)
                 Item {
                     implicitWidth: brand.implicitWidth
                     implicitHeight: brand.implicitHeight
@@ -870,7 +921,7 @@ ApplicationWindow {
                         readonly property var t: root.scopeTelemetry
                         visible: root.scopeOnline && !titleBar.narrow
                         spacing: 5
-                        Text { text: "▤"; color: titleStorage.t.storage_tone === "bad" ? Theme.danger : titleStorage.t.storage_tone === "warn" ? Theme.warning : Theme.accent; font.pixelSize: 11 }
+                        Text { text: "▤"; color: titleStorage.t.storage_tone === "bad" ? Theme.danger : titleStorage.t.storage_tone === "warn" ? Theme.warning : Theme.accent; font.pixelSize: Theme.fontPx(11) }
                         Text {
                             text: root.scopeOnline && titleStorage.t.storage_text && titleStorage.t.storage_text !== "—" ? String(titleStorage.t.storage_free_text || titleStorage.t.storage_text) : "—"
                             color: titleStorage.t.storage_tone === "bad" ? Theme.danger : titleStorage.t.storage_tone === "warn" ? Theme.warning : (titleStorage.t.storage_text && titleStorage.t.storage_text !== "—" ? Theme.textPrimary : Theme.textSecondary)
@@ -885,15 +936,15 @@ ApplicationWindow {
                 }
                 Column {
                     visible: !titleBar.compact
-                    Text { text: backend.selectedDevice.status || "OFFLINE"; color: backend.selectedDevice.connected ? Theme.success : Theme.textSecondary; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignRight; width: 160 }
-                    Text { text: root.deviceLabel(); color: Theme.textSecondary; font.pixelSize: 10; horizontalAlignment: Text.AlignRight; width: 160; elide: Text.ElideRight }
+                    Text { text: backend.selectedDevice.status || "OFFLINE"; color: backend.selectedDevice.connected ? Theme.success : Theme.textSecondary; font.pixelSize: Theme.fontPx(11); font.bold: true; horizontalAlignment: Text.AlignRight; width: 160 }
+                    Text { text: root.deviceLabel(); color: Theme.textSecondary; font.pixelSize: Theme.fontSm; horizontalAlignment: Text.AlignRight; width: 160; elide: Text.ElideRight }
                 }
                 Column {
                     Text { text: backend.clockText; color: Theme.accent; font.pixelSize: titleBar.compact ? 18 : Theme.fontXl; font.family: Theme.fontMono; font.letterSpacing: 1; horizontalAlignment: Text.AlignRight; width: titleBar.compact ? 124 : 168 }
                     Text {
                         text: backend.selectedDevice.timezone_name || "UTC"
                         color: Theme.textSecondary
-                        font.pixelSize: 9
+                        font.pixelSize: Theme.fontPx(9)
                         font.family: Theme.fontMono
                         horizontalAlignment: Text.AlignRight
                         width: titleBar.compact ? 124 : 168
@@ -921,7 +972,7 @@ ApplicationWindow {
                 Text {
                     text: "DEVICES"
                     color: Theme.textSecondary
-                    font.pixelSize: 9
+                    font.pixelSize: Theme.fontPx(9)
                     font.bold: true
                     font.letterSpacing: Theme.tracking2
                 }
@@ -1005,13 +1056,13 @@ ApplicationWindow {
                             Text {
                                 text: deviceCard.modelData.name
                                 color: deviceCard.selected ? Theme.textPrimary : Theme.textSecondary
-                                font.pixelSize: 11
+                                font.pixelSize: Theme.fontPx(11)
                                 font.bold: deviceCard.selected
                             }
                             Text {
                                 text: deviceCard.modelData.model
                                 color: Theme.textSecondary
-                                font.pixelSize: 9
+                                font.pixelSize: Theme.fontPx(9)
                                 opacity: 0.8
                             }
                             Text {
@@ -1019,7 +1070,7 @@ ApplicationWindow {
                                 visible: deviceCard.modelData.connected && t.battery_percent !== undefined && Number(t.battery_percent) >= 0
                                 text: (t.battery_percent !== undefined ? t.battery_percent : "") + "%" + (t.charging ? "⚡" : "")
                                 color: Util.toneColor(Util.batteryTone(t.battery_percent))
-                                font.pixelSize: 9; font.family: Theme.fontMono; font.bold: true
+                                font.pixelSize: Theme.fontPx(9); font.family: Theme.fontMono; font.bold: true
                             }
                             HudChip {
                                 readonly property var t: deviceCard.modelData.telemetry || ({})
@@ -1119,9 +1170,11 @@ ApplicationWindow {
             Layout.topMargin: 8
             currentIndex: root.currentPage
             skyToolsEnabled: layoutSettings.skyToolsEnabled
+            barOnTop: true
             attentionIndex: settingsPage.dirty ? root.settingsPageIndex : -1
             attentionDescription: "Unsaved settings"
             onPageRequested: index => root.goToPage(index)
+            onPlacementRequested: onTop => layoutSettings.navBarOnTop = onTop
         }
 
         StackLayout {
@@ -1146,9 +1199,11 @@ ApplicationWindow {
             Layout.bottomMargin: 8
             currentIndex: root.currentPage
             skyToolsEnabled: layoutSettings.skyToolsEnabled
+            barOnTop: false
             attentionIndex: settingsPage.dirty ? root.settingsPageIndex : -1
             attentionDescription: "Unsaved settings"
             onPageRequested: index => root.goToPage(index)
+            onPlacementRequested: onTop => layoutSettings.navBarOnTop = onTop
         }
         }
 
@@ -1164,16 +1219,17 @@ ApplicationWindow {
 
     Rectangle {
         id: sessionDragProxy
+        objectName: "sessionDragProxy"
         parent: root.contentItem
         visible: DragCoordinator.active
         enabled: false
         z: 4000
-        width: 220
-        height: 30
+        width: Theme.px(220)
+        height: Theme.px(30)
         radius: 2
         property string sessionId: ""
-        color: Util.statusFill(DragCoordinator.data.status || "")
-        border.color: Util.statusColor(DragCoordinator.data.status || "")
+        color: Util.statusFill(DragCoordinator.data.group_collapsed ? (DragCoordinator.data.group_status || DragCoordinator.data.status) : DragCoordinator.data.status)
+        border.color: Util.statusColor(DragCoordinator.data.group_collapsed ? (DragCoordinator.data.group_status || DragCoordinator.data.status) : DragCoordinator.data.status)
         border.width: 2
         opacity: 0.92
         Drag.keys: ["session"]
@@ -1186,7 +1242,9 @@ ApplicationWindow {
             x = pos.x - width / 2
             y = pos.y - height / 2
             DragCoordinator.begin(item, pos)
-            Drag.active = true
+            // Do not set Drag.active. Qt delivers that drop on mouse
+            // release and re-enters drag-and-drop from the pointer
+            // handler, which hangs UP NEXT and the calendar sidebar.
         }
         function moveDrag(pos) {
             x = pos.x - width / 2
@@ -1195,16 +1253,12 @@ ApplicationWindow {
         }
         function finishDrag() {
             DragCoordinator.active = false
-            if (Drag.active)
-                Drag.drop()
             Drag.active = false
             DragCoordinator.end()
             sessionId = ""
         }
         function cancelDrag() {
             DragCoordinator.active = false
-            if (Drag.active)
-                Drag.cancel()
             Drag.active = false
             DragCoordinator.end()
             sessionId = ""
@@ -1216,16 +1270,18 @@ ApplicationWindow {
             Text {
                 text: DragCoordinator.previewTime || (DragCoordinator.data.start_time || "")
                 color: Theme.accent
-                font.pixelSize: 10
+                font.pixelSize: Theme.fontSm
                 font.bold: true
                 font.family: Theme.fontMono
                 width: 40
             }
             Text {
                 width: Math.max(20, sessionDragProxy.width - 56)
-                text: (DragCoordinator.data.target_name || DragCoordinator.data.name || "Session")
+                text: DragCoordinator.data.group_collapsed
+                      ? (DragCoordinator.data.group_title || DragCoordinator.data.target_name || "Mosaic")
+                      : (DragCoordinator.data.pane_name || DragCoordinator.data.target_name || DragCoordinator.data.name || "Session")
                 color: Theme.textPrimary
-                font.pixelSize: 10
+                font.pixelSize: Theme.fontSm
                 font.bold: true
                 elide: Text.ElideRight
             }
@@ -1374,7 +1430,7 @@ ApplicationWindow {
                             color: Qt.rgba(toastCard.tone.r, toastCard.tone.g, toastCard.tone.b, 0.16)
                             border.color: Qt.rgba(toastCard.tone.r, toastCard.tone.g, toastCard.tone.b, 0.6)
                             Layout.alignment: Qt.AlignTop
-                            Text { anchors.centerIn: parent; text: Util.glyphForLevel(toastCard.level); color: toastCard.tone; font.pixelSize: 13; font.bold: true }
+                            Text { anchors.centerIn: parent; text: Util.glyphForLevel(toastCard.level); color: toastCard.tone; font.pixelSize: Theme.fontBase; font.bold: true }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true
@@ -1396,7 +1452,7 @@ ApplicationWindow {
                                     visible: toastCard.count > 1
                                     width: toastCount.implicitWidth + 10; height: 16; radius: 8
                                     color: toastCard.tone
-                                    Text { id: toastCount; anchors.centerIn: parent; text: "×" + toastCard.count; color: Theme.windowBase; font.pixelSize: 9; font.bold: true }
+                                    Text { id: toastCount; anchors.centerIn: parent; text: "×" + toastCard.count; color: Theme.windowBase; font.pixelSize: Theme.fontPx(9); font.bold: true }
                                 }
                             }
                             Text {
@@ -1417,7 +1473,7 @@ ApplicationWindow {
                                     visible: toastCard.actionKind === "template"
                                     text: toastCard.actionLabel || "VIEW TEMPLATE"
                                     color: viewTemplateHover.hovered ? Theme.textPrimary : toastCard.tone
-                                    font.pixelSize: 9; font.bold: true; font.letterSpacing: Theme.tracking2
+                                    font.pixelSize: Theme.fontPx(9); font.bold: true; font.letterSpacing: Theme.tracking2
                                     HoverHandler { id: viewTemplateHover; cursorShape: Qt.PointingHandCursor }
                                     TapHandler {
                                         onTapped: {
@@ -1430,7 +1486,7 @@ ApplicationWindow {
                                     visible: toastCard.level === "error" || toastCard.level === "warning"
                                     text: "VIEW LOG"
                                     color: viewLogHover.hovered ? Theme.textPrimary : toastCard.tone
-                                    font.pixelSize: 9; font.bold: true; font.letterSpacing: Theme.tracking2
+                                    font.pixelSize: Theme.fontPx(9); font.bold: true; font.letterSpacing: Theme.tracking2
                                     HoverHandler { id: viewLogHover; cursorShape: Qt.PointingHandCursor }
                                     TapHandler {
                                         onTapped: {
@@ -1443,7 +1499,7 @@ ApplicationWindow {
                                 Text {
                                     text: "DISMISS"
                                     color: dismissHover.hovered ? Theme.textPrimary : Theme.textSecondary
-                                    font.pixelSize: 9; font.bold: true; font.letterSpacing: Theme.tracking2
+                                    font.pixelSize: Theme.fontPx(9); font.bold: true; font.letterSpacing: Theme.tracking2
                                     HoverHandler { id: dismissHover; cursorShape: Qt.PointingHandCursor }
                                     TapHandler { onTapped: toastHost.dismiss(toastCard.toastId) }
                                 }
@@ -1452,7 +1508,7 @@ ApplicationWindow {
                         Text {
                             text: "✕"
                             color: closeHover.hovered ? Theme.textPrimary : Theme.muted
-                            font.pixelSize: 11
+                            font.pixelSize: Theme.fontPx(11)
                             Layout.alignment: Qt.AlignTop
                             HoverHandler { id: closeHover; cursorShape: Qt.PointingHandCursor }
                             TapHandler { onTapped: toastHost.dismiss(toastCard.toastId) }

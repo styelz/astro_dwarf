@@ -30,7 +30,7 @@ Item {
         property bool shown: false
         readonly property color tint: Theme.warning   // stands out against the cyan HUD
         width: parent.width
-        height: 26
+        height: Theme.px(26)
         visible: opacity > 0.01
         opacity: shown ? 0.6 : 0
         Behavior on opacity { NumberAnimation { duration: Theme.normal } }
@@ -54,7 +54,7 @@ Item {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: hint.pointsDown ? "\uE70D" : "\uE70E"   // Segoe MDL2 ChevronDown / ChevronUp
                     font.family: Theme.fontIcon
-                    font.pixelSize: 9
+                    font.pixelSize: Theme.fontPx(9)
                     color: hint.tint
                     opacity: 0.35 + 0.3 * (hint.pointsDown ? index : 2 - index)
                 }

@@ -8,9 +8,9 @@ Rectangle {
     readonly property bool running: normalizedStatus === "running"
     readonly property bool pending: ["pending", "stopping", "connecting", "disconnecting", "cancelling"].indexOf(normalizedStatus) >= 0
     readonly property color tone: pending ? Theme.warning : Util.statusColor(status)
-    implicitHeight: 18
-    implicitWidth: statusChipText.implicitWidth + 16
-    radius: 3
+    implicitHeight: Theme.px(18)
+    implicitWidth: statusChipText.implicitWidth + Theme.px(16)
+    radius: Theme.radius
     color: pending ? Qt.rgba(tone.r, tone.g, tone.b, 0.12) : Util.statusFill(status)
     border.color: Qt.rgba(tone.r, tone.g, tone.b, 0.7)
     Accessible.name: normalizedStatus || "Unknown status"
@@ -31,7 +31,7 @@ Rectangle {
         anchors.centerIn: parent
         text: String(statusChip.status || "").toUpperCase()
         color: statusChip.tone
-        font.pixelSize: 8
+        font.pixelSize: Theme.fontXs
         font.bold: true
         font.letterSpacing: 1.2
     }

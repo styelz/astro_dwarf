@@ -252,7 +252,7 @@ Item {
                         rightPadding: 10
                         text: item && (item.label || item.name) || ""
                         color: suggestionView.currentIndex === row ? Theme.accent : Theme.textPrimary
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.fontBase
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
                     }
@@ -270,7 +270,7 @@ Item {
                 leftPadding: 10
                 text: "No matches"
                 color: Theme.textSecondary
-                font.pixelSize: 13
+                font.pixelSize: Theme.fontBase
                 verticalAlignment: Text.AlignVCenter
             }
         }

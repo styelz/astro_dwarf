@@ -5,18 +5,21 @@ import ".."
 
 RowLayout {
     id: navBar
+    objectName: "pageNavBar"
     property int currentIndex: 0
     property int attentionIndex: -1
     property string attentionDescription: "Needs attention"
     property bool skyToolsEnabled: false
+    property bool barOnTop: true
     signal pageRequested(int index)
+    signal placementRequested(bool onTop)
     Layout.fillWidth: true
-    Layout.preferredHeight: 48
-    Layout.maximumHeight: 48
+    Layout.preferredHeight: Theme.px(48)
+    Layout.maximumHeight: Theme.px(48)
     Layout.fillHeight: false
-    Layout.leftMargin: 10
-    Layout.rightMargin: 10
-    spacing: 8
+    Layout.leftMargin: Theme.px(10)
+    Layout.rightMargin: Theme.px(10)
+    spacing: Theme.s2
     readonly property var pages: {
         void navBar.skyToolsEnabled
         const items = [
@@ -38,10 +41,10 @@ RowLayout {
             required property int index
             required property var modelData
             Layout.fillWidth: true
-            Layout.preferredHeight: 40
+            Layout.preferredHeight: Theme.px(40)
             Layout.fillHeight: false
             text: modelData.label
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontMd
             font.letterSpacing: 1.4
             buttonColor: navBar.currentIndex === modelData.idx ? Theme.fillActive : Theme.inputBg
             foregroundColor: navBar.currentIndex === modelData.idx ? Theme.accent : Theme.textSecondary
@@ -64,7 +67,7 @@ RowLayout {
                 anchors.bottomMargin: 1
                 anchors.horizontalCenter: parent.horizontalCenter
                 height: 2
-                width: navBar.currentIndex === parent.modelData.idx ? parent.width - 24 : 0
+                width: navBar.currentIndex === parent.modelData.idx ? parent.width - Theme.px(24) : 0
                 color: Theme.accent
                 Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
             }
@@ -72,12 +75,38 @@ RowLayout {
                 visible: navBar.attentionIndex === parent.modelData.idx
                 anchors.right: parent.right
                 anchors.top: parent.top
-                anchors.margins: 7
-                width: 6
-                height: 6
-                radius: 3
+                anchors.margins: Theme.px(7)
+                width: Theme.px(6)
+                height: Theme.px(6)
+                radius: Theme.px(3)
                 color: Theme.warning
             }
+            TapHandler {
+                acceptedButtons: Qt.RightButton
+                onTapped: navPlacementMenu.popup()
+            }
+        }
+    }
+    TapHandler {
+        acceptedButtons: Qt.RightButton
+        onTapped: navPlacementMenu.popup()
+    }
+    HudMenu {
+        id: navPlacementMenu
+        objectName: "navBarPlacementMenu"
+        HudMenuItem {
+            text: "Move to top"
+            glyph: "\uE74A"
+            trailingText: navBar.barOnTop ? "ON" : ""
+            enabled: !navBar.barOnTop
+            onTriggered: navBar.placementRequested(true)
+        }
+        HudMenuItem {
+            text: "Move to bottom"
+            glyph: "\uE74B"
+            trailingText: navBar.barOnTop ? "" : "ON"
+            enabled: navBar.barOnTop
+            onTriggered: navBar.placementRequested(false)
         }
     }
 }

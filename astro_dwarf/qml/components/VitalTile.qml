@@ -12,9 +12,9 @@ Rectangle {
     property bool stale: false
     property bool live: false
     property bool dimmed: value === "—" || value === ""
-    implicitHeight: 46
-    implicitWidth: 96
-    readonly property bool compact: height > 0 && height < 38
+    implicitHeight: Theme.px(46)
+    implicitWidth: Theme.px(96)
+    readonly property bool compact: height > 0 && height < Theme.px(38)
     readonly property int valuePx: compact
         ? Math.max(8, Math.min(12, height - 10))
         : Math.max(10, Math.min(14, Math.round(height * 0.30)))
@@ -23,7 +23,7 @@ Rectangle {
         : Math.max(6, Math.min(8, Math.round(height * 0.18)))
     readonly property int glyphPx: Math.max(9, Math.min(14, Math.round(height * 0.32)))
     readonly property int unitPx: Math.max(7, Math.min(9, Math.round(height * (compact ? 0.28 : 0.20))))
-    radius: 3
+    radius: Theme.radius
     color: Theme.hsl(0.072, 0.581, 0.084, 0.400)
     border.color: stale && !dimmed ? Qt.rgba(Theme.warning.r, Theme.warning.g, Theme.warning.b, 0.75)
                                       : live ? Qt.rgba(tone.r, tone.g, tone.b, 0.6) : Theme.outlineSoft
@@ -47,7 +47,7 @@ Rectangle {
         anchors.rightMargin: tile.compact ? 5 : 8
         spacing: tile.compact ? 4 : 6
         Text {
-            visible: tile.glyph !== "" && !tile.compact && tile.width >= 84
+            visible: tile.glyph !== "" && !tile.compact && tile.width >= Theme.px(84)
             text: tile.glyph
             color: tile.dimmed ? Theme.muted : tile.tone
             font.pixelSize: tile.glyphPx
@@ -71,7 +71,7 @@ Rectangle {
                     elide: Text.ElideRight
                     Layout.fillWidth: true
                     Layout.preferredWidth: implicitWidth
-                    Layout.minimumWidth: 18
+                    Layout.minimumWidth: Theme.px(18)
                     Behavior on color { ColorAnimation { duration: Theme.normal } }
                 }
                 Text { visible: tile.unit !== "" && !tile.dimmed; text: tile.unit; color: Theme.textSecondary; font.pixelSize: tile.unitPx; elide: Text.ElideRight; Layout.alignment: Qt.AlignBottom; Layout.bottomMargin: 1 }
@@ -107,10 +107,10 @@ Rectangle {
     }
     Text {
         anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 3
-        visible: tile.stale && !tile.dimmed && tile.height >= 34
+        visible: tile.stale && !tile.dimmed && tile.height >= Theme.px(34)
         text: "STALE"
         color: Theme.warning
-        font.pixelSize: 7
+        font.pixelSize: Theme.fontPx(7)
         font.bold: true
         font.letterSpacing: 1
         opacity: 0.85

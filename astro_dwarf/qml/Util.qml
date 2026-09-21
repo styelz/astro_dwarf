@@ -28,6 +28,13 @@ QtObject {
             return m + "m"
         return total + "s"
     }
+    function clockDuration(seconds) {
+        const total = Math.max(0, Math.round(Number(seconds || 0)))
+        const h = Math.floor(total / 3600)
+        const m = Math.floor((total % 3600) / 60)
+        const s = total % 60
+        return h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0")
+    }
     function canReset(status) {
         const value = String(status || "").toLowerCase()
         return value === "error" || value === "skipped" || value === "done"
@@ -436,6 +443,331 @@ QtObject {
             })
             for (let m = 0; m < members.length; m++)
                 result.push(members[m])
+        }
+        return result
+    }
+    function mosaicGroupStatus(members) {
+        const list = members || []
+        let running = false
+        let error = false
+        let planned = 0
+        let done = 0
+        let skipped = 0
+        for (let i = 0; i < list.length; i++) {
+            const status = String((list[i] && list[i].status) || "").toLowerCase()
+            if (status === "running")
+                running = true
+            else if (status === "error")
+                error = true
+            else if (status === "planned")
+                planned += 1
+            else if (status === "done")
+                done += 1
+            else if (status === "skipped")
+                skipped += 1
+        }
+        if (running)
+            return "running"
+        if (error)
+            return "error"
+        if (planned > 0)
+            return "planned"
+        if (done > 0 && done === list.length)
+            return "done"
+        if (skipped > 0 && skipped === list.length)
+            return "skipped"
+        return (list[0] && list[0].status) || "planned"
+    }
+    function mosaicGroupSummary(members) {
+        const list = members || []
+        const first = list[0] || {}
+        let startMs = Number(first.start_epoch_ms)
+        let endMs = Number(first.end_epoch_ms)
+        let startDate = first.start_date || ""
+        let startTime = first.start_time || ""
+        let durationSum = 0
+        let action = first
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i]
+            if (!item)
+                continue
+            const start = Number(item.start_epoch_ms)
+            const finish = Number(item.end_epoch_ms)
+            if (Number.isFinite(start) && (!Number.isFinite(startMs) || start < startMs)) {
+                startMs = start
+                startDate = item.start_date || startDate
+                startTime = item.start_time || startTime
+            }
+            if (Number.isFinite(finish) && (!Number.isFinite(endMs) || finish > endMs))
+                endMs = finish
+            durationSum += Number(item.planned_duration_seconds || 0)
+            if (!action || String(item.status || "").toLowerCase() === "running")
+                action = item
+        }
+        const span = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs
+            ? (endMs - startMs) / 1000
+            : durationSum
+        const count = Number(first.pane_count || list.length)
+        const grid = first.grid_text || ""
+        return {
+            group_collapsed: true,
+            group_members: list,
+            group_status: Util.mosaicGroupStatus(list),
+            group_start_date: startDate,
+            group_start_time: startTime,
+            group_duration_text: Util.clockDuration(span),
+            group_summary: count + (count === 1 ? " pane" : " panes") + (grid ? " · " + grid : ""),
+            group_action: action
+        }
+    }
+    function sessionGroupKey(item) {
+        if (item && item.is_grouped)
+            return String(item.group_key || "")
+        return ""
+    }
+    function sameSessionGroup(a, b) {
+        if (!a || !b)
+            return false
+        if (String(a.id || "") && String(a.id) === String(b.id))
+            return true
+        const key = Util.sessionGroupKey(a)
+        return !!(key && key === Util.sessionGroupKey(b))
+    }
+    function sessionDragPlanned(item) {
+        if (!item)
+            return false
+        const status = String((item.group_collapsed ? (item.group_status || item.status) : item.status) || "").toLowerCase()
+        return status === "planned"
+    }
+    function groupIndexRange(rows, index) {
+        const list = rows || []
+        const row = list[index]
+        if (!row)
+            return { start: index, end: index }
+        const key = Util.sessionGroupKey(row)
+        if (!key || row.group_collapsed)
+            return { start: index, end: index }
+        let start = index
+        let end = index
+        while (start > 0 && Util.sessionGroupKey(list[start - 1]) === key)
+            start -= 1
+        while (end + 1 < list.length && Util.sessionGroupKey(list[end + 1]) === key)
+            end += 1
+        return { start, end }
+    }
+    function snapReorderInsertIndex(rows, insertIndex, source) {
+        const list = rows || []
+        const count = list.length
+        if (insertIndex < 0)
+            return insertIndex
+        let idx = Math.max(0, Math.min(insertIndex, count))
+        let from = -1
+        let fromEnd = -1
+        for (let i = 0; i < count; i++) {
+            if (!Util.sameSessionGroup(list[i], source))
+                continue
+            if (from < 0)
+                from = i
+            fromEnd = i
+        }
+        if (from >= 0 && idx >= from && idx <= fromEnd + 1)
+            return -1
+        const probe = idx < count ? idx : count - 1
+        if (probe >= 0 && probe < count && !Util.sameSessionGroup(list[probe], source)) {
+            const range = Util.groupIndexRange(list, probe)
+            if (range.end > range.start && idx > range.start && idx <= range.end) {
+                const mid = (range.start + range.end + 1) / 2
+                idx = idx <= mid ? range.start : range.end + 1
+            }
+        }
+        return idx
+    }
+    function reorderBeforeId(rows, insertIndex, source) {
+        const list = rows || []
+        const idx = Util.snapReorderInsertIndex(list, insertIndex, source)
+        if (idx < 0)
+            return { skip: true, beforeId: "", night: "" }
+        for (let i = idx; i < list.length; i++) {
+            const target = list[i]
+            if (!target || Util.sameSessionGroup(target, source))
+                continue
+            if (String(target.device_id) !== String(source.device_id))
+                continue
+            if (!Util.sessionDragPlanned(target))
+                continue
+            return { skip: false, beforeId: String(target.id), night: String(target.observing_date || "") }
+        }
+        let night = ""
+        const prevIdx = Math.min(idx, list.length) - 1
+        const neighbor = list[prevIdx >= 0 ? prevIdx : 0]
+        if (neighbor && neighbor.observing_date)
+            night = String(neighbor.observing_date)
+        return { skip: false, beforeId: "", night }
+    }
+    function mosaicGroupKeys(items) {
+        const list = items || []
+        const keys = []
+        const seen = {}
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i]
+            if (!item || !item.is_grouped)
+                continue
+            const key = String(item.group_key || "")
+            if (!key || seen[key])
+                continue
+            seen[key] = true
+            keys.push(key)
+        }
+        return keys
+    }
+    function mosaicGroupKeyMap(items) {
+        const keys = Util.mosaicGroupKeys(items)
+        const next = {}
+        for (let i = 0; i < keys.length; i++)
+            next[keys[i]] = true
+        return next
+    }
+    function expandedKeyCount(map, keys) {
+        const expanded = map || {}
+        const list = keys || []
+        let n = 0
+        for (let i = 0; i < list.length; i++) {
+            if (expanded[list[i]])
+                n += 1
+        }
+        return n
+    }
+    function idSetVisibleCount(map, items) {
+        const list = items || []
+        let n = 0
+        for (let i = 0; i < list.length; i++) {
+            if (Util.idSetHas(map, list[i] && list[i].id))
+                n += 1
+        }
+        return n
+    }
+    function visibleClusteredSessions(items, expandedMap) {
+        const clustered = Util.clusterSessions(items)
+        const expanded = expandedMap || {}
+        const result = []
+        let i = 0
+        while (i < clustered.length) {
+            const item = clustered[i]
+            if (!item) {
+                i += 1
+                continue
+            }
+            if (!item.is_grouped) {
+                result.push(item)
+                i += 1
+                continue
+            }
+            const key = String(item.group_key || "")
+            const members = []
+            while (i < clustered.length && clustered[i] && String(clustered[i].group_key || "") === key) {
+                members.push(clustered[i])
+                i += 1
+            }
+            if (expanded[key]) {
+                for (let m = 0; m < members.length; m++)
+                    result.push(members[m])
+            } else {
+                result.push(Object.assign({}, members[0], Util.mosaicGroupSummary(members)))
+            }
+        }
+        return result
+    }
+    function historyGroupSummary(members) {
+        const list = members || []
+        const first = list[0] || {}
+        let ok = 0
+        let captured = 0
+        let planned = 0
+        let plannedSec = 0
+        let actualSec = 0
+        const ids = []
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i]
+            if (!item)
+                continue
+            ids.push(item.id)
+            if (item.ok)
+                ok += 1
+            captured += Number(item.captured_frames || 0)
+            planned += Number(item.planned_frames || item.frame_count || 0)
+            plannedSec += Number(item.planned_duration_seconds || 0)
+            actualSec += Number(item.actual_duration_seconds || 0)
+        }
+        const count = list.length
+        const fail = count - ok
+        let outcome = first.outcome || ""
+        const allOk = fail === 0 && count > 0
+        if (ok && fail)
+            outcome = ok + "/" + count + " completed"
+        else if (allOk)
+            outcome = "Completed"
+        const grid = first.grid_text || ""
+        const title = first.group_title || first.target_name || "Mosaic"
+        return {
+            group_collapsed: true,
+            group_members: list,
+            group_member_ids: ids,
+            group_summary: count + (count === 1 ? " pane" : " panes") + (grid ? " · " + grid : ""),
+            group_title: title,
+            target_name: title,
+            date: first.date,
+            device_name: first.device_name,
+            device_color: first.device_color,
+            device_id: first.device_id,
+            ok: allOk,
+            outcome: outcome,
+            frame_text: captured + "/" + planned,
+            captured_frames: captured,
+            planned_frames: planned,
+            planned_duration_seconds: plannedSec,
+            actual_duration_seconds: actualSec,
+            planned_text: Util.clockDuration(plannedSec),
+            actual_text: Util.clockDuration(actualSec),
+            delta_seconds: actualSec - plannedSec,
+            delta_text: "",
+            summary: first.summary || "",
+            notes: "",
+            has_session: list.some(function(item) { return !!(item && item.has_session) }),
+            session_id: first.session_id,
+            id: first.id,
+            is_grouped: true,
+            group_key: first.group_key,
+            group_id: first.group_id
+        }
+    }
+    function visibleClusteredHistory(items, expandedMap) {
+        const clustered = Util.clusterSessions(items)
+        const expanded = expandedMap || {}
+        const result = []
+        let i = 0
+        while (i < clustered.length) {
+            const item = clustered[i]
+            if (!item) {
+                i += 1
+                continue
+            }
+            if (!item.is_grouped) {
+                result.push(item)
+                i += 1
+                continue
+            }
+            const key = String(item.group_key || "")
+            const members = []
+            while (i < clustered.length && clustered[i] && String(clustered[i].group_key || "") === key) {
+                members.push(clustered[i])
+                i += 1
+            }
+            if (expanded[key]) {
+                for (let m = 0; m < members.length; m++)
+                    result.push(members[m])
+            } else {
+                result.push(Object.assign({}, members[0], Util.historyGroupSummary(members)))
+            }
         }
         return result
     }

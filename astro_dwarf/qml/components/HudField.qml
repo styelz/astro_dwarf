@@ -80,7 +80,7 @@ TextField {
             anchors.centerIn: parent
             text: field.passwordRevealed ? "\uE7ED" : "\uE7B3"
             font.family: Theme.fontIcon
-            font.pixelSize: 14
+            font.pixelSize: Theme.fontPx(14)
             color: !field.enabled ? Theme.textSecondary
                  : revealBtn.activeFocus || revealClick.containsMouse ? Theme.accent
                  : Theme.textSecondary

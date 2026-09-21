@@ -19,10 +19,10 @@ RowLayout {
     signal deleteRequested()
     Layout.fillWidth: true
     visible: active && totalCount > 0
-    spacing: 8
+    spacing: Theme.s2
     HudButton {
         text: selectionBar.selectedCount > 0 && selectionBar.selectedCount === selectionBar.totalCount ? "CLEAR" : "SELECT ALL"
-        implicitHeight: 28
+        implicitHeight: Theme.px(28)
         onClicked: {
             if (selectionBar.selectedCount > 0 && selectionBar.selectedCount === selectionBar.totalCount)
                 selectionBar.clearRequested()
@@ -34,20 +34,20 @@ RowLayout {
         visible: selectionBar.selectedCount > 0
         text: selectionBar.selectedCount + " selected"
         color: Theme.accent
-        font.pixelSize: 11
+        font.pixelSize: Theme.fontPx(11)
         font.letterSpacing: 0.4
     }
     Item { Layout.fillWidth: true }
     HudButton {
         text: selectionBar.selectedCount > 1 ? "EDIT " + selectionBar.selectedCount : "EDIT SELECTED"
         visible: selectionBar.allowEdit && selectionBar.selectedCount > 1
-        implicitHeight: 28
+        implicitHeight: Theme.px(28)
         onClicked: selectionBar.editRequested()
     }
     HudButton {
         text: "MOVE TO"
         visible: selectionBar.allowMove && selectionBar.selectedCount > 0 && (backend.devices || []).length > 1
-        implicitHeight: 28
+        implicitHeight: Theme.px(28)
         onClicked: moveMenu.popup()
     }
     MoveDeviceMenu {
@@ -57,7 +57,7 @@ RowLayout {
     HudButton {
         text: selectionBar.selectedCount > 1 ? "DELETE " + selectionBar.selectedCount : "DELETE SELECTED"
         enabled: selectionBar.selectedCount > 0 && selectionBar.deleteEnabled
-        implicitHeight: 28
+        implicitHeight: Theme.px(28)
         busyText: "DELETING…"
         buttonColor: Theme.fillDanger
         foregroundColor: Theme.danger

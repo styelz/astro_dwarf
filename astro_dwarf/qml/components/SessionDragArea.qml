@@ -9,23 +9,36 @@ Item {
     id: root
     required property var dragItem
     property var pressedAction: null
+    property bool editOnDoubleTap: true
     signal editRequested(var session)
-    readonly property bool canEdit: String((dragItem && dragItem.status) || "") !== "running"
+    readonly property bool canEdit: {
+        const item = root.dragItem || {}
+        if (item.group_collapsed)
+            return String(item.group_status || item.status || "") !== "running"
+        return String(item.status || "") !== "running"
+    }
     Accessible.role: Accessible.Button
     Accessible.name: {
         const item = root.dragItem || {}
         const when = item.start_time || ""
-        const label = item.pane_name || item.target_name || "Session"
+        const label = item.group_collapsed
+            ? (item.group_title || item.target_name || "Mosaic")
+            : (item.pane_name || item.target_name || "Session")
         return (when ? when + " " : "") + label
     }
-    Accessible.description: root.canEdit ? "Drag to reschedule, double-click to edit" : "Running"
+        Accessible.description: !root.canEdit
+                                ? "Running"
+                                : (root.editOnDoubleTap ? "Drag to reschedule, double-click to edit" : "Drag to reschedule")
 
     TapHandler {
         parent: root.parent
         acceptedButtons: Qt.LeftButton
         acceptedModifiers: Qt.NoModifier
-        enabled: root.canEdit
-        grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
+        enabled: root.editOnDoubleTap && root.canEdit && !drag.active && !drag.live
+        // Approve a drag taking this press. Do not steal the grab back —
+        // CanTakeOverFromAnything + ApprovesTakeOverByAnything livelocks
+        // against DragHandler on these list rows.
+        grabPermissions: PointerHandler.ApprovesTakeOverByAnything
         onDoubleTapped: root.editRequested(root.dragItem)
     }
 
@@ -38,6 +51,7 @@ Item {
         cursorShape: Qt.ClosedHandCursor
         enabled: root.canEdit
         property bool started: false
+        property bool live: false
 
         function mappedPos() {
             return parent.mapToItem(DragCoordinator.contentItem, centroid.position.x, centroid.position.y)
@@ -46,12 +60,17 @@ Item {
         onActiveChanged: {
             if (active) {
                 started = true
+                live = true
                 if (root.pressedAction)
                     root.pressedAction()
                 DragCoordinator.startDrag(root.dragItem, mappedPos(), centroid.position.y)
             } else if (started) {
                 started = false
-                DragCoordinator.completeDrag(mappedPos())
+                const pos = mappedPos()
+                Qt.callLater(function() {
+                    drag.live = false
+                    DragCoordinator.completeDrag(pos)
+                })
             }
         }
         onTranslationChanged: {
@@ -61,7 +80,10 @@ Item {
         onCanceled: {
             if (started) {
                 started = false
-                DragCoordinator.cancelDrag()
+                Qt.callLater(function() {
+                    drag.live = false
+                    DragCoordinator.cancelDrag()
+                })
             }
         }
     }

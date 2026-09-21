@@ -397,10 +397,89 @@ def find_named(root: Any, name: str) -> Any | None:
                 return child
         except Exception:
             pass
+    prefix = None
+    if wanted in {"upcoming", "calendar-sidebar", "session", "calendar-session"}:
+        prefix = wanted + "-"
     for obj in walk_objects(root):
-        if object_name_of(obj) == wanted:
+        name = object_name_of(obj)
+        if name == wanted:
+            return obj
+        if prefix and name.startswith(prefix):
             return obj
     return None
+
+
+def _item_window_pos(obj: Any, nx: float = 0.5, ny: float = 0.5) -> Any:
+    from PySide6.QtCore import QPoint, QPointF
+
+    width = float(_property(obj, "width", 0) or 0)
+    height = float(_property(obj, "height", 0) or 0)
+    mapper = getattr(obj, "mapToScene", None)
+    if not callable(mapper):
+        raise RuntimeError(f"{object_name_of(obj) or 'item'} cannot mapToScene")
+    scene = mapper(QPointF(max(0.0, width * nx), max(0.0, height * ny)))
+    return QPoint(int(round(scene.x())), int(round(scene.y())))
+
+
+def _drag_trace(message: str) -> None:
+    path = os.path.join(tempfile.gettempdir(), "astro-dwarf-drag.log")
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(f"{time.time():.3f} {message}\n")
+
+
+def drag_item(obj: Any, dx: float = 0, dy: float = 80, steps: int = 8) -> dict[str, Any]:
+    from PySide6.QtCore import Qt, QPoint
+    from PySide6.QtTest import QTest
+
+    window_fn = getattr(obj, "window", None)
+    window = window_fn() if callable(window_fn) else window_fn
+    if window is None:
+        raise RuntimeError(f"{object_name_of(obj) or 'item'} has no window")
+    activate = getattr(window, "requestActivate", None)
+    if callable(activate):
+        activate()
+    start = _item_window_pos(obj)
+    delay = 20
+    _drag_trace(f"press {start.x()},{start.y()}")
+    QTest.mousePress(window, Qt.LeftButton, Qt.NoModifier, start, delay)
+    _drag_trace("pressed")
+    proxy = find_named(window, "sessionDragProxy")
+    mouse_event = getattr(QTest, "mouseEvent", None)
+    for index in range(1, max(1, int(steps)) + 1):
+        pos = QPoint(
+            start.x() + int(dx * index / steps),
+            start.y() + int(dy * index / steps),
+        )
+        _drag_trace(f"move {pos.x()},{pos.y()}")
+        if callable(mouse_event):
+            mouse_event(QTest.MouseMove, window, Qt.LeftButton, Qt.NoModifier, pos, delay)
+        else:
+            QTest.mouseMove(window, pos, delay)
+        _drag_trace(
+            f"moved {index} proxy={bool(proxy.property('visible')) if proxy is not None else 'missing'}"
+        )
+    end = QPoint(start.x() + int(dx), start.y() + int(dy))
+    _drag_trace(f"release {end.x()},{end.y()}")
+    from PySide6.QtCore import QCoreApplication, QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+
+    QCoreApplication.postEvent(
+        window,
+        QMouseEvent(
+            QEvent.Type.MouseButtonRelease,
+            QPointF(end),
+            QPointF(end),
+            Qt.LeftButton,
+            Qt.MouseButtons(Qt.NoButton),
+            Qt.NoModifier,
+        ),
+    )
+    _drag_trace("posted release")
+    return {
+        "dragged": object_name_of(obj),
+        "from": [start.x(), start.y()],
+        "to": [end.x(), end.y()],
+    }
 
 
 def invoke_qml(obj: Any, name: str, *args: Any) -> Any:
@@ -424,16 +503,47 @@ def _emit_or_call(obj: Any, name: str, *args: Any) -> bool:
     return False
 
 
+def pointer_click_object(
+    obj: Any,
+    *,
+    double: bool = False,
+    button: str = "left",
+    nx: float = 0.5,
+    ny: float = 0.5,
+) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    window_fn = getattr(obj, "window", None)
+    window = window_fn() if callable(window_fn) else window_fn
+    if window is None:
+        raise RuntimeError(f"{object_name_of(obj) or control_label(obj)} has no window")
+    activate = getattr(window, "requestActivate", None)
+    if callable(activate):
+        activate()
+    pos = _item_window_pos(obj, nx, ny)
+    qt_button = Qt.RightButton if str(button or "left").strip().lower() == "right" else Qt.LeftButton
+    delay = 20
+    QTest.mousePress(window, qt_button, Qt.NoModifier, pos, delay)
+    QTest.mouseRelease(window, qt_button, Qt.NoModifier, pos, delay)
+    if double:
+        QTest.mousePress(window, qt_button, Qt.NoModifier, pos, delay)
+        QTest.mouseRelease(window, qt_button, Qt.NoModifier, pos, delay)
+
+
 def click_object(obj: Any) -> None:
     click = getattr(obj, "click", None)
     if callable(click):
-        click()
-        return
+        try:
+            click()
+            return
+        except Exception:
+            pass
     if _emit_or_call(obj, "clicked"):
         return
     if _emit_or_call(obj, "triggered"):
         return
-    raise RuntimeError(f"cannot click {object_name_of(obj) or control_label(obj)}")
+    pointer_click_object(obj)
 
 
 def _combo_texts(obj: Any) -> list[str]:
@@ -738,17 +848,78 @@ class TestHarness:
             raise RuntimeError(f"control not found: {query}")
         return match["_obj"]
 
-    def click(self, query: str) -> dict[str, Any]:
+    def click(self, query: str, double: bool = False, button: str = "left", nx: float = 0.5, ny: float = 0.5) -> dict[str, Any]:
         start = pad_start_from_query(query)
-        if start:
+        if start and not double and str(button or "left").strip().lower() != "right":
             try:
                 result = self.call_hook("clickPad", start)
             except Exception:
                 result = "missing"
             if result and result != "missing":
                 return {"clicked": query, "via": "pad", "pad": result}
-        click_object(self._resolved(query))
+        try:
+            obj = self._resolved(query)
+        except RuntimeError:
+            obj = find_named(self.window, query)
+            if obj is None:
+                raise
+        if double or str(button or "left").strip().lower() == "right":
+            try:
+                pointer_click_object(obj, double=double, button=button, nx=nx, ny=ny)
+            except Exception:
+                pass
+            via = self._click_fallbacks(query, double=double, button=button, ny=ny)
+            return {"clicked": query, "double": bool(double), "button": str(button or "left"), "via": via}
+        click_object(obj)
         return {"clicked": query}
+
+    def _click_fallbacks(self, query: str, *, double: bool, button: str, ny: float) -> str:
+        name = str(query or "")
+        if double and name.startswith("calendar-day-"):
+            page = find_named(self.window, "calendarPage")
+            if page is not None and int(_property(page, "viewMode", 0) or 0) != 1:
+                invoke_qml(page, "openNight", name[len("calendar-day-"):])
+                return "openNight"
+            return "pointer"
+        if double and name == "nightTimelineTrack":
+            dialog = find_named(self.window, "sessionDialog")
+            if dialog is None or not bool(_property(dialog, "visible", False)):
+                page = find_named(self.window, "calendarPage")
+                if page is not None:
+                    minutes = max(0, min(1439, int(round(1440 * float(ny)))))
+                    invoke_qml(page, "createSessionAtMinutes", minutes)
+                    return "createSession"
+            return "pointer"
+        if str(button or "left").strip().lower() == "right" and name == "pageNavBar":
+            menu = find_named(self.window, "navBarPlacementMenu")
+            popup = getattr(menu, "popup", None) if menu is not None else None
+            if callable(popup):
+                popup()
+                return "menu"
+        return "pointer"
+
+    def drag(self, query: str, dx: float = 0, dy: float = 80, mode: str = "pointer") -> dict[str, Any]:
+        _drag_trace(f"drag query={query} mode={mode}")
+        kind = str(mode or "pointer").strip().lower()
+        if kind in {"coordinator", "start", "reorder"}:
+            ident = str(query or "")
+            if ident.startswith("upcoming-"):
+                ident = ident[len("upcoming-"):]
+            elif ident in {"upcoming", "calendar-sidebar", "session"}:
+                rows = self.items("upcoming" if ident == "upcoming" else "sessions")
+                if not rows:
+                    raise RuntimeError(f"no {ident} sessions")
+                ident = str(rows[0].get("id") or "")
+            phase = "start" if kind == "start" else ("reorder" if kind == "reorder" else "all")
+            result = self.call_hook("sessionDrag", ident, phase, dx, dy)
+            return {"dragged": query, "via": "coordinator", "result": str(result), "phase": phase, "id": ident}
+        obj = find_named(self.window, query)
+        _drag_trace(f"found {object_name_of(obj) if obj is not None else 'none'}")
+        if obj is None:
+            obj = self._resolved(query)
+        result = drag_item(obj, dx, dy)
+        result["query"] = query
+        return result
 
     def set_value(self, query: str, value: Any) -> dict[str, Any]:
         key = str(query or "").strip()
@@ -831,7 +1002,20 @@ class TestHarness:
             if method == "GET" and route == "/items":
                 return {"items": self.items(str(query.get("kind") or payload.get("kind") or "sessions"))}
             if method == "POST" and route == "/click":
-                return self.click(str(payload.get("name") or payload.get("path") or ""))
+                return self.click(
+                    str(payload.get("name") or payload.get("path") or ""),
+                    bool(payload.get("double")),
+                    str(payload.get("button") or "left"),
+                    float(payload.get("nx") if payload.get("nx") is not None else 0.5),
+                    float(payload.get("ny") if payload.get("ny") is not None else 0.5),
+                )
+            if method == "POST" and route == "/drag":
+                return self.drag(
+                    str(payload.get("name") or payload.get("path") or ""),
+                    float(payload.get("dx") or 0),
+                    float(payload.get("dy") if payload.get("dy") is not None else 80),
+                    str(payload.get("mode") or "pointer"),
+                )
             if method == "POST" and route == "/set":
                 return self.set_value(str(payload.get("name") or payload.get("path") or ""), payload.get("value"))
             if method == "POST" and route == "/page":

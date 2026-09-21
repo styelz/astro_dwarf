@@ -70,6 +70,16 @@ def main(argv: list[str] | None = None) -> int:
 
     click = sub.add_parser("click", help="Click a control by objectName, label, or path")
     click.add_argument("name")
+    click.add_argument("--double", action="store_true", help="Send a double-click")
+    click.add_argument("--right", action="store_true", help="Send a right-click")
+    click.add_argument("--nx", type=float, default=0.5, help="Horizontal hit fraction 0–1")
+    click.add_argument("--ny", type=float, default=0.5, help="Vertical hit fraction 0–1")
+
+    drag = sub.add_parser("drag", help="Pointer-drag a named item (upcoming, calendar-sidebar, session-…)")
+    drag.add_argument("name")
+    drag.add_argument("dx", nargs="?", type=float, default=0)
+    drag.add_argument("dy", nargs="?", type=float, default=80)
+    drag.add_argument("--mode", default="pointer", choices=("pointer", "coordinator", "start", "reorder"))
 
     setter = sub.add_parser("set", help="Set a field, combo, spinbox, or check")
     setter.add_argument("name")
@@ -139,7 +149,29 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "items":
         return _print(request(base, "GET", f"/items?kind={args.kind}"))
     if args.cmd == "click":
-        return _print(request(base, "POST", "/click", {"name": args.name}))
+        return _print(
+            request(
+                base,
+                "POST",
+                "/click",
+                {
+                    "name": args.name,
+                    "double": bool(args.double),
+                    "button": "right" if args.right else "left",
+                    "nx": args.nx,
+                    "ny": args.ny,
+                },
+            )
+        )
+    if args.cmd == "drag":
+        return _print(
+            request(
+                base,
+                "POST",
+                "/drag",
+                {"name": args.name, "dx": args.dx, "dy": args.dy, "mode": args.mode},
+            )
+        )
     if args.cmd == "set":
         return _print(request(base, "POST", "/set", {"name": args.name, "value": args.value}))
     if args.cmd == "page":

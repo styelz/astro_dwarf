@@ -26,7 +26,7 @@ Dialog {
             : (settingsLeaveDialog.pendingDeviceId
                 ? "Save your device settings before switching telescopes?"
                 : "Save your device settings before leaving this page?")
-        Text { text: "UNSAVED SETTINGS"; color: Theme.warning; font.pixelSize: 16; font.letterSpacing: 1.4 }
+        Text { text: "UNSAVED SETTINGS"; color: Theme.warning; font.pixelSize: Theme.fontLg; font.letterSpacing: 1.4 }
         Text {
             text: settingsLeaveDialog.pendingPage === -2
                 ? "Save your device settings before closing?"

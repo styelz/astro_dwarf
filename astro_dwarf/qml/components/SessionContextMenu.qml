@@ -19,6 +19,11 @@ HudMenu {
     signal unselectAllRequested()
     signal editRequested(var session)
     signal editSelectedRequested()
+    property bool showExpandCollapse: false
+    property bool canExpandAll: false
+    property bool canCollapseAll: false
+    signal expandAllRequested()
+    signal collapseAllRequested()
 
     HudMenuItem {
         text: sessionContextMenu.editSelection ? "Edit selected" : "Edit"
@@ -81,6 +86,28 @@ HudMenu {
         glyph: "\uE8C8"
         enabled: sessionContextMenu.coordinates !== ""
         onTriggered: backend.copyText(sessionContextMenu.coordinates)
+    }
+    HudMenuSeparator {
+        visible: sessionContextMenu.showExpandCollapse
+        height: visible ? implicitHeight : 0
+    }
+    HudMenuItem {
+        objectName: "session-expand-all"
+        text: "Expand all"
+        glyph: "\uE70D"
+        visible: sessionContextMenu.showExpandCollapse
+        enabled: sessionContextMenu.canExpandAll
+        accessibleDescription: "Expand every mosaic session group on this list"
+        onTriggered: sessionContextMenu.expandAllRequested()
+    }
+    HudMenuItem {
+        objectName: "session-collapse-all"
+        text: "Collapse all"
+        glyph: "\uE70E"
+        visible: sessionContextMenu.showExpandCollapse
+        enabled: sessionContextMenu.canCollapseAll
+        accessibleDescription: "Collapse every mosaic session group on this list"
+        onTriggered: sessionContextMenu.collapseAllRequested()
     }
     HudMenuSeparator {}
     HudMenuItem {

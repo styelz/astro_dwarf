@@ -11,9 +11,9 @@ Item {
     property bool applyingDeviceSelect: false
     property int categoryIndex: 0
     // Width of the control column in every settings grid; the hint column takes the rest.
-    readonly property int controlWidth: 320
+    readonly property int controlWidth: Theme.px(320)
     // Narrower column for plain numeric entries so the explanation gets the room instead.
-    readonly property int numberWidth: 140
+    readonly property int numberWidth: Theme.px(140)
     // Telescope first (header is already device-scoped), then app-wide console.
     readonly property var categories: [
         { key: "device", title: "DEVICE", hint: "Identity · site", glyph: "◈", device: true, group: "TELESCOPE" },
@@ -826,7 +826,7 @@ Item {
                                   + " of imaging with " + readoutField.text + " s readout per frame (Timing)."
                             color: Theme.textPrimary
                             font.family: Theme.fontMono
-                            font.pixelSize: 11
+                            font.pixelSize: Theme.fontPx(11)
                             wrapMode: Text.Wrap
                         }
                     }
@@ -930,7 +930,7 @@ Item {
                                 text: settingsPage.durationHint.summary || ""
                                 color: Theme.warning
                                 wrapMode: Text.Wrap
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontMd
                             }
                             Text {
                                 visible: !!(settingsPage.durationHint.note)
@@ -938,14 +938,14 @@ Item {
                                 text: settingsPage.durationHint.note || ""
                                 color: Theme.textSecondary
                                 wrapMode: Text.Wrap
-                                font.pixelSize: 11
+                                font.pixelSize: Theme.fontPx(11)
                             }
                             Text {
                                 Layout.fillWidth: true
                                 text: settingsPage.durationHint.change_text || ""
                                 color: Theme.textPrimary
                                 wrapMode: Text.Wrap
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontMd
                                 font.family: Theme.fontMono
                             }
                             RowLayout {
@@ -1005,7 +1005,7 @@ Item {
                                   + " before the first frame; each frame then takes exposure + " + readoutField.text + " s."
                             color: Theme.textPrimary
                             font.family: Theme.fontMono
-                            font.pixelSize: 11
+                            font.pixelSize: Theme.fontPx(11)
                             wrapMode: Text.Wrap
                         }
                     }

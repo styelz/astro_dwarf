@@ -41,7 +41,7 @@ T.MenuItem {
             text: hudMenuItem.glyph
             color: hudMenuItem.info ? Theme.muted : (hudMenuItem.destructive ? Theme.danger : Theme.textSecondary)
             font.family: Theme.fontIcon
-            font.pixelSize: 14
+            font.pixelSize: Theme.fontPx(14)
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
         }

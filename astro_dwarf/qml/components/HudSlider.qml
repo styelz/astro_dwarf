@@ -13,13 +13,13 @@ Slider {
     property var trackGradient: null
     property real markerPosition: -1
     property string valueText: ""
-    property int trackHeight: 10
+    property int trackHeight: Theme.px(10)
     readonly property bool fillTrack: !trackGradient
 
-    implicitHeight: 28
+    implicitHeight: Theme.px(28)
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
-    rightPadding: valueText.length ? 46 : 0
+    rightPadding: valueText.length ? Theme.px(46) : 0
     opacity: enabled ? 1 : 0.55
     Behavior on opacity { NumberAnimation { duration: Theme.quick } }
     Accessible.name: accessibleName
@@ -61,9 +61,9 @@ Slider {
     handle: Rectangle {
         x: control.leftPadding + control.visualPosition * (control.availableWidth - width)
         y: control.topPadding + control.availableHeight / 2 - height / 2
-        width: 20
-        height: 20
-        radius: 10
+        width: Theme.px(20)
+        height: Theme.px(20)
+        radius: Theme.px(10)
         color: control.enabled ? Theme.accent : Theme.textSecondary
         border.color: control.pressed || control.hovered || control.visualFocus ? Theme.textPrimary : Theme.surface
         border.width: 2
@@ -83,11 +83,11 @@ Slider {
         visible: control.valueText.length
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        width: 40
+        width: Theme.px(40)
         horizontalAlignment: Text.AlignRight
         text: control.valueText
         color: control.enabled ? Theme.textPrimary : Theme.textSecondary
         font.family: Theme.fontMono
-        font.pixelSize: 11
+        font.pixelSize: Theme.fontPx(11)
     }
 }

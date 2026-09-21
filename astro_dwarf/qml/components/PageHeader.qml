@@ -10,8 +10,8 @@ RowLayout {
     property string glyph: ""
     default property alias actions: pageActions.data
     Layout.fillWidth: true
-    spacing: 10
-    Rectangle { width: 3; Layout.preferredHeight: 34; color: Theme.accent; radius: 1 }
+    spacing: Theme.px(10)
+    Rectangle { width: Theme.px(3); Layout.preferredHeight: Theme.controlHeight; color: Theme.accent; radius: 1 }
     ColumnLayout {
         Layout.fillWidth: true
         Layout.minimumWidth: 0
@@ -19,7 +19,7 @@ RowLayout {
         spacing: 1
         RowLayout {
             Layout.fillWidth: true
-            spacing: 8
+            spacing: Theme.s2
             Text { visible: pageHeader.glyph !== ""; text: pageHeader.glyph; color: Theme.accent; font.pixelSize: Theme.fontLg }
             Text {
                 text: pageHeader.title
@@ -45,7 +45,7 @@ RowLayout {
     }
     Row {
         id: pageActions
-        spacing: 8
+        spacing: Theme.s2
         Layout.fillWidth: false
         Layout.preferredWidth: implicitWidth
         Layout.minimumWidth: 0

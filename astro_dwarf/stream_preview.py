@@ -465,6 +465,7 @@ class MosaicLiveItem(QQuickPaintedItem):
     accentChanged = Signal()
     southUpChanged = Signal()
     positionAngleChanged = Signal()
+    fontPixelSizeChanged = Signal()
 
     def __init__(self, parent: Optional[QQuickItem] = None):
         super().__init__(parent)
@@ -479,6 +480,9 @@ class MosaicLiveItem(QQuickPaintedItem):
         self._accent = QColor(126, 224, 208)
         self._south_up = False
         self._position_angle = 0.0
+        self._font_pixel_size = 11
+        self._held_pane = 0
+        self._held_image = QImage()
         hub = live_frames()
         if hub is not None:
             hub.frameChanged.connect(self._on_live_frame)
@@ -506,6 +510,8 @@ class MosaicLiveItem(QQuickPaintedItem):
         active = bool(value)
         if active == self._live_active:
             return
+        if not active:
+            self._capture_hold()
         self._live_active = active
         self.liveActiveChanged.emit()
         self.update()
@@ -524,6 +530,11 @@ class MosaicLiveItem(QQuickPaintedItem):
             pane = 0
         if pane == self._live_pane:
             return
+        if pane < 1:
+            self._capture_hold()
+        elif pane != self._held_pane:
+            self._held_pane = 0
+            self._held_image = QImage()
         self._live_pane = pane
         self.livePaneChanged.emit()
         self.update()
@@ -586,6 +597,35 @@ class MosaicLiveItem(QQuickPaintedItem):
         self.update()
 
     positionAngle = Property(float, getPositionAngle, setPositionAngle, notify=positionAngleChanged)
+
+    def getFontPixelSize(self) -> int:
+        return self._font_pixel_size
+
+    def setFontPixelSize(self, value: int) -> None:
+        try:
+            size = int(value or 0)
+        except (TypeError, ValueError):
+            size = 11
+        if size < 1:
+            size = 11
+        if size == self._font_pixel_size:
+            return
+        self._font_pixel_size = size
+        self.fontPixelSizeChanged.emit()
+        self.update()
+
+    fontPixelSize = Property(int, getFontPixelSize, setFontPixelSize, notify=fontPixelSizeChanged)
+
+    def _capture_hold(self) -> None:
+        """Keep the last painted live frame after stacking takes the stream."""
+        if self._live_pane < 1:
+            return
+        live = live_frames()
+        image = live.peek(self._camera) if live is not None else QImage()
+        if image is None or image.isNull():
+            return
+        self._held_pane = self._live_pane
+        self._held_image = image.copy()
 
     @Slot(str)
     def _on_live_frame(self, key: str) -> None:
@@ -659,7 +699,7 @@ class MosaicLiveItem(QQuickPaintedItem):
         live_image = live.peek(self._camera) if live is not None and self._live_active else QImage()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         font = QFont()
-        font.setPixelSize(11)
+        font.setPixelSize(max(1, int(self._font_pixel_size or 11)))
         font.setBold(True)
         painter.setFont(font)
         count = columns * rows
@@ -672,6 +712,13 @@ class MosaicLiveItem(QQuickPaintedItem):
             if index == self._live_pane and self._live_active and not live_image.isNull():
                 image = live_image
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+            elif (
+                image.isNull()
+                and index == self._held_pane
+                and not self._held_image.isNull()
+            ):
+                image = self._held_image
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
             else:
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
             fitted = self._fit_in(image, cell)
@@ -681,7 +728,9 @@ class MosaicLiveItem(QQuickPaintedItem):
                 painter.setPen(self._accent)
                 painter.drawText(cell.toRect(), Qt.AlignmentFlag.AlignCenter, str(index))
             border = QPen(self._accent)
-            highlight = self._live_pane if self._live_pane >= 1 else current
+            highlight = self._live_pane if self._live_pane >= 1 else (
+                self._held_pane if self._held_pane >= 1 else current
+            )
             border.setWidth(2 if index == highlight else 1)
             painter.setPen(border)
             painter.setBrush(Qt.BrushStyle.NoBrush)

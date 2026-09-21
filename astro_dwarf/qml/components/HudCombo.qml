@@ -12,7 +12,7 @@ ComboBox {
     property string accessibleName: ""
     property string accessibleDescription: ""
     displayText: combo.currentIndex < 0 && combo.emptyText ? combo.emptyText : combo.currentText
-    implicitWidth: 160
+    implicitWidth: Theme.px(160)
     implicitHeight: Theme.controlHeight
     Layout.minimumWidth: 0
     Layout.preferredWidth: implicitWidth
@@ -40,7 +40,7 @@ ComboBox {
     }
     background: Item {
         implicitHeight: Theme.controlHeight
-        implicitWidth: 120
+        implicitWidth: Theme.px(120)
         HudFrame {
             anchors.fill: parent
             anchors.margins: -2
@@ -62,8 +62,8 @@ ComboBox {
         }
     }
     contentItem: Text {
-        leftPadding: 10
-        rightPadding: 22
+        leftPadding: Theme.px(10)
+        rightPadding: Theme.px(22)
         text: combo.displayText
         color: combo.enabled ? Theme.textPrimary : Theme.textSecondary
         font: combo.font
@@ -74,7 +74,7 @@ ComboBox {
         text: "▾"
         color: combo.enabled ? Theme.accent : Theme.textSecondary
         anchors.right: parent.right
-        anchors.rightMargin: 8
+        anchors.rightMargin: Theme.s2
         anchors.verticalCenter: parent.verticalCenter
         rotation: combo.popup.visible ? 180 : 0
         Behavior on rotation { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
@@ -83,7 +83,7 @@ ComboBox {
         id: optionItem
         required property int index
         width: combo.width
-        height: 32
+        height: Theme.px(32)
         highlighted: combo.highlightedIndex === index
         palette.window: Theme.popupBg
         palette.windowText: Theme.textPrimary
@@ -94,7 +94,7 @@ ComboBox {
             color: optionItem.highlighted ? Theme.accent : Theme.textPrimary
             font.pixelSize: Theme.fontBase
             verticalAlignment: Text.AlignVCenter
-            leftPadding: 10
+            leftPadding: Theme.px(10)
         }
         background: Rectangle { color: optionItem.highlighted ? Theme.fillChecked : Theme.popupBg }
     }
@@ -102,14 +102,14 @@ ComboBox {
         y: combo.height + 3
         width: combo.width
         padding: 1
-        height: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, 242)
+        height: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, Theme.px(242))
         palette.window: Theme.popupBg
         palette.windowText: Theme.textPrimary
         palette.base: Theme.popupBg
         palette.text: Theme.textPrimary
         background: HudFrame {
             implicitWidth: combo.width
-            implicitHeight: 32
+            implicitHeight: Theme.px(32)
             topLeft: 0
             topRight: 0
             bottomRight: Theme.notchSmall

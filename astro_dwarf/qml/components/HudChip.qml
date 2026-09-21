@@ -9,9 +9,9 @@ Rectangle {
     property color tone: Theme.accent
     property bool glow: false
     property bool dim: false
-    implicitHeight: 20
-    implicitWidth: chipRowLayout.implicitWidth + 14
-    radius: 3
+    implicitHeight: Theme.px(20)
+    implicitWidth: chipRowLayout.implicitWidth + Theme.px(14)
+    radius: Theme.radius
     color: Qt.rgba(tone.r, tone.g, tone.b, dim ? 0.05 : 0.14)
     border.color: Qt.rgba(tone.r, tone.g, tone.b, dim ? 0.25 : 0.55)
     opacity: dim ? 0.6 : 1
@@ -24,8 +24,8 @@ Rectangle {
     RowLayout {
         id: chipRowLayout
         anchors.centerIn: parent
-        spacing: 5
-        Text { visible: chip.label !== ""; text: chip.label; color: chip.tone; font.pixelSize: 8; font.bold: true; font.letterSpacing: 1 }
-        Text { visible: chip.value !== ""; text: chip.value; color: Theme.textPrimary; font.pixelSize: 10; font.family: Theme.fontMono }
+        spacing: Theme.px(5)
+        Text { visible: chip.label !== ""; text: chip.label; color: chip.tone; font.pixelSize: Theme.fontXs; font.bold: true; font.letterSpacing: 1 }
+        Text { visible: chip.value !== ""; text: chip.value; color: Theme.textPrimary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono }
     }
 }

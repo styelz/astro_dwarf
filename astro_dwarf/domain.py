@@ -1563,6 +1563,7 @@ class HistoryRecord:
     captured_frame_count: int | None = None
     exposure_seconds: float | None = None
     mosaic_panes: int = 1
+    mosaic_group_id: str = ""
     workflow: dict[str, Any] = field(default_factory=dict)
     hardware: dict[str, float] = field(default_factory=dict)
     step_seconds: dict[str, float] = field(default_factory=dict)
@@ -1790,6 +1791,7 @@ def history_from_dict(data: dict[str, Any]) -> HistoryRecord:
         data["mosaic_panes"] = max(1, int(data.get("mosaic_panes") or 1))
     except (TypeError, ValueError):
         data["mosaic_panes"] = 1
+    data["mosaic_group_id"] = str(data.get("mosaic_group_id") or "")
     allowed = set(HistoryRecord.__dataclass_fields__)
     return HistoryRecord(**{key: value for key, value in data.items() if key in allowed})
 
@@ -1820,6 +1822,7 @@ def history_record_for_run(
         notes=session.notes,
         exposure_seconds=float(session.camera.exposure_seconds),
         mosaic_panes=int(session.mosaic.panes),
+        mosaic_group_id=str(session.mosaic.group_id or ""),
         workflow=asdict(session.workflow),
         hardware={
             key: float(getattr(hardware, key))

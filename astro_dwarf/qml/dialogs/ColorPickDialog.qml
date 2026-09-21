@@ -149,7 +149,7 @@ Dialog {
                         anchors.verticalCenter: parent.verticalCenter
                         text: "\uEF3C"
                         font.family: Theme.fontIcon
-                        font.pixelSize: 14
+                        font.pixelSize: Theme.fontPx(14)
                         color: dropperBtn.enabled || dropperBtn.isBusy ? dropperBtn.foregroundColor : Theme.textSecondary
                     }
                     Text {

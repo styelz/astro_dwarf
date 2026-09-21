@@ -309,8 +309,6 @@ Item {
     function withSkySources(action) {
         if (backend.uiBusy !== "" || skyPage.harvestBusy)
             return
-        if ((action === "mosaic" || action === "import") && !skyPage.mapHasTarget)
-            return
         skyPage.pendingAction = String(action || "")
         skyPage.harvestBusy = true
         const map = mapLoader.item

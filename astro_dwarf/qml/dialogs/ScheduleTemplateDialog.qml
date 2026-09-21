@@ -81,11 +81,11 @@ Dialog {
     contentItem: ColumnLayout {
         id: scheduleColumn
         spacing: 12
-        Text { text: "SCHEDULE TEMPLATE"; color: Theme.accent; font.pixelSize: 16; font.letterSpacing: 1.4 }
+        Text { text: "SCHEDULE TEMPLATE"; color: Theme.accent; font.pixelSize: Theme.fontLg; font.letterSpacing: 1.4 }
         Text {
             text: scheduleDialog.templateName
             color: Theme.textPrimary
-            font.pixelSize: 15
+            font.pixelSize: Theme.fontPx(15)
             font.bold: true
             elide: Text.ElideRight
             Layout.fillWidth: true
@@ -110,7 +110,7 @@ Dialog {
             }
             color: Theme.textSecondary
             wrapMode: Text.Wrap
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontMd
             font.family: Theme.fontMono
             Layout.fillWidth: true
         }
@@ -183,7 +183,7 @@ Dialog {
                 return finish + length + tz
             }
             color: Theme.textSecondary
-            font.pixelSize: 11
+            font.pixelSize: Theme.fontPx(11)
             font.family: Theme.fontMono
             wrapMode: Text.Wrap
             Layout.fillWidth: true

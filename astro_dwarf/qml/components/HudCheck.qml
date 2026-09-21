@@ -16,7 +16,7 @@ CheckBox {
         visible: box.tooltip !== "" && box.hovered
         text: box.tooltip
     }
-    spacing: 10
+    spacing: Theme.px(10)
     padding: 0
     opacity: enabled ? 1 : 0.5
     Behavior on opacity { NumberAnimation { duration: Theme.quick } }
@@ -33,8 +33,8 @@ CheckBox {
     }
 
     indicator: Item {
-        implicitWidth: 20
-        implicitHeight: 20
+        implicitWidth: Theme.px(20)
+        implicitHeight: Theme.px(20)
         x: box.leftPadding
         y: box.height / 2 - height / 2
 

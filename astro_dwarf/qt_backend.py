@@ -110,6 +110,7 @@ from .services import (
     SKY_WEB_HARVEST_JS,
     StellariumClient,
     generate_mosaic_plan,
+    sessions_for_command_stack,
     templates_from_mosaic_panes,
     import_telescopius,
     MAX_MOSAIC_AXIS,
@@ -131,6 +132,9 @@ from .services import (
     next_free_start,
     observing_date,
     pane_sort_key,
+    planned_reorder_block,
+    insert_reorder_block,
+    reorder_anchor_id,
     format_coordinates,
     format_coordinate_fields,
     coordinate_format_info,
@@ -580,6 +584,10 @@ _STACK_RESULT_RETRY_MS = 2000
 # Dual Lenses 14009 is fire-and-forget. Keep the wide view locked only until
 # PictureMatching lands on the tap, or this short settle after the send.
 _CENTER_TAP_SETTLE_MS = 1500
+# Hold the last RTSP frame in a mosaic pane after stack is commanded. Tracking
+# needs a few seconds to settle, and the next HTTP stacked.jpg can take longer.
+_MOSAIC_TRACK_SETTLE_S = 3.0
+_MOSAIC_LAST_FRAME_WAIT_S = 5.0
 _STACK_RESULT_RETRY_S = 30.0
 _STACK_RESULT_LOADING = "Loading completed stack…"
 _STACK_RESULT_READY = (
@@ -976,14 +984,108 @@ def mosaic_overlay_live_pane(
     """Contact-sheet cell that paints live video.
 
     Stacking JPEG only after that pane's own frames are accepted. Camera
-    RTSP may fill the pane during GOTO/settle until stacking starts.
-    Leftover stacked.jpg must not paint the next cell.
+    RTSP may fill the pane during GOTO/settle and after stack is commanded
+    until HTTP stacking preview takes over. Leftover stacked.jpg must not
+    paint the next cell.
     """
     if may_copy:
         return mosaic_live_pane(current_index, phase, active)
     if stacking_preview or not preview_playing:
         return 0
-    return mosaic_slew_live_pane(current_index, phase, active)
+    slew = mosaic_slew_live_pane(current_index, phase, active)
+    if slew >= 1:
+        return slew
+    if str(phase or "").strip().lower() == "stacking":
+        try:
+            index = int(current_index or 0)
+        except (TypeError, ValueError):
+            return 0
+        return index if index >= 1 else 0
+    return 0
+
+
+def mosaic_hold_pane(current_index: int, phase: str, active: bool = True) -> int:
+    """Pane that may keep the last live camera frame until stacking JPEG starts."""
+    stacking = mosaic_live_pane(current_index, phase, active)
+    if stacking >= 1:
+        return stacking
+    slew = mosaic_slew_live_pane(current_index, phase, active)
+    if slew >= 1:
+        return slew
+    try:
+        index = int(current_index or 0)
+    except (TypeError, ValueError):
+        return 0
+    if not active or index < 1:
+        return 0
+    if str(phase or "").strip().lower() in {"goto", "stacking"}:
+        return index
+    return 0
+
+
+def mosaic_should_refresh_slew_placeholder(
+    *,
+    stacking_preview: bool,
+    frozen: bool,
+    may_copy: bool,
+    has_live_frame: bool,
+    tracking: bool = False,
+    track_elapsed_s: float = 0.0,
+    settle_s: float = 0.0,
+    stacking: bool = False,
+) -> bool:
+    """Incoming RTSP frames may update the last-frame placeholder.
+
+    Mid-slew frames stay off the contact sheet until tracking has settled
+    or stack has already been commanded.
+    """
+    if not has_live_frame or stacking_preview or frozen or may_copy:
+        return False
+    if stacking:
+        return True
+    try:
+        elapsed = float(track_elapsed_s or 0)
+        settle = max(0.0, float(settle_s or 0))
+    except (TypeError, ValueError):
+        return False
+    return bool(tracking and elapsed >= settle)
+
+
+def mosaic_slew_frame_ready(
+    *,
+    has_frame: bool,
+    timed_out: bool = False,
+    tracking: bool = False,
+    track_elapsed_s: float = 0.0,
+    settle_s: float = 0.0,
+    stacking: bool = False,
+) -> bool:
+    """True when the last live frame can be held and stacking preview may switch."""
+    if timed_out:
+        return True
+    if not has_frame:
+        return False
+    if stacking:
+        return True
+    try:
+        elapsed = float(track_elapsed_s or 0)
+        settle = max(0.0, float(settle_s or 0))
+    except (TypeError, ValueError):
+        return False
+    return bool(tracking and elapsed >= settle)
+
+
+def mosaic_should_hold_last_live_frame(pane: int) -> bool:
+    """Defer HTTP stacking preview only for a live mosaic cell.
+
+    A single STACK has no contact-sheet pane. Holding then waits the
+    timeout with no frame, and used to copy every RTSP frame on the GUI
+    thread until that timeout.
+    """
+    try:
+        return int(pane or 0) >= 1
+    except (TypeError, ValueError):
+        return False
 
 
 def mosaic_slew_preview_should_restore(
@@ -1587,6 +1689,7 @@ class AppBackend(QObject):
         self._manual_capture_started: dict[str, str] = {}
         self._manual_capture_peak: dict[str, int] = {}
         self._skip_manual_history: set[str] = set()
+        self._command_panel_sessions: set[str] = set()
         self._session_timing: dict[str, dict[str, Any]] = {}
         self._hold_session_capture: set[str] = set()
         self._pending_session_finish: dict[str, tuple[str, bool, Any]] = {}
@@ -1706,6 +1809,10 @@ class AppBackend(QObject):
         self._mosaic_firmware_stacked = 0
         self._mosaic_stream_pane = 0
         self._mosaic_seen_stack_reset = False
+        self._mosaic_track_since = 0.0
+        self._mosaic_holding_last = False
+        self._mosaic_hold_until = 0.0
+        self._mosaic_hold_urls: tuple[str, str] | None = None
         self._stack_result_mosaic_pane = 0
         self._mosaic_result_held = False
         self._mosaic_result_dismissed = False
@@ -2455,6 +2562,22 @@ class AppBackend(QObject):
             item["group_key"] = f"{group_id}|{device_id}" if grouped else f"session:{item.get('id', '')}"
         return items
 
+    def _decorate_history_groups(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        counts: dict[str, int] = {}
+        for item in items:
+            key = str(item.get("group_key") or "")
+            if not key.startswith("session:"):
+                counts[key] = counts.get(key, 0) + 1
+        for item in items:
+            key = str(item.get("group_key") or "")
+            pane_count = counts.get(key, 1)
+            grouped = pane_count > 1
+            item["pane_count"] = pane_count
+            item["is_grouped"] = grouped
+            if not grouped:
+                item["group_key"] = f"session:{item.get('id', '')}"
+        return items
+
     @Property("QVariantList", notify=sessionsChanged)
     def sessions(self) -> list[dict[str, Any]]:
         return self._ensure_sessions_view()
@@ -2615,8 +2738,41 @@ class AppBackend(QObject):
                     continue
                 steps.append(f"{name} {self._duration_text(seconds)}")
             data["step_text"] = " · ".join(steps)
+            group_id = str(getattr(record, "mosaic_group_id", "") or "").strip()
+            if not group_id and session is not None:
+                group_id = str(session.mosaic.group_id or "").strip()
+            title = mosaic_group_title(record.target_name, group_id)
+            pane_like = is_mosaic_pane_name(record.target_name) or int(record.mosaic_panes or 1) > 1
+            if not group_id and pane_like:
+                group_id = f"{title}|{record.device_id}|{data['date']}"
+            data["group_id"] = group_id
+            data["group_title"] = title
+            data["pane_name"] = record.target_name
+            data["pane_index"] = pane_sort_key(record.target_name)[0]
+            grid = ""
+            if session is not None:
+                mosaic = session.mosaic
+                grid = mosaic.grid_text
+                if not grid and mosaic.rows * mosaic.columns > 1:
+                    grid = f"{mosaic.rows}×{mosaic.columns}"
+            data["grid_text"] = grid
+            start_epoch = 0
+            try:
+                start_epoch = int(
+                    parse_in_zone(record.actual_started_at or record.scheduled_start, self._zone_for(device)).timestamp()
+                    * 1000
+                )
+            except (TypeError, ValueError, OSError):
+                start_epoch = 0
+            data["start_epoch_ms"] = start_epoch
+            if group_id and (pane_like or (session is not None and session.mosaic.group_id)):
+                data["group_key"] = f"{group_id}|{record.device_id}|{data['date']}"
+                data["is_grouped"] = True
+            else:
+                data["group_key"] = f"session:{record.id}"
+                data["is_grouped"] = False
             result.append(data)
-        return result
+        return self._decorate_history_groups(result)
 
     @Property("QVariantMap", notify=durationSuggestionChanged)
     def durationSuggestion(self) -> dict[str, Any]:
@@ -3146,6 +3302,7 @@ class AppBackend(QObject):
                 "name": member.name,
                 "row": int(member.mosaic.row or 0),
                 "column": int(member.mosaic.column or 0),
+                "session_id": member.id,
             })
         return payload
 
@@ -3160,6 +3317,16 @@ class AppBackend(QObject):
         except (TypeError, ValueError):
             return None
         group_id = str(payload.get("group") or f"live-mosaic-{device_id[:8]}")
+        stored_by_id = {
+            item.id: item
+            for item in self.store.sessions.all()
+            if item.device_id == device_id and item.mosaic.group_id == group_id
+        }
+        stored_by_index = {
+            mosaic_pane_index(item.name): item
+            for item in stored_by_id.values()
+            if mosaic_pane_index(item.name)
+        }
         members: list[Session] = []
         cleaned: list[dict[str, Any]] = []
         for pane in panes:
@@ -3179,28 +3346,33 @@ class AppBackend(QObject):
                 column = int(pane.get("column") or 0)
             except (TypeError, ValueError):
                 row = column = 0
-            members.append(
-                Session(
-                    name=name,
-                    target=Target(
-                        name=mosaic_group_title(name, group_id),
-                        kind=TargetKind.EQUATORIAL,
-                        ra_hours=ra,
-                        dec_degrees=dec,
-                    ),
-                    device_id=device_id,
-                    scheduled_start=datetime.now(timezone.utc).isoformat(),
-                    mosaic=Mosaic(
-                        group_id=group_id,
-                        grid_rows=rows,
-                        grid_columns=columns,
-                        row=row,
-                        column=column,
-                    ),
-                    status=SessionStatus.RUNNING if index == current_index else SessionStatus.PLANNED,
-                    current_step=str(payload.get("phase") or "Recovered after restart"),
+            session_id = str(pane.get("session_id") or "").strip()
+            stored = stored_by_id.get(session_id) or stored_by_index.get(index)
+            if stored is not None:
+                members.append(stored)
+            else:
+                members.append(
+                    Session(
+                        name=name,
+                        target=Target(
+                            name=mosaic_group_title(name, group_id),
+                            kind=TargetKind.EQUATORIAL,
+                            ra_hours=ra,
+                            dec_degrees=dec,
+                        ),
+                        device_id=device_id,
+                        scheduled_start=datetime.now(timezone.utc).isoformat(),
+                        mosaic=Mosaic(
+                            group_id=group_id,
+                            grid_rows=rows,
+                            grid_columns=columns,
+                            row=row,
+                            column=column,
+                        ),
+                        status=SessionStatus.RUNNING if index == current_index else SessionStatus.PLANNED,
+                        current_step=str(payload.get("phase") or "Recovered after restart"),
+                    )
                 )
-            )
             cleaned.append({
                 "index": index,
                 "ra_hours": ra,
@@ -3208,6 +3380,7 @@ class AppBackend(QObject):
                 "name": name,
                 "row": row,
                 "column": column,
+                "session_id": stored.id if stored is not None else members[-1].id,
             })
             self._remember_named_sky_coords(name, ra, dec)
         if len(members) < 2:
@@ -3287,7 +3460,10 @@ class AppBackend(QObject):
             self.add_log("warning", f"Recovered {recovered} interrupted mosaic(s)")
 
     def _maybe_resume_interrupted_mosaic(self, device_id: str, *, allow_idle: bool = False) -> None:
-        if device_id in self._resume_mosaic_attempted or self._active_sessions.get(device_id):
+        if device_id in self._resume_mosaic_attempted:
+            return
+        session_id = self._active_sessions.get(device_id)
+        if session_id and session_id not in self._command_panel_sessions:
             return
         live = self._live_mosaic.get(device_id)
         if not live or not live.get("phase") or live.get("worker_running") or live.get("stopping"):
@@ -3347,6 +3523,8 @@ class AppBackend(QObject):
             live["members"] = members
             live["current"] = current
             live["label"] = current.name
+            if self.store.sessions.get(current.id):
+                self._adopt_command_session(device_id, current, step="Joining mosaic")
         worker.busy = True
         worker.availabilityChanged.emit()
         self.mosaic_frames.set_layout(
@@ -4134,6 +4312,139 @@ class AppBackend(QObject):
             preview_playing=bool(self._preview_playing or self._preview_tele_playing),
         )
 
+    def _mosaic_hold_pane(self, device_id: str = "") -> int:
+        owner = str(device_id or self._selected_device_id or "")
+        live = self._live_mosaic.get(owner) or {}
+        try:
+            index = int(live.get("current_index") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        pane = mosaic_hold_pane(index, str(live.get("phase") or ""), bool(live.get("phase")))
+        if pane >= 1:
+            return pane
+        return self._current_mosaic_live_pane(owner)
+
+    def _mosaic_track_elapsed_s(self, device_id: str = "") -> tuple[bool, float]:
+        owner = str(device_id or self._selected_device_id or "")
+        telemetry = self._device_telemetry.get(owner) or {}
+        tracking = telemetry.get("tracking_state") == "running"
+        if not tracking:
+            return False, 0.0
+        if not self._mosaic_track_since:
+            self._mosaic_track_since = time.monotonic()
+            return True, 0.0
+        return True, max(0.0, time.monotonic() - self._mosaic_track_since)
+
+    def _reset_mosaic_last_frame_hold(self) -> None:
+        self._mosaic_track_since = 0.0
+        self._mosaic_holding_last = False
+        self._mosaic_hold_until = 0.0
+        self._mosaic_hold_urls = None
+
+    def _hold_mosaic_slew_frame(self, pane: int, image: QImage | None = None) -> bool:
+        """Keep the last RTSP frame in the cell until stacking JPEG arrives.
+
+        Unfrozen so the pane's own stack can replace it. Not published as a
+        completed still.
+        """
+        try:
+            index = int(pane or 0)
+        except (TypeError, ValueError):
+            return False
+        if index < 1 or self.mosaic_frames.frozen(index) or self._mosaic_may_copy_live(index):
+            return False
+        frame = image
+        if frame is None or frame.isNull():
+            frame = self.live_images.peek(mosaic_live_still_camera())
+        if frame is None or frame.isNull():
+            frame = self._raw_preview_images.get(mosaic_live_still_camera()) or QImage()
+        if frame is None or frame.isNull():
+            return False
+        existed = index in self.mosaic_frames.indexes()
+        self.mosaic_frames.put(index, frame)
+        if not existed:
+            self.mosaicPreviewChanged.emit()
+        return True
+
+    def _mosaic_has_hold_frame(self, pane: int) -> bool:
+        try:
+            index = int(pane or 0)
+        except (TypeError, ValueError):
+            return False
+        if index < 1:
+            return False
+        stored = self.mosaic_frames.peek(index)
+        if stored is not None and not stored.isNull():
+            return True
+        live = self.live_images.peek(mosaic_live_still_camera())
+        return live is not None and not live.isNull()
+
+    def _mosaic_last_frame_ready(self, device_id: str = "", *, stacking: bool = False) -> bool:
+        pane = self._mosaic_hold_pane(device_id)
+        tracking, elapsed = self._mosaic_track_elapsed_s(device_id)
+        timed_out = bool(self._mosaic_hold_until and time.monotonic() >= self._mosaic_hold_until)
+        return mosaic_slew_frame_ready(
+            has_frame=self._mosaic_has_hold_frame(pane),
+            timed_out=timed_out,
+            tracking=tracking,
+            track_elapsed_s=elapsed,
+            settle_s=_MOSAIC_TRACK_SETTLE_S,
+            stacking=stacking,
+        )
+
+    def _finish_mosaic_last_frame_hold(self, device_id: str, tele_url: str, wide_url: str) -> None:
+        pane = self._mosaic_hold_pane(device_id)
+        self._hold_mosaic_slew_frame(pane)
+        self._mosaic_holding_last = False
+        self._mosaic_hold_until = 0.0
+        self._mosaic_hold_urls = None
+        self._set_preview_stack_mode(True)
+        self._retarget_preview_streams(tele_url, wide_url)
+        next_stream = self._current_mosaic_live_pane(device_id) or pane
+        if next_stream != self._mosaic_stream_pane:
+            self._mosaic_seen_stack_reset = False
+            self._note_mosaic_stack_reset(device_id)
+        self._mosaic_stream_pane = next_stream
+        if self._mosaic_keep_live_sheet(device_id):
+            self.mosaicPreviewChanged.emit()
+
+    def _refresh_mosaic_slew_placeholder(self, image: QImage) -> None:
+        if self._preview_stack_mode or image is None or image.isNull():
+            return
+        pane = self._mosaic_hold_pane()
+        if pane < 1:
+            return
+        live = self._live_mosaic.get(self._selected_device_id) or {}
+        tracking, elapsed = self._mosaic_track_elapsed_s()
+        stacking = str(live.get("phase") or "").strip().lower() == "stacking" or self._mosaic_holding_last
+        if mosaic_should_refresh_slew_placeholder(
+            stacking_preview=False,
+            frozen=self.mosaic_frames.frozen(pane),
+            may_copy=self._mosaic_may_copy_live(pane),
+            has_live_frame=True,
+            tracking=tracking,
+            track_elapsed_s=elapsed,
+            settle_s=_MOSAIC_TRACK_SETTLE_S,
+            stacking=stacking,
+        ):
+            self._hold_mosaic_slew_frame(pane, image)
+
+    def _maybe_finish_mosaic_last_frame_hold(self, device_id: str = "") -> None:
+        if not self._mosaic_holding_last:
+            return
+        owner = str(device_id or self._selected_device_id or "")
+        pending = self._mosaic_hold_urls
+        if not pending:
+            self._reset_mosaic_last_frame_hold()
+            return
+        pane = self._mosaic_hold_pane(owner)
+        if mosaic_should_hold_last_live_frame(pane):
+            self._hold_mosaic_slew_frame(pane)
+            if not self._mosaic_last_frame_ready(owner, stacking=True):
+                return
+        tele_url, wide_url = pending
+        self._finish_mosaic_last_frame_hold(owner, tele_url, wide_url)
+
     def _mosaic_capture_continues(self, device_id: str = "") -> bool:
         owner = str(device_id or self._selected_device_id or "")
         live = self._live_mosaic.get(owner) or {}
@@ -4295,6 +4606,7 @@ class AppBackend(QObject):
         self._mosaic_firmware_stacked = 0
         self._mosaic_stream_pane = 0
         self._mosaic_seen_stack_reset = False
+        self._reset_mosaic_last_frame_hold()
         self._stack_result_mosaic_pane = 0
         self._mosaic_result_held = False
         if had:
@@ -5920,6 +6232,11 @@ class AppBackend(QObject):
         if self._device_is_stopping(device_id):
             return
         stacking = self._preview_stacking(device_id)
+        if self._mosaic_holding_last:
+            if stacking:
+                self._maybe_finish_mosaic_last_frame_hold(device_id)
+                return
+            self._reset_mosaic_last_frame_hold()
         if stacking and not self._preview_active:
             if self._preview_result:
                 self._clear_preview_result()
@@ -5998,14 +6315,26 @@ class AppBackend(QObject):
                 self.live_images.update("tele", QImage())
                 self._raw_preview_images["tele"] = QImage()
                 self.live_images.notify("tele")
-            self._set_preview_stack_mode(stacking)
             if stacking and not was_stacking:
-                self.add_log(
-                    "info",
-                    "Capture started — switching live view to the stacking preview",
-                    device_id,
-                )
-            elif stacking and force_mosaic and live_pane >= 1 and live_pane != self._mosaic_stream_pane:
+                pane = self._mosaic_hold_pane(device_id)
+                if mosaic_should_hold_last_live_frame(pane):
+                    self._hold_mosaic_slew_frame(pane)
+                    if not self._mosaic_last_frame_ready(device_id, stacking=True):
+                        self._mosaic_holding_last = True
+                        self._mosaic_hold_until = time.monotonic() + _MOSAIC_LAST_FRAME_WAIT_S
+                        self._mosaic_hold_urls = (tele_url, wide_url)
+                        if self._mosaic_keep_live_sheet(device_id):
+                            self.mosaicPreviewChanged.emit()
+                        return
+                    self.add_log(
+                        "info",
+                        "Capture started — switching live view to the stacking preview",
+                        device_id,
+                    )
+                    self._finish_mosaic_last_frame_hold(device_id, tele_url, wide_url)
+                    return
+            self._set_preview_stack_mode(stacking)
+            if stacking and force_mosaic and live_pane >= 1 and live_pane != self._mosaic_stream_pane:
                 self.add_log(
                     "info",
                     f"Mosaic pane {live_pane} — reconnecting stacking preview",
@@ -6025,6 +6354,7 @@ class AppBackend(QObject):
         GoLive after a pane closes tele and puts live JPEG on the same HTTP
         URL. The tele player then ingested the wide landscape into pane 3.
         """
+        self._reset_mosaic_last_frame_hold()
         self._set_preview_stack_mode(False)
         self._pending_retarget = None
         self._preview_token += 1
@@ -6392,6 +6722,10 @@ class AppBackend(QObject):
         else:
             self.live_images.update(camera, raw)
             self._remember_mosaic_live_frame(camera, raw)
+        if camera == mosaic_live_still_camera() and not raw.isNull():
+            self._refresh_mosaic_slew_placeholder(raw)
+            if self._mosaic_holding_last:
+                self._maybe_finish_mosaic_last_frame_hold()
         if first_frame:
             if camera == "wide":
                 self._preview_wide_playing = True
@@ -6824,6 +7158,220 @@ class AppBackend(QObject):
 
         worker.disconnect_device(done)
 
+    def _command_stack_target(self, device_id: str) -> Target:
+        center = self._live_mosaic_center()
+        if center is not None and str(center.name or "").strip():
+            return center
+        telemetry = self._device_telemetry.get(device_id) or {}
+        name = str(
+            telemetry.get("capture_target")
+            or telemetry.get("tracking_target")
+            or getattr(self._sky_target, "name", None)
+            or "Manual stack"
+        ).strip() or "Manual stack"
+        if is_mosaic_pane_name(name):
+            parent = mosaic_group_title(name)
+            if parent:
+                name = parent
+        coords = self._target_coords(self._sky_target)
+        if coords is None:
+            coords = self._target_coords(self.trackedSkyTarget)
+        if coords is not None:
+            return Target(
+                name=name,
+                kind=TargetKind.EQUATORIAL,
+                ra_hours=coords[0],
+                dec_degrees=coords[1],
+            )
+        return Target(name=name)
+
+    def _persist_command_sessions(self, sessions: list[Session]) -> list[Session]:
+        saved = [self._save_session(item, notify=False) for item in sessions]
+        if saved:
+            self._emit_sessions_changed()
+        return saved
+
+    def _adopt_command_session(self, device_id: str, session: Session, *, step: str = "Starting") -> Session:
+        started = session.actual_started_at or datetime.now(timezone.utc).isoformat()
+        session = self._save_session(
+            replace(
+                session,
+                status=SessionStatus.RUNNING,
+                current_step=step,
+                actual_started_at=started,
+            ),
+            notify=False,
+        )
+        previous = self._active_sessions.get(device_id)
+        if previous and previous != session.id:
+            self._command_panel_sessions.discard(previous)
+        self._active_sessions[device_id] = session.id
+        self._command_panel_sessions.add(session.id)
+        self._session_timing.setdefault(
+            session.id,
+            {
+                "started": time.monotonic(),
+                "steps": [],
+                "step_started_at": time.time(),
+                "step_wait_seconds": 0.0,
+            },
+        )
+        self._session_capture_base.setdefault(session.id, self._telemetry_frame_count(device_id))
+        self._session_capture_peak.setdefault(session.id, 0)
+        self._emit_sessions_changed()
+        return session
+
+    def _start_command_stack_session(self, device_id: str, camera: str) -> Session | None:
+        if self._active_sessions.get(device_id):
+            return None
+        device = self._device_by_id(device_id)
+        try:
+            choice = Camera(str(camera or "").strip().lower())
+        except ValueError:
+            choice = device.camera if device is not None else Camera.TELE
+        settings = replace(self._device_stack_camera_settings(device_id), camera=choice)
+        start = self._store_session_time(self._now_local(device), device)
+        saved = self._persist_command_sessions(
+            sessions_for_command_stack(
+                target=self._command_stack_target(device_id),
+                device_id=device_id,
+                scheduled_start=start,
+                camera=settings,
+            )
+        )
+        if not saved:
+            return None
+        return self._adopt_command_session(device_id, saved[0], step="Starting stack")
+
+    def _sync_command_mosaic_members(self, device_id: str, live: dict[str, Any]) -> None:
+        members = [item for item in (live.get("members") or []) if isinstance(item, Session)]
+        if not members or not any(self.store.sessions.get(item.id) for item in members):
+            return
+        current = live.get("current")
+        for member in members:
+            stored = self.store.sessions.get(member.id)
+            if stored is None:
+                continue
+            self.store.sessions.save(
+                replace(
+                    stored,
+                    status=member.status,
+                    current_step=member.current_step,
+                    outcome=member.outcome,
+                    actual_started_at=member.actual_started_at or stored.actual_started_at,
+                    actual_ended_at=member.actual_ended_at,
+                )
+            )
+            if member.status == SessionStatus.RUNNING or stored.status == SessionStatus.RUNNING:
+                self._command_panel_sessions.add(member.id)
+        if isinstance(current, Session) and self.store.sessions.get(current.id):
+            if self._active_sessions.get(device_id) != current.id:
+                self._adopt_command_session(
+                    device_id, current, step=str(current.current_step or "Stacking")
+                )
+                return
+            self._apply_session_step(current, str(current.current_step or "Stacking"))
+            return
+        self._emit_sessions_changed()
+
+    def _cancel_command_mosaic_sessions(
+        self, live: dict[str, Any] | None, *, outcome: str = "Cancelled"
+    ) -> None:
+        if not live:
+            return
+        members = [item for item in (live.get("members") or []) if isinstance(item, Session)]
+        changed = False
+        ended = datetime.now(timezone.utc).isoformat()
+        for member in members:
+            stored = self.store.sessions.get(member.id)
+            self._command_panel_sessions.discard(member.id)
+            self._session_timing.pop(member.id, None)
+            self._session_capture_base.pop(member.id, None)
+            self._session_capture_peak.pop(member.id, None)
+            self._stop_requested.discard(member.id)
+            if stored is None or stored.status in {SessionStatus.DONE, SessionStatus.ERROR}:
+                continue
+            self.store.sessions.save(
+                replace(
+                    stored,
+                    status=SessionStatus.ERROR,
+                    current_step=outcome,
+                    outcome=outcome,
+                    actual_ended_at=stored.actual_ended_at or ended,
+                )
+            )
+            changed = True
+        if members:
+            device_id = members[0].device_id
+            if self._active_sessions.get(device_id) in {item.id for item in members}:
+                self._active_sessions.pop(device_id, None)
+        if changed:
+            self._emit_sessions_changed()
+
+    def _finish_command_mosaic_sessions(
+        self,
+        device_id: str,
+        live: dict[str, Any],
+        ok: bool,
+        stopped: bool,
+        result: Any,
+    ) -> bool:
+        members = [item for item in (live.get("members") or []) if isinstance(item, Session)]
+        if not members or not any(self.store.sessions.get(item.id) for item in members):
+            return False
+        ended = datetime.now(timezone.utc).isoformat()
+        try:
+            last = max(0, int(live.get("current_index") or 0))
+        except (TypeError, ValueError):
+            last = 0
+        device = next((item for item in self._devices if item.id == device_id), None)
+        records = history_records_for_live_mosaic(
+            members,
+            dict(live.get("captured") or {}),
+            ok=ok,
+            stopped=stopped,
+            current_index=last,
+            ended_at=ended,
+            result=result,
+            hardware=device.hardware if device else None,
+        )
+        for index, member in enumerate(members, start=1):
+            stored = self.store.sessions.get(member.id)
+            self._command_panel_sessions.discard(member.id)
+            self._session_timing.pop(member.id, None)
+            self._session_capture_base.pop(member.id, None)
+            self._session_capture_peak.pop(member.id, None)
+            self._stop_requested.discard(member.id)
+            if stored is None:
+                continue
+            if index < last or (index == last and ok):
+                outcome = "Completed"
+                status = SessionStatus.DONE
+            elif index == last:
+                outcome = "Stopped by user" if stopped else str(result or "Failed")
+                status = SessionStatus.ERROR
+            else:
+                outcome = "Cancelled"
+                status = SessionStatus.ERROR
+            self.store.sessions.save(
+                replace(
+                    stored,
+                    status=status,
+                    current_step=outcome,
+                    outcome=outcome,
+                    actual_started_at=member.actual_started_at or stored.actual_started_at,
+                    actual_ended_at=member.actual_ended_at or (ended if index <= last else stored.actual_ended_at),
+                )
+            )
+        self._active_sessions.pop(device_id, None)
+        if records:
+            self._skip_manual_history.add(device_id)
+            for record in records:
+                self.store.history.save(record)
+            self.historyChanged.emit()
+        self._emit_sessions_changed()
+        return True
+
     def _start_live_mosaic_stack(self, device_id: str, camera: str) -> bool:
         worker = self._workers.get(device_id)
         device = self._device_by_id(device_id)
@@ -6838,6 +7386,7 @@ class AppBackend(QObject):
             self._toast("A mosaic stack is already running", "warning")
             return False
         if existing and existing.get("phase"):
+            self._cancel_command_mosaic_sessions(existing)
             self._discard_live_mosaic(device_id, notify=False)
         if self._telemetry_capturing(device_id):
             self._toast("Telescope is already stacking", "warning")
@@ -6903,50 +7452,42 @@ class AppBackend(QObject):
             return False
         center_ra = float(target.ra_hours)
         center_dec = float(target.dec_degrees)
-        group_id = f"live-mosaic-{device_id[:8]}-{uuid4().hex[:8]}"
-        members: list[Session] = []
-        payload: list[dict[str, Any]] = []
-        base_name = mosaic_group_title(str(target.name or "")) or str(target.name or "Sky mosaic")
         started_at = datetime.now(timezone.utc).isoformat()
+        scheduled_start = self._store_session_time(self._now_local(device), device)
         camera_settings = replace(
             self._device_stack_camera_settings(device_id),
             camera=mosaic_stack_camera(camera),
         )
-        for pane in panes:
-            index = int(pane["index"])
-            name = f"{base_name} pane {index}"
-            session = Session(
-                name=name,
-                target=Target(
-                    name=base_name,
-                    kind=TargetKind.EQUATORIAL,
-                    ra_hours=float(pane["ra_hours"]),
-                    dec_degrees=float(pane["dec_degrees"]),
-                ),
+        members = self._persist_command_sessions(
+            sessions_for_command_stack(
+                target=target,
                 device_id=device_id,
-                scheduled_start=started_at,
+                scheduled_start=scheduled_start,
                 camera=camera_settings,
-                mosaic=Mosaic(
-                    group_id=group_id,
-                    grid_rows=rows,
-                    grid_columns=columns,
-                    row=int(pane["row"]),
-                    column=int(pane["column"]),
-                ),
-                status=SessionStatus.RUNNING if index == 1 else SessionStatus.PLANNED,
-                current_step="Starting mosaic",
-                actual_started_at=started_at if index == 1 else None,
+                panes=panes,
+                columns=columns,
+                rows=rows,
+                started_at=started_at,
             )
-            members.append(session)
+        )
+        if len(members) < 2:
+            self._cancel_command_mosaic_sessions({"members": members})
+            return False
+        payload: list[dict[str, Any]] = []
+        for session in members:
+            index = mosaic_pane_index(session.name) or (len(payload) + 1)
             payload.append({
                 "index": index,
-                "ra_hours": float(pane["ra_hours"]),
-                "dec_degrees": float(pane["dec_degrees"]),
-                "name": name,
-                "row": int(pane["row"]),
-                "column": int(pane["column"]),
+                "ra_hours": float(session.target.ra_hours or 0),
+                "dec_degrees": float(session.target.dec_degrees or 0),
+                "name": session.name,
+                "row": int(session.mosaic.row or 0),
+                "column": int(session.mosaic.column or 0),
+                "session_id": session.id,
             })
-            self._remember_named_sky_coords(name, pane["ra_hours"], pane["dec_degrees"])
+            self._remember_named_sky_coords(session.name, session.target.ra_hours, session.target.dec_degrees)
+        group_id = str(members[0].mosaic.group_id or f"live-mosaic-{device_id[:8]}-{uuid4().hex[:8]}")
+        self._adopt_command_session(device_id, members[0], step="Starting mosaic")
         self._live_mosaic[device_id] = {
             "group": group_id,
             "columns": columns,
@@ -7011,6 +7552,7 @@ class AppBackend(QObject):
         previous = int(live.get("current_index") or 0)
         text = str(step or "")
         if previous and index != previous:
+            self._reset_mosaic_last_frame_hold()
             self._snapshot_mosaic_pane(
                 mosaic_finished_pane(self._mosaic_stream_pane, previous)
             )
@@ -7035,7 +7577,9 @@ class AppBackend(QObject):
                 self._snapshot_mosaic_pane(index)
             elif phase == "failed":
                 # Do not freeze leftover live video into a pane that never stacked.
-                pass
+                self._reset_mosaic_last_frame_hold()
+            elif phase == "stacking":
+                self._hold_mosaic_slew_frame(index)
         if 1 <= index <= len(members):
             current = replace(
                 members[index - 1],
@@ -7054,6 +7598,7 @@ class AppBackend(QObject):
                 self._set_preview_coords(current.name, self._target_coords(current.target))
         live["current_index"] = index
         live["members"] = members
+        self._sync_command_mosaic_members(device_id, live)
         self._persist_live_mosaic(device_id)
         self.mosaic_frames.set_layout(
             int(live.get("columns") or 1),
@@ -7090,7 +7635,11 @@ class AppBackend(QObject):
         if mosaic_goto_failed_result(result) and live is not None:
             live["phase"] = "failed"
         if live is not None:
-            self._write_live_mosaic_history(device_id, live, ok, stopped, result)
+            if ok or stopped:
+                if not self._finish_command_mosaic_sessions(device_id, live, ok, stopped, result):
+                    self._write_live_mosaic_history(device_id, live, ok, stopped, result)
+            else:
+                self._sync_command_mosaic_members(device_id, live)
         if (ok or stopped) and device_id == self._selected_device_id:
             if self._mosaic_result_dismissed:
                 keep_sheet = False
@@ -7311,6 +7860,15 @@ class AppBackend(QObject):
                     )
                 else:
                     self._toast(f"{label} failed", "error", str(result))
+                if operation == "stack":
+                    session_id = self._active_sessions.get(device_id)
+                    if (
+                        session_id
+                        and session_id in self._command_panel_sessions
+                        and not self._live_mosaic_running(device_id)
+                    ):
+                        self._finalize_session(session_id, False, result)
+                        self._command_panel_sessions.discard(session_id)
 
         payload: dict[str, Any] = {}
         if operation == "track":
@@ -7337,9 +7895,11 @@ class AppBackend(QObject):
                 return
             leftover = self._live_mosaic.pop(device_id, None)
             if leftover:
+                self._cancel_command_mosaic_sessions(leftover)
                 self.store.clear_live_mosaic(device_id)
                 self._clear_mosaic_preview()
             self._skip_manual_history.discard(device_id)
+            self._start_command_stack_session(device_id, camera)
             payload = {"args": [camera]}
         elif operation == "burst_start":
             telemetry = self._device_telemetry.get(device_id) or {}
@@ -7360,6 +7920,12 @@ class AppBackend(QObject):
                 self.mosaicPreviewChanged.emit()
             elif live and live.get("phase"):
                 self._discard_live_mosaic(device_id)
+            session_id = self._active_sessions.get(device_id)
+            if session_id and session_id in self._command_panel_sessions:
+                self._stop_requested.add(session_id)
+                session = self.store.sessions.get(session_id)
+                if session:
+                    self._apply_session_step(session, "Stopping")
         worker_operation = operation
         if photo_focus:
             worker_operation = "normal_autofocus"
@@ -10417,15 +10983,24 @@ class AppBackend(QObject):
         session = self.store.sessions.get(session_id)
         if not session:
             return
-        if session.status != SessionStatus.PLANNED:
+        sessions = self.store.sessions.all()
+        moving = planned_reorder_block(sessions, session)
+        if moving is None:
+            self._toast("Stop the running session before moving it", "warning")
+            return
+        if not moving:
             self._toast("Only planned sessions can be reordered", "warning")
             return
-        moving = [session]
-        moving_ids = {session.id}
+        moving_ids = {item.id for item in moving}
         before = self.store.sessions.get(before_session_id) if before_session_id else None
-        if before and (before.device_id != session.device_id or before.status != SessionStatus.PLANNED):
+        if before and before.device_id != session.device_id:
             before = None
             before_session_id = ""
+        before_session_id = reorder_anchor_id(sessions, before, moving_ids)
+        if before_session_id:
+            before = self.store.sessions.get(before_session_id)
+        else:
+            before = None
         device = self._device_by_id(session.device_id)
         tz = self._zone_for(device)
         cutoff = self._cutoff_hour()
@@ -10444,29 +11019,34 @@ class AppBackend(QObject):
         except ValueError:
             target_day = old_night
         if target_day != old_night:
-            start = parse_in_zone(session.scheduled_start, tz) + timedelta(days=(target_day - old_night).days)
-            session = replace(session, scheduled_start=store_local_iso(start, tz))
-            moving = [session]
+            delta = timedelta(days=(target_day - old_night).days)
+            moving = [
+                replace(
+                    item,
+                    scheduled_start=store_local_iso(
+                        parse_in_zone(item.scheduled_start, tz) + delta,
+                        tz,
+                    ),
+                )
+                for item in moving
+            ]
         queue = sorted(
             (
                 item for item in self.store.sessions.all()
                 if item.device_id == session.device_id
                 and item.status == SessionStatus.PLANNED
-                and item.id not in moving_ids
                 and observing_date(item.scheduled_start, cutoff, tz) == target_night
             ),
             key=lambda item: (item.scheduled_start, pane_sort_key(item.name), item.name),
         )
-        insert_at = len(queue)
-        if before_session_id:
-            insert_at = next(
-                (index for index, item in enumerate(queue) if item.id == before_session_id),
-                len(queue),
-            )
-        ordered = queue[:insert_at] + moving + queue[insert_at:]
+        ordered = insert_reorder_block(queue, moving, before_session_id)
         if not ordered:
             return
-        starts = [parse_in_zone(item.scheduled_start, tz) for item in queue]
+        starts = [
+            parse_in_zone(item.scheduled_start, tz)
+            for item in queue
+            if item.id not in moving_ids
+        ]
         if not starts:
             starts = [parse_in_zone(item.scheduled_start, tz) for item in moving]
         cursor = min(starts)
@@ -11410,6 +11990,26 @@ class AppBackend(QObject):
         was = bool(previous.get("capture_active") or previous.get("capture_state") == "running")
         now = bool(current.get("capture_active") or current.get("capture_state") == "running")
         stacked = stacked_capture_count(current)
+        session_id = self._active_sessions.get(device_id)
+        if session_id and session_id in self._command_panel_sessions:
+            if self._live_mosaic_running(device_id, live) or bool(live and live.get("phase")):
+                if now:
+                    self._manual_capture_started.pop(device_id, None)
+                    self._manual_capture_peak.pop(device_id, None)
+                return
+            if now:
+                if not was:
+                    self._session_capture_base.setdefault(session_id, stacked)
+                self._session_capture_peak[session_id] = max(
+                    self._session_capture_peak.get(session_id, 0), stacked
+                )
+                return
+            if not was:
+                return
+            stopped = session_id in self._stop_requested
+            self._finalize_session(session_id, not stopped, "Stopped by user" if stopped else "")
+            self._command_panel_sessions.discard(session_id)
+            return
         if owner != "manual":
             if now:
                 self._manual_capture_started.pop(device_id, None)
@@ -11631,7 +12231,7 @@ class AppBackend(QObject):
             start = self._night_start(day, device)
         except (ValueError, StopIteration):
             return ""
-        value = start + timedelta(minutes=max(0, min(1435, int(minutes))))
+        value = start + timedelta(minutes=max(0, min(1439, int(minutes))))
         return store_local_iso(value, self._zone_for(device))
 
     def _zone_for(self, device: Device | None = None):

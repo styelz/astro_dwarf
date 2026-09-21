@@ -56,21 +56,80 @@ Item {
             HudButton { text: "IMPORT TELESCOPIUS"; busy: backend.uiBusy === "telescopius"; busyText: backend.uiBusy === "telescopius" ? "IMPORTING…" : "OPENING…"; enabled: backend.uiBusy === ""; onClicked: telescopiusDialog.open() }
             HudButton { text: "+ MANUAL SESSION"; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: sessionDialog.openForDate(Qt.formatDate(new Date(), "yyyy-MM-dd")) }
         }
-        TabBar {
+        RowLayout {
             id: sessionsTabs
+            objectName: "sessionsTabs"
+            property int currentIndex: 0
             Layout.fillWidth: true
-            background: Rectangle { color: "transparent" }
-            TabButton {
-                text: "SCHEDULED"
-                font.letterSpacing: 1.2
-                contentItem: Text { text: parent.text; color: parent.checked ? Theme.accent : Theme.textSecondary; font: parent.font; horizontalAlignment: Text.AlignHCenter }
-                background: Rectangle { color: parent.checked ? Theme.fillChecked : Theme.inputBg; border.color: parent.checked ? Theme.accent : Theme.outline }
+            Layout.preferredHeight: Theme.controlHeight
+            Layout.maximumHeight: Theme.controlHeight
+            spacing: Theme.s2
+
+            function selectTab(index) {
+                sessionsTabs.currentIndex = index
             }
-            TabButton {
-                text: "TEMPLATES"
-                font.letterSpacing: 1.2
-                contentItem: Text { text: parent.text; color: parent.checked ? Theme.accent : Theme.textSecondary; font: parent.font; horizontalAlignment: Text.AlignHCenter }
-                background: Rectangle { color: parent.checked ? Theme.fillChecked : Theme.inputBg; border.color: parent.checked ? Theme.accent : Theme.outline }
+
+            HudButton {
+                id: scheduledTab
+                objectName: "sessions-tab-scheduled"
+                Layout.fillWidth: true
+                Layout.preferredHeight: Theme.controlHeight
+                text: "SCHEDULED  ·  " + backend.sessions.length
+                font.pixelSize: Theme.fontMd
+                font.letterSpacing: Theme.tracking2
+                buttonColor: sessionsTabs.currentIndex === 0 ? Theme.fillActive : Theme.inputBg
+                foregroundColor: sessionsTabs.currentIndex === 0 ? Theme.accent : Theme.textSecondary
+                Accessible.name: "Scheduled"
+                accessibleDescription: (sessionsTabs.currentIndex === 0 ? "Current list. " : "") + "Show scheduled sessions"
+                onClicked: sessionsTabs.selectTab(0)
+                Keys.onLeftPressed: {
+                    templatesTab.forceActiveFocus()
+                    sessionsTabs.selectTab(1)
+                }
+                Keys.onRightPressed: {
+                    templatesTab.forceActiveFocus()
+                    sessionsTabs.selectTab(1)
+                }
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 1
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    height: 2
+                    width: sessionsTabs.currentIndex === 0 ? parent.width - Theme.px(24) : 0
+                    color: Theme.accent
+                    Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                }
+            }
+            HudButton {
+                id: templatesTab
+                objectName: "sessions-tab-templates"
+                Layout.fillWidth: true
+                Layout.preferredHeight: Theme.controlHeight
+                text: "TEMPLATES  ·  " + backend.templates.length
+                font.pixelSize: Theme.fontMd
+                font.letterSpacing: Theme.tracking2
+                buttonColor: sessionsTabs.currentIndex === 1 ? Theme.fillActive : Theme.inputBg
+                foregroundColor: sessionsTabs.currentIndex === 1 ? Theme.accent : Theme.textSecondary
+                Accessible.name: "Templates"
+                accessibleDescription: (sessionsTabs.currentIndex === 1 ? "Current list. " : "") + "Show session templates"
+                onClicked: sessionsTabs.selectTab(1)
+                Keys.onLeftPressed: {
+                    scheduledTab.forceActiveFocus()
+                    sessionsTabs.selectTab(0)
+                }
+                Keys.onRightPressed: {
+                    scheduledTab.forceActiveFocus()
+                    sessionsTabs.selectTab(0)
+                }
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 1
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    height: 2
+                    width: sessionsTabs.currentIndex === 1 ? parent.width - Theme.px(24) : 0
+                    color: Theme.accent
+                    Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                }
             }
         }
         StackLayout {
@@ -83,26 +142,134 @@ Item {
                 id: scheduledPage
                 property var selectedIds: ({})
                 property string selectionAnchorId: ""
+                property var expandedGroups: ({})
                 readonly property int selectedCount: Util.idSetCount(selectedIds)
                 readonly property var clusteredSessions: Util.clusterSessions(backend.sessions)
+                readonly property var visibleSessions: Util.visibleClusteredSessions(clusteredSessions, expandedGroups)
+                readonly property var mosaicGroupKeys: Util.mosaicGroupKeys(clusteredSessions)
+                readonly property int groupedCount: mosaicGroupKeys.length
+                readonly property int expandedGroupCount: Util.expandedKeyCount(expandedGroups, mosaicGroupKeys)
+                readonly property bool canExpandAll: groupedCount > 0 && expandedGroupCount < groupedCount
+                readonly property bool canCollapseAll: expandedGroupCount > 0
+                function groupKey(item) {
+                    return String((item && item.group_key) || "")
+                }
+                function toggleGroup(item) {
+                    const key = scheduledPage.groupKey(item)
+                    if (!key || !(item && item.is_grouped))
+                        return
+                    const next = Object.assign({}, expandedGroups)
+                    if (next[key])
+                        delete next[key]
+                    else
+                        next[key] = true
+                    expandedGroups = next
+                }
+                function expandAllGroups() {
+                    expandedGroups = Util.mosaicGroupKeyMap(clusteredSessions)
+                }
+                function collapseAllGroups() {
+                    expandedGroups = ({})
+                }
+                function groupMembers(item) {
+                    if (item && item.group_members && item.group_members.length)
+                        return item.group_members
+                    const key = scheduledPage.groupKey(item)
+                    const result = []
+                    if (!key || !(item && item.is_grouped)) {
+                        if (item)
+                            result.push(item)
+                        return result
+                    }
+                    const list = scheduledPage.clusteredSessions
+                    for (let i = 0; i < list.length; i++) {
+                        if (list[i] && String(list[i].group_key || "") === key)
+                            result.push(list[i])
+                    }
+                    return result
+                }
+                function groupChecked(item) {
+                    const members = scheduledPage.groupMembers(item)
+                    if (!members.length)
+                        return false
+                    for (let i = 0; i < members.length; i++) {
+                        if (!Util.idSetHas(selectedIds, members[i].id))
+                            return false
+                    }
+                    return true
+                }
+                function rowHighlighted(item) {
+                    if (item && item.group_collapsed) {
+                        const members = scheduledPage.groupMembers(item)
+                        for (let i = 0; i < members.length; i++) {
+                            if (Util.idSetHas(selectedIds, members[i].id))
+                                return true
+                        }
+                        return false
+                    }
+                    return Util.idSetHas(selectedIds, item && item.id)
+                }
                 function selectClick(id, shift) {
+                    const list = scheduledPage.visibleSessions
+                    let item = null
+                    for (let i = 0; i < list.length; i++) {
+                        if (list[i] && list[i].id === id) {
+                            item = list[i]
+                            break
+                        }
+                    }
+                    if (!shift && item && item.group_collapsed) {
+                        const members = scheduledPage.groupMembers(item)
+                        const allOn = scheduledPage.groupChecked(item)
+                        const next = Object.assign({}, selectedIds)
+                        for (let i = 0; i < members.length; i++) {
+                            const memberId = members[i] && members[i].id
+                            if (!memberId)
+                                continue
+                            if (allOn)
+                                delete next[memberId]
+                            else
+                                next[memberId] = true
+                        }
+                        selectedIds = next
+                        selectionAnchorId = id
+                        return
+                    }
                     const result = Util.clickSelect(selectedIds, scheduledPage.clusteredSessions, id, shift, selectionAnchorId)
                     selectedIds = result.map
                     selectionAnchorId = result.anchor
+                }
+                function editItem(item) {
+                    sessionDialog.openExisting(item)
+                }
+                function resetItem(item) {
+                    const members = item && item.group_collapsed ? scheduledPage.groupMembers(item) : [item]
+                    for (let i = 0; i < members.length; i++) {
+                        if (members[i] && Util.canReset(members[i].status))
+                            backend.resetSession(members[i].id)
+                    }
+                }
+                function canResetItem(item) {
+                    const members = item && item.group_collapsed ? scheduledPage.groupMembers(item) : [item]
+                    for (let i = 0; i < members.length; i++) {
+                        if (members[i] && Util.canReset(members[i].status))
+                            return true
+                    }
+                    return false
                 }
                 property var contextSession: ({})
                 function openSessionMenu(session) {
                     contextSession = session || ({})
                     sessionMenu.popup()
                 }
-                readonly property int rowInset: 12
-                readonly property int colGap: 12
-                readonly property int gripWidth: 28
-                readonly property int startWidth: 148
-                readonly property int deviceWidth: 118
-                readonly property int durationWidth: 72
-                readonly property int statusWidth: 92
-                readonly property int actionsWidth: 228
+                readonly property int rowInset: Theme.px(12)
+                readonly property int colGap: Theme.px(12)
+                readonly property int gripWidth: Theme.px(28)
+                readonly property int startWidth: Theme.px(148)
+                readonly property int deviceWidth: Theme.px(118)
+                readonly property int durationWidth: Theme.px(72)
+                readonly property int statusWidth: Theme.px(92)
+                readonly property int actionsWidth: Theme.px(228)
                 Connections {
                     target: backend
                     function onSessionsChanged() {
@@ -125,19 +292,35 @@ Item {
                         onEditRequested: sessionDialog.openSelected(Util.itemsByIds(backend.sessions, scheduledPage.selectedIds))
                         onDeleteRequested: root.confirmBulkDelete("deleteSessions", scheduledPage.selectedIds, "session")
                     }
-                    RowLayout {
+                    Item {
                         Layout.fillWidth: true
                         Layout.leftMargin: scheduledPage.rowInset
                         Layout.rightMargin: scheduledPage.rowInset
-                        Layout.preferredHeight: 18
-                        spacing: scheduledPage.colGap
-                        Item { Layout.preferredWidth: scheduledPage.gripWidth; Layout.maximumWidth: scheduledPage.gripWidth }
-                        Text { text: "SESSION"; color: Theme.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4; font.bold: true; Layout.fillWidth: true }
-                        Text { text: "START"; color: Theme.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4; font.bold: true; Layout.preferredWidth: scheduledPage.startWidth; Layout.maximumWidth: scheduledPage.startWidth }
-                        Text { text: "DEVICE"; color: Theme.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4; font.bold: true; Layout.preferredWidth: scheduledPage.deviceWidth; Layout.maximumWidth: scheduledPage.deviceWidth }
-                        Text { text: "LENGTH"; color: Theme.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4; font.bold: true; Layout.preferredWidth: scheduledPage.durationWidth; Layout.maximumWidth: scheduledPage.durationWidth; horizontalAlignment: Text.AlignRight; Layout.fillWidth: false }
-                        Text { text: "STATUS"; color: Theme.textSecondary; font.pixelSize: 10; font.letterSpacing: 1.4; font.bold: true; Layout.preferredWidth: scheduledPage.statusWidth; Layout.maximumWidth: scheduledPage.statusWidth; horizontalAlignment: Text.AlignHCenter }
-                        Item { Layout.preferredWidth: scheduledPage.actionsWidth; Layout.maximumWidth: scheduledPage.actionsWidth }
+                        Layout.preferredHeight: Theme.px(18)
+                        RowLayout {
+                            anchors.fill: parent
+                            spacing: scheduledPage.colGap
+                            Item { Layout.preferredWidth: scheduledPage.gripWidth; Layout.maximumWidth: scheduledPage.gripWidth }
+                            Text { text: "SESSION"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.letterSpacing: 1.4; font.bold: true; Layout.fillWidth: true }
+                            Text { text: "START"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.letterSpacing: 1.4; font.bold: true; Layout.preferredWidth: scheduledPage.startWidth; Layout.maximumWidth: scheduledPage.startWidth }
+                            Text { text: "DEVICE"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.letterSpacing: 1.4; font.bold: true; Layout.preferredWidth: scheduledPage.deviceWidth; Layout.maximumWidth: scheduledPage.deviceWidth }
+                            Text { text: "LENGTH"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.letterSpacing: 1.4; font.bold: true; Layout.preferredWidth: scheduledPage.durationWidth; Layout.maximumWidth: scheduledPage.durationWidth; horizontalAlignment: Text.AlignRight; Layout.fillWidth: false }
+                            Text { text: "STATUS"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.letterSpacing: 1.4; font.bold: true; Layout.preferredWidth: scheduledPage.statusWidth; Layout.maximumWidth: scheduledPage.statusWidth; horizontalAlignment: Text.AlignHCenter }
+                            Item { Layout.preferredWidth: scheduledPage.actionsWidth; Layout.maximumWidth: scheduledPage.actionsWidth }
+                        }
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            onTapped: scheduledExpandMenu.popup()
+                        }
+                        ExpandCollapseMenu {
+                            id: scheduledExpandMenu
+                            expandObjectName: "scheduled-header-expand-all"
+                            collapseObjectName: "scheduled-header-collapse-all"
+                            canExpandAll: scheduledPage.canExpandAll
+                            canCollapseAll: scheduledPage.canCollapseAll
+                            onExpandAllRequested: scheduledPage.expandAllGroups()
+                            onCollapseAllRequested: scheduledPage.collapseAllGroups()
+                        }
                     }
                     SessionInsertDrop {
                         id: scheduledInsert
@@ -145,6 +328,7 @@ Item {
                         Layout.fillHeight: true
                         targetList: scheduledList
                         rowHeight: 76
+                        headerHeight: 30
                         ListView {
                             id: scheduledList
                             anchors.fill: parent
@@ -153,28 +337,61 @@ Item {
                             boundsBehavior: Flickable.StopAtBounds
                             ScrollBar.vertical: HiddenBar {}
                             ScrollBar.horizontal: HiddenBar {}
-                            model: scheduledPage.clusteredSessions
+                            model: scheduledPage.visibleSessions
                             delegate: Column {
                                 id: scheduledWrap
                                 required property var modelData
                                 required property int index
+                                objectName: modelData && modelData.is_grouped ? "session-group-" + modelData.group_id : ""
                                 width: ListView.view.width
                                 spacing: 0
                                 height: (showHeader ? 30 : 0) + 76
+                                readonly property bool collapsedGroup: !!(modelData && modelData.group_collapsed)
                                 readonly property bool showHeader: {
-                                    if (!modelData.is_grouped)
+                                    if (!modelData.is_grouped || scheduledWrap.collapsedGroup)
                                         return false
                                     if (index <= 0)
                                         return true
-                                    const prev = scheduledPage.clusteredSessions[index - 1]
+                                    const prev = scheduledPage.visibleSessions[index - 1]
                                     return !prev || String(prev.group_key || "") !== String(modelData.group_key || "")
                                 }
                                 readonly property color groupTone: modelData.is_grouped ? Util.groupTone(modelData.group_id) : (modelData.device_color || Theme.accent)
-                                opacity: DragCoordinator.active && DragCoordinator.data.id === modelData.id ? 0.35 : 1
+                                opacity: DragCoordinator.active && Util.sameSessionGroup(DragCoordinator.data, modelData) ? 0.35 : 1
                                 Item {
+                                    id: groupHeader
+                                    objectName: scheduledWrap.showHeader ? "session-group-" + scheduledWrap.modelData.group_id : ""
                                     width: parent.width
                                     height: scheduledWrap.showHeader ? 30 : 0
                                     visible: scheduledWrap.showHeader
+                                    activeFocusOnTab: visible
+                                    Accessible.role: Accessible.Button
+                                    Accessible.name: "Collapse " + String(scheduledWrap.modelData.group_title || scheduledWrap.modelData.display_title || "mosaic")
+                                    Keys.onPressed: function (event) {
+                                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                                            scheduledPage.toggleGroup(scheduledWrap.modelData)
+                                            event.accepted = true
+                                        }
+                                    }
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        visible: groupHeader.activeFocus
+                                        color: "transparent"
+                                        border.color: Theme.accent
+                                        border.width: Theme.focusStroke
+                                    }
+                                    TapHandler {
+                                        acceptedButtons: Qt.LeftButton
+                                        onTapped: scheduledPage.toggleGroup(scheduledWrap.modelData)
+                                    }
+                                    TapHandler {
+                                        acceptedButtons: Qt.RightButton
+                                        onTapped: scheduledPage.openSessionMenu(scheduledWrap.modelData)
+                                    }
+                                    HoverHandler { id: groupHeaderHover }
+                                    HudToolTip {
+                                        visible: groupHeaderHover.hovered
+                                        text: "Collapse mosaic panes"
+                                    }
                                     RowLayout {
                                         anchors.fill: parent
                                         anchors.leftMargin: scheduledPage.rowInset
@@ -187,9 +404,15 @@ Item {
                                             color: scheduledWrap.groupTone
                                         }
                                         Text {
+                                            text: "▾"
+                                            color: scheduledWrap.groupTone
+                                            font.pixelSize: Theme.fontSm
+                                            Layout.fillWidth: false
+                                        }
+                                        Text {
                                             text: String(scheduledWrap.modelData.group_title || scheduledWrap.modelData.display_title || "").toUpperCase()
                                             color: scheduledWrap.groupTone
-                                            font.pixelSize: 11
+                                            font.pixelSize: Theme.fontPx(11)
                                             font.letterSpacing: 1.4
                                             font.bold: true
                                             elide: Text.ElideRight
@@ -202,7 +425,7 @@ Item {
                                                 return count + (count === 1 ? " PANE" : " PANES") + (grid ? " · " + grid : "")
                                             }
                                             color: Theme.textSecondary
-                                            font.pixelSize: 10
+                                            font.pixelSize: Theme.fontSm
                                             font.family: Theme.fontMono
                                             Layout.fillWidth: false
                                         }
@@ -212,10 +435,11 @@ Item {
                                     id: scheduledRow
                                     objectName: "session-" + scheduledWrap.modelData.id
                                     readonly property var modelData: scheduledWrap.modelData
+                                    readonly property var actionSession: modelData.group_action || modelData
                                     width: parent.width
                                     height: 76
                                     readonly property color groupTone: scheduledWrap.groupTone
-                                    fill: Util.idSetHas(scheduledPage.selectedIds, modelData.id) ? Theme.hsl(0.036, 0.640, 0.196, 0.753) : (modelData.is_grouped ? Util.groupFill(modelData.group_id) : Theme.panelFill)
+                                    fill: scheduledPage.rowHighlighted(modelData) ? Theme.hsl(0.036, 0.640, 0.196, 0.753) : (modelData.is_grouped ? Util.groupFill(modelData.group_id) : Theme.panelFill)
                                 overlay: [
                                     HoverHandler { id: scheduledHover },
                                     TapHandler {
@@ -228,7 +452,49 @@ Item {
                                         anchors.rightMargin: scheduledPage.rowInset + scheduledPage.actionsWidth
                                         SessionDragArea {
                                             dragItem: scheduledRow.modelData
-                                            onEditRequested: session => sessionDialog.openExisting(session)
+                                            onEditRequested: session => scheduledPage.editItem(scheduledRow.modelData)
+                                        }
+                                    },
+                                    Item {
+                                        id: groupExpand
+                                        visible: scheduledWrap.collapsedGroup
+                                        z: 40
+                                        objectName: scheduledWrap.collapsedGroup
+                                                   ? "session-expand-" + String(scheduledRow.modelData.id || "")
+                                                   : ""
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.bottom: parent.bottom
+                                        anchors.leftMargin: scheduledPage.rowInset + scheduledPage.gripWidth + scheduledPage.colGap
+                                        anchors.rightMargin: scheduledPage.rowInset + scheduledPage.startWidth + scheduledPage.deviceWidth + scheduledPage.durationWidth + scheduledPage.statusWidth + scheduledPage.actionsWidth + scheduledPage.colGap * 5
+                                        activeFocusOnTab: visible
+                                        Accessible.role: Accessible.Button
+                                        Accessible.name: "Expand " + String(scheduledRow.modelData.group_title || scheduledRow.modelData.display_title || "mosaic")
+                                        signal clicked()
+                                        onClicked: scheduledPage.toggleGroup(scheduledRow.modelData)
+                                        Keys.onPressed: function (event) {
+                                            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                                                groupExpand.clicked()
+                                                event.accepted = true
+                                            }
+                                        }
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            visible: groupExpand.activeFocus
+                                            color: "transparent"
+                                            border.color: Theme.accent
+                                            border.width: Theme.focusStroke
+                                        }
+                                        TapHandler {
+                                            acceptedButtons: Qt.LeftButton
+                                            grabPermissions: PointerHandler.CanTakeOverFromAnything
+                                            onTapped: groupExpand.clicked()
+                                        }
+                                        HoverHandler { id: groupExpandHover }
+                                        HudToolTip {
+                                            visible: groupExpandHover.hovered
+                                            text: "Expand mosaic panes"
                                         }
                                     },
                                     SelectBox {
@@ -236,7 +502,9 @@ Item {
                                         anchors.left: parent.left
                                         anchors.leftMargin: scheduledPage.rowInset + Math.round((scheduledPage.gripWidth - width) / 2) + 2
                                         anchors.verticalCenter: parent.verticalCenter
-                                        checked: Util.idSetHas(scheduledPage.selectedIds, scheduledRow.modelData.id)
+                                        checked: scheduledWrap.collapsedGroup
+                                                 ? scheduledPage.groupChecked(scheduledRow.modelData)
+                                                 : Util.idSetHas(scheduledPage.selectedIds, scheduledRow.modelData.id)
                                         revealed: scheduledHover.hovered || scheduledPage.selectedCount > 0
                                         onToggled: (shiftHeld) => scheduledPage.selectClick(scheduledRow.modelData.id, shiftHeld)
                                     }
@@ -265,17 +533,39 @@ Item {
                                             anchors.left: parent.left
                                             anchors.right: parent.right
                                             spacing: 3
-                                            Text {
+                                            Row {
                                                 width: parent.width
-                                                text: scheduledRow.modelData.pane_name || scheduledRow.modelData.target_name
-                                                color: Theme.textPrimary
-                                                font.pixelSize: 15
-                                                font.bold: true
-                                                elide: Text.ElideRight
+                                                spacing: 6
+                                                Text {
+                                                    visible: scheduledWrap.collapsedGroup
+                                                    text: "▸"
+                                                    color: scheduledRow.groupTone
+                                                    font.pixelSize: Theme.fontSm
+                                                    anchors.verticalCenter: parent.verticalCenter
+                                                }
+                                                Text {
+                                                    width: parent.width - (scheduledWrap.collapsedGroup ? 20 : 0)
+                                                    text: scheduledWrap.collapsedGroup
+                                                          ? (scheduledRow.modelData.group_title || scheduledRow.modelData.display_title || scheduledRow.modelData.target_name)
+                                                          : (scheduledRow.modelData.pane_name || scheduledRow.modelData.target_name)
+                                                    color: Theme.textPrimary
+                                                    font.pixelSize: Theme.fontPx(15)
+                                                    font.bold: true
+                                                    elide: Text.ElideRight
+                                                }
                                             }
                                             Text {
                                                 width: parent.width
                                                 text: {
+                                                    if (scheduledWrap.collapsedGroup) {
+                                                        const action = scheduledRow.actionSession
+                                                        if (action && action.status === "running") {
+                                                            const step = Util.sessionStepLabel(action, backend.localNow.epoch_ms)
+                                                            if (step)
+                                                                return step
+                                                        }
+                                                        return scheduledRow.modelData.group_summary || ""
+                                                    }
                                                     if (scheduledRow.modelData.status === "running") {
                                                         const step = Util.sessionStepLabel(scheduledRow.modelData, backend.localNow.epoch_ms)
                                                         if (step)
@@ -288,17 +578,19 @@ Item {
                                                     return pos || scheduledRow.modelData.subtitle || summary
                                                 }
                                                 color: Theme.textSecondary
-                                                font.pixelSize: 11
+                                                font.pixelSize: Theme.fontPx(11)
                                                 elide: Text.ElideRight
                                                 visible: text !== "" && text !== (scheduledRow.modelData.pane_name || scheduledRow.modelData.target_name)
                                             }
                                         }
                                     }
                                     Text {
-                                        text: scheduledRow.modelData.start_date + "  " + scheduledRow.modelData.start_time
+                                        text: scheduledWrap.collapsedGroup
+                                              ? ((scheduledRow.modelData.group_start_date || scheduledRow.modelData.start_date) + "  " + (scheduledRow.modelData.group_start_time || scheduledRow.modelData.start_time))
+                                              : (scheduledRow.modelData.start_date + "  " + scheduledRow.modelData.start_time)
                                         color: Theme.textPrimary
                                         font.family: Theme.fontMono
-                                        font.pixelSize: 13
+                                        font.pixelSize: Theme.fontBase
                                         Layout.preferredWidth: scheduledPage.startWidth
                                         Layout.maximumWidth: scheduledPage.startWidth
                                         Layout.minimumWidth: scheduledPage.startWidth
@@ -327,16 +619,18 @@ Item {
                                                 text: scheduledRow.modelData.device_name
                                                 color: Theme.textPrimary
                                                 elide: Text.ElideRight
-                                                font.pixelSize: 13
+                                                font.pixelSize: Theme.fontBase
                                                 anchors.verticalCenter: parent.verticalCenter
                                             }
                                         }
                                     }
                                     Text {
-                                        text: scheduledRow.modelData.duration_text
+                                        text: scheduledWrap.collapsedGroup
+                                              ? (scheduledRow.modelData.group_duration_text || scheduledRow.modelData.duration_text)
+                                              : scheduledRow.modelData.duration_text
                                         color: Theme.textSecondary
                                         font.family: Theme.fontMono
-                                        font.pixelSize: 13
+                                        font.pixelSize: Theme.fontBase
                                         horizontalAlignment: Text.AlignRight
                                         Layout.preferredWidth: scheduledPage.durationWidth
                                         Layout.maximumWidth: scheduledPage.durationWidth
@@ -351,9 +645,11 @@ Item {
                                         Layout.fillHeight: true
                                         StatusChip {
                                             anchors.centerIn: parent
-                                            status: scheduledRow.modelData.status
+                                            status: scheduledWrap.collapsedGroup
+                                                    ? (scheduledRow.modelData.group_status || scheduledRow.modelData.status)
+                                                    : scheduledRow.modelData.status
                                             implicitWidth: 86
-                                            implicitHeight: 22
+                                            implicitHeight: Theme.px(22)
                                         }
                                     }
                                     RowLayout {
@@ -365,34 +661,36 @@ Item {
                                         spacing: 6
                                         HudButton {
                                             text: "EDIT"
-                                            implicitHeight: 30
+                                            implicitHeight: Theme.px(30)
                                             Layout.preferredWidth: 68
-                                            enabled: scheduledRow.modelData.status !== "running"
+                                            enabled: (scheduledWrap.collapsedGroup
+                                                      ? scheduledRow.modelData.group_status
+                                                      : scheduledRow.modelData.status) !== "running"
                                             busyText: "OPENING…"
-                                            onClicked: sessionDialog.openExisting(scheduledRow.modelData)
+                                            onClicked: scheduledPage.editItem(scheduledRow.modelData)
                                         }
                                         HudButton {
                                             text: "RESET"
-                                            implicitHeight: 30
+                                            implicitHeight: Theme.px(30)
                                             Layout.preferredWidth: 76
-                                            opacity: Util.canReset(scheduledRow.modelData.status) ? 1 : 0
-                                            enabled: Util.canReset(scheduledRow.modelData.status)
+                                            opacity: scheduledPage.canResetItem(scheduledRow.modelData) ? 1 : 0
+                                            enabled: scheduledPage.canResetItem(scheduledRow.modelData)
                                             busyText: "RESETTING…"
-                                            onClicked: backend.resetSession(scheduledRow.modelData.id)
+                                            onClicked: scheduledPage.resetItem(scheduledRow.modelData)
                                         }
                                         HudButton {
-                                            text: scheduledRow.modelData.status === "running" ? "STOP" : "RUN"
-                                            implicitHeight: 30
+                                            text: scheduledRow.actionSession.status === "running" ? "STOP" : "RUN"
+                                            implicitHeight: Theme.px(30)
                                             Layout.preferredWidth: 68
-                                            enabled: scheduledRow.modelData.status !== "running" || !root.sessionStopping(scheduledRow.modelData)
-                                            busy: root.sessionStopping(scheduledRow.modelData)
-                                            busyText: scheduledRow.modelData.status === "running" ? "STOPPING…" : "STARTING…"
-                                            busyMs: scheduledRow.modelData.status === "running" ? 0 : 1400
-                                            buttonColor: scheduledRow.modelData.status === "running" ? Theme.fillDanger : Theme.surfaceHigh
-                                            foregroundColor: scheduledRow.modelData.status === "running" ? Theme.danger : Theme.textPrimary
-                                            onClicked: scheduledRow.modelData.status === "running"
-                                                ? backend.stopSession(scheduledRow.modelData.id)
-                                                : backend.runNow(scheduledRow.modelData.id)
+                                            enabled: scheduledRow.actionSession.status !== "running" || !root.sessionStopping(scheduledRow.actionSession)
+                                            busy: root.sessionStopping(scheduledRow.actionSession)
+                                            busyText: scheduledRow.actionSession.status === "running" ? "STOPPING…" : "STARTING…"
+                                            busyMs: scheduledRow.actionSession.status === "running" ? 0 : 1400
+                                            buttonColor: scheduledRow.actionSession.status === "running" ? Theme.fillDanger : Theme.surfaceHigh
+                                            foregroundColor: scheduledRow.actionSession.status === "running" ? Theme.danger : Theme.textPrimary
+                                            onClicked: scheduledRow.actionSession.status === "running"
+                                                ? backend.stopSession(scheduledRow.actionSession.id)
+                                                : backend.runNow(scheduledRow.actionSession.id)
                                         }
                                     }
                                 }
@@ -407,13 +705,18 @@ Item {
                     sessionData: scheduledPage.contextSession
                     selectionItems: backend.sessions
                     selectedMap: scheduledPage.selectedIds
-                    onEditRequested: session => sessionDialog.openExisting(session)
+                    showExpandCollapse: true
+                    canExpandAll: scheduledPage.canExpandAll
+                    canCollapseAll: scheduledPage.canCollapseAll
+                    onEditRequested: session => scheduledPage.editItem(session)
                     onEditSelectedRequested: sessionDialog.openSelected(Util.itemsByIds(backend.sessions, scheduledPage.selectedIds))
                     onSelectAllRequested: scheduledPage.selectedIds = Util.idSetAll(backend.sessions, true)
                     onUnselectAllRequested: {
                         scheduledPage.selectedIds = ({})
                         scheduledPage.selectionAnchorId = ""
                     }
+                    onExpandAllRequested: scheduledPage.expandAllGroups()
+                    onCollapseAllRequested: scheduledPage.collapseAllGroups()
                 }
             }
             Item {
@@ -619,7 +922,7 @@ Item {
                             visible: !!modelData.target_name && modelData.target_name !== modelData.name
                             text: modelData.target_name
                             color: Theme.textPrimary
-                            font.pixelSize: 14
+                            font.pixelSize: Theme.fontPx(14)
                             font.bold: true
                             elide: Text.ElideRight
                             Layout.fillWidth: true
@@ -634,7 +937,7 @@ Item {
                                 return coords || length
                             }
                             color: Theme.textPrimary
-                            font.pixelSize: 12
+                            font.pixelSize: Theme.fontMd
                             font.family: Theme.fontMono
                             elide: Text.ElideRight
                             Layout.fillWidth: true
@@ -644,12 +947,12 @@ Item {
                             columns: 2
                             columnSpacing: 14
                             rowSpacing: 2
-                            Text { text: "CAPTURE"; color: Theme.muted; font.pixelSize: 9; font.letterSpacing: 1.1; font.bold: true }
-                            Text { text: "CAMERA"; color: Theme.muted; font.pixelSize: 9; font.letterSpacing: 1.1; font.bold: true }
+                            Text { text: "CAPTURE"; color: Theme.muted; font.pixelSize: Theme.fontPx(9); font.letterSpacing: 1.1; font.bold: true }
+                            Text { text: "CAMERA"; color: Theme.muted; font.pixelSize: Theme.fontPx(9); font.letterSpacing: 1.1; font.bold: true }
                             Text {
                                 text: (modelData.capture_text || modelData.summary || "") + (modelData.gain_text ? "  " + modelData.gain_text : "")
                                 color: Theme.textPrimary
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontMd
                                 font.family: Theme.fontMono
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
@@ -657,17 +960,17 @@ Item {
                             Text {
                                 text: modelData.camera_text || ""
                                 color: Theme.textPrimary
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontMd
                                 font.family: Theme.fontMono
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
                             }
-                            Text { text: "MOSAIC"; color: Theme.muted; font.pixelSize: 9; font.letterSpacing: 1.1; font.bold: true }
-                            Text { text: "WORKFLOW"; color: Theme.muted; font.pixelSize: 9; font.letterSpacing: 1.1; font.bold: true }
+                            Text { text: "MOSAIC"; color: Theme.muted; font.pixelSize: Theme.fontPx(9); font.letterSpacing: 1.1; font.bold: true }
+                            Text { text: "WORKFLOW"; color: Theme.muted; font.pixelSize: Theme.fontPx(9); font.letterSpacing: 1.1; font.bold: true }
                             Text {
                                 text: modelData.mosaic_text || ""
                                 color: Theme.textPrimary
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontMd
                                 font.family: Theme.fontMono
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
@@ -675,7 +978,7 @@ Item {
                             Text {
                                 text: modelData.workflow_text || ""
                                 color: Theme.textPrimary
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontMd
                                 font.family: Theme.fontMono
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
@@ -685,7 +988,7 @@ Item {
                             visible: !!(modelData.notes)
                             text: modelData.notes
                             color: Theme.textSecondary
-                            font.pixelSize: 11
+                            font.pixelSize: Theme.fontPx(11)
                             wrapMode: Text.Wrap
                             maximumLineCount: 3
                             elide: Text.ElideRight

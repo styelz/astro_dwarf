@@ -9,36 +9,53 @@ DropArea {
     id: insertDrop
     required property var targetList
     required property real rowHeight
+    property real headerHeight: 0
     property string observingDate: ""
     keys: ["session"]
+    // Written from refreshInsert(). Do not bind these to itemAtIndex / mapToItem:
+    // those walk the same ListView that owns the drag and can relayout the
+    // delegate mid-gesture, which hangs the GUI thread.
+    property int insertIndex: -1
+    property real insertLineY: -999
     Component.onCompleted: DragCoordinator.registerDropArea(insertDrop)
     Component.onDestruction: DragCoordinator.unregisterDropArea(insertDrop)
-    readonly property int insertIndex: {
-        if (!DragCoordinator.active || !insertDrop.targetList)
-            return -1
+
+    function pointerLocal() {
+        if (!DragCoordinator.active || !DragCoordinator.contentItem || !insertDrop.visible)
+            return null
+        if (insertDrop.width <= 0 || insertDrop.height <= 0)
+            return null
         const pos = insertDrop.mapFromItem(DragCoordinator.contentItem, DragCoordinator.pos.x, DragCoordinator.pos.y)
         if (pos.x < 0 || pos.y < 0 || pos.x > insertDrop.width || pos.y > insertDrop.height)
-            return -1
-        return insertDrop.indexAtY(pos.y)
+            return null
+        return pos
     }
-    readonly property real insertLineY: {
-        const list = insertDrop.targetList
-        const idx = insertDrop.insertIndex
-        if (!list || idx < 0)
-            return -999
-        if (idx === 0)
-            return -list.contentY - 1
-        if (idx >= list.count) {
-            const last = list.itemAtIndex(list.count - 1)
-            if (last)
-                return last.mapToItem(insertDrop, 0, last.height).y - 1
-            return list.contentHeight - list.contentY - 1
-        }
-        const row = list.itemAtIndex(idx)
-        if (row)
-            return row.mapToItem(insertDrop, 0, 0).y - 1
-        const stride = Math.max(1, insertDrop.rowHeight + list.spacing)
-        return idx * stride - list.contentY - 1
+
+    function rowAt(list, index) {
+        if (!list || index < 0)
+            return null
+        const model = list.model
+        if (model && model[index])
+            return model[index]
+        if (model && model.get)
+            return model.get(index)
+        return null
+    }
+
+    function rowStrideAt(list, index) {
+        const spacing = list ? Number(list.spacing) || 0 : 0
+        const base = Math.max(1, insertDrop.rowHeight + spacing)
+        if (insertDrop.headerHeight <= 0 || !list)
+            return base
+        const row = insertDrop.rowAt(list, index)
+        if (!row || !row.is_grouped || row.group_collapsed)
+            return base
+        if (index <= 0)
+            return base + insertDrop.headerHeight
+        const prev = insertDrop.rowAt(list, index - 1)
+        if (!prev || String(prev.group_key || "") !== String(row.group_key || ""))
+            return base + insertDrop.headerHeight
+        return base
     }
 
     function indexAtY(y) {
@@ -48,36 +65,61 @@ DropArea {
         const contentY = y + list.contentY
         if (contentY <= 0)
             return 0
-        if (contentY >= list.contentHeight)
+        const contentHeight = Number(list.contentHeight)
+        if (contentHeight > 0 && contentY >= contentHeight)
             return list.count
-        const x = Math.max(1, list.width / 2)
-        let idx = list.indexAt(x, contentY)
-        if (idx < 0) {
-            const step = Math.max(4, insertDrop.rowHeight / 4)
-            const reach = insertDrop.rowHeight + list.spacing
-            for (let d = step; d <= reach; d += step) {
-                const down = list.indexAt(x, contentY + d)
-                if (down >= 0)
-                    return down
-                const up = list.indexAt(x, contentY - d)
-                if (up >= 0)
-                    return up + 1
-            }
-            const stride = Math.max(1, insertDrop.rowHeight + list.spacing)
-            idx = Math.round(contentY / stride)
-            if (idx < 0)
-                return 0
-            if (idx > list.count)
-                return list.count
-            return idx
+        let acc = 0
+        for (let i = 0; i < list.count; i++) {
+            const stride = insertDrop.rowStrideAt(list, i)
+            if (contentY < acc + stride / 2)
+                return i
+            acc += stride
         }
-        const row = list.itemAtIndex(idx)
-        if (row) {
-            const top = row.mapToItem(insertDrop, 0, 0).y
-            if (y > top + row.height / 2)
-                return idx + 1
+        return list.count
+    }
+
+    function lineYForIndex(idx) {
+        const list = insertDrop.targetList
+        if (!list || idx < 0)
+            return -999
+        if (idx === 0)
+            return -list.contentY - 1
+        if (idx >= list.count)
+            return Number(list.contentHeight) - list.contentY - 1
+        let acc = 0
+        for (let i = 0; i < idx && i < list.count; i++)
+            acc += insertDrop.rowStrideAt(list, i)
+        return acc - list.contentY - 1
+    }
+
+    function refreshInsert() {
+        const pos = insertDrop.pointerLocal()
+        if (!pos || !insertDrop.targetList) {
+            if (insertDrop.insertIndex !== -1)
+                insertDrop.insertIndex = -1
+            if (Math.abs(insertDrop.insertLineY + 999) > 0.01)
+                insertDrop.insertLineY = -999
+            return
         }
-        return idx
+        const idx = insertDrop.indexAtY(pos.y)
+        const lineY = insertDrop.lineYForIndex(idx)
+        if (insertDrop.insertIndex !== idx)
+            insertDrop.insertIndex = idx
+        if (insertDrop.insertLineY !== lineY)
+            insertDrop.insertLineY = lineY
+    }
+
+    Connections {
+        target: DragCoordinator
+        function onPosChanged() { insertDrop.refreshInsert() }
+        function onActiveChanged() { insertDrop.refreshInsert() }
+    }
+    Connections {
+        target: insertDrop.targetList
+        ignoreUnknownSignals: true
+        function onContentYChanged() { if (DragCoordinator.active) insertDrop.refreshInsert() }
+        function onCountChanged() { if (DragCoordinator.active) insertDrop.refreshInsert() }
+        function onContentHeightChanged() { if (DragCoordinator.active) insertDrop.refreshInsert() }
     }
 
     onDropped: drop => {

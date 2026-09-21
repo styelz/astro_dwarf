@@ -20,9 +20,9 @@ Button {
     signal stopClicked()
     hoverEnabled: enabled
     focusPolicy: Qt.StrongFocus
-    implicitHeight: 58
-    leftPadding: 8
-    rightPadding: 8
+    implicitHeight: Theme.px(58)
+    leftPadding: Theme.s2
+    rightPadding: Theme.s2
     Accessible.name: text
     Accessible.description: pending ? "Sending" : (tooltip || detail)
     function showFlash(kind) {
@@ -86,24 +86,24 @@ Button {
         }
     }
     contentItem: RowLayout {
-        spacing: 7
+        spacing: Theme.px(7)
         Text { text: commandPad.glyph; color: commandPad.destructive ? Theme.danger : commandPad.activeState || commandPad.primed ? Theme.success : Theme.accent; font.pixelSize: Math.round(Math.min(26, Math.max(16, commandPad.height * 0.32))); Layout.preferredWidth: font.pixelSize + 6; horizontalAlignment: Text.AlignHCenter }
         ColumnLayout {
             Layout.fillWidth: true; spacing: 0
-            Text { text: commandPad.text; color: commandPad.enabled || commandPad.activeState ? Theme.textPrimary : Theme.textSecondary; font.pixelSize: 10; font.bold: true; font.letterSpacing: 0.7; elide: Text.ElideRight; Layout.fillWidth: true }
-            Text { text: commandPad.flash === "success" ? "DONE" : commandPad.flash === "error" ? "FAILED" : commandPad.pending ? "SENDING…" : commandPad.detail; color: commandPad.flash !== "" ? commandPad.flashColor : commandPad.activeState || (commandPad.primed && !commandPad.pending) ? Theme.success : commandPad.pending ? Theme.accent : Theme.textSecondary; font.pixelSize: 8; font.family: commandPad.activeState || commandPad.primed ? Theme.fontMono : Theme.fontUi; elide: Text.ElideRight; Layout.fillWidth: true }
+            Text { text: commandPad.text; color: commandPad.enabled || commandPad.activeState ? Theme.textPrimary : Theme.textSecondary; font.pixelSize: Theme.fontSm; font.bold: true; font.letterSpacing: 0.7; elide: Text.ElideRight; Layout.fillWidth: true }
+            Text { text: commandPad.flash === "success" ? "DONE" : commandPad.flash === "error" ? "FAILED" : commandPad.pending ? "SENDING…" : commandPad.detail; color: commandPad.flash !== "" ? commandPad.flashColor : commandPad.activeState || (commandPad.primed && !commandPad.pending) ? Theme.success : commandPad.pending ? Theme.accent : Theme.textSecondary; font.pixelSize: Theme.fontXs; font.family: commandPad.activeState || commandPad.primed ? Theme.fontMono : Theme.fontUi; elide: Text.ElideRight; Layout.fillWidth: true }
         }
         Button {
             id: stopButton
             objectName: commandPad.objectName ? commandPad.objectName + "-stop" : "pad-stop"
             visible: commandPad.showStop
-            Layout.preferredWidth: 22
-            Layout.preferredHeight: 22
-            Layout.minimumWidth: 22
-            Layout.maximumWidth: 22
+            Layout.preferredWidth: Theme.px(22)
+            Layout.preferredHeight: Theme.px(22)
+            Layout.minimumWidth: Theme.px(22)
+            Layout.maximumWidth: Theme.px(22)
             Layout.alignment: Qt.AlignVCenter
-            implicitWidth: 22
-            implicitHeight: 22
+            implicitWidth: Theme.px(22)
+            implicitHeight: Theme.px(22)
             padding: 0
             hoverEnabled: true
             focusPolicy: Qt.TabFocus
@@ -122,8 +122,8 @@ Button {
             }
             contentItem: Item {
                 Rectangle {
-                    width: 8
-                    height: 8
+                    width: Theme.s2
+                    height: Theme.s2
                     radius: 1
                     color: Theme.danger
                     anchors.centerIn: parent

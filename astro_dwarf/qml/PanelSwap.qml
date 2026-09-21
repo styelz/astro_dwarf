@@ -4,7 +4,8 @@ import QtQuick.Controls
 import QtCore
 
 // Control-page panel drag. Drop on a panel body to swap slots; drop on the
-// leading or trailing edge to insert beside it.
+// leading or trailing edge to insert beside it. Drop on a column edge or
+// between columns to dock the panel as a column.
 QtObject {
     id: coord
 
@@ -19,6 +20,9 @@ QtObject {
     property var splits: ({})
     property var defaultSplitStates: ({})
     property bool defaultsCaptured: false
+    readonly property int columnEdgePx: 28
+    property int columnDockIndex: -1
+    property real columnDockX: 0
 
     property Settings store: Settings {
         id: orderStore
@@ -105,14 +109,20 @@ QtObject {
         const a = coord.source
         const b = coord.hover
         const mode = coord.dropMode
+        const dockIndex = coord.columnDockIndex
         coord.clearHover()
         coord.active = false
         coord.source = null
         coord.dropMode = ""
-        if (!a || !b || a === b)
+        coord.columnDockIndex = -1
+        if (!a)
             return
         Qt.callLater(function() {
-            if (mode === "before")
+            if (mode === "column")
+                coord.dockAsColumnAt(a, dockIndex)
+            else if (!b || a === b)
+                return
+            else if (mode === "before")
                 coord.insertPanel(a, b, false)
             else if (mode === "after")
                 coord.insertPanel(a, b, true)
@@ -146,6 +156,17 @@ QtObject {
     }
 
     function refreshHover(position) {
+        const dock = coord.columnDockAt(position)
+        if (dock) {
+            if (coord.hover)
+                coord.hover.dropMode = ""
+            coord.hover = null
+            coord.dropMode = "column"
+            coord.columnDockIndex = dock.destIndex
+            coord.columnDockX = dock.x
+            return
+        }
+        coord.columnDockIndex = -1
         const next = coord.panelAt(position)
         const mode = next ? coord.dropKind(next, position) : ""
         if (coord.hover === next && coord.dropMode === mode)
@@ -163,6 +184,7 @@ QtObject {
             coord.hover.dropMode = ""
         coord.hover = null
         coord.dropMode = ""
+        coord.columnDockIndex = -1
     }
 
     function panelAt(position) {
@@ -199,6 +221,274 @@ QtObject {
                 return i
         }
         return -1
+    }
+
+    function columnsSplit() {
+        return coord.splits["controlColumns"] || null
+    }
+
+    function columnPanels(split, exclude) {
+        const out = []
+        if (!split || !split.itemAt)
+            return out
+        for (let i = 0; i < split.count; i++) {
+            const item = split.itemAt(i)
+            if (!item || !item.panelId || !item.movable)
+                continue
+            if (exclude && item === exclude)
+                continue
+            out.push(item)
+        }
+        return out
+    }
+
+    function columnIsEmpty(split, exclude) {
+        return coord.columnPanels(split, exclude).length === 0
+    }
+
+    function columnIsCollapsed(split) {
+        if (!split)
+            return true
+        if (!split.visible)
+            return true
+        if (!split.SplitView)
+            return false
+        const maxW = coord.finiteHint(split.SplitView.maximumWidth)
+        return maxW === 0
+    }
+
+    function collapseColumn(split) {
+        if (!split || !split.SplitView)
+            return
+        split.visible = false
+        const attached = split.SplitView
+        attached.fillWidth = false
+        attached.minimumWidth = 0
+        attached.preferredWidth = 0
+        attached.maximumWidth = 0
+    }
+
+    function expandColumn(split) {
+        if (!split)
+            return
+        const saved = coord.defaultSplitStates[split.settingsKey]
+        if (saved && saved.attached)
+            coord.applyProps(split, saved.attached)
+        else if (split.SplitView) {
+            split.SplitView.maximumWidth = Number.POSITIVE_INFINITY
+            split.SplitView.minimumWidth = 196
+            split.SplitView.preferredWidth = 280
+            split.SplitView.fillWidth = false
+        }
+        split.visible = true
+    }
+
+    function syncColumns() {
+        const keys = coord.columnKeys
+        const occupied = []
+        for (let k = 0; k < keys.length; k++) {
+            const split = coord.splits[keys[k]]
+            if (!split)
+                continue
+            if (coord.columnIsEmpty(split))
+                coord.collapseColumn(split)
+            else {
+                if (coord.columnIsCollapsed(split))
+                    coord.expandColumn(split)
+                else
+                    split.visible = true
+                occupied.push(split)
+            }
+        }
+        let fill = null
+        for (let i = 0; i < occupied.length; i++) {
+            if (occupied[i].settingsKey === "controlCenter") {
+                fill = occupied[i]
+                break
+            }
+        }
+        if (!fill) {
+            const columns = coord.columnsSplit()
+            if (columns && columns.itemAt) {
+                for (let i = columns.count - 1; i >= 0; i--) {
+                    const item = columns.itemAt(i)
+                    if (occupied.indexOf(item) >= 0) {
+                        fill = item
+                        break
+                    }
+                }
+            }
+        }
+        if (!fill && occupied.length)
+            fill = occupied[occupied.length - 1]
+        for (let i = 0; i < occupied.length; i++) {
+            if (!occupied[i].SplitView)
+                continue
+            occupied[i].SplitView.fillWidth = occupied[i] === fill
+        }
+        const columns = coord.columnsSplit()
+        if (columns && columns.relock)
+            columns.relock()
+    }
+
+    function findCollapsedShell(excludeSplit) {
+        const keys = coord.columnKeys
+        for (let k = 0; k < keys.length; k++) {
+            const split = coord.splits[keys[k]]
+            if (!split || split === excludeSplit)
+                continue
+            if (coord.columnIsEmpty(split))
+                return split
+        }
+        return null
+    }
+
+    function dockTargetAt(panel, destIndex) {
+        const sourceSplit = coord.ancestorSplit(panel)
+        const columns = coord.columnsSplit()
+        if (!panel || !sourceSplit || !columns || !columns.moveItem)
+            return null
+        const lastInSource = coord.columnIsEmpty(sourceSplit, panel)
+        const dest = lastInSource ? sourceSplit : coord.findCollapsedShell(sourceSplit)
+        if (!dest)
+            return null
+        const currentIndex = coord.indexOfItem(columns, dest)
+        if (currentIndex < 0)
+            return null
+        const destClamped = Math.max(0, Math.min(Number(destIndex), columns.count - 1))
+        if (!isFinite(destClamped))
+            return null
+        if (dest === sourceSplit && currentIndex === destClamped && lastInSource)
+            return null
+        return { dest: dest, destIndex: destClamped, currentIndex: currentIndex, sourceSplit: sourceSplit }
+    }
+
+    function visibleColumns() {
+        const columns = coord.columnsSplit()
+        const out = []
+        if (!columns || !columns.itemAt)
+            return out
+        for (let i = 0; i < columns.count; i++) {
+            const item = columns.itemAt(i)
+            if (!item || !item.visible || item.width < 1)
+                continue
+            const pt = item.mapToItem(columns, 0, 0)
+            out.push({ split: item, index: i, x: pt.x, width: item.width })
+        }
+        return out
+    }
+
+    function columnDockAt(position) {
+        const columns = coord.columnsSplit()
+        const host = coord.host
+        const panel = coord.source
+        if (!columns || !host || !panel)
+            return null
+        const sourceSplit = coord.ancestorSplit(panel)
+        if (!sourceSplit || !columns.moveItem)
+            return null
+        const lastInSource = coord.columnIsEmpty(sourceSplit, panel)
+        const dest = lastInSource ? sourceSplit : coord.findCollapsedShell(sourceSplit)
+        if (!dest)
+            return null
+        const local = columns.mapFromItem(host, position.x, position.y)
+        if (local.y < -8 || local.y > columns.height + 8)
+            return null
+        const vis = coord.visibleColumns()
+        if (!vis.length)
+            return null
+        const edge = coord.columnEdgePx
+        const gapEdge = Math.max(edge, 72)
+        let insertBefore = undefined
+        for (let i = 0; i < vis.length - 1; i++) {
+            const leftEnd = vis[i].x + vis[i].width
+            const rightStart = vis[i + 1].x
+            if (local.x > leftEnd - gapEdge && local.x < rightStart + gapEdge) {
+                insertBefore = vis[i + 1].split
+                break
+            }
+        }
+        if (insertBefore === undefined) {
+            if (local.x < vis[0].x + edge && local.x > vis[0].x - edge)
+                insertBefore = vis[0].split
+            else if (local.x > vis[vis.length - 1].x + vis[vis.length - 1].width - edge
+                     && local.x < vis[vis.length - 1].x + vis[vis.length - 1].width + edge)
+                insertBefore = null
+            else
+                return null
+        }
+        const order = []
+        for (let i = 0; i < columns.count; i++) {
+            const item = columns.itemAt(i)
+            if (!item || item === dest)
+                continue
+            if (insertBefore && item === insertBefore)
+                order.push(dest)
+            order.push(item)
+        }
+        if (!insertBefore)
+            order.push(dest)
+        const destIndex = order.indexOf(dest)
+        if (destIndex < 0)
+            return null
+        const currentIndex = coord.indexOfItem(columns, dest)
+        if (currentIndex === destIndex && lastInSource && dest === sourceSplit)
+            return null
+        let barX = vis[0].x
+        if (!insertBefore)
+            barX = vis[vis.length - 1].x + vis[vis.length - 1].width
+        else {
+            for (let i = 0; i < vis.length; i++) {
+                if (vis[i].split === insertBefore) {
+                    barX = vis[i].x
+                    break
+                }
+            }
+        }
+        return { destIndex: destIndex, x: barX }
+    }
+
+    function dockAsColumnAt(panel, destIndex) {
+        const target = coord.dockTargetAt(panel, destIndex)
+        if (!target)
+            return
+        const columns = coord.columnsSplit()
+        coord.takeFrom(target.sourceSplit, panel)
+        if (target.currentIndex !== target.destIndex)
+            columns.moveItem(target.currentIndex, target.destIndex)
+        coord.insertAt(target.dest, panel, target.dest.count)
+        if (coord.columnIsCollapsed(target.dest))
+            coord.expandColumn(target.dest)
+        coord.syncColumns()
+        coord.persist()
+    }
+
+    function columnOrder() {
+        const columns = coord.columnsSplit()
+        const order = []
+        if (!columns || !columns.itemAt)
+            return coord.columnKeys.slice()
+        for (let i = 0; i < columns.count; i++) {
+            const item = columns.itemAt(i)
+            if (item && item.settingsKey)
+                order.push(item.settingsKey)
+        }
+        return order.length ? order : coord.columnKeys.slice()
+    }
+
+    function applyColumnOrder(order) {
+        const columns = coord.columnsSplit()
+        if (!columns || !columns.moveItem || !order || !order.length)
+            return
+        for (let dest = 0; dest < order.length; dest++) {
+            const split = coord.splits[order[dest]]
+            if (!split)
+                continue
+            const current = coord.indexOfItem(columns, split)
+            if (current < 0 || current === dest)
+                continue
+            columns.moveItem(current, dest)
+        }
     }
 
     function finiteHint(value) {
@@ -302,6 +592,7 @@ QtObject {
             coord.takeFrom(splitA, source)
             coord.insertAt(splitB, source, dest)
         }
+        coord.syncColumns()
         coord.persist()
     }
 
@@ -338,6 +629,7 @@ QtObject {
             splitA.restoreState(stateA)
         if (stateB)
             splitB.restoreState(stateB)
+        coord.syncColumns()
         coord.persist()
     }
 
@@ -360,6 +652,7 @@ QtObject {
             }
             out[key] = entries
         }
+        out.order = coord.columnOrder()
         if (!coord.layoutComplete(out))
             return false
         orderStore.panelOrderJson = JSON.stringify(out)
@@ -467,11 +760,14 @@ QtObject {
             const saved = coord.defaultSplitStates[key]
             if (!split || !saved)
                 continue
+            split.visible = true
             if (key !== "controlColumns" && saved.attached)
                 coord.applyProps(split, saved.attached)
             if (split.relock)
                 split.relock()
         }
+        coord.applyColumnOrder(coord.columnKeys)
+        coord.syncColumns()
         coord.discardSavedLayout()
         coord.persist()
         return true
@@ -500,6 +796,7 @@ QtObject {
         const raw = String(orderStore.panelOrderJson || "")
         if (!raw) {
             coord.restoreSplitSizes()
+            coord.syncColumns()
             return false
         }
         let saved
@@ -508,10 +805,12 @@ QtObject {
         } catch (e) {
             orderStore.panelOrderJson = ""
             coord.restoreSplitSizes()
+            coord.syncColumns()
             return false
         }
         if (!saved || typeof saved !== "object" || !coord.layoutComplete(saved)) {
             coord.restoreSplitSizes()
+            coord.syncColumns()
             return false
         }
         const byId = {}
@@ -546,7 +845,10 @@ QtObject {
                 coord.applyProps(panel, entry)
             }
         }
+        if (saved.order)
+            coord.applyColumnOrder(saved.order)
         coord.restoreSplitSizes()
+        coord.syncColumns()
         return true
     }
 }

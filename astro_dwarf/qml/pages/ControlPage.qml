@@ -163,14 +163,14 @@ Item {
                             anchors.leftMargin: 7
                             anchors.rightMargin: 7
                             spacing: 5
-                            Text { text: root.scopePending ? "⇡" : root.scopeActivity !== "" ? "◈" : root.scopeImaging ? "●" : root.scopeOnline ? "◇" : "○"; color: activityBadge.tone; font.pixelSize: 9 }
+                            Text { text: root.scopePending ? "⇡" : root.scopeActivity !== "" ? "◈" : root.scopeImaging ? "●" : root.scopeOnline ? "◇" : "○"; color: activityBadge.tone; font.pixelSize: Theme.fontPx(9) }
                             Text {
                                 text: {
                                     backend.clockText
                                     return root.scopeActivityText()
                                 }
                                 color: activityBadge.tone
-                                font.pixelSize: 8; font.bold: true; font.letterSpacing: 1
+                                font.pixelSize: Theme.fontXs; font.bold: true; font.letterSpacing: 1
                                 font.family: Theme.fontMono
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
@@ -179,7 +179,7 @@ Item {
                                 visible: root.scopeActivityFromDevice
                                 text: "DEV"
                                 color: Theme.textSecondary
-                                font.pixelSize: 6; font.bold: true; font.letterSpacing: 1
+                                font.pixelSize: Theme.fontPx(6); font.bold: true; font.letterSpacing: 1
                             }
                         }
                     }
@@ -198,7 +198,7 @@ Item {
                             id: statusHeading
                             text: String(backend.selectedDevice.status || "OFFLINE").toUpperCase()
                             color: root.scopeLinking ? Theme.warning : root.scopeImaging ? Theme.danger : root.scopeOnline ? Theme.success : Theme.textSecondary
-                            font.pixelSize: 15; font.bold: true; font.letterSpacing: 1.4
+                            font.pixelSize: Theme.fontPx(15); font.bold: true; font.letterSpacing: 1.4
                             Behavior on color { ColorAnimation { duration: 200 } }
                             SequentialAnimation on opacity {
                                 running: root.scopeImaging || root.scopeLinking
@@ -208,7 +208,7 @@ Item {
                                 onRunningChanged: if (!running) statusHeading.opacity = 1
                             }
                         }
-                        Text { text: root.deviceLabel(); color: Theme.textSecondary; font.pixelSize: 9 }
+                        Text { text: root.deviceLabel(); color: Theme.textSecondary; font.pixelSize: Theme.fontPx(9) }
                     }
                 }
                 Repeater {
@@ -225,9 +225,9 @@ Item {
                         required property var modelData
                         Layout.fillWidth: true
                         spacing: 6
-                        Text { text: modelData.label; color: Theme.textSecondary; font.pixelSize: 9; font.bold: true; font.letterSpacing: 0.8; Layout.preferredWidth: 72 }
+                        Text { text: modelData.label; color: Theme.textSecondary; font.pixelSize: Theme.fontPx(9); font.bold: true; font.letterSpacing: 0.8; Layout.preferredWidth: 72 }
                         Rectangle { Layout.fillWidth: true; Layout.minimumWidth: 12; Layout.preferredHeight: 1; color: Theme.outlineSoft; opacity: 0.7 }
-                        Text { text: modelData.value; color: modelData.tone; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; Layout.fillWidth: true; Layout.maximumWidth: implicitWidth }
+                        Text { text: modelData.value; color: modelData.tone; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; Layout.fillWidth: true; Layout.maximumWidth: implicitWidth }
                     }
                 }
             }
@@ -287,11 +287,11 @@ Item {
                                 spacing: vitalsBody.compact ? 3 : 5
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    Text { text: "STORAGE"; color: Theme.textSecondary; font.pixelSize: 8; font.bold: true; font.letterSpacing: 1.1; Layout.fillWidth: true }
+                                    Text { text: "STORAGE"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; font.letterSpacing: 1.1; Layout.fillWidth: true }
                                     Text {
                                         text: vitalsPanel.live ? String(vitalsPanel.t.storage_text || "—") : "—"
                                         color: vitalsPanel.live && vitalsPanel.t.storage_tone && vitalsPanel.t.storage_tone !== "unknown" && vitalsPanel.t.storage_tone !== "good" ? Util.toneColor(vitalsPanel.t.storage_tone) : Theme.textPrimary
-                                        font.pixelSize: 11; font.family: Theme.fontMono; font.bold: true
+                                        font.pixelSize: Theme.fontPx(11); font.family: Theme.fontMono; font.bold: true
                                         elide: Text.ElideRight
                                     }
                                 }
@@ -305,14 +305,14 @@ Item {
                                     visible: !vitalsBody.compact
                                     Layout.fillWidth: true
                                     text: vitalsPanel.live ? (vitalsPanel.t.storage_percent ? Math.round(Number(vitalsPanel.t.storage_percent) * 100) + "% USED" : (vitalsPanel.t.storage_valid === false ? "CARD MISSING" : "")) : ""
-                                    color: Theme.textSecondary; font.pixelSize: 8; font.letterSpacing: 0.8; elide: Text.ElideRight
+                                    color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.letterSpacing: 0.8; elide: Text.ElideRight
                                 }
                                 RowLayout {
                                     visible: !vitalsBody.compact
                                     Layout.fillWidth: true
                                     spacing: 4
                                     HudChip { label: vitalsPanel.t.charging_text || "BATT"; tone: vitalsPanel.t.charging ? Theme.warning : Theme.textSecondary; dim: !vitalsPanel.live; visible: vitalsPanel.live && !!vitalsPanel.t.charging_text }
-                                    Text { visible: !!vitalsPanel.t.battery_health_text && vitalsPanel.live; text: vitalsPanel.t.battery_health_text || ""; color: Theme.textSecondary; font.pixelSize: 8; font.letterSpacing: 0.6; elide: Text.ElideRight; Layout.fillWidth: true }
+                                    Text { visible: !!vitalsPanel.t.battery_health_text && vitalsPanel.live; text: vitalsPanel.t.battery_health_text || ""; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.letterSpacing: 0.6; elide: Text.ElideRight; Layout.fillWidth: true }
                                     Item { Layout.fillWidth: true; visible: !vitalsPanel.t.battery_health_text }
                                 }
                             }
@@ -339,27 +339,27 @@ Item {
                                     return 2
                                 return 1
                             }
-                            columnSpacing: height > 0 && height < 90 ? 4 : 6
-                            rowSpacing: height > 0 && height < 90 ? 4 : 6
-                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "♨"; label: "BODY TEMP"; value: vitalsPanel.live ? String(vitalsPanel.t.temperature_c_text || "—") : "—"; unit: vitalsPanel.live ? String(vitalsPanel.t.temperature_f_text || "") : ""; tone: Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
-                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "◉"; label: backend.selectedDevice.camera === "wide" ? "WIDE SENSOR" : "TELE SENSOR"; value: vitalsPanel.live ? String((backend.selectedDevice.camera === "wide" ? vitalsPanel.t.cmos_wide_c_text : vitalsPanel.t.cmos_tele_c_text) || "—") : "—"; unit: vitalsPanel.live ? String((backend.selectedDevice.camera === "wide" ? vitalsPanel.t.cmos_wide_f_text : vitalsPanel.t.cmos_tele_f_text) || "") : ""; tone: Theme.notice; stale: vitalsPanel.stale; live: vitalsPanel.live }
-                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "⌾"; label: "FOCUS"; value: vitalsPanel.live ? String(vitalsPanel.t.focus_text || "—") : "—"; unit: "STEPS"; tone: root.scopeActivity === "autofocus" || root.scopeActivity === "infinity" ? Theme.notice : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
-                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "⛭"; label: "MOUNT"; value: vitalsPanel.live ? String(vitalsPanel.t.mount_text || "—") : "—"; unit: vitalsPanel.t.mount_mode === "EQ" ? "EQUATORIAL" : vitalsPanel.t.mount_mode === "AZ" ? "ALT-AZ" : ""; tone: vitalsPanel.t.mount_mode === "EQ" ? Theme.success : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
-                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "▶"; label: "STREAM"; value: vitalsPanel.live ? String(vitalsPanel.t.stream_text || "—") : "—"; unit: vitalsPanel.t.shooting_mode_text && vitalsPanel.t.shooting_mode_text !== "—" ? vitalsPanel.t.shooting_mode_text : ""; tone: backend.previewPlaying ? Theme.danger : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
-                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: 46; Layout.minimumWidth: 0; glyph: "✦"; label: "LIGHTS"; value: vitalsPanel.live ? (vitalsPanel.t.lights_on ? "RING ON" : "RING OFF") : "—"; unit: vitalsPanel.live ? (vitalsPanel.t.indicator_on ? "· LED ON" : "· LED OFF") : ""; tone: vitalsPanel.t.lights_on ? Theme.warning : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                            columnSpacing: height > 0 && height < Theme.px(90) ? Theme.s1 : Theme.px(6)
+                            rowSpacing: height > 0 && height < Theme.px(90) ? Theme.s1 : Theme.px(6)
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: Theme.px(46); Layout.minimumWidth: 0; glyph: "♨"; label: "BODY TEMP"; value: vitalsPanel.live ? String(vitalsPanel.t.temperature_c_text || "—") : "—"; unit: vitalsPanel.live ? String(vitalsPanel.t.temperature_f_text || "") : ""; tone: Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: Theme.px(46); Layout.minimumWidth: 0; glyph: "◉"; label: backend.selectedDevice.camera === "wide" ? "WIDE SENSOR" : "TELE SENSOR"; value: vitalsPanel.live ? String((backend.selectedDevice.camera === "wide" ? vitalsPanel.t.cmos_wide_c_text : vitalsPanel.t.cmos_tele_c_text) || "—") : "—"; unit: vitalsPanel.live ? String((backend.selectedDevice.camera === "wide" ? vitalsPanel.t.cmos_wide_f_text : vitalsPanel.t.cmos_tele_f_text) || "") : ""; tone: Theme.notice; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: Theme.px(46); Layout.minimumWidth: 0; glyph: "⌾"; label: "FOCUS"; value: vitalsPanel.live ? String(vitalsPanel.t.focus_text || "—") : "—"; unit: "STEPS"; tone: root.scopeActivity === "autofocus" || root.scopeActivity === "infinity" ? Theme.notice : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: Theme.px(46); Layout.minimumWidth: 0; glyph: "⛭"; label: "MOUNT"; value: vitalsPanel.live ? String(vitalsPanel.t.mount_text || "—") : "—"; unit: vitalsPanel.t.mount_mode === "EQ" ? "EQUATORIAL" : vitalsPanel.t.mount_mode === "AZ" ? "ALT-AZ" : ""; tone: vitalsPanel.t.mount_mode === "EQ" ? Theme.success : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: Theme.px(46); Layout.minimumWidth: 0; glyph: "▶"; label: "STREAM"; value: vitalsPanel.live ? String(vitalsPanel.t.stream_text || "—") : "—"; unit: vitalsPanel.t.shooting_mode_text && vitalsPanel.t.shooting_mode_text !== "—" ? vitalsPanel.t.shooting_mode_text : ""; tone: backend.previewPlaying ? Theme.danger : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
+                            VitalTile { Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 0; Layout.preferredHeight: Theme.px(46); Layout.minimumWidth: 0; glyph: "✦"; label: "LIGHTS"; value: vitalsPanel.live ? (vitalsPanel.t.lights_on ? "RING ON" : "RING OFF") : "—"; unit: vitalsPanel.live ? (vitalsPanel.t.indicator_on ? "· LED ON" : "· LED OFF") : ""; tone: vitalsPanel.t.lights_on ? Theme.warning : Theme.accent; stale: vitalsPanel.stale; live: vitalsPanel.live }
                         }
                         Text {
                             visible: !root.scopeOnline
                             Layout.fillWidth: true
                             text: "Connect the telescope to stream battery, storage and sensor telemetry."
-                            color: Theme.textSecondary; font.pixelSize: 9; elide: Text.ElideRight; maximumLineCount: 1
+                            color: Theme.textSecondary; font.pixelSize: Theme.fontPx(9); elide: Text.ElideRight; maximumLineCount: 1
                         }
                         Text {
                             id: vitalsWaiting
                             visible: root.scopeOnline && !vitalsPanel.live
                             Layout.fillWidth: true
                             text: "Waiting for the first device report…"
-                            color: Theme.textSecondary; font.pixelSize: 9
+                            color: Theme.textSecondary; font.pixelSize: Theme.fontPx(9)
                             SequentialAnimation on opacity { running: vitalsWaiting.visible; loops: Animation.Infinite; NumberAnimation { to: 0.4; duration: 700 } NumberAnimation { to: 1; duration: 700 } }
                         }
                     }
@@ -427,7 +427,7 @@ Item {
                         return backend.selectedDevice.connected ? "No active lock" : "No telescope link"
                     }
                     color: Theme.textPrimary
-                    font.pixelSize: 18
+                    font.pixelSize: Theme.fontPx(18)
                     font.bold: true
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
@@ -446,7 +446,7 @@ Item {
                             : ""
                     }
                     color: Theme.textSecondary
-                    font.pixelSize: 11
+                    font.pixelSize: Theme.fontPx(11)
                 }
                 Text {
                     text: {
@@ -483,8 +483,8 @@ Item {
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    Text { text: backend.currentSession.duration_text ? "PLANNED  " + backend.currentSession.duration_text : Util.idleScheduleLabel(backend.upcomingSessions, backend.schedulerEnabled, backend.localNow.epoch_ms); color: Theme.accent; font.pixelSize: 11; font.letterSpacing: 0.8; Layout.fillWidth: true; elide: Text.ElideRight }
-                    Text { visible: !!backend.currentSession.id; text: Math.round(backend.sessionProgress * 100) + "%"; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono }
+                    Text { text: backend.currentSession.duration_text ? "PLANNED  " + backend.currentSession.duration_text : Util.idleScheduleLabel(backend.upcomingSessions, backend.schedulerEnabled, backend.localNow.epoch_ms); color: Theme.accent; font.pixelSize: Theme.fontPx(11); font.letterSpacing: 0.8; Layout.fillWidth: true; elide: Text.ElideRight }
+                    Text { visible: !!backend.currentSession.id; text: Math.round(backend.sessionProgress * 100) + "%"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono }
                 }
                 ProgressBar {
                     id: sessionBar
@@ -1415,7 +1415,7 @@ Item {
                                 anchors.centerIn: parent
                                 text: pipPane.wideView ? "WIDE" : "TELE"
                                 color: Theme.accent
-                                font.pixelSize: 9
+                                font.pixelSize: Theme.fontPx(9)
                                 font.bold: true
                                 font.letterSpacing: 1
                             }
@@ -1439,7 +1439,7 @@ Item {
                                 text: "SWAP"
                                 implicitHeight: 18
                                 implicitWidth: implicitContentWidth + 14
-                                font.pixelSize: 9
+                                font.pixelSize: Theme.fontPx(9)
                                 font.letterSpacing: 1
                                 leftPadding: 6
                                 rightPadding: 6
@@ -1453,7 +1453,7 @@ Item {
                                 text: "HIDE"
                                 implicitHeight: 18
                                 implicitWidth: implicitContentWidth + 14
-                                font.pixelSize: 9
+                                font.pixelSize: Theme.fontPx(9)
                                 font.letterSpacing: 1
                                 leftPadding: 6
                                 rightPadding: 6
@@ -1537,12 +1537,12 @@ Item {
                             anchors.leftMargin: 10
                             anchors.rightMargin: 10
                             spacing: 8
-                            Text { text: readoutStrip.wide ? "WIDE" : "TELE"; color: Theme.accent; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1; Layout.fillWidth: false }
+                            Text { text: readoutStrip.wide ? "WIDE" : "TELE"; color: Theme.accent; font.pixelSize: Theme.fontSm; font.bold: true; font.letterSpacing: 1; Layout.fillWidth: false }
                             Text {
                                 visible: root.scopeOnline && backend.previewSkyCoordVisible
                                 text: backend.previewSkyCoordText
                                 color: Theme.textPrimary
-                                font.pixelSize: 10
+                                font.pixelSize: Theme.fontSm
                                 font.family: Theme.fontMono
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
@@ -1550,31 +1550,31 @@ Item {
                                 Layout.preferredWidth: implicitWidth
                                 Layout.maximumWidth: implicitWidth
                             }
-                            Text { text: "EXP " + readoutStrip.exposure + "s"; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 36; Layout.preferredWidth: implicitWidth }
-                            Text { text: "GAIN " + readoutStrip.gain; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 36; Layout.preferredWidth: implicitWidth }
-                            Text { visible: !readoutStrip.wide; text: liveFilter.currentText.toUpperCase(); color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 24; Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
+                            Text { text: "EXP " + readoutStrip.exposure + "s"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 36; Layout.preferredWidth: implicitWidth }
+                            Text { text: "GAIN " + readoutStrip.gain; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 36; Layout.preferredWidth: implicitWidth }
+                            Text { visible: !readoutStrip.wide; text: liveFilter.currentText.toUpperCase(); color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 24; Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
                             Text {
                                 visible: root.scopeOnline && readoutStrip.t.capture_active && !!readoutStrip.t.capture_text
                                 text: "FRAMES " + (readoutStrip.t.capture_text || "")
                                 color: readoutStrip.t.capture_active ? Theme.danger : Theme.textPrimary
-                                font.pixelSize: 10; font.family: Theme.fontMono; font.bold: true
+                                font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; font.bold: true
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 40
                                 Layout.preferredWidth: implicitWidth
                             }
                             Item { Layout.fillWidth: true; Layout.preferredWidth: 8; Layout.minimumWidth: 0 }
-                            Text { visible: root.scopeOnline && readoutStrip.sensor !== "—"; text: "SENSOR " + readoutStrip.sensor; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
+                            Text { visible: root.scopeOnline && readoutStrip.sensor !== "—"; text: "SENSOR " + readoutStrip.sensor; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
                             Text {
                                 visible: root.scopeOnline && readoutStrip.t.battery_percent !== undefined && Number(readoutStrip.t.battery_percent) >= 0
                                 text: "BATT " + (readoutStrip.t.battery_text || "—") + (readoutStrip.t.charging ? "⚡" : "")
                                 color: Util.toneColor(Util.batteryTone(readoutStrip.t.battery_percent))
-                                font.pixelSize: 10; font.family: Theme.fontMono
+                                font.pixelSize: Theme.fontSm; font.family: Theme.fontMono
                                 elide: Text.ElideRight
                                 Layout.fillWidth: false
                             }
-                            Text { visible: !root.scopeOnline; text: backend.selectedDevice.ip_address || "—"; color: Theme.textSecondary; font.pixelSize: 10; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.maximumWidth: 120 }
-                            Text { text: backend.clockText; color: Theme.accent; font.pixelSize: 10; font.family: Theme.fontMono; Layout.fillWidth: false }
+                            Text { visible: !root.scopeOnline; text: backend.selectedDevice.ip_address || "—"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.maximumWidth: 120 }
+                            Text { text: backend.clockText; color: Theme.accent; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; Layout.fillWidth: false }
                         }
                     }
                     Rectangle {
@@ -1607,7 +1607,7 @@ Item {
                                         return Theme.warning
                                     return Theme.success
                                 }
-                                font.pixelSize: 12
+                                font.pixelSize: Theme.fontMd
                                 font.letterSpacing: 2
                                 font.bold: true
                             }
@@ -1616,7 +1616,7 @@ Item {
                                 wrapMode: Text.Wrap
                                 text: backend.previewResultDetail || "Completed stack from the telescope. This is not live video."
                                 color: Theme.textPrimary
-                                font.pixelSize: 11
+                                font.pixelSize: Theme.fontPx(11)
                             }
                         }
                     }
@@ -1630,7 +1630,7 @@ Item {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: "LIVE VIEW PAUSED"
                             color: Theme.warning
-                            font.pixelSize: 16
+                            font.pixelSize: Theme.fontLg
                             font.letterSpacing: 3
                             font.bold: true
                         }
@@ -1641,7 +1641,7 @@ Item {
                             horizontalAlignment: Text.AlignHCenter
                             text: backend.previewHoldMessage
                             color: Theme.textPrimary
-                            font.pixelSize: 13
+                            font.pixelSize: Theme.fontBase
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -1650,7 +1650,7 @@ Item {
                             horizontalAlignment: Text.AlignHCenter
                             text: "Streaming resumes automatically when stacking starts."
                             color: Theme.textSecondary
-                            font.pixelSize: 11
+                            font.pixelSize: Theme.fontPx(11)
                         }
                     }
                     Column {
@@ -1658,7 +1658,7 @@ Item {
                         anchors.centerIn: parent
                         spacing: 8
                         visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.startBriefVisible && !previewHost.mosaicPreview
-                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: Theme.textPrimary; font.pixelSize: 16; font.letterSpacing: 3; font.bold: true }
+                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: Theme.textPrimary; font.pixelSize: Theme.fontLg; font.letterSpacing: 3; font.bold: true }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             width: previewHost.width - 40
@@ -1773,7 +1773,7 @@ Item {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 text: "WAITING FOR FIRST STACKED FRAME"
                                 color: Theme.warning
-                                font.pixelSize: 16
+                                font.pixelSize: Theme.fontLg
                                 font.letterSpacing: 2
                                 font.bold: true
                                 SequentialAnimation on opacity {
@@ -1795,7 +1795,7 @@ Item {
                                         ? previewHost.stackCount + " frames stacked"
                                         : "No stacked frames yet")
                                 color: Theme.textPrimary
-                                font.pixelSize: 13
+                                font.pixelSize: Theme.fontBase
                             }
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
@@ -1804,7 +1804,7 @@ Item {
                                 horizontalAlignment: Text.AlignHCenter
                                 text: "Live video stops when stacking starts. The stacked preview appears after the first frame is captured and added to the stack — this can take one full exposure."
                                 color: Theme.textSecondary
-                                font.pixelSize: 11
+                                font.pixelSize: Theme.fontPx(11)
                             }
                         }
                     }
@@ -1831,7 +1831,7 @@ Item {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 text: "STOPPING"
                                 color: Theme.warning
-                                font.pixelSize: 16
+                                font.pixelSize: Theme.fontLg
                                 font.letterSpacing: 3
                                 font.bold: true
                                 SequentialAnimation on opacity {
@@ -1849,7 +1849,7 @@ Item {
                                 horizontalAlignment: Text.AlignHCenter
                                 text: previewHost.statusText
                                 color: Theme.textPrimary
-                                font.pixelSize: 13
+                                font.pixelSize: Theme.fontBase
                             }
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
@@ -1858,7 +1858,7 @@ Item {
                                 horizontalAlignment: Text.AlignHCenter
                                 text: "This can take a few seconds while capture, GOTO and motors wind down."
                                 color: Theme.textSecondary
-                                font.pixelSize: 11
+                                font.pixelSize: Theme.fontPx(11)
                             }
                         }
                     }
@@ -1891,7 +1891,7 @@ Item {
                                         NumberAnimation { from: 0.3; to: 1; duration: 600 }
                                     }
                                 }
-                                Text { text: previewBadge.stopping ? "STOPPING" : (backend.previewResult ? "RESULT" : (backend.previewPlaying ? (backend.previewStacking ? "STACK" : "LIVE") : (backend.previewHeld ? "PAUSED" : (backend.previewActive ? "STARTING" : "STANDBY")))); color: Theme.textPrimary; font.pixelSize: 11; font.bold: true }
+                                Text { text: previewBadge.stopping ? "STOPPING" : (backend.previewResult ? "RESULT" : (backend.previewPlaying ? (backend.previewStacking ? "STACK" : "LIVE") : (backend.previewHeld ? "PAUSED" : (backend.previewActive ? "STARTING" : "STANDBY")))); color: Theme.textPrimary; font.pixelSize: Theme.fontPx(11); font.bold: true }
                             }
                         }
                         Rectangle {
@@ -1905,7 +1905,7 @@ Item {
                                 anchors.centerIn: parent
                                 text: previewHost.displayWide ? "WIDE" : (backend.previewResult || backend.previewStacking ? "STACK" : "TELE")
                                 color: Theme.accent
-                                font.pixelSize: 11
+                                font.pixelSize: Theme.fontPx(11)
                                 font.bold: true
                                 font.letterSpacing: 1
                             }
@@ -1922,7 +1922,7 @@ Item {
                                 anchors.centerIn: parent
                                 text: "ENHANCE"
                                 color: previewHost.previewEnhance ? Theme.accent : Theme.textSecondary
-                                font.pixelSize: 11
+                                font.pixelSize: Theme.fontPx(11)
                                 font.bold: true
                                 font.letterSpacing: 1
                             }
@@ -1946,7 +1946,7 @@ Item {
                                 anchors.centerIn: parent
                                 text: "DEEP"
                                 color: previewHost.previewDeep ? Theme.accent : Theme.textSecondary
-                                font.pixelSize: 11
+                                font.pixelSize: Theme.fontPx(11)
                                 font.bold: true
                                 font.letterSpacing: 1
                             }
@@ -1988,7 +1988,7 @@ Item {
                                             ? "REC " + (root.scopeActivityDetail || "00:00")
                                             : "STACKING " + (recBadge.t.capture_text || "")
                                     }
-                                    color: Theme.danger; font.pixelSize: 11; font.bold: true; font.family: Theme.fontMono
+                                    color: Theme.danger; font.pixelSize: Theme.fontPx(11); font.bold: true; font.family: Theme.fontMono
                                 }
                             }
                         }
@@ -2073,7 +2073,7 @@ Item {
                             anchors.leftMargin: 14
                             anchors.rightMargin: 14
                             spacing: 10
-                            Text { text: "\uE962"; font.family: Theme.fontIcon; font.pixelSize: 12; color: Theme.accent; Layout.alignment: Qt.AlignVCenter }
+                            Text { text: "\uE962"; font.family: Theme.fontIcon; font.pixelSize: Theme.fontMd; color: Theme.accent; Layout.alignment: Qt.AlignVCenter }
                             Text {
                                 text: "MOVE THE POINTER OVER THE STREAM FOR CONTROLS  ·  DOUBLE-CLICK THE WIDE VIEW TO CENTRE"
                                 color: Theme.textPrimary
@@ -2164,13 +2164,13 @@ Item {
                     Text {
                         text: String(root.scopeTelemetry.eq_azi_text || "")
                         color: Number(root.scopeTelemetry.eq_azi_err) > 0 ? Theme.success : (Number(root.scopeTelemetry.eq_azi_err) < 0 ? Theme.danger : Theme.textSecondary)
-                        font.pixelSize: 10
+                        font.pixelSize: Theme.fontSm
                         font.family: Theme.fontMono
                     }
                     Text {
                         text: String(root.scopeTelemetry.eq_alt_text || "")
                         color: Number(root.scopeTelemetry.eq_alt_err) > 0 ? Theme.success : (Number(root.scopeTelemetry.eq_alt_err) < 0 ? Theme.danger : Theme.textSecondary)
-                        font.pixelSize: 10
+                        font.pixelSize: Theme.fontSm
                         font.family: Theme.fontMono
                     }
                 }
@@ -2514,8 +2514,8 @@ Item {
                     delegate: RowLayout {
                         required property var modelData
                         Layout.fillWidth: true
-                        Text { text: modelData.label; color: Theme.textSecondary; font.pixelSize: 10; font.bold: true; Layout.preferredWidth: 72 }
-                        Text { text: modelData.value; color: Theme.textPrimary; font.pixelSize: 12; elide: Text.ElideRight; Layout.fillWidth: true }
+                        Text { text: modelData.label; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.bold: true; Layout.preferredWidth: 72 }
+                        Text { text: modelData.value; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; elide: Text.ElideRight; Layout.fillWidth: true }
                     }
                 }
             }
@@ -2544,7 +2544,7 @@ Item {
                     visible: motionPanel.stacking && stackTimer.target
                     text: stackTimer.target
                     color: Theme.textSecondary
-                    font.pixelSize: 9
+                    font.pixelSize: Theme.fontPx(9)
                     font.letterSpacing: 0.6
                     elide: Text.ElideRight
                     width: Math.min(110, implicitWidth)
@@ -2870,7 +2870,7 @@ Item {
                     visible: !motionPanel.stacking
                     Layout.fillWidth: true
                     opacity: root.motionEnabled && !motionPanel.captureArmed ? 1 : 0.42
-                    Text { text: "SPEED"; color: Theme.textSecondary; font.pixelSize: 10 }
+                    Text { text: "SPEED"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm }
                     Slider {
                         id: speedSlider
                         Layout.fillWidth: true
@@ -2886,7 +2886,7 @@ Item {
                     Text {
                         text: root.mappedJoySpeedText
                         color: Theme.textPrimary
-                        font.pixelSize: 10
+                        font.pixelSize: Theme.fontSm
                         font.family: Theme.fontMono
                         Layout.preferredWidth: 42
                         horizontalAlignment: Text.AlignRight
@@ -2895,7 +2895,7 @@ Item {
                 RowLayout {
                     visible: motionPanel.stacking
                     Layout.fillWidth: true
-                    Text { text: "FRAME"; color: Theme.textSecondary; font.pixelSize: 10 }
+                    Text { text: "FRAME"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm }
                     Item {
                         Layout.fillWidth: true
                         implicitHeight: 12
@@ -2921,7 +2921,7 @@ Item {
                             return label
                         }
                         color: stackTimer.waiting ? Theme.warning : Theme.textPrimary
-                        font.pixelSize: 10
+                        font.pixelSize: Theme.fontSm
                         font.family: Theme.fontMono
                     }
                 }
@@ -2939,7 +2939,7 @@ Item {
                         text: controlPage.selectedUpcomingCount > 0 && controlPage.selectedUpcomingCount === backend.upcomingSessions.length ? "CLEAR" : "ALL"
                         implicitHeight: 20
                         implicitWidth: 44
-                        font.pixelSize: 8
+                        font.pixelSize: Theme.fontXs
                         leftPadding: 6
                         rightPadding: 6
                         onClicked: {
@@ -2954,7 +2954,7 @@ Item {
                         visible: controlPage.selectedUpcomingCount > 1
                         implicitHeight: 20
                         implicitWidth: controlPage.selectedUpcomingCount > 1 ? 64 : 44
-                        font.pixelSize: 8
+                        font.pixelSize: Theme.fontXs
                         leftPadding: 6
                         rightPadding: 6
                         onClicked: sessionDialog.openSelected(Util.itemsByIds(backend.upcomingSessions, controlPage.selectedUpcomingIds))
@@ -2964,7 +2964,7 @@ Item {
                         enabled: controlPage.selectedUpcomingCount > 0
                         implicitHeight: 20
                         implicitWidth: controlPage.selectedUpcomingCount > 1 ? 64 : 58
-                        font.pixelSize: 8
+                        font.pixelSize: Theme.fontXs
                         leftPadding: 6
                         rightPadding: 6
                         buttonColor: Theme.fillDanger
@@ -2981,6 +2981,7 @@ Item {
                         anchors.fill: parent
                         targetList: upcomingList
                         rowHeight: 44
+                        headerHeight: 20
                         ListView {
                             id: upcomingList
                             anchors.fill: parent
@@ -3006,7 +3007,7 @@ Item {
                                     return !prev || String(prev.group_key || "") !== String(modelData.group_key || "")
                                 }
                                 readonly property color groupTone: Util.sessionTone(modelData)
-                                opacity: DragCoordinator.active && DragCoordinator.data.id === modelData.id ? 0.35 : 1
+                                opacity: DragCoordinator.active && Util.sameSessionGroup(DragCoordinator.data, modelData) ? 0.35 : 1
                                 Item {
                                     width: parent.width
                                     height: upcomingWrap.showHeader ? 20 : 0
@@ -3025,7 +3026,7 @@ Item {
                                         Text {
                                             text: String(upcomingWrap.modelData.group_title || upcomingWrap.modelData.display_title || "").toUpperCase()
                                             color: upcomingWrap.groupTone
-                                            font.pixelSize: 8
+                                            font.pixelSize: Theme.fontXs
                                             font.letterSpacing: 1.1
                                             font.bold: true
                                             elide: Text.ElideRight
@@ -3034,7 +3035,7 @@ Item {
                                         Text {
                                             text: Number(upcomingWrap.modelData.pane_count || 0) + "P"
                                             color: Theme.textSecondary
-                                            font.pixelSize: 8
+                                            font.pixelSize: Theme.fontXs
                                             font.family: Theme.fontMono
                                             Layout.fillWidth: false
                                         }
@@ -3075,7 +3076,7 @@ Item {
                                     ColumnLayout {
                                         Layout.fillWidth: true
                                         spacing: 0
-                                        Text { text: modelData.pane_name || modelData.target_name; color: Theme.textPrimary; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                                        Text { text: modelData.pane_name || modelData.target_name; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                         Text {
                                             readonly property bool due: {
                                                 backend.clockText
@@ -3088,7 +3089,7 @@ Item {
                                                 const seconds = Math.floor(((isNaN(startMs) ? new Date(modelData.scheduled_start).getTime() : startMs) - Date.now()) / 1000)
                                                 return modelData.start_time + " · " + modelData.duration_text + (seconds > 0 ? " · T−" + Util.durationLabel(seconds) : " · DUE")
                                             }
-                                            color: due ? Theme.warning : Theme.textSecondary; font.pixelSize: 9
+                                            color: due ? Theme.warning : Theme.textSecondary; font.pixelSize: Theme.fontPx(9)
                                         }
                                     }
                                 }
@@ -3152,7 +3153,7 @@ Item {
                                     width: badgeText.implicitWidth + 6; height: 12; radius: 6
                                     color: backend.logErrorCount > 0 ? Theme.danger : Theme.warning
                                     anchors.verticalCenter: parent.verticalCenter
-                                    Text { id: badgeText; anchors.centerIn: parent; text: pill.badge > 99 ? "99+" : pill.badge; color: Theme.windowBase; font.pixelSize: 8; font.bold: true }
+                                    Text { id: badgeText; anchors.centerIn: parent; text: pill.badge > 99 ? "99+" : pill.badge; color: Theme.windowBase; font.pixelSize: Theme.fontXs; font.bold: true }
                                 }
                             }
                             Rectangle {
@@ -3166,7 +3167,7 @@ Item {
                                 radius: 6
                                 z: 1
                                 color: backend.logErrorCount > 0 ? Theme.danger : Theme.warning
-                                Text { id: compactBadgeText; anchors.centerIn: parent; text: pill.badge > 99 ? "99+" : pill.badge; color: Theme.windowBase; font.pixelSize: 7; font.bold: true }
+                                Text { id: compactBadgeText; anchors.centerIn: parent; text: pill.badge > 99 ? "99+" : pill.badge; color: Theme.windowBase; font.pixelSize: Theme.fontPx(7); font.bold: true }
                             }
                             HoverHandler { id: pillHover; cursorShape: Qt.PointingHandCursor }
                             TapHandler { onTapped: backend.setLogFilter(pill.modelData.key) }
@@ -3228,10 +3229,10 @@ Item {
                             id: newPillRow
                             anchors.centerIn: parent
                             spacing: 6
-                            Text { text: "↓"; color: Theme.accent; font.pixelSize: 11; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: "↓"; color: Theme.accent; font.pixelSize: Theme.fontPx(11); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
                             Text {
                                 text: logList.unseen > 0 ? logList.unseen + " NEW" : "FOLLOW"
-                                color: Theme.textPrimary; font.pixelSize: 9; font.bold: true; font.letterSpacing: 1
+                                color: Theme.textPrimary; font.pixelSize: Theme.fontPx(9); font.bold: true; font.letterSpacing: 1
                                 anchors.verticalCenter: parent.verticalCenter
                             }
                         }
@@ -3351,13 +3352,13 @@ Item {
                                     text: logRow.time
                                     color: Theme.muted
                                     font.family: Theme.fontMono
-                                    font.pixelSize: 9
+                                    font.pixelSize: Theme.fontPx(9)
                                     Layout.preferredWidth: 50
                                 }
                                 Text {
                                     text: logRow.glyph
                                     color: logRow.quiet && logRow.level !== "INFO" ? Theme.muted : logRow.tone
-                                    font.pixelSize: 9
+                                    font.pixelSize: Theme.fontPx(9)
                                     font.bold: true
                                     Layout.preferredWidth: 10
                                     horizontalAlignment: Text.AlignHCenter
@@ -3366,7 +3367,7 @@ Item {
                                     visible: backend.devices.length > 1
                                     text: logRow.device
                                     color: Theme.textSecondary
-                                    font.pixelSize: 9
+                                    font.pixelSize: Theme.fontPx(9)
                                     elide: Text.ElideRight
                                     Layout.maximumWidth: 62
                                 }
@@ -3375,7 +3376,7 @@ Item {
                                     text: logRow.message
                                     color: logRow.level === "SDK" || logRow.level === "DEBUG" ? Theme.muted : logRow.level === "INFO" ? Theme.hsl(0.033, 0.426, 0.802) : logRow.tone
                                     font.family: Theme.fontMono
-                                    font.pixelSize: 10
+                                    font.pixelSize: Theme.fontSm
                                     elide: Text.ElideRight
                                     maximumLineCount: 1
                                     Layout.fillWidth: true
@@ -3387,7 +3388,7 @@ Item {
                                     radius: 6
                                     color: Qt.rgba(logRow.tone.r, logRow.tone.g, logRow.tone.b, 0.2)
                                     border.color: Qt.rgba(logRow.tone.r, logRow.tone.g, logRow.tone.b, 0.6)
-                                    Text { id: countText; anchors.centerIn: parent; text: "×" + logRow.count; color: logRow.tone; font.pixelSize: 8; font.bold: true }
+                                    Text { id: countText; anchors.centerIn: parent; text: "×" + logRow.count; color: logRow.tone; font.pixelSize: Theme.fontXs; font.bold: true }
                                 }
                             }
                             HoverHandler { id: rowHover }
@@ -3435,11 +3436,22 @@ Item {
                         width: parent.width - 24
                         glyph: backend.logFilter === "alerts" ? "✓" : "◇"
                         text: backend.logFilter === "alerts" ? "No warnings or errors" : backend.logFilter === "device" ? "No device reports yet" : "Log is empty"
-                        font.pixelSize: 11
+                        font.pixelSize: Theme.fontPx(11)
                     }
                 }
             }
         }
+    }
+    Rectangle {
+        id: columnDockMark
+        z: 3000
+        enabled: false
+        width: 3
+        x: controlColumns.x + PanelSwap.columnDockX - width / 2
+        y: controlColumns.y
+        height: controlColumns.height
+        visible: PanelSwap.active && PanelSwap.dropMode === "column"
+        color: Theme.accent
     }
     Rectangle {
         id: panelDragProxy
@@ -3459,7 +3471,7 @@ Item {
             anchors.centerIn: parent
             text: PanelSwap.source ? (PanelSwap.source.moveLabel || "PANEL") : ""
             color: Theme.accent
-            font.pixelSize: 9
+            font.pixelSize: Theme.fontPx(9)
             font.bold: true
             font.letterSpacing: 1.2
             font.family: Theme.fontMono

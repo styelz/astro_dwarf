@@ -62,7 +62,7 @@ Dialog {
 
     component FieldCaption: Text {
         color: Theme.textSecondary
-        font.pixelSize: 9
+        font.pixelSize: Theme.fontPx(9)
         font.letterSpacing: 1.0
         font.bold: true
     }
@@ -527,7 +527,7 @@ Dialog {
         gain.text = String(capture.gain)
         frames.text = String(capture.frame_count)
     }
-    function openForDate(day) {
+    function openForDate(day, minutes) {
         sessionDialog.resetEditorState()
         editingId = ""
         editingAnchorId = ""
@@ -539,7 +539,9 @@ Dialog {
         targetType.currentIndex = 0
         ra.text = ""
         dec.text = ""
-        startTime.text = backend.nightTimelineIso(day, 10 * 60) || (day + "T22:00")
+        const mins = (minutes === undefined || minutes === null || minutes === "" || Number(minutes) < 0)
+                     ? 10 * 60 : Number(minutes)
+        startTime.text = backend.nightTimelineIso(day, mins) || (day + "T22:00")
         sessionDialog.applyCaptureDefaults(sessionDialog.editingDeviceId)
         binning.currentIndex = 0
         irFilter.currentIndex = 0
@@ -564,7 +566,7 @@ Dialog {
         open()
     }
     function openExisting(data) {
-        const panes = backend.sessionPanes(data.id)
+        const panes = backend.sessionPanes(data && data.id)
         const members = panes && panes.length ? panes : []
         sessionDialog.resetEditorState()
         editingId = data.id
@@ -685,7 +687,7 @@ Dialog {
                     return sessionDialog.editingId ? "EDIT SESSION" : "NEW SESSION"
                 }
                 color: Theme.accent
-                font.pixelSize: 20
+                font.pixelSize: Theme.fontPx(20)
                 font.letterSpacing: 2
                 Layout.fillWidth: true
             }
@@ -738,7 +740,7 @@ Dialog {
                 return "Camera, wait, and workflow apply only to this pane. Name and coordinates also follow this pane. Mosaic and notes still apply to every pane."
             }
             color: Theme.textSecondary
-            font.pixelSize: 12
+            font.pixelSize: Theme.fontMd
             wrapMode: Text.Wrap
             Layout.fillWidth: true
         }
@@ -781,7 +783,7 @@ Dialog {
                     objectName: "copy-ra-dec"
                     text: "\uE8C8"
                     font.family: Theme.fontIcon
-                    font.pixelSize: 12
+                    font.pixelSize: Theme.fontMd
                     font.letterSpacing: 0
                     implicitWidth: Theme.compactControlHeight
                     implicitHeight: Theme.compactControlHeight
@@ -921,7 +923,7 @@ Dialog {
                 Layout.fillWidth: true
                 text: sessionDialog.planGridText
                 color: Theme.textSecondary
-                font.pixelSize: 12
+                font.pixelSize: Theme.fontMd
                 wrapMode: Text.Wrap
             }
             FieldLabel { text: "ROTATION / SCALE"; visible: sessionDialog.mosaicScaleVisible }
