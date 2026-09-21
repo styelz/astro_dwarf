@@ -26,7 +26,7 @@ ColumnLayout {
         }
         Rectangle {
             Layout.fillWidth: true
-            implicitHeight: 1
+            implicitHeight: Theme.px(1)
             gradient: Gradient {
                 orientation: Gradient.Horizontal
                 GradientStop { position: 0.0; color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.35) }
@@ -35,7 +35,7 @@ ColumnLayout {
         }
         Row {
             id: trailingRow
-            spacing: 6
+            spacing: Theme.px(6)
             Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
         }
     }

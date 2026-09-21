@@ -11,12 +11,12 @@ RowLayout {
     default property alias actions: pageActions.data
     Layout.fillWidth: true
     spacing: Theme.px(10)
-    Rectangle { width: Theme.px(3); Layout.preferredHeight: Theme.controlHeight; color: Theme.accent; radius: 1 }
+    Rectangle { width: Theme.px(3); Layout.preferredHeight: Theme.controlHeight; color: Theme.accent; radius: Theme.px(1) }
     ColumnLayout {
         Layout.fillWidth: true
         Layout.minimumWidth: 0
         Layout.preferredWidth: 0
-        spacing: 1
+        spacing: Theme.px(1)
         RowLayout {
             Layout.fillWidth: true
             spacing: Theme.s2

@@ -37,14 +37,14 @@ Item {
         flickableDirection: Flickable.VerticalFlick
         contentWidth: width
         contentHeight: Math.max(height, sessionsColumn.implicitHeight)
-        interactive: contentHeight > height + 1
+        interactive: contentHeight > height + Theme.px(1)
         ScrollBar.vertical: HiddenBar {}
         ScrollBar.horizontal: HiddenBar {}
     ColumnLayout {
         id: sessionsColumn
         width: sessionsFlick.width
         height: Math.max(implicitHeight, sessionsFlick.height)
-        spacing: 10
+        spacing: Theme.px(10)
         PageHeader {
             title: "SESSIONS"
             subtitle: {
@@ -92,9 +92,9 @@ Item {
                 }
                 Rectangle {
                     anchors.bottom: parent.bottom
-                    anchors.bottomMargin: 1
+                    anchors.bottomMargin: Theme.px(1)
                     anchors.horizontalCenter: parent.horizontalCenter
-                    height: 2
+                    height: Theme.px(2)
                     width: sessionsTabs.currentIndex === 0 ? parent.width - Theme.px(24) : 0
                     color: Theme.accent
                     Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
@@ -123,9 +123,9 @@ Item {
                 }
                 Rectangle {
                     anchors.bottom: parent.bottom
-                    anchors.bottomMargin: 1
+                    anchors.bottomMargin: Theme.px(1)
                     anchors.horizontalCenter: parent.horizontalCenter
-                    height: 2
+                    height: Theme.px(2)
                     width: sessionsTabs.currentIndex === 1 ? parent.width - Theme.px(24) : 0
                     color: Theme.accent
                     Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
@@ -136,7 +136,7 @@ Item {
             currentIndex: sessionsTabs.currentIndex
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.minimumHeight: 280
+            Layout.minimumHeight: Theme.px(280)
             Layout.preferredHeight: 0
             Item {
                 id: scheduledPage
@@ -279,7 +279,7 @@ Item {
                 EmptyHint { visible: backend.sessions.length === 0; glyph: "✦"; text: "No scheduled sessions yet. Create one manually or import a Stellarium / Telescopius target list."; anchors.centerIn: parent }
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: 4
+                    spacing: Theme.s1
                     visible: backend.sessions.length > 0
                     SelectionBar {
                         selectedCount: scheduledPage.selectedCount
@@ -327,13 +327,13 @@ Item {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         targetList: scheduledList
-                        rowHeight: 76
-                        headerHeight: 30
+                        rowHeight: Theme.px(76)
+                        headerHeight: Theme.px(30)
                         ListView {
                             id: scheduledList
                             anchors.fill: parent
                             clip: true
-                            spacing: 6
+                            spacing: Theme.px(6)
                             boundsBehavior: Flickable.StopAtBounds
                             ScrollBar.vertical: HiddenBar {}
                             ScrollBar.horizontal: HiddenBar {}
@@ -345,7 +345,7 @@ Item {
                                 objectName: modelData && modelData.is_grouped ? "session-group-" + modelData.group_id : ""
                                 width: ListView.view.width
                                 spacing: 0
-                                height: (showHeader ? 30 : 0) + 76
+                                height: (showHeader ? Theme.px(30) : 0) + Theme.px(76)
                                 readonly property bool collapsedGroup: !!(modelData && modelData.group_collapsed)
                                 readonly property bool showHeader: {
                                     if (!modelData.is_grouped || scheduledWrap.collapsedGroup)
@@ -361,7 +361,7 @@ Item {
                                     id: groupHeader
                                     objectName: scheduledWrap.showHeader ? "session-group-" + scheduledWrap.modelData.group_id : ""
                                     width: parent.width
-                                    height: scheduledWrap.showHeader ? 30 : 0
+                                    height: scheduledWrap.showHeader ? Theme.px(30) : 0
                                     visible: scheduledWrap.showHeader
                                     activeFocusOnTab: visible
                                     Accessible.role: Accessible.Button
@@ -396,10 +396,10 @@ Item {
                                         anchors.fill: parent
                                         anchors.leftMargin: scheduledPage.rowInset
                                         anchors.rightMargin: scheduledPage.rowInset
-                                        spacing: 8
+                                        spacing: Theme.s2
                                         Rectangle {
-                                            Layout.preferredWidth: 4
-                                            Layout.preferredHeight: 14
+                                            Layout.preferredWidth: Theme.s1
+                                            Layout.preferredHeight: Theme.px(14)
                                             Layout.alignment: Qt.AlignVCenter
                                             color: scheduledWrap.groupTone
                                         }
@@ -437,7 +437,7 @@ Item {
                                     readonly property var modelData: scheduledWrap.modelData
                                     readonly property var actionSession: modelData.group_action || modelData
                                     width: parent.width
-                                    height: 76
+                                    height: Theme.px(76)
                                     readonly property color groupTone: scheduledWrap.groupTone
                                     fill: scheduledPage.rowHighlighted(modelData) ? Theme.hsl(0.036, 0.640, 0.196, 0.753) : (modelData.is_grouped ? Util.groupFill(modelData.group_id) : Theme.panelFill)
                                 overlay: [
@@ -518,8 +518,8 @@ Item {
                                         Layout.maximumWidth: scheduledPage.gripWidth
                                         Layout.fillHeight: true
                                         Rectangle {
-                                            width: 4
-                                            height: parent.height - 8
+                                            width: Theme.s1
+                                            height: parent.height - Theme.s2
                                             anchors.verticalCenter: parent.verticalCenter
                                             color: scheduledRow.groupTone
                                         }
@@ -527,15 +527,15 @@ Item {
                                     Item {
                                         Layout.fillWidth: true
                                         Layout.fillHeight: true
-                                        Layout.minimumWidth: 140
+                                        Layout.minimumWidth: Theme.px(140)
                                         Column {
                                             anchors.verticalCenter: parent.verticalCenter
                                             anchors.left: parent.left
                                             anchors.right: parent.right
-                                            spacing: 3
+                                            spacing: Theme.px(3)
                                             Row {
                                                 width: parent.width
-                                                spacing: 6
+                                                spacing: Theme.px(6)
                                                 Text {
                                                     visible: scheduledWrap.collapsedGroup
                                                     text: "▸"
@@ -544,7 +544,7 @@ Item {
                                                     anchors.verticalCenter: parent.verticalCenter
                                                 }
                                                 Text {
-                                                    width: parent.width - (scheduledWrap.collapsedGroup ? 20 : 0)
+                                                    width: parent.width - (scheduledWrap.collapsedGroup ? Theme.s5 : 0)
                                                     text: scheduledWrap.collapsedGroup
                                                           ? (scheduledRow.modelData.group_title || scheduledRow.modelData.display_title || scheduledRow.modelData.target_name)
                                                           : (scheduledRow.modelData.pane_name || scheduledRow.modelData.target_name)
@@ -606,16 +606,16 @@ Item {
                                             anchors.verticalCenter: parent.verticalCenter
                                             anchors.left: parent.left
                                             anchors.right: parent.right
-                                            spacing: 8
+                                            spacing: Theme.s2
                                             Rectangle {
-                                                width: 7
-                                                height: 7
-                                                radius: 4
+                                                width: Theme.px(7)
+                                                height: Theme.px(7)
+                                                radius: Theme.s1
                                                 anchors.verticalCenter: parent.verticalCenter
                                                 color: scheduledRow.modelData.device_color || Theme.accent
                                             }
                                             Text {
-                                                width: parent.width - 15
+                                                width: parent.width - Theme.px(15)
                                                 text: scheduledRow.modelData.device_name
                                                 color: Theme.textPrimary
                                                 elide: Text.ElideRight
@@ -648,7 +648,7 @@ Item {
                                             status: scheduledWrap.collapsedGroup
                                                     ? (scheduledRow.modelData.group_status || scheduledRow.modelData.status)
                                                     : scheduledRow.modelData.status
-                                            implicitWidth: 86
+                                            implicitWidth: Theme.px(86)
                                             implicitHeight: Theme.px(22)
                                         }
                                     }
@@ -658,11 +658,11 @@ Item {
                                         Layout.minimumWidth: scheduledPage.actionsWidth
                                         Layout.fillWidth: false
                                         Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
-                                        spacing: 6
+                                        spacing: Theme.px(6)
                                         HudButton {
                                             text: "EDIT"
                                             implicitHeight: Theme.px(30)
-                                            Layout.preferredWidth: 68
+                                            Layout.preferredWidth: Theme.px(68)
                                             enabled: (scheduledWrap.collapsedGroup
                                                       ? scheduledRow.modelData.group_status
                                                       : scheduledRow.modelData.status) !== "running"
@@ -672,7 +672,7 @@ Item {
                                         HudButton {
                                             text: "RESET"
                                             implicitHeight: Theme.px(30)
-                                            Layout.preferredWidth: 76
+                                            Layout.preferredWidth: Theme.px(76)
                                             opacity: scheduledPage.canResetItem(scheduledRow.modelData) ? 1 : 0
                                             enabled: scheduledPage.canResetItem(scheduledRow.modelData)
                                             busyText: "RESETTING…"
@@ -681,7 +681,7 @@ Item {
                                         HudButton {
                                             text: scheduledRow.actionSession.status === "running" ? "STOP" : "RUN"
                                             implicitHeight: Theme.px(30)
-                                            Layout.preferredWidth: 68
+                                            Layout.preferredWidth: Theme.px(68)
                                             enabled: scheduledRow.actionSession.status !== "running" || !root.sessionStopping(scheduledRow.actionSession)
                                             busy: root.sessionStopping(scheduledRow.actionSession)
                                             busyText: scheduledRow.actionSession.status === "running" ? "STOPPING…" : "STARTING…"
@@ -776,7 +776,7 @@ Item {
                 EmptyHint { anchors.centerIn: parent; visible: backend.templates.length === 0; glyph: "❖"; text: "No templates yet. Save a session as a reusable template, or import Stellarium / Telescopius." }
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: 4
+                    spacing: Theme.s1
                     visible: backend.templates.length > 0
                     SelectionBar {
                         selectedCount: templatesPage.selectedCount
@@ -802,8 +802,8 @@ Item {
                         id: templateCard
                         objectName: "template-" + modelData.id
                         required property var modelData
-                        width: 344
-                        height: 212
+                        width: Theme.px(344)
+                        height: Theme.px(212)
                         title: modelData.name
                         readonly property bool grouped: Util.isGrouped(modelData)
                         readonly property bool flashing: Util.idSetHas(templatesPage.flashIds, modelData.id)
@@ -825,12 +825,12 @@ Item {
                         overlay: [
                             Rectangle {
                                 visible: templateCard.grouped
-                                width: 4
+                                width: Theme.s1
                                 anchors.left: parent.left
                                 anchors.top: parent.top
                                 anchors.bottom: parent.bottom
-                                anchors.topMargin: 10
-                                anchors.bottomMargin: 10
+                                anchors.topMargin: Theme.px(10)
+                                anchors.bottomMargin: Theme.px(10)
                                 color: templateCard.groupTone
                             },
                             SequentialAnimation {
@@ -851,7 +851,7 @@ Item {
                             },
                             Item {
                                 anchors.fill: parent
-                                anchors.bottomMargin: 52
+                                anchors.bottomMargin: Theme.px(52)
                                 TapHandler {
                                     acceptedButtons: Qt.LeftButton
                                     acceptedModifiers: Qt.NoModifier
@@ -862,7 +862,7 @@ Item {
                             SelectBox {
                                 anchors.right: parent.right
                                 anchors.top: parent.top
-                                anchors.margins: 8
+                                anchors.margins: Theme.s2
                                 checked: Util.idSetHas(templatesPage.selectedIds, templateCard.modelData.id)
                                 revealed: templateHover.hovered || templatesPage.selectedCount > 0
                                 onToggled: (shiftHeld) => templatesPage.selectClick(templateCard.modelData.id, shiftHeld)
@@ -871,7 +871,7 @@ Item {
                                 anchors.left: parent.left
                                 anchors.right: parent.right
                                 anchors.bottom: parent.bottom
-                                anchors.margins: 12
+                                anchors.margins: Theme.s3
                                 HudButton { text: "EDIT"; busyText: "OPENING…"; onClicked: sessionDialog.openTemplate(templateCard.modelData) }
                                 HudButton { text: "SCHEDULE"; Layout.fillWidth: true; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: scheduleTemplateDialog.openFor(templateCard.modelData) }
                                 HudButton { text: "DELETE"; busyText: "DELETING…"; onClicked: root.confirmBulkDelete("deleteTemplates", templateCard.modelData.id, "template") }
@@ -945,8 +945,8 @@ Item {
                         GridLayout {
                             Layout.fillWidth: true
                             columns: 2
-                            columnSpacing: 14
-                            rowSpacing: 2
+                            columnSpacing: Theme.px(14)
+                            rowSpacing: Theme.px(2)
                             Text { text: "CAPTURE"; color: Theme.muted; font.pixelSize: Theme.fontPx(9); font.letterSpacing: 1.1; font.bold: true }
                             Text { text: "CAMERA"; color: Theme.muted; font.pixelSize: Theme.fontPx(9); font.letterSpacing: 1.1; font.bold: true }
                             Text {
@@ -994,7 +994,7 @@ Item {
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                         }
-                        Item { Layout.fillWidth: true; Layout.preferredHeight: 34 }
+                        Item { Layout.fillWidth: true; Layout.preferredHeight: Theme.px(34) }
                     }
                 }
                 }

@@ -16,8 +16,8 @@ Item {
     readonly property color typeTint: Theme.previewColor(chip.themeEntry, "textPrimary")
     signal clicked()
 
-    implicitWidth: 100
-    implicitHeight: 40
+    implicitWidth: Theme.px(100)
+    implicitHeight: Theme.px(40)
     Accessible.role: Accessible.Button
     Accessible.name: chip.themeLabel
     Accessible.description: chip.selected ? "Current theme" : "Apply " + chip.themeLabel
@@ -39,7 +39,7 @@ Item {
         anchors.fill: parent
         radius: Theme.radius
         color: chip.panelTint
-        border.width: chip.selected || chip.activeFocus ? 2 : 1
+        border.width: chip.selected || chip.activeFocus ? Theme.px(2) : Theme.px(1)
         border.color: chip.selected || chip.activeFocus ? chip.accentTint : (hover.hovered ? chip.accentTint : chip.lineTint)
         Behavior on border.color { ColorAnimation { duration: Theme.quick } }
 
@@ -47,18 +47,18 @@ Item {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            anchors.margins: 1
-            height: 7
-            radius: 1
+            anchors.margins: Theme.px(1)
+            height: Theme.px(7)
+            radius: Theme.px(1)
             color: chip.accentTint
         }
         Text {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            anchors.leftMargin: 4
-            anchors.rightMargin: 4
-            anchors.bottomMargin: 5
+            anchors.leftMargin: Theme.s1
+            anchors.rightMargin: Theme.s1
+            anchors.bottomMargin: Theme.px(5)
             text: chip.themeLabel.toUpperCase()
             color: chip.typeTint
             font.pixelSize: Theme.fontXs

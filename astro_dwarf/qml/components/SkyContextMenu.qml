@@ -1,11 +1,12 @@
 import QtQuick
 import QtQuick.Controls
+import ".."
 
 HudMenu {
     id: skyMenu
     objectName: "skyContextMenu"
     popupType: Popup.Window
-    implicitWidth: 300
+    implicitWidth: Theme.px(300)
     property bool overlayEnabled: false
     property real overlayOpacity: 0.65
     readonly property int overlayOpacityPct: Math.round(Math.max(0, Math.min(1, overlayOpacity)) * 100)
@@ -42,7 +43,7 @@ HudMenu {
         glyph: "\uE707"
         enabled: skyMenu.clipboardValid
         trailingText: skyMenu.clipboardValid ? skyMenu.clipboardText : ""
-        trailingMaxWidth: 168
+        trailingMaxWidth: Theme.px(168)
         accessibleDescription: skyMenu.clipboardValid
                                ? "Center the sky map on the clipboard RA and Dec without changing the selected mosaic target, "
                                  + skyMenu.clipboardText

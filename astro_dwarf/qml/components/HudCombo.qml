@@ -43,7 +43,7 @@ ComboBox {
         implicitWidth: Theme.px(120)
         HudFrame {
             anchors.fill: parent
-            anchors.margins: -2
+            anchors.margins: Theme.px(-2)
             topLeft: Theme.notchSmall + 1
             bottomRight: Theme.notchSmall + 1
             strokeColor: Theme.accent
@@ -99,9 +99,9 @@ ComboBox {
         background: Rectangle { color: optionItem.highlighted ? Theme.fillChecked : Theme.popupBg }
     }
     popup: Popup {
-        y: combo.height + 3
+        y: combo.height + Theme.px(3)
         width: combo.width
-        padding: 1
+        padding: Theme.px(1)
         height: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, Theme.px(242))
         palette.window: Theme.popupBg
         palette.windowText: Theme.textPrimary

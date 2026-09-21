@@ -60,7 +60,7 @@ Button {
         // outer glow on hover / busy
         HudFrame {
             anchors.fill: parent
-            anchors.margins: -2
+            anchors.margins: Theme.px(-2)
             topLeft: Theme.notchSmall + 2
             bottomRight: Theme.notchSmall + 2
             strokeColor: Theme.accent
@@ -87,9 +87,9 @@ Button {
         // top highlight line, like a lit bezel edge
         Rectangle {
             x: Theme.notchSmall + 2
-            y: 2
+            y: Theme.px(2)
             width: parent.width - Theme.notchSmall - 6
-            height: 1
+            height: Theme.px(1)
             color: Theme.accent
             opacity: hudBtn.inactive ? 0 : hudBtn.lit ? 0.45 : 0.18
             Behavior on opacity { NumberAnimation { duration: Theme.quick } }
@@ -97,9 +97,9 @@ Button {
         // active indicator bar along the bottom that grows on hover
         Rectangle {
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: 1
+            anchors.bottomMargin: Theme.px(1)
             anchors.horizontalCenter: parent.horizontalCenter
-            height: 2
+            height: Theme.px(2)
             width: hudBtn.lit && !hudBtn.inactive ? parent.width - Theme.notchSmall * 2 - 8 : 0
             color: Theme.accent
             opacity: 0.85

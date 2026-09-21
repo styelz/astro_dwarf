@@ -97,9 +97,10 @@ def native_webview_plugin_present() -> bool:
 def linux_webengine_available() -> bool:
     """True when Stellarium Web can embed Qt WebEngine without aborting.
 
-    Hyper-V and other software-Qt sessions disable GLX/EGL so the window
+    WSL and Hyper-V software-Qt sessions disable GLX/EGL so the window
     can open. Creating a WebEngineView there makes Chromium/ANGLE abort
-    (IOT / core dump) as soon as the SKY tab loads.
+    (IOT / core dump) as soon as the SKY tab loads. Native Linux GPUs
+    keep WebEngine enabled.
     """
     from .qt_display import needs_software_qt
 

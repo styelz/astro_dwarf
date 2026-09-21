@@ -1,12 +1,13 @@
 import QtQuick
 import QtQuick.Controls
+import ".."
 
 HudCombo {
     id: deviceCombo
     model: backend.devices
     textRole: "name"
     valueRole: "id"
-    implicitWidth: 200
+    implicitWidth: Theme.px(200)
     onActivated: if (currentValue) backend.selectDevice(currentValue)
 
     function sync() {

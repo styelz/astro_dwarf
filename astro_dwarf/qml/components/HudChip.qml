@@ -17,7 +17,7 @@ Rectangle {
     opacity: dim ? 0.6 : 1
     Behavior on color { ColorAnimation { duration: 200 } }
     Rectangle {
-        anchors.fill: parent; anchors.margins: -2; radius: 5
+        anchors.fill: parent; anchors.margins: Theme.px(-2); radius: Theme.px(5)
         color: "transparent"; border.color: chip.tone; opacity: 0.3
         visible: chip.glow && !chip.dim
     }

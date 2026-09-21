@@ -6,7 +6,7 @@ Rectangle {
     property bool on: false
     property color onColor: Theme.success
     property bool pulse: false
-    width: 7; height: 7; radius: 4
+    width: Theme.px(7); height: Theme.px(7); radius: Theme.s1
     color: on ? onColor : Theme.hsl(0.057, 0.296, 0.212)
     border.color: on ? Theme.hsl(-0.021, 1.000, 0.924) : Theme.outline
     Behavior on color { ColorAnimation { duration: 200 } }

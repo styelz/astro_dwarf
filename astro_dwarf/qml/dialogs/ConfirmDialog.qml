@@ -51,8 +51,8 @@ Dialog {
     }
     modal: true
     anchors.centerIn: Overlay.overlay
-    width: 420
-    height: Math.max(196, headingLabel.implicitHeight + summaryLabel.implicitHeight + 88)
+    width: Theme.px(420)
+    height: Math.max(Theme.px(196), headingLabel.implicitHeight + summaryLabel.implicitHeight + Theme.px(88))
     padding: Theme.s4
     onOpened: cancelBtn.forceActiveFocus()
     background: DialogFrame { tone: Theme.danger }

@@ -44,7 +44,7 @@ DropArea {
 
     function rowStrideAt(list, index) {
         const spacing = list ? Number(list.spacing) || 0 : 0
-        const base = Math.max(1, insertDrop.rowHeight + spacing)
+        const base = Math.max(Theme.px(1), insertDrop.rowHeight + spacing)
         if (insertDrop.headerHeight <= 0 || !list)
             return base
         const row = insertDrop.rowAt(list, index)
@@ -131,7 +131,7 @@ DropArea {
         z: 1000
         enabled: false
         width: parent.width
-        height: 2
+        height: Theme.px(2)
         color: Theme.accent
         visible: insertDrop.insertIndex >= 0 && insertDrop.insertLineY >= -2 && insertDrop.insertLineY <= insertDrop.height
         y: insertDrop.insertLineY

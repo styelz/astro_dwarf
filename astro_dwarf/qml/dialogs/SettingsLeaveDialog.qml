@@ -14,12 +14,12 @@ Dialog {
     property string pendingDeviceId: ""
     modal: true
     anchors.centerIn: Overlay.overlay
-    width: 480
-    height: 176
-    padding: 16
+    width: Theme.px(480)
+    height: Theme.px(176)
+    padding: Theme.s4
     background: DialogFrame { tone: Theme.warning }
     contentItem: ColumnLayout {
-        spacing: 12
+        spacing: Theme.s3
         Accessible.name: "Unsaved settings"
         Accessible.description: settingsLeaveDialog.pendingPage === -2
             ? "Save your device settings before closing?"

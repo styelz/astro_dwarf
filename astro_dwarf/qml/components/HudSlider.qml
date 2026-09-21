@@ -50,9 +50,9 @@ Slider {
         Rectangle {
             visible: control.markerPosition >= 0 && control.markerPosition <= 1
             x: Math.round(control.markerPosition * parent.width) - 1
-            y: -3
-            width: 2
-            height: parent.height + 6
+            y: Theme.px(-3)
+            width: Theme.px(2)
+            height: parent.height + Theme.px(6)
             color: Theme.textPrimary
             opacity: 0.5
         }
@@ -70,7 +70,7 @@ Slider {
         Behavior on border.color { ColorAnimation { duration: Theme.quick } }
         Rectangle {
             anchors.fill: parent
-            anchors.margins: -4
+            anchors.margins: -Theme.s1
             radius: width / 2
             color: "transparent"
             border.color: Theme.accent

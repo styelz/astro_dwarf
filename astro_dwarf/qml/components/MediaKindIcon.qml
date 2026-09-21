@@ -8,8 +8,8 @@ Item {
     id: icon
     property var item: ({})
     readonly property bool isFolder: Util.isFolderMedia(item)
-    implicitWidth: 72
-    implicitHeight: 72
+    implicitWidth: Theme.px(72)
+    implicitHeight: Theme.px(72)
     Accessible.ignored: true
 
     readonly property color folderFront: Theme.bake(0.12, 0.74, 0.58, 1, 0.45, Theme.brightness)
@@ -30,14 +30,14 @@ Item {
         Rectangle {
             width: parent.width * 0.40
             height: parent.height * 0.28
-            radius: Math.max(2, parent.width * 0.07)
+            radius: Math.max(Theme.px(2), parent.width * 0.07)
             color: icon.folderTab
         }
         Rectangle {
             y: parent.height * 0.16
             width: parent.width
             height: parent.height * 0.84
-            radius: Math.max(3, parent.width * 0.09)
+            radius: Math.max(Theme.px(3), parent.width * 0.09)
             color: icon.folderFront
             border.width: 1
             border.color: icon.folderEdge
@@ -46,8 +46,8 @@ Item {
             x: parent.width * 0.08
             y: parent.height * 0.28
             width: parent.width * 0.84
-            height: Math.max(3, parent.height * 0.10)
-            radius: 1
+            height: Math.max(Theme.px(3), parent.height * 0.10)
+            radius: Theme.px(1)
             color: icon.folderPaper
             opacity: 0.42
         }
@@ -62,7 +62,7 @@ Item {
 
         Rectangle {
             anchors.fill: parent
-            radius: Math.max(2, fileMark.width * 0.08)
+            radius: Math.max(Theme.px(2), fileMark.width * 0.08)
             color: icon.fileFill
             border.width: 1
             border.color: icon.fileEdge
@@ -96,8 +96,8 @@ Item {
                 x: fileMark.width * 0.16
                 y: fileMark.height * (0.42 + index * 0.14)
                 width: fileMark.width * 0.56
-                height: Math.max(1, fileMark.height * 0.045)
-                radius: 1
+                height: Math.max(Theme.px(1), fileMark.height * 0.045)
+                radius: Theme.px(1)
                 color: icon.fileRule
             }
         }

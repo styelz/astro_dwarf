@@ -76,7 +76,7 @@ SplitView {
         const n = splitView.verticalSplit
             ? Number(item.SplitView.preferredHeight)
             : Number(item.SplitView.preferredWidth)
-        if (isFinite(n) && n >= 8)
+        if (isFinite(n) && n >= Theme.s2)
             return n
         return -1
     }
@@ -224,7 +224,7 @@ SplitView {
     function captureLocked() {
         if (splitView.handleDragging || splitView.applyingLocks)
             return
-        if (splitView.viewAlong() < 64)
+        if (splitView.viewAlong() < Theme.px(64))
             return
         const usable = splitView.paneUsable()
         if (usable < 8)
@@ -288,7 +288,7 @@ SplitView {
     function applyLocked() {
         if (splitView.handleDragging || splitView.applyingLocks)
             return
-        if (splitView.viewAlong() < 64)
+        if (splitView.viewAlong() < Theme.px(64))
             return
         const ratios = splitView.lockedRatios
         if (!splitView.ratiosValid(ratios)) {
@@ -320,7 +320,7 @@ SplitView {
 
     function scheduleApply() {
         const along = splitView.viewAlong()
-        if (along < 64)
+        if (along < Theme.px(64))
             return
         const changed = splitView.lastAlong >= 0 && Math.abs(along - splitView.lastAlong) >= 1
         splitView.lastAlong = along
@@ -351,7 +351,7 @@ SplitView {
             splitView.endNeighborResize()
         if (splitView.settingsKey === "")
             return
-        if (splitView.viewAlong() < 64)
+        if (splitView.viewAlong() < Theme.px(64))
             return
         splitView.captureLocked()
         splitStore.setValue(splitView.settingsKey, splitView.saveState())
@@ -397,8 +397,8 @@ SplitView {
     handle: Rectangle {
         id: grip
         objectName: "splitHandle"
-        implicitWidth: 8
-        implicitHeight: 8
+        implicitWidth: Theme.s2
+        implicitHeight: Theme.s2
         color: SplitHandle.pressed ? Theme.glowAccent : (SplitHandle.hovered ? Theme.hsl(0.039, 0.535, 0.253, 0.13) : "transparent")
         property bool dragging: SplitHandle.pressed
         onDraggingChanged: {
@@ -421,9 +421,9 @@ SplitView {
         }
         Rectangle {
             anchors.centerIn: parent
-            width: parent.width >= parent.height ? 22 : 2
-            height: parent.width >= parent.height ? 2 : 22
-            radius: 1
+            width: parent.width >= parent.height ? Theme.px(22) : Theme.px(2)
+            height: parent.width >= parent.height ? Theme.px(2) : Theme.px(22)
+            radius: Theme.px(1)
             color: SplitHandle.pressed ? Theme.accent : (SplitHandle.hovered ? Theme.accent : Theme.outline)
         }
     }

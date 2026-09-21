@@ -5,12 +5,49 @@ export PATH="$HERE/usr/bin:$PATH"
 GTK_MODULES=
 GTK3_MODULES=
 export GTK_MODULES GTK3_MODULES
-# Hyper-V and many NVIDIA/XWayland hosts abort in GLX/EGL. Software Qt Quick
-# plus no xcb GL integration keeps the window opening. Stellarium WebGL then
-# uses SwiftShader. ASTRO_DWARF_QT_SYSTEM=1 uses the host GPU instead.
 [ -n "$QTWEBENGINE_DISABLE_SANDBOX" ] || export QTWEBENGINE_DISABLE_SANDBOX=1
 [ -n "$NO_AT_BRIDGE" ] || export NO_AT_BRIDGE=1
-if [ "${ASTRO_DWARF_QT_SYSTEM:-}" != "1" ]; then
+
+# Software Qt is only for WSL, Hyper-V guests, and machines with no DRM
+# render node. Native NVIDIA/AMD/Intel desktops must keep host OpenGL so
+# Stellarium Web can run. Do not treat every frozen Linux install as a VM.
+# ASTRO_DWARF_QT_SOFTWARE=1 forces the fallback. ASTRO_DWARF_QT_SYSTEM=1
+# keeps the host GPU even in WSL.
+astro_dwarf_needs_software_qt() {
+    [ "${ASTRO_DWARF_QT_SOFTWARE:-}" = "1" ] && return 0
+    [ "${ASTRO_DWARF_QT_SYSTEM:-}" = "1" ] && return 1
+    if [ -n "${WSL_DISTRO_NAME:-}" ] || [ -n "${WSL_INTEROP:-}" ]; then
+        return 0
+    fi
+    if [ -r /proc/sys/kernel/osrelease ] && grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease; then
+        return 0
+    fi
+    vendor=""
+    product=""
+    [ -r /sys/class/dmi/id/sys_vendor ] && vendor=$(cat /sys/class/dmi/id/sys_vendor)
+    [ -r /sys/class/dmi/id/product_name ] && product=$(cat /sys/class/dmi/id/product_name)
+    dmi=$(printf '%s\n%s\n' "$vendor" "$product" | tr '[:upper:]' '[:lower:]')
+    case "$dmi" in
+        *hyper-v*|*hyperv*) return 0 ;;
+    esac
+    case "$dmi" in
+        *microsoft*)
+            case "$dmi" in
+                *virtual*machine*) return 0 ;;
+            esac
+            ;;
+    esac
+    has_drm=0
+    for n in /dev/dri/renderD*; do
+        if [ -e "$n" ]; then
+            has_drm=1
+            break
+        fi
+    done
+    [ "$has_drm" -eq 0 ]
+}
+
+if astro_dwarf_needs_software_qt; then
     [ -n "$QT_QPA_PLATFORM" ] || export QT_QPA_PLATFORM=xcb
     [ -n "$QT_XCB_GL_INTEGRATION" ] || export QT_XCB_GL_INTEGRATION=none
     [ -n "$QT_QUICK_BACKEND" ] || export QT_QUICK_BACKEND=software

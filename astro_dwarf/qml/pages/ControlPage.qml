@@ -114,16 +114,16 @@ Item {
             settingsKey: "controlLeft"
             autoRestore: false
             orientation: Qt.Vertical
-            SplitView.preferredWidth: 344
-            SplitView.minimumWidth: 196
+            SplitView.preferredWidth: Theme.px(344)
+            SplitView.minimumWidth: Theme.px(196)
 
             HudPanel {
                 panelId: "status"
                 title: "SYSTEM STATUS"
-                SplitView.preferredHeight: 196
-                SplitView.minimumHeight: 120
+                SplitView.preferredHeight: Theme.px(196)
+                SplitView.minimumHeight: Theme.px(120)
                 headerExtra: Row {
-                    spacing: 4
+                    spacing: Theme.s1
                     HudChip {
                         label: root.scopeTelemetry.host_text && root.scopeTelemetry.host_text !== "—" ? root.scopeTelemetry.host_text : ""
                         tone: root.scopeTelemetry.host_mode === false ? Theme.warning : Theme.success
@@ -134,9 +134,9 @@ Item {
                         // compact activity badge derived from device telemetry
                         id: activityBadge
                         anchors.verticalCenter: parent.verticalCenter
-                        height: 20
-                        width: Math.min(140, activityBadgeRow.implicitWidth + 14)
-                        radius: 3
+                        height: Theme.s5
+                        width: Math.min(Theme.px(140), activityBadgeRow.implicitWidth + Theme.px(14))
+                        radius: Theme.px(3)
                         readonly property color tone: root.activityColor()
                         color: Qt.rgba(tone.r, tone.g, tone.b, root.scopeOnline ? 0.14 : 0.05)
                         border.color: Qt.rgba(tone.r, tone.g, tone.b, root.scopeOnline ? 0.55 : 0.25)
@@ -144,8 +144,8 @@ Item {
                         Behavior on color { ColorAnimation { duration: 220 } }
                         Rectangle {
                             anchors.fill: parent
-                            anchors.margins: -2
-                            radius: 5
+                            anchors.margins: Theme.px(-2)
+                            radius: Theme.px(5)
                             color: "transparent"
                             border.color: activityBadge.tone
                             visible: root.scopePending !== ""
@@ -160,9 +160,9 @@ Item {
                         RowLayout {
                             id: activityBadgeRow
                             anchors.fill: parent
-                            anchors.leftMargin: 7
-                            anchors.rightMargin: 7
-                            spacing: 5
+                            anchors.leftMargin: Theme.px(7)
+                            anchors.rightMargin: Theme.px(7)
+                            spacing: Theme.px(5)
                             Text { text: root.scopePending ? "⇡" : root.scopeActivity !== "" ? "◈" : root.scopeImaging ? "●" : root.scopeOnline ? "◇" : "○"; color: activityBadge.tone; font.pixelSize: Theme.fontPx(9) }
                             Text {
                                 text: {
@@ -187,7 +187,7 @@ Item {
                 RowLayout {
                     Layout.fillWidth: true
                     LedDot {
-                        width: 10; height: 10; radius: 5
+                        width: Theme.px(10); height: Theme.px(10); radius: Theme.px(5)
                         on: true
                         pulse: root.scopeOnline && (root.scopeImaging || root.scopeActivity !== "")
                         onColor: root.scopeLinking ? Theme.warning : root.scopeImaging ? Theme.danger : root.scopeOnline ? Theme.success : Theme.danger
@@ -224,9 +224,9 @@ Item {
                     delegate: RowLayout {
                         required property var modelData
                         Layout.fillWidth: true
-                        spacing: 6
-                        Text { text: modelData.label; color: Theme.textSecondary; font.pixelSize: Theme.fontPx(9); font.bold: true; font.letterSpacing: 0.8; Layout.preferredWidth: 72 }
-                        Rectangle { Layout.fillWidth: true; Layout.minimumWidth: 12; Layout.preferredHeight: 1; color: Theme.outlineSoft; opacity: 0.7 }
+                        spacing: Theme.px(6)
+                        Text { text: modelData.label; color: Theme.textSecondary; font.pixelSize: Theme.fontPx(9); font.bold: true; font.letterSpacing: 0.8; Layout.preferredWidth: Theme.px(72) }
+                        Rectangle { Layout.fillWidth: true; Layout.minimumWidth: Theme.s3; Layout.preferredHeight: Theme.px(1); color: Theme.outlineSoft; opacity: 0.7 }
                         Text { text: modelData.value; color: modelData.tone; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; Layout.fillWidth: true; Layout.maximumWidth: implicitWidth }
                     }
                 }
@@ -236,15 +236,15 @@ Item {
                 id: vitalsPanel
                 panelId: "vitals"
                 title: "VITALS"
-                SplitView.preferredHeight: 231
-                SplitView.minimumHeight: 150
+                SplitView.preferredHeight: Theme.px(231)
+                SplitView.minimumHeight: Theme.px(150)
                 readonly property var t: root.scopeTelemetry
                 readonly property bool live: root.scopeOnline && !!t.has_data
                 readonly property bool stale: !!t.stale
                 opacity: root.scopeOnline ? 1 : 0.55
                 Behavior on opacity { NumberAnimation { duration: 240 } }
                 headerExtra: Row {
-                    spacing: 4
+                    spacing: Theme.s1
                     HudChip {
                         label: vitalsPanel.stale ? "STALE" : vitalsPanel.live ? "LIVE" : "NO DATA"
                         tone: vitalsPanel.stale ? Theme.warning : vitalsPanel.live ? Theme.success : Theme.muted
@@ -261,30 +261,30 @@ Item {
                     readonly property int gaugeSize: {
                         const minGrid = 62
                         const fromHeight = height - minGrid - 6
-                        return Math.round(Math.max(36, Math.min(74, fromHeight)))
+                        return Math.round(Math.max(Theme.px(36), Math.min(Theme.px(74), fromHeight)))
                     }
-                    readonly property bool compact: gaugeSize < 56
+                    readonly property bool compact: gaugeSize < Theme.px(56)
                     ColumnLayout {
                         anchors.fill: parent
-                        spacing: 6
+                        spacing: Theme.px(6)
                         RowLayout {
                             Layout.fillWidth: true
                             Layout.preferredHeight: vitalsBody.gaugeSize
-                            Layout.maximumHeight: 74
-                            Layout.minimumHeight: 36
-                            spacing: 10
+                            Layout.maximumHeight: Theme.px(74)
+                            Layout.minimumHeight: Theme.px(36)
+                            spacing: Theme.px(10)
                             BatteryGauge {
                                 percent: vitalsPanel.live && vitalsPanel.t.battery_percent !== undefined ? Number(vitalsPanel.t.battery_percent) : -1
                                 charging: !!vitalsPanel.t.charging && vitalsPanel.live
                                 Layout.preferredWidth: vitalsBody.gaugeSize
                                 Layout.preferredHeight: vitalsBody.gaugeSize
-                                Layout.minimumWidth: 36
-                                Layout.minimumHeight: 36
+                                Layout.minimumWidth: Theme.px(36)
+                                Layout.minimumHeight: Theme.px(36)
                             }
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
-                                spacing: vitalsBody.compact ? 3 : 5
+                                spacing: vitalsBody.compact ? Theme.px(3) : Theme.px(5)
                                 RowLayout {
                                     Layout.fillWidth: true
                                     Text { text: "STORAGE"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; font.letterSpacing: 1.1; Layout.fillWidth: true }
@@ -310,7 +310,7 @@ Item {
                                 RowLayout {
                                     visible: !vitalsBody.compact
                                     Layout.fillWidth: true
-                                    spacing: 4
+                                    spacing: Theme.s1
                                     HudChip { label: vitalsPanel.t.charging_text || "BATT"; tone: vitalsPanel.t.charging ? Theme.warning : Theme.textSecondary; dim: !vitalsPanel.live; visible: vitalsPanel.live && !!vitalsPanel.t.charging_text }
                                     Text { visible: !!vitalsPanel.t.battery_health_text && vitalsPanel.live; text: vitalsPanel.t.battery_health_text || ""; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.letterSpacing: 0.6; elide: Text.ElideRight; Layout.fillWidth: true }
                                     Item { Layout.fillWidth: true; visible: !vitalsPanel.t.battery_health_text }
@@ -326,9 +326,9 @@ Item {
                             columns: {
                                 if (width <= 0)
                                     return 2
-                                const minTile = 76
+                                const minTile = Theme.px(76)
                                 const fit = Math.max(1, Math.floor((width + columnSpacing) / (minTile + columnSpacing)))
-                                const minRowH = 28
+                                const minRowH = Theme.px(28)
                                 const rowsOk = (cols) => {
                                     const rows = Math.ceil(tileCount / cols)
                                     return rows * minRowH + (rows - 1) * rowSpacing <= height + 0.5
@@ -370,8 +370,8 @@ Item {
                 id: targetPanel
                 panelId: "target"
                 title: "TARGET"
-                SplitView.preferredHeight: 174
-                SplitView.minimumHeight: 80
+                SplitView.preferredHeight: Theme.px(174)
+                SplitView.minimumHeight: Theme.px(80)
                 overlay: [
                     TapHandler {
                         acceptedButtons: Qt.LeftButton
@@ -387,7 +387,7 @@ Item {
                     }
                 ]
                 headerExtra: Row {
-                    spacing: 4
+                    spacing: Theme.s1
                     HudChip {
                         readonly property var t: root.scopeTelemetry
                         visible: root.scopeOnline && (!!t.capture_active || controlPage.mosaicRunning)
@@ -494,9 +494,9 @@ Item {
                     value: backend.sessionProgress
                     readonly property bool idle: !backend.currentSession.id
                     readonly property bool waitingForNext: idle && backend.schedulerEnabled && backend.upcomingSessions.length > 0
-                    background: Rectangle { implicitHeight: 8; color: Theme.inputBg; border.color: Theme.outline }
+                    background: Rectangle { implicitHeight: Theme.s2; color: Theme.inputBg; border.color: Theme.outline }
                     contentItem: Item {
-                        implicitHeight: 8
+                        implicitHeight: Theme.s2
                         clip: true
                         Rectangle {
                             visible: !sessionBar.idle
@@ -507,7 +507,7 @@ Item {
                         Rectangle {
                             id: idleSweep
                             visible: sessionBar.waitingForNext && controlPage.visible
-                            width: 46
+                            width: Theme.px(46)
                             height: parent.height
                             opacity: 0.55
                             gradient: Gradient {
@@ -575,7 +575,7 @@ Item {
                 panelId: "camera"
                 title: "CAMERA"
                 SplitView.fillHeight: true
-                SplitView.minimumHeight: 120
+                SplitView.minimumHeight: Theme.px(120)
                 readonly property bool miniBody: String((backend.selectedDevice && backend.selectedDevice.model) || "") === "Dwarf Mini"
                 readonly property bool teleSelected: backend.selectedDevice.camera !== "wide"
                 readonly property string shootingMode: String(root.scopeTelemetry.shooting_mode_text || "—")
@@ -645,7 +645,7 @@ Item {
                 FieldLabel { text: "SHOOTING MODE · " + (cameraPanel.shootingMode === "—" ? "UNKNOWN" : cameraPanel.shootingMode) }
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 4
+                    spacing: Theme.s1
                     HudButton {
                         text: "PHOTO"
                         Layout.fillWidth: true
@@ -1037,13 +1037,13 @@ Item {
             autoRestore: false
             orientation: Qt.Vertical
             SplitView.fillWidth: true
-            SplitView.minimumWidth: 280
+            SplitView.minimumWidth: Theme.px(280)
 
             HudPanel {
                 panelId: "preview"
                 moveLabel: "LIVE VIEW"
                 SplitView.fillHeight: true
-                SplitView.minimumHeight: 150
+                SplitView.minimumHeight: Theme.px(150)
                 fill: Theme.popupBg
                 Item {
                     id: previewHost
@@ -1158,7 +1158,7 @@ Item {
                     readonly property bool previewFailed: root.previewFailed
                     readonly property bool previewStartEnabled: backend.selectedDevice.connected && !root.scopeLinking && !root.scopeStopping && (!backend.previewActive || backend.previewPlaying || previewFailed)
                     readonly property bool startBriefVisible: root.previewStarting && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicPreview
-                    readonly property bool startBriefCompact: height < 280
+                    readonly property bool startBriefCompact: height < Theme.px(280)
                     readonly property string actionLabel: {
                         if (!backend.previewActive || backend.previewPlaying)
                             return "STARTING CAMERA…"
@@ -1328,14 +1328,14 @@ Item {
                         z: 3
                         clip: true
                         visible: previewHost.pipPlaying
-                        width: Math.round(Math.max(168, Math.min(parent.width * 0.32, parent.height * 0.38, 300)))
+                        width: Math.round(Math.max(Theme.px(168), Math.min(parent.width * 0.32, parent.height * 0.38, Theme.px(300))))
                         height: Math.round(width * pipAspect)
                         property bool floating: false
                         readonly property real pipAspect: pipPane.sourceAspect
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
-                        anchors.rightMargin: 14
-                        anchors.bottomMargin: 46
+                        anchors.rightMargin: Theme.px(14)
+                        anchors.bottomMargin: Theme.px(46)
                         function beginFloat() {
                             if (floating)
                                 return
@@ -1351,8 +1351,8 @@ Item {
                         function clampToHost() {
                             if (!floating || !parent)
                                 return
-                            x = Math.max(8, Math.min(x, parent.width - width - 8))
-                            y = Math.max(8, Math.min(y, parent.height - height - 8))
+                            x = Math.max(Theme.s2, Math.min(x, parent.width - width - Theme.s2))
+                            y = Math.max(Theme.s2, Math.min(y, parent.height - height - Theme.s2))
                         }
                         onWidthChanged: clampToHost()
                         onHeightChanged: clampToHost()
@@ -1370,7 +1370,7 @@ Item {
                         LiveViewPane {
                             id: pipPane
                             anchors.fill: parent
-                            anchors.margins: 1
+                            anchors.margins: Theme.px(1)
                             playing: previewHost.pipPlaying
                             wideView: !previewHost.displayWide
                             camera: previewHost.liveCamera(!previewHost.displayWide)
@@ -1396,18 +1396,18 @@ Item {
                             anchors.fill: parent
                             drag.target: pipBox
                             drag.minimumX: 8
-                            drag.maximumX: Math.max(8, previewHost.width - pipBox.width - 8)
+                            drag.maximumX: Math.max(Theme.s2, previewHost.width - pipBox.width - Theme.s2)
                             drag.minimumY: 8
-                            drag.maximumY: Math.max(8, previewHost.height - pipBox.height - 8)
+                            drag.maximumY: Math.max(Theme.s2, previewHost.height - pipBox.height - Theme.s2)
                             onPressed: pipBox.beginFloat()
                             onDoubleClicked: (mouse) => pipPane.centerOn(mouse.x, mouse.y)
                         }
                         Rectangle {
                             anchors.left: parent.left
                             anchors.top: parent.top
-                            anchors.margins: 6
-                            width: pipLabel.implicitWidth + 12
-                            height: 18
+                            anchors.margins: Theme.px(6)
+                            width: pipLabel.implicitWidth + Theme.s3
+                            height: Theme.px(18)
                             color: Theme.panelFill
                             border.color: Theme.outline
                             Text {
@@ -1423,8 +1423,8 @@ Item {
                         Row {
                             anchors.right: parent.right
                             anchors.top: parent.top
-                            anchors.margins: 6
-                            spacing: 4
+                            anchors.margins: Theme.px(6)
+                            spacing: Theme.s1
                             z: 2
                             // Mouse: only while the pointer is over the PiP. Touch: same
                             // tap that reveals the main preview chrome.
@@ -1437,12 +1437,12 @@ Item {
                             HudButton {
                                 id: pipSwapBtn
                                 text: "SWAP"
-                                implicitHeight: 18
+                                implicitHeight: Theme.px(18)
                                 implicitWidth: implicitContentWidth + 14
                                 font.pixelSize: Theme.fontPx(9)
                                 font.letterSpacing: 1
-                                leftPadding: 6
-                                rightPadding: 6
+                                leftPadding: Theme.px(6)
+                                rightPadding: Theme.px(6)
                                 buttonColor: Theme.fillActive
                                 foregroundColor: Theme.accent
                                 tooltip: "Swap main and picture-in-picture cameras.\nDoes not change capture, focus, or command availability."
@@ -1451,12 +1451,12 @@ Item {
                             HudButton {
                                 id: pipHideBtn
                                 text: "HIDE"
-                                implicitHeight: 18
+                                implicitHeight: Theme.px(18)
                                 implicitWidth: implicitContentWidth + 14
                                 font.pixelSize: Theme.fontPx(9)
                                 font.letterSpacing: 1
-                                leftPadding: 6
-                                rightPadding: 6
+                                leftPadding: Theme.px(6)
+                                rightPadding: Theme.px(6)
                                 buttonColor: Theme.fillActive
                                 foregroundColor: Theme.accent
                                 tooltip: "Hide picture-in-picture"
@@ -1513,8 +1513,8 @@ Item {
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
-                        anchors.margins: 14
-                        height: 24
+                        anchors.margins: Theme.px(14)
+                        height: Theme.px(24)
                         // status stays up while streaming; it just recedes when the controls are away
                         opacity: previewHost.chromeShown ? 1 : 0.62
                         Behavior on opacity { NumberAnimation { duration: Theme.slow } }
@@ -1534,9 +1534,9 @@ Item {
                             }
                             readonly property string sensor: String((wide ? t.cmos_wide_text : t.cmos_tele_text) || "—")
                             anchors.fill: parent
-                            anchors.leftMargin: 10
-                            anchors.rightMargin: 10
-                            spacing: 8
+                            anchors.leftMargin: Theme.px(10)
+                            anchors.rightMargin: Theme.px(10)
+                            spacing: Theme.s2
                             Text { text: readoutStrip.wide ? "WIDE" : "TELE"; color: Theme.accent; font.pixelSize: Theme.fontSm; font.bold: true; font.letterSpacing: 1; Layout.fillWidth: false }
                             Text {
                                 visible: root.scopeOnline && backend.previewSkyCoordVisible
@@ -1546,13 +1546,13 @@ Item {
                                 font.family: Theme.fontMono
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
-                                Layout.minimumWidth: 72
+                                Layout.minimumWidth: Theme.px(72)
                                 Layout.preferredWidth: implicitWidth
                                 Layout.maximumWidth: implicitWidth
                             }
-                            Text { text: "EXP " + readoutStrip.exposure + "s"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 36; Layout.preferredWidth: implicitWidth }
-                            Text { text: "GAIN " + readoutStrip.gain; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 36; Layout.preferredWidth: implicitWidth }
-                            Text { visible: !readoutStrip.wide; text: liveFilter.currentText.toUpperCase(); color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 24; Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
+                            Text { text: "EXP " + readoutStrip.exposure + "s"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: Theme.px(36); Layout.preferredWidth: implicitWidth }
+                            Text { text: "GAIN " + readoutStrip.gain; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: Theme.px(36); Layout.preferredWidth: implicitWidth }
+                            Text { visible: !readoutStrip.wide; text: liveFilter.currentText.toUpperCase(); color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: Theme.px(24); Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
                             Text {
                                 visible: root.scopeOnline && readoutStrip.t.capture_active && !!readoutStrip.t.capture_text
                                 text: "FRAMES " + (readoutStrip.t.capture_text || "")
@@ -1560,10 +1560,10 @@ Item {
                                 font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; font.bold: true
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
-                                Layout.minimumWidth: 40
+                                Layout.minimumWidth: Theme.px(40)
                                 Layout.preferredWidth: implicitWidth
                             }
-                            Item { Layout.fillWidth: true; Layout.preferredWidth: 8; Layout.minimumWidth: 0 }
+                            Item { Layout.fillWidth: true; Layout.preferredWidth: Theme.s2; Layout.minimumWidth: 0 }
                             Text { visible: root.scopeOnline && readoutStrip.sensor !== "—"; text: "SENSOR " + readoutStrip.sensor; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
                             Text {
                                 visible: root.scopeOnline && readoutStrip.t.battery_percent !== undefined && Number(readoutStrip.t.battery_percent) >= 0
@@ -1573,7 +1573,7 @@ Item {
                                 elide: Text.ElideRight
                                 Layout.fillWidth: false
                             }
-                            Text { visible: !root.scopeOnline; text: backend.selectedDevice.ip_address || "—"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.maximumWidth: 120 }
+                            Text { visible: !root.scopeOnline; text: backend.selectedDevice.ip_address || "—"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.maximumWidth: Theme.px(120) }
                             Text { text: backend.clockText; color: Theme.accent; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; Layout.fillWidth: false }
                         }
                     }
@@ -1582,11 +1582,11 @@ Item {
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
-                        anchors.leftMargin: 14
-                        anchors.rightMargin: 14
-                        anchors.bottomMargin: 46
+                        anchors.leftMargin: Theme.px(14)
+                        anchors.rightMargin: Theme.px(14)
+                        anchors.bottomMargin: Theme.px(46)
                         visible: backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack
-                        height: resultCaptionCol.implicitHeight + 16
+                        height: resultCaptionCol.implicitHeight + Theme.s4
                         color: Theme.panelFill
                         border.color: Theme.outline
                         Column {
@@ -1594,9 +1594,9 @@ Item {
                             anchors.left: parent.left
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
-                            spacing: 4
+                            anchors.leftMargin: Theme.s3
+                            anchors.rightMargin: Theme.s3
+                            spacing: Theme.s1
                             Text {
                                 text: backend.previewResultTitle || "STACK COMPLETE"
                                 color: {
@@ -1623,8 +1623,8 @@ Item {
                     Column {
                         z: 5
                         anchors.centerIn: parent
-                        spacing: 10
-                        width: Math.min(parent.width - 48, 520)
+                        spacing: Theme.px(10)
+                        width: Math.min(parent.width - Theme.px(48), 520)
                         visible: backend.previewHeld && !backend.previewPlaying && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicPreview
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -1656,12 +1656,12 @@ Item {
                     Column {
                         z: 5
                         anchors.centerIn: parent
-                        spacing: 8
+                        spacing: Theme.s2
                         visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.startBriefVisible && !previewHost.mosaicPreview
                         Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: Theme.textPrimary; font.pixelSize: Theme.fontLg; font.letterSpacing: 3; font.bold: true }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            width: previewHost.width - 40
+                            width: previewHost.width - Theme.px(40)
                             wrapMode: Text.Wrap
                             horizontalAlignment: Text.AlignHCenter
                             text: previewHost.statusText
@@ -1693,7 +1693,7 @@ Item {
                         Column {
                             anchors.centerIn: parent
                             spacing: Theme.s3
-                            width: Math.min(parent.width - 48, 440)
+                            width: Math.min(parent.width - Theme.px(48), 440)
                             Text {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 width: parent.width
@@ -1716,8 +1716,8 @@ Item {
                             }
                             Rectangle {
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                width: 40
-                                height: 1
+                                width: Theme.px(40)
+                                height: Theme.px(1)
                                 color: Theme.outline
                             }
                             Repeater {
@@ -1732,7 +1732,7 @@ Item {
                                     property bool extra: false
                                     visible: !extra || !previewHost.startBriefCompact
                                     width: parent.width
-                                    spacing: 2
+                                    spacing: Theme.px(2)
                                     Text {
                                         width: parent.width
                                         text: key
@@ -1766,8 +1766,8 @@ Item {
                         }
                         Column {
                             anchors.centerIn: parent
-                            spacing: 10
-                            width: Math.min(parent.width - 48, 520)
+                            spacing: Theme.px(10)
+                            width: Math.min(parent.width - Theme.px(48), 520)
                             Text {
                                 id: stackWaitHeading
                                 anchors.horizontalCenter: parent.horizontalCenter
@@ -1824,8 +1824,8 @@ Item {
                         }
                         Column {
                             anchors.centerIn: parent
-                            spacing: 10
-                            width: Math.min(parent.width - 48, 520)
+                            spacing: Theme.px(10)
+                            width: Math.min(parent.width - Theme.px(48), 520)
                             Text {
                                 id: stopHeading
                                 anchors.horizontalCenter: parent.horizontalCenter
@@ -1866,22 +1866,22 @@ Item {
                         z: 7
                         anchors.left: parent.left
                         anchors.top: parent.top
-                        anchors.margins: 14
-                        spacing: 6
+                        anchors.margins: Theme.px(14)
+                        spacing: Theme.px(6)
                         opacity: previewHost.chromeShown ? 1 : 0.75
                         Behavior on opacity { NumberAnimation { duration: Theme.slow } }
                         Rectangle {
                             id: previewBadge
                             readonly property bool stopping: root.scopeStopping
-                            width: stopping ? 118 : (backend.previewResult ? 96 : (backend.previewHeld && !backend.previewPlaying ? 108 : 96))
-                            height: 28
+                            width: stopping ? Theme.px(118) : (backend.previewResult ? Theme.px(96) : (backend.previewHeld && !backend.previewPlaying ? Theme.px(108) : Theme.px(96)))
+                            height: Theme.px(28)
                             color: Theme.panelFill
                             border.color: stopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.success : (backend.previewHeld ? Theme.warning : Theme.outline)))
                             Row {
                                 anchors.centerIn: parent
-                                spacing: 7
+                                spacing: Theme.px(7)
                                 Rectangle {
-                                    width: 8; height: 8; radius: 4
+                                    width: Theme.s2; height: Theme.s2; radius: Theme.s1
                                     color: previewBadge.stopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.danger : (backend.previewHeld ? Theme.warning : (backend.previewActive ? Theme.warning : Theme.muted))))
                                     anchors.verticalCenter: parent.verticalCenter
                                     SequentialAnimation on opacity {
@@ -1896,8 +1896,8 @@ Item {
                         }
                         Rectangle {
                             visible: backend.previewPlaying || backend.previewResult
-                            width: mainCamLabel.implicitWidth + 16
-                            height: 28
+                            width: mainCamLabel.implicitWidth + Theme.s4
+                            height: Theme.px(28)
                             color: Theme.panelFill
                             border.color: Theme.outline
                             Text {
@@ -1912,8 +1912,8 @@ Item {
                         }
                         Rectangle {
                             visible: previewHost.stackEnhanceAvailable
-                            width: enhanceLabel.implicitWidth + 16
-                            height: 28
+                            width: enhanceLabel.implicitWidth + Theme.s4
+                            height: Theme.px(28)
                             color: previewHost.previewEnhance ? Theme.fillActive : Theme.panelFill
                             border.color: previewHost.previewEnhance ? Theme.accent : Theme.outline
                             Accessible.name: previewHost.previewEnhance ? "Enhance on" : "Enhance off"
@@ -1936,8 +1936,8 @@ Item {
                         }
                         Rectangle {
                             visible: previewHost.stackEnhanceAvailable && previewHost.previewEnhance
-                            width: deepLabel.implicitWidth + 16
-                            height: 28
+                            width: deepLabel.implicitWidth + Theme.s4
+                            height: Theme.px(28)
                             color: previewHost.previewDeep ? Theme.fillActive : Theme.panelFill
                             border.color: previewHost.previewDeep ? Theme.accent : Theme.outline
                             Accessible.name: previewHost.previewDeep ? "Deep clean on" : "Deep clean off"
@@ -1963,16 +1963,16 @@ Item {
                             readonly property var t: root.scopeTelemetry
                             readonly property bool rec: root.scopeOnline && (root.scopeActivity === "record" || !!t.capture_active)
                             visible: rec
-                            width: recRow.implicitWidth + 20
-                            height: 28
+                            width: recRow.implicitWidth + Theme.s5
+                            height: Theme.px(28)
                             color: Theme.fillDanger
                             border.color: Theme.danger
                             Row {
                                 id: recRow
                                 anchors.centerIn: parent
-                                spacing: 7
+                                spacing: Theme.px(7)
                                 Rectangle {
-                                    width: 8; height: 8; radius: 4; color: Theme.danger
+                                    width: Theme.s2; height: Theme.s2; radius: Theme.s1; color: Theme.danger
                                     anchors.verticalCenter: parent.verticalCenter
                                     SequentialAnimation on opacity {
                                         running: recBadge.rec
@@ -1998,8 +1998,8 @@ Item {
                         z: 7
                         anchors.right: parent.right
                         anchors.top: parent.top
-                        anchors.margins: 14
-                        spacing: 8
+                        anchors.margins: Theme.px(14)
+                        spacing: Theme.s2
                         opacity: (backend.previewActive || backend.previewResult) && previewHost.chromeShown ? 1 : 0
                         visible: opacity > 0
                         Behavior on opacity { NumberAnimation { duration: Theme.normal } }
@@ -2038,10 +2038,10 @@ Item {
                         id: firstRunHint
                         anchors.horizontalCenter: parent.horizontalCenter
                         anchors.bottom: parent.bottom
-                        anchors.bottomMargin: 50
-                        width: Math.min(parent.width - 24, hintRow.implicitWidth + 28)
-                        height: 30
-                        radius: 15
+                        anchors.bottomMargin: Theme.px(50)
+                        width: Math.min(parent.width - Theme.px(24), hintRow.implicitWidth + Theme.px(28))
+                        height: Theme.px(30)
+                        radius: Theme.px(15)
                         color: Theme.popupBg
                         border.color: Theme.accent
                         opacity: 0
@@ -2070,9 +2070,9 @@ Item {
                         RowLayout {
                             id: hintRow
                             anchors.fill: parent
-                            anchors.leftMargin: 14
-                            anchors.rightMargin: 14
-                            spacing: 10
+                            anchors.leftMargin: Theme.px(14)
+                            anchors.rightMargin: Theme.px(14)
+                            spacing: Theme.px(10)
                             Text { text: "\uE962"; font.family: Theme.fontIcon; font.pixelSize: Theme.fontMd; color: Theme.accent; Layout.alignment: Qt.AlignVCenter }
                             Text {
                                 text: "MOVE THE POINTER OVER THE STREAM FOR CONTROLS  ·  DOUBLE-CLICK THE WIDE VIEW TO CENTRE"
@@ -2156,10 +2156,10 @@ Item {
             HudPanel {
                 panelId: "commands"
                 title: "COMMANDS"
-                SplitView.preferredHeight: 358
-                SplitView.minimumHeight: 140
+                SplitView.preferredHeight: Theme.px(358)
+                SplitView.minimumHeight: Theme.px(140)
                 headerExtra: Row {
-                    spacing: 8
+                    spacing: Theme.s2
                     visible: !!(root.scopeTelemetry.eq_has_result)
                     Text {
                         text: String(root.scopeTelemetry.eq_azi_text || "")
@@ -2181,15 +2181,15 @@ Item {
                     readonly property int padCount: 15
                     // pick the widest column count that still divides the pads into full rows
                     columns: {
-                        const fit = Math.max(2, Math.floor((width + columnSpacing) / (150 + columnSpacing)))
+                        const fit = Math.max(2, Math.floor((width + columnSpacing) / (Theme.px(150) + columnSpacing)))
                         const options = [8, 5, 4, 3]
                         for (let i = 0; i < options.length; i++)
                             if (options[i] <= fit && padCount % options[i] === 0)
                                 return options[i]
                         return 3
                     }
-                    columnSpacing: 8
-                    rowSpacing: 8
+                    columnSpacing: Theme.s2
+                    rowSpacing: Theme.s2
                     Repeater {
                     id: commandPads
                     model: [
@@ -2417,8 +2417,8 @@ Item {
                         }
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        Layout.minimumHeight: 44
-                        Layout.preferredHeight: 58
+                        Layout.minimumHeight: Theme.px(44)
+                        Layout.preferredHeight: Theme.px(58)
                         text: padLabel
                         glyph: modelData.glyph
                         detail: {
@@ -2495,8 +2495,8 @@ Item {
             settingsKey: "controlRight"
             autoRestore: false
             orientation: Qt.Vertical
-            SplitView.preferredWidth: 375
-            SplitView.minimumWidth: 220
+            SplitView.preferredWidth: Theme.px(375)
+            SplitView.minimumWidth: Theme.px(220)
 
             HudPanel {
                 title: "SCOPE STATUS"
@@ -2514,7 +2514,7 @@ Item {
                     delegate: RowLayout {
                         required property var modelData
                         Layout.fillWidth: true
-                        Text { text: modelData.label; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.bold: true; Layout.preferredWidth: 72 }
+                        Text { text: modelData.label; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.bold: true; Layout.preferredWidth: Theme.px(72) }
                         Text { text: modelData.value; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; elide: Text.ElideRight; Layout.fillWidth: true }
                     }
                 }
@@ -2531,8 +2531,8 @@ Item {
                 // count packet (0/0 or N/N) before it starts counting.
                 readonly property bool stacking: captureArmed
                     || (root.scopeOnline && root.scopePending === "stack")
-                SplitView.preferredHeight: 289
-                SplitView.minimumHeight: 136
+                SplitView.preferredHeight: Theme.px(289)
+                SplitView.minimumHeight: Theme.px(136)
                 onStackingChanged: {
                     if (motionPanel.stacking) {
                         analogPad.clearKeys()
@@ -2547,14 +2547,14 @@ Item {
                     font.pixelSize: Theme.fontPx(9)
                     font.letterSpacing: 0.6
                     elide: Text.ElideRight
-                    width: Math.min(110, implicitWidth)
+                    width: Math.min(Theme.px(110), implicitWidth)
                 }
                 Item {
                     id: padHost
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    Layout.preferredHeight: 128
-                    Layout.minimumHeight: 96
+                    Layout.preferredHeight: Theme.px(128)
+                    Layout.minimumHeight: Theme.px(96)
                     readonly property real padSize: Theme.fitPadSize(Math.min(width, height))
                     Item {
                         anchors.fill: parent
@@ -2567,9 +2567,9 @@ Item {
                             width: padHost.padSize
                             height: width
                             readonly property real padScale: width / 96
-                            readonly property real knobSize: Math.max(18, Math.round(28 * padScale))
-                            readonly property real tickMargin: Math.max(6, Math.round(10 * padScale))
-                            readonly property real hairInset: Math.max(12, Math.round(18 * padScale))
+                            readonly property real knobSize: Math.max(Theme.px(18), Math.round(28 * padScale))
+                            readonly property real tickMargin: Math.max(Theme.px(6), Math.round(10 * padScale))
+                            readonly property real hairInset: Math.max(Theme.s3, Math.round(18 * padScale))
                             property real stickDx: 0
                             property real stickDy: 0
                             property bool moving: false
@@ -2577,7 +2577,7 @@ Item {
                             property bool keyRight: false
                             property bool keyUp: false
                             property bool keyDown: false
-                            readonly property real maxThrow: Math.max(8, width / 2 - knobSize / 2 - 1)
+                            readonly property real maxThrow: Math.max(Theme.s2, width / 2 - knobSize / 2 - 1)
                             readonly property real deadzone: 0.15
                         readonly property bool nudgesEnabled: root.motionEnabled && !motionPanel.captureArmed && !stickArea.pressed && !moving
                         activeFocusOnTab: root.motionEnabled && !motionPanel.captureArmed
@@ -2713,7 +2713,7 @@ Item {
                         }
                         Rectangle {
                             anchors.centerIn: parent
-                            width: 2
+                            width: Theme.px(2)
                             height: parent.height - analogPad.hairInset
                             color: Theme.outlineStrong
                             opacity: 0.45
@@ -2721,7 +2721,7 @@ Item {
                         Rectangle {
                             anchors.centerIn: parent
                             width: parent.width - analogPad.hairInset
-                            height: 2
+                            height: Theme.px(2)
                             color: Theme.outlineStrong
                             opacity: 0.45
                         }
@@ -2880,15 +2880,15 @@ Item {
                         to: 1
                         value: root.joySpeed
                         onMoved: root.joySpeed = value
-                        background: Rectangle { x: speedSlider.leftPadding; y: speedSlider.topPadding + speedSlider.availableHeight / 2 - 2; implicitHeight: 4; width: speedSlider.availableWidth; color: Theme.inputBg; Rectangle { width: speedSlider.visualPosition * parent.width; height: parent.height; color: Theme.accent } }
-                        handle: Rectangle { x: speedSlider.leftPadding + speedSlider.visualPosition * (speedSlider.availableWidth - 12); y: speedSlider.topPadding + speedSlider.availableHeight / 2 - 6; width: 12; height: 12; radius: 6; color: Theme.accent }
+                        background: Rectangle { x: speedSlider.leftPadding; y: speedSlider.topPadding + speedSlider.availableHeight / 2 - 2; implicitHeight: Theme.s1; width: speedSlider.availableWidth; color: Theme.inputBg; Rectangle { width: speedSlider.visualPosition * parent.width; height: parent.height; color: Theme.accent } }
+                        handle: Rectangle { x: speedSlider.leftPadding + speedSlider.visualPosition * (speedSlider.availableWidth - 12); y: speedSlider.topPadding + speedSlider.availableHeight / 2 - 6; width: Theme.s3; height: Theme.s3; radius: Theme.px(6); color: Theme.accent }
                     }
                     Text {
                         text: root.mappedJoySpeedText
                         color: Theme.textPrimary
                         font.pixelSize: Theme.fontSm
                         font.family: Theme.fontMono
-                        Layout.preferredWidth: 42
+                        Layout.preferredWidth: Theme.px(42)
                         horizontalAlignment: Text.AlignRight
                     }
                 }
@@ -2898,11 +2898,11 @@ Item {
                     Text { text: "FRAME"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm }
                     Item {
                         Layout.fillWidth: true
-                        implicitHeight: 12
+                        implicitHeight: Theme.s3
                         Rectangle {
                             anchors.verticalCenter: parent.verticalCenter
                             width: parent.width
-                            height: 4
+                            height: Theme.s1
                             color: Theme.inputBg
                             Rectangle {
                                 width: parent.width * (stackTimer.total > 0 ? Math.min(1, stackTimer.stacked / stackTimer.total) : 0)
@@ -2930,18 +2930,18 @@ Item {
             HudPanel {
                 panelId: "upcoming"
                 title: "UP NEXT"
-                SplitView.preferredHeight: 368
-                SplitView.minimumHeight: 72
+                SplitView.preferredHeight: Theme.px(368)
+                SplitView.minimumHeight: Theme.px(72)
                 headerExtra: Row {
-                    spacing: 4
+                    spacing: Theme.s1
                     visible: backend.upcomingSessions.length > 0
                     HudButton {
                         text: controlPage.selectedUpcomingCount > 0 && controlPage.selectedUpcomingCount === backend.upcomingSessions.length ? "CLEAR" : "ALL"
-                        implicitHeight: 20
-                        implicitWidth: 44
+                        implicitHeight: Theme.s5
+                        implicitWidth: Theme.px(44)
                         font.pixelSize: Theme.fontXs
-                        leftPadding: 6
-                        rightPadding: 6
+                        leftPadding: Theme.px(6)
+                        rightPadding: Theme.px(6)
                         onClicked: {
                             if (controlPage.selectedUpcomingCount > 0 && controlPage.selectedUpcomingCount === backend.upcomingSessions.length)
                                 controlPage.selectedUpcomingIds = ({})
@@ -2952,21 +2952,21 @@ Item {
                     HudButton {
                         text: controlPage.selectedUpcomingCount > 1 ? "EDIT " + controlPage.selectedUpcomingCount : "EDIT"
                         visible: controlPage.selectedUpcomingCount > 1
-                        implicitHeight: 20
-                        implicitWidth: controlPage.selectedUpcomingCount > 1 ? 64 : 44
+                        implicitHeight: Theme.s5
+                        implicitWidth: controlPage.selectedUpcomingCount > 1 ? Theme.px(64) : Theme.px(44)
                         font.pixelSize: Theme.fontXs
-                        leftPadding: 6
-                        rightPadding: 6
+                        leftPadding: Theme.px(6)
+                        rightPadding: Theme.px(6)
                         onClicked: sessionDialog.openSelected(Util.itemsByIds(backend.upcomingSessions, controlPage.selectedUpcomingIds))
                     }
                     HudButton {
                         text: controlPage.selectedUpcomingCount > 1 ? "DEL " + controlPage.selectedUpcomingCount : "DELETE"
                         enabled: controlPage.selectedUpcomingCount > 0
-                        implicitHeight: 20
-                        implicitWidth: controlPage.selectedUpcomingCount > 1 ? 64 : 58
+                        implicitHeight: Theme.s5
+                        implicitWidth: controlPage.selectedUpcomingCount > 1 ? Theme.px(64) : Theme.px(58)
                         font.pixelSize: Theme.fontXs
-                        leftPadding: 6
-                        rightPadding: 6
+                        leftPadding: Theme.px(6)
+                        rightPadding: Theme.px(6)
                         buttonColor: Theme.fillDanger
                         foregroundColor: Theme.danger
                         onClicked: root.confirmBulkDelete("deleteSessions", controlPage.selectedUpcomingIds, "session")
@@ -2980,13 +2980,13 @@ Item {
                         id: upcomingInsert
                         anchors.fill: parent
                         targetList: upcomingList
-                        rowHeight: 44
-                        headerHeight: 20
+                        rowHeight: Theme.px(44)
+                        headerHeight: Theme.s5
                         ListView {
                             id: upcomingList
                             anchors.fill: parent
                             clip: true
-                            spacing: 4
+                            spacing: Theme.s1
                             boundsBehavior: Flickable.StopAtBounds
                             ScrollBar.vertical: HiddenBar {}
                             ScrollBar.horizontal: HiddenBar {}
@@ -2997,7 +2997,7 @@ Item {
                                 required property int index
                                 width: ListView.view.width
                                 spacing: 0
-                                height: (showHeader ? 20 : 0) + 44
+                                height: (showHeader ? Theme.s5 : 0) + Theme.px(44)
                                 readonly property bool showHeader: {
                                     if (!modelData.is_grouped)
                                         return false
@@ -3010,16 +3010,16 @@ Item {
                                 opacity: DragCoordinator.active && Util.sameSessionGroup(DragCoordinator.data, modelData) ? 0.35 : 1
                                 Item {
                                     width: parent.width
-                                    height: upcomingWrap.showHeader ? 20 : 0
+                                    height: upcomingWrap.showHeader ? Theme.s5 : 0
                                     visible: upcomingWrap.showHeader
                                     RowLayout {
                                         anchors.fill: parent
-                                        anchors.leftMargin: 4
-                                        anchors.rightMargin: 4
-                                        spacing: 6
+                                        anchors.leftMargin: Theme.s1
+                                        anchors.rightMargin: Theme.s1
+                                        spacing: Theme.px(6)
                                         Rectangle {
-                                            Layout.preferredWidth: 3
-                                            Layout.preferredHeight: 10
+                                            Layout.preferredWidth: Theme.px(3)
+                                            Layout.preferredHeight: Theme.px(10)
                                             Layout.alignment: Qt.AlignVCenter
                                             color: upcomingWrap.groupTone
                                         }
@@ -3046,7 +3046,7 @@ Item {
                                 objectName: "upcoming-" + upcomingWrap.modelData.id
                                 readonly property var modelData: upcomingWrap.modelData
                                 width: parent.width
-                                height: 44
+                                height: Theme.px(44)
                                 color: modelData.is_grouped ? Util.groupFill(modelData.group_id) : Theme.surfaceHigh
                                 border.color: modelData.is_grouped ? Qt.rgba(upcomingWrap.groupTone.r, upcomingWrap.groupTone.g, upcomingWrap.groupTone.b, 0.45) : Theme.outline
                                 SessionDragArea {
@@ -3061,12 +3061,12 @@ Item {
                                 }
                                 RowLayout {
                                     anchors.fill: parent
-                                    anchors.margins: 6
-                                    anchors.leftMargin: 2
-                                    spacing: 6
+                                    anchors.margins: Theme.px(6)
+                                    anchors.leftMargin: Theme.px(2)
+                                    spacing: Theme.px(6)
                                     RowGutter {
-                                        Layout.preferredWidth: 20
-                                        Layout.maximumWidth: 20
+                                        Layout.preferredWidth: Theme.s5
+                                        Layout.maximumWidth: Theme.s5
                                         Layout.fillHeight: true
                                         spineColor: upcomingWrap.groupTone
                                         checked: Util.idSetHas(controlPage.selectedUpcomingIds, upcomingRow.modelData.id)
@@ -3110,13 +3110,13 @@ Item {
                 id: logPanel
                 panelId: "log"
                 moveLabel: "LIVE LOG"
-                readonly property bool compactChrome: width < 420
-                title: width < 280 ? "" : "LIVE LOG"
+                readonly property bool compactChrome: width < Theme.px(420)
+                title: width < Theme.px(280) ? "" : "LIVE LOG"
                 SplitView.fillHeight: true
-                SplitView.minimumHeight: 80
+                SplitView.minimumHeight: Theme.px(80)
                 headerExtra: Row {
                     id: logToolbar
-                    spacing: logPanel.compactChrome ? 2 : 3
+                    spacing: logPanel.compactChrome ? Theme.px(2) : Theme.px(3)
                     Repeater {
                         model: [
                             {key: "all", label: "ALL", icon: "\uE71D"},
@@ -3129,28 +3129,28 @@ Item {
                             required property var modelData
                             readonly property bool active: backend.logFilter === modelData.key
                             readonly property int badge: modelData.key === "alerts" ? backend.logWarningCount + backend.logErrorCount : 0
-                            width: logPanel.compactChrome ? 22 : pillRow.implicitWidth + 12
-                            height: 20
-                            radius: 3
+                            width: logPanel.compactChrome ? Theme.px(22) : pillRow.implicitWidth + Theme.s3
+                            height: Theme.s5
+                            radius: Theme.px(3)
                             color: active ? (modelData.key === "debug" ? Theme.fillSuccess : Theme.fillActive) : pillHover.hovered ? Theme.surfaceHigh : "transparent"
                             border.color: active ? (modelData.key === "debug" ? Theme.success : Theme.accent) : Theme.outlineSoft
                             Behavior on color { ColorAnimation { duration: 120 } }
                             Row {
                                 id: pillRow
                                 anchors.centerIn: parent
-                                spacing: 4
+                                spacing: Theme.s1
                                 Text {
                                     text: logPanel.compactChrome ? pill.modelData.icon : pill.modelData.label
                                     color: pill.active ? (pill.modelData.key === "debug" ? Theme.success : Theme.accent) : Theme.textSecondary
                                     font.family: logPanel.compactChrome ? Theme.fontIcon : Theme.fontUi
-                                    font.pixelSize: logPanel.compactChrome ? 11 : 8
+                                    font.pixelSize: logPanel.compactChrome ? Theme.fontPx(11) : Theme.fontPx(8)
                                     font.bold: !logPanel.compactChrome
                                     font.letterSpacing: logPanel.compactChrome ? 0 : 1
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
                                 Rectangle {
                                     visible: pill.badge > 0 && !logPanel.compactChrome
-                                    width: badgeText.implicitWidth + 6; height: 12; radius: 6
+                                    width: badgeText.implicitWidth + Theme.px(6); height: Theme.s3; radius: Theme.px(6)
                                     color: backend.logErrorCount > 0 ? Theme.danger : Theme.warning
                                     anchors.verticalCenter: parent.verticalCenter
                                     Text { id: badgeText; anchors.centerIn: parent; text: pill.badge > 99 ? "99+" : pill.badge; color: Theme.windowBase; font.pixelSize: Theme.fontXs; font.bold: true }
@@ -3160,11 +3160,11 @@ Item {
                                 visible: pill.badge > 0 && logPanel.compactChrome
                                 anchors.right: parent.right
                                 anchors.top: parent.top
-                                anchors.rightMargin: -3
-                                anchors.topMargin: -3
-                                width: Math.max(12, compactBadgeText.implicitWidth + 4)
-                                height: 12
-                                radius: 6
+                                anchors.rightMargin: Theme.px(-3)
+                                anchors.topMargin: Theme.px(-3)
+                                width: Math.max(Theme.s3, compactBadgeText.implicitWidth + Theme.s1)
+                                height: Theme.s3
+                                radius: Theme.px(6)
                                 z: 1
                                 color: backend.logErrorCount > 0 ? Theme.danger : Theme.warning
                                 Text { id: compactBadgeText; anchors.centerIn: parent; text: pill.badge > 99 ? "99+" : pill.badge; color: Theme.windowBase; font.pixelSize: Theme.fontPx(7); font.bold: true }
@@ -3176,16 +3176,16 @@ Item {
                             ToolTip.text: pill.modelData.label
                         }
                     }
-                    Rectangle { width: 1; height: 16; color: Theme.outline; anchors.verticalCenter: parent.verticalCenter }
+                    Rectangle { width: Theme.px(1); height: Theme.s4; color: Theme.outline; anchors.verticalCenter: parent.verticalCenter }
                     HudButton {
                         text: logPanel.compactChrome ? "\uE8C8" : "COPY"
-                        implicitHeight: 20
-                        implicitWidth: logPanel.compactChrome ? 22 : 46
+                        implicitHeight: Theme.s5
+                        implicitWidth: logPanel.compactChrome ? Theme.px(22) : Theme.px(46)
                         font.family: logPanel.compactChrome ? Theme.fontIcon : Theme.fontUi
-                        font.pixelSize: logPanel.compactChrome ? 11 : 8
+                        font.pixelSize: logPanel.compactChrome ? Theme.fontPx(11) : Theme.fontPx(8)
                         font.letterSpacing: logPanel.compactChrome ? 0 : 1
-                        leftPadding: logPanel.compactChrome ? 0 : 6
-                        rightPadding: logPanel.compactChrome ? 0 : 6
+                        leftPadding: logPanel.compactChrome ? 0 : Theme.px(6)
+                        rightPadding: logPanel.compactChrome ? 0 : Theme.px(6)
                         busyText: logPanel.compactChrome ? "\uE73E" : "COPIED"
                         busyMs: 900
                         enabled: logList.count > 0
@@ -3196,13 +3196,13 @@ Item {
                     }
                     HudButton {
                         text: logPanel.compactChrome ? "\uE74D" : "CLEAR"
-                        implicitHeight: 20
-                        implicitWidth: logPanel.compactChrome ? 22 : 50
+                        implicitHeight: Theme.s5
+                        implicitWidth: logPanel.compactChrome ? Theme.px(22) : Theme.px(50)
                         font.family: logPanel.compactChrome ? Theme.fontIcon : Theme.fontUi
-                        font.pixelSize: logPanel.compactChrome ? 11 : 8
+                        font.pixelSize: logPanel.compactChrome ? Theme.fontPx(11) : Theme.fontPx(8)
                         font.letterSpacing: logPanel.compactChrome ? 0 : 1
-                        leftPadding: logPanel.compactChrome ? 0 : 6
-                        rightPadding: logPanel.compactChrome ? 0 : 6
+                        leftPadding: logPanel.compactChrome ? 0 : Theme.px(6)
+                        rightPadding: logPanel.compactChrome ? 0 : Theme.px(6)
                         enabled: logList.count > 0
                         buttonColor: "transparent"
                         foregroundColor: Theme.textSecondary
@@ -3216,10 +3216,10 @@ Item {
                         // "N new" follow-tail pill
                         anchors.horizontalCenter: parent.horizontalCenter
                         anchors.bottom: parent.bottom
-                        anchors.bottomMargin: 14
-                        width: newPillRow.implicitWidth + 22
-                        height: 22
-                        radius: 11
+                        anchors.bottomMargin: Theme.px(14)
+                        width: newPillRow.implicitWidth + Theme.px(22)
+                        height: Theme.px(22)
+                        radius: Theme.px(11)
                         color: Theme.hsl(0.019, 0.674, 0.169, 0.878)
                         border.color: Theme.accent
                         visible: !logList.followTail && logList.count > 0
@@ -3228,7 +3228,7 @@ Item {
                         Row {
                             id: newPillRow
                             anchors.centerIn: parent
-                            spacing: 6
+                            spacing: Theme.px(6)
                             Text { text: "↓"; color: Theme.accent; font.pixelSize: Theme.fontPx(11); font.bold: true; anchors.verticalCenter: parent.verticalCenter }
                             Text {
                                 text: logList.unseen > 0 ? logList.unseen + " NEW" : "FOLLOW"
@@ -3252,13 +3252,13 @@ Item {
                         readonly property bool pageVisible: controlPage.visible
                         anchors.fill: parent
                         clip: true
-                        spacing: 1
+                        spacing: Theme.px(1)
                         boundsBehavior: Flickable.StopAtBounds
                         ScrollBar.vertical: ScrollBar {
                             id: logScroll
                             policy: ScrollBar.AsNeeded
                             onPressedChanged: if (pressed && logList.contentHeight > logList.height) logList.followTail = false
-                            contentItem: Rectangle { implicitWidth: 3; radius: 1.5; color: Theme.outline; opacity: logScroll.active ? 0.9 : 0.4 }
+                            contentItem: Rectangle { implicitWidth: Theme.px(3); radius: 1.5; color: Theme.outline; opacity: logScroll.active ? 0.9 : 0.4 }
                             background: Item {}
                         }
                         ScrollBar.horizontal: HiddenBar {}
@@ -3333,34 +3333,39 @@ Item {
                             readonly property bool quiet: level === "SDK" || level === "DEBUG" || level === "INFO"
                             readonly property string lineText: time + "  " + level + "  [" + device + "]  " + message + (count > 1 ? "  (×" + count + ")" : "")
                             width: ListView.view ? ListView.view.width : 0
-                            height: 18
+                            height: Math.max(Theme.px(18), logCols.implicitHeight)
                             color: rowHover.hovered ? Theme.hsl(0.057, 0.548, 0.122, 0.102) : (index % 2 === 0 ? "transparent" : Theme.hsl(0.070, 0.524, 0.082, 0.047))
                             Rectangle {
-                                x: 0; y: 2
-                                width: 2
-                                height: parent.height - 4
-                                radius: 1
+                                x: 0; y: Theme.px(2)
+                                width: Theme.px(2)
+                                height: parent.height - Theme.s1
+                                radius: Theme.px(1)
                                 color: logRow.quiet ? Theme.outline : logRow.tone
                                 opacity: logRow.level === "SDK" || logRow.level === "DEBUG" ? 0.45 : 1
                             }
                             RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 7
-                                anchors.rightMargin: 6
-                                spacing: 6
+                                id: logCols
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: Theme.px(7)
+                                anchors.rightMargin: Theme.px(6)
+                                height: implicitHeight
+                                spacing: Theme.px(6)
                                 Text {
                                     text: logRow.time
                                     color: Theme.muted
                                     font.family: Theme.fontMono
                                     font.pixelSize: Theme.fontPx(9)
-                                    Layout.preferredWidth: 50
+                                    Layout.preferredWidth: implicitWidth
+                                    Layout.minimumWidth: implicitWidth
                                 }
                                 Text {
                                     text: logRow.glyph
                                     color: logRow.quiet && logRow.level !== "INFO" ? Theme.muted : logRow.tone
                                     font.pixelSize: Theme.fontPx(9)
                                     font.bold: true
-                                    Layout.preferredWidth: 10
+                                    Layout.preferredWidth: Math.max(Theme.px(10), implicitWidth)
                                     horizontalAlignment: Text.AlignHCenter
                                 }
                                 Text {
@@ -3369,7 +3374,7 @@ Item {
                                     color: Theme.textSecondary
                                     font.pixelSize: Theme.fontPx(9)
                                     elide: Text.ElideRight
-                                    Layout.maximumWidth: 62
+                                    Layout.maximumWidth: Theme.px(62)
                                 }
                                 Text {
                                     id: logText
@@ -3383,9 +3388,9 @@ Item {
                                 }
                                 Rectangle {
                                     visible: logRow.count > 1
-                                    width: countText.implicitWidth + 8
-                                    height: 13
-                                    radius: 6
+                                    width: countText.implicitWidth + Theme.s2
+                                    height: Theme.px(13)
+                                    radius: Theme.px(6)
                                     color: Qt.rgba(logRow.tone.r, logRow.tone.g, logRow.tone.b, 0.2)
                                     border.color: Qt.rgba(logRow.tone.r, logRow.tone.g, logRow.tone.b, 0.6)
                                     Text { id: countText; anchors.centerIn: parent; text: "×" + logRow.count; color: logRow.tone; font.pixelSize: Theme.fontXs; font.bold: true }
@@ -3433,7 +3438,7 @@ Item {
                     EmptyHint {
                         anchors.centerIn: parent
                         visible: logList.count === 0
-                        width: parent.width - 24
+                        width: parent.width - Theme.px(24)
                         glyph: backend.logFilter === "alerts" ? "✓" : "◇"
                         text: backend.logFilter === "alerts" ? "No warnings or errors" : backend.logFilter === "device" ? "No device reports yet" : "Log is empty"
                         font.pixelSize: Theme.fontPx(11)
@@ -3446,7 +3451,7 @@ Item {
         id: columnDockMark
         z: 3000
         enabled: false
-        width: 3
+        width: Theme.px(3)
         x: controlColumns.x + PanelSwap.columnDockX - width / 2
         y: controlColumns.y
         height: controlColumns.height
@@ -3460,8 +3465,8 @@ Item {
         z: 4000
         x: PanelSwap.pos.x + 12
         y: PanelSwap.pos.y + 12
-        width: proxyLabel.implicitWidth + 16
-        height: 22
+        width: proxyLabel.implicitWidth + Theme.s4
+        height: Theme.px(22)
         radius: Theme.radius
         color: Theme.fillActive
         border.color: Theme.accent

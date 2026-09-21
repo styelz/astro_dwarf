@@ -355,7 +355,7 @@ Item {
                     text: "BACK"
                     visible: mediaPage.inNestedFolder
                     enabled: !mediaPage.albumLocked && !mediaPage.busy && mediaPage.scopeOnline
-                    implicitHeight: 28
+                    implicitHeight: Theme.px(28)
                     tooltip: "Returns to the previous album folder"
                     onClicked: {
                         mediaPage.clearSelection()
@@ -399,8 +399,8 @@ Item {
                     highlightFollowsCurrentItem: true
                     highlightMoveDuration: 0
                     onCountChanged: Qt.callLater(mediaPage.syncGridIndex)
-                    cellWidth: Math.max(148, Math.floor(width / Math.max(1, Math.floor(width / 168))))
-                    cellHeight: cellWidth + 36
+                    cellWidth: Math.max(Theme.px(148), Math.floor(width / Math.max(1, Math.floor(width / Theme.px(168)))))
+                    cellHeight: cellWidth + Theme.px(36)
                     model: backend.mediaItems
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: HiddenBar {}
@@ -585,8 +585,8 @@ Item {
         modal: true
         focus: true
         padding: 0
-        width: Math.min(root.width * 0.82, root.width - 48)
-        height: Math.min(root.height * 0.88, root.height - 36)
+        width: Math.min(root.width * 0.82, root.width - Theme.px(48))
+        height: Math.min(root.height * 0.88, root.height - Theme.px(36))
         anchors.centerIn: Overlay.overlay
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: DialogFrame {}

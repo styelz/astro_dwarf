@@ -9,8 +9,8 @@ Item {
     readonly property color toneColor: percent < 0 ? Theme.muted : Util.toneColor(tone)
     property real shown: Math.max(0, percent)
     Behavior on shown { NumberAnimation { duration: 600; easing.type: Easing.OutCubic } }
-    implicitWidth: 72
-    implicitHeight: 72
+    implicitWidth: Theme.px(72)
+    implicitHeight: Theme.px(72)
     Canvas {
         anchors.fill: parent
         readonly property real value: gauge.shown
@@ -54,7 +54,7 @@ Item {
     Column {
         anchors.centerIn: parent
         anchors.verticalCenterOffset: 2
-        spacing: -2
+        spacing: Theme.px(-2)
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             text: gauge.percent >= 0 ? gauge.percent + "%" : "—"
@@ -67,7 +67,7 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             text: gauge.charging ? "⚡ CHG" : "BATT"
             color: gauge.charging ? Theme.warning : Theme.textSecondary
-            font.pixelSize: gauge.width >= 52 ? 8 : 7
+            font.pixelSize: gauge.width >= Theme.fontPx(52) ? Theme.fontPx(8) : Theme.fontPx(7)
             font.letterSpacing: 1
             font.bold: true
             SequentialAnimation on opacity {

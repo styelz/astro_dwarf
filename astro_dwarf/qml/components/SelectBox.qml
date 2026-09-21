@@ -11,10 +11,10 @@ Item {
     readonly property bool shown: revealed || checked
     signal toggled(bool shiftHeld)
     z: 30
-    implicitWidth: 14
-    implicitHeight: 14
-    width: 14
-    height: 14
+    implicitWidth: Theme.px(14)
+    implicitHeight: Theme.px(14)
+    width: Theme.px(14)
+    height: Theme.px(14)
     opacity: shown ? 1 : 0
     scale: shown ? 1 : 0.7
     enabled: shown
@@ -28,15 +28,15 @@ Item {
     // scrim so the box stays legible over text or colour bars
     Rectangle {
         anchors.fill: parent
-        anchors.margins: -3
-        radius: 3
+        anchors.margins: Theme.px(-3)
+        radius: Theme.px(3)
         color: Theme.popupBg
         opacity: 0.85
     }
     HudFrame {
         anchors.fill: parent
-        topLeft: 4
-        bottomRight: 4
+        topLeft: Theme.s1
+        bottomRight: Theme.s1
         strokeWidth: 1
         strokeColor: selectBox.checked || hoverArea.containsMouse ? Theme.accent : Theme.outlineStrong
         fillColor: selectBox.checked ? Theme.fillChecked : Theme.inputBg
@@ -45,14 +45,14 @@ Item {
     }
     HudCheckMark {
         anchors.fill: parent
-        anchors.margins: 2
+        anchors.margins: Theme.px(2)
         on: selectBox.checked
         strokeWidth: 1.6
     }
     MouseArea {
         id: hoverArea
         anchors.fill: parent
-        anchors.margins: -5
+        anchors.margins: Theme.px(-5)
         hoverEnabled: true
         acceptedButtons: Qt.LeftButton
         preventStealing: true

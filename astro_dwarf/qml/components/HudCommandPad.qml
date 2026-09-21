@@ -39,17 +39,17 @@ Button {
         color: commandPad.flash !== "" ? Qt.rgba(commandPad.flashColor.r, commandPad.flashColor.g, commandPad.flashColor.b, 0.22)
              : commandPad.destructive ? Theme.fillDanger : commandPad.activeState ? Theme.fillSuccess : commandPad.pending ? Theme.fillActive : commandPad.down ? Theme.fillChecked : commandPad.hovered ? Theme.surfaceHigh : Theme.surface
         border.color: commandPad.flash !== "" ? commandPad.flashColor : commandPad.destructive ? Theme.danger : commandPad.activeState ? Theme.success : commandPad.pending || commandPad.hovered ? Theme.accent : commandPad.primed ? Theme.success : Theme.outline
-        border.width: commandPad.activeState || commandPad.hovered || commandPad.pending || commandPad.flash !== "" ? 2 : 1
+        border.width: commandPad.activeState || commandPad.hovered || commandPad.pending || commandPad.flash !== "" ? Theme.px(2) : Theme.px(1)
         radius: Theme.radius
         Behavior on color { ColorAnimation { duration: Theme.normal } }
         Behavior on border.color { ColorAnimation { duration: Theme.normal } }
-        Rectangle { x: 4; y: 4; width: parent.width - 8; height: 1; color: commandPad.destructive ? Theme.danger : commandPad.primed && !commandPad.activeState ? Theme.success : Theme.accent; opacity: 0.35 }
+        Rectangle { x: Theme.s1; y: Theme.s1; width: parent.width - Theme.s2; height: Theme.px(1); color: commandPad.destructive ? Theme.danger : commandPad.primed && !commandPad.activeState ? Theme.success : Theme.accent; opacity: 0.35 }
         Rectangle {
             visible: commandPad.primed && !commandPad.activeState && !commandPad.pending
-            width: 2
-            height: parent.height - 8
+            width: Theme.px(2)
+            height: parent.height - Theme.s2
             anchors.left: parent.left
-            anchors.leftMargin: 2
+            anchors.leftMargin: Theme.px(2)
             anchors.verticalCenter: parent.verticalCenter
             color: Theme.success
             opacity: 0.9
@@ -57,8 +57,8 @@ Button {
         Rectangle {
             // pulsing ring while the device reports the command running
             anchors.fill: parent
-            anchors.margins: -3
-            radius: 6
+            anchors.margins: Theme.px(-3)
+            radius: Theme.px(6)
             color: "transparent"
             border.color: commandPad.activeState ? Theme.success : Theme.accent
             border.width: 1
@@ -72,8 +72,8 @@ Button {
             }
         }
         Rectangle {
-            anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 7
-            width: 7; height: 7; radius: 4
+            anchors.right: parent.right; anchors.top: parent.top; anchors.margins: Theme.px(7)
+            width: Theme.px(7); height: Theme.px(7); radius: Theme.s1
             visible: !commandPad.showStop
             color: commandPad.activeState || (commandPad.primed && !commandPad.pending) ? Theme.success : commandPad.pending ? Theme.accent : commandPad.enabled ? Theme.muted : Theme.disabledOutline
             border.color: commandPad.activeState || commandPad.primed ? Theme.accentSoft : Theme.outline
@@ -124,7 +124,7 @@ Button {
                 Rectangle {
                     width: Theme.s2
                     height: Theme.s2
-                    radius: 1
+                    radius: Theme.px(1)
                     color: Theme.danger
                     anchors.centerIn: parent
                 }

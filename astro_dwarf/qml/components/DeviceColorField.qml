@@ -63,7 +63,7 @@ Item {
     RowLayout {
         id: row
         anchors.fill: parent
-        spacing: 6
+        spacing: Theme.px(6)
 
         Item {
             id: currentChip
@@ -79,9 +79,9 @@ Item {
             TapHandler { onTapped: field.openPicker() }
             Rectangle {
                 anchors.centerIn: parent
-                width: 18
-                height: 18
-                radius: 9
+                width: Theme.px(18)
+                height: Theme.px(18)
+                radius: Theme.px(9)
                 color: field.currentColor
                 border.color: currentChip.activeFocus || currentHover.hovered ? Theme.textPrimary : Theme.outlineStrong
                 border.width: 2
@@ -98,7 +98,7 @@ Item {
                 id: chip
                 required property var modelData
                 required property int index
-                Layout.preferredWidth: 26
+                Layout.preferredWidth: Theme.px(26)
                 Layout.preferredHeight: Theme.controlHeight
                 readonly property string hex: String(modelData || "").toUpperCase()
                 readonly property bool chosen: chip.hex === String(field.colorHex).toUpperCase()
@@ -113,12 +113,12 @@ Item {
                 TapHandler { onTapped: field.setHex(chip.modelData) }
                 Rectangle {
                     anchors.centerIn: parent
-                    width: chip.chosen ? 16 : 12
+                    width: chip.chosen ? Theme.s4 : Theme.s3
                     height: width
                     radius: width / 2
                     color: chip.modelData
                     border.color: chip.chosen || chip.activeFocus ? Theme.textPrimary : (chipHover.hovered ? Theme.outlineStrong : Theme.outline)
-                    border.width: chip.chosen || chip.activeFocus ? 2 : 1
+                    border.width: chip.chosen || chip.activeFocus ? Theme.px(2) : Theme.px(1)
                     Behavior on width { NumberAnimation { duration: Theme.quick } }
                     Behavior on border.color { ColorAnimation { duration: Theme.quick } }
                 }

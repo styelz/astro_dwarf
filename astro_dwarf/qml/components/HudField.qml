@@ -36,8 +36,8 @@ TextField {
             field.focus = false
         }
     }
-    leftPadding: 10
-    rightPadding: passwordField ? 32 : 10
+    leftPadding: Theme.px(10)
+    rightPadding: passwordField ? Theme.px(32) : Theme.px(10)
     clip: true
     Binding {
         target: field
@@ -49,7 +49,7 @@ TextField {
     Item {
         id: revealBtn
         visible: field.passwordField
-        width: 28
+        width: Theme.px(28)
         height: parent.height
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
@@ -88,8 +88,8 @@ TextField {
         }
         Rectangle {
             anchors.fill: parent
-            anchors.margins: 4
-            radius: 2
+            anchors.margins: Theme.s1
+            radius: Theme.px(2)
             color: "transparent"
             border.color: Theme.accent
             border.width: Theme.focusStroke
@@ -99,7 +99,7 @@ TextField {
         ToolTip.delay: Theme.tooltipDelay
         ToolTip.text: field.passwordRevealed ? "Hide password" : "Show password"
     }
-    implicitWidth: 160
+    implicitWidth: Theme.px(160)
     implicitHeight: Theme.controlHeight
     Layout.minimumWidth: 0
     Layout.preferredWidth: implicitWidth
@@ -107,7 +107,7 @@ TextField {
         implicitHeight: Theme.controlHeight
         HudFrame {
             anchors.fill: parent
-            anchors.margins: -2
+            anchors.margins: Theme.px(-2)
             topLeft: Theme.notchSmall + 1
             bottomRight: Theme.notchSmall + 1
             strokeColor: Theme.accent
@@ -126,9 +126,9 @@ TextField {
         // bottom "active" rail that fills while focused
         Rectangle {
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: 1
+            anchors.bottomMargin: Theme.px(1)
             anchors.horizontalCenter: parent.horizontalCenter
-            height: 2
+            height: Theme.px(2)
             width: field.activeFocus ? parent.width - Theme.notchSmall * 2 - 6 : 0
             color: Theme.accent
             opacity: 0.8

@@ -64,9 +64,9 @@ RowLayout {
             }
             Rectangle {
                 anchors.bottom: parent.bottom
-                anchors.bottomMargin: 1
+                anchors.bottomMargin: Theme.px(1)
                 anchors.horizontalCenter: parent.horizontalCenter
-                height: 2
+                height: Theme.px(2)
                 width: navBar.currentIndex === parent.modelData.idx ? parent.width - Theme.px(24) : 0
                 color: Theme.accent
                 Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }

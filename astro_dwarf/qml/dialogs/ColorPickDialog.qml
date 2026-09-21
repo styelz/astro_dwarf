@@ -32,7 +32,7 @@ Dialog {
     header: null
     footer: null
     padding: Theme.s3
-    width: 292
+    width: Theme.px(292)
     height: body.implicitHeight + padding * 2
     background: DialogFrame {}
     Overlay.modal: Rectangle {
@@ -56,14 +56,14 @@ Dialog {
     }
 
     function pickPlane(px, py) {
-        const w = Math.max(1, plane.width)
-        const h = Math.max(1, plane.height)
+        const w = Math.max(Theme.px(1), plane.width)
+        const h = Math.max(Theme.px(1), plane.height)
         pick.sat = Math.max(0, Math.min(1, px / w))
         pick.val = Math.max(0, Math.min(1, 1 - py / h))
     }
 
     function pickHue(py) {
-        const h = Math.max(1, hueBar.height)
+        const h = Math.max(Theme.px(1), hueBar.height)
         pick.hue = Theme.wrapHue(py / h)
     }
 
@@ -142,9 +142,9 @@ Dialog {
                 accessibleDescription: "Sample a colour from anywhere on screen. Click a pixel, Escape cancels."
                 onClicked: pick.beginDrop()
                 contentItem: Row {
-                    spacing: 6
-                    leftPadding: 2
-                    rightPadding: 2
+                    spacing: Theme.px(6)
+                    leftPadding: Theme.px(2)
+                    rightPadding: Theme.px(2)
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
                         text: "\uEF3C"
@@ -169,10 +169,10 @@ Dialog {
             Item {
                 id: plane
                 objectName: "colourPlane"
-                Layout.preferredWidth: 216
-                Layout.preferredHeight: 216
-                implicitWidth: 216
-                implicitHeight: 216
+                Layout.preferredWidth: Theme.px(216)
+                Layout.preferredHeight: Theme.px(216)
+                implicitWidth: Theme.px(216)
+                implicitHeight: Theme.px(216)
                 activeFocusOnTab: true
                 Accessible.role: Accessible.Slider
                 Accessible.name: pick.roleName + " saturation and brightness"
@@ -199,12 +199,12 @@ Dialog {
 
                 Rectangle {
                     anchors.fill: parent
-                    radius: 2
+                    radius: Theme.px(2)
                     color: Qt.hsva(Theme.wrapHue(pick.hue), 1, 1, 1)
                 }
                 Rectangle {
                     anchors.fill: parent
-                    radius: 2
+                    radius: Theme.px(2)
                     gradient: Gradient {
                         orientation: Gradient.Horizontal
                         GradientStop { position: 0.0; color: "#ffffffff" }
@@ -213,7 +213,7 @@ Dialog {
                 }
                 Rectangle {
                     anchors.fill: parent
-                    radius: 2
+                    radius: Theme.px(2)
                     gradient: Gradient {
                         orientation: Gradient.Vertical
                         GradientStop { position: 0.0; color: "#00000000" }
@@ -222,17 +222,17 @@ Dialog {
                 }
                 Rectangle {
                     anchors.fill: parent
-                    radius: 2
+                    radius: Theme.px(2)
                     color: "transparent"
                     border.color: plane.activeFocus ? Theme.accent : Theme.outline
-                    border.width: plane.activeFocus ? 2 : 1
+                    border.width: plane.activeFocus ? Theme.px(2) : Theme.px(1)
                 }
                 Rectangle {
                     x: Math.round(pick.sat * plane.width) - width / 2
                     y: Math.round((1 - pick.val) * plane.height) - height / 2
-                    width: 12
-                    height: 12
-                    radius: 6
+                    width: Theme.s3
+                    height: Theme.s3
+                    radius: Theme.px(6)
                     color: "transparent"
                     border.color: pick.val > 0.55 ? "#111111" : "#ffffff"
                     border.width: 2
@@ -256,10 +256,10 @@ Dialog {
             Item {
                 id: hueBar
                 objectName: "colourHue"
-                Layout.preferredWidth: 18
-                Layout.preferredHeight: 216
-                implicitWidth: 18
-                implicitHeight: 216
+                Layout.preferredWidth: Theme.px(18)
+                Layout.preferredHeight: Theme.px(216)
+                implicitWidth: Theme.px(18)
+                implicitHeight: Theme.px(216)
                 activeFocusOnTab: true
                 Accessible.role: Accessible.Slider
                 Accessible.name: pick.roleName + " hue"
@@ -299,14 +299,14 @@ Dialog {
                     anchors.fill: parent
                     color: "transparent"
                     border.color: hueBar.activeFocus ? Theme.accent : Theme.outline
-                    border.width: hueBar.activeFocus ? 2 : 1
+                    border.width: hueBar.activeFocus ? Theme.px(2) : Theme.px(1)
                 }
                 Rectangle {
-                    x: -2
+                    x: Theme.px(-2)
                     y: Math.round(Theme.wrapHue(pick.hue) * hueBar.height) - height / 2
-                    width: hueBar.width + 4
-                    height: 4
-                    radius: 1
+                    width: hueBar.width + Theme.s1
+                    height: Theme.s1
+                    radius: Theme.px(1)
                     color: Theme.textPrimary
                     border.color: Theme.windowBase
                     border.width: 1
@@ -335,7 +335,7 @@ Dialog {
             HudField {
                 id: hexField
                 objectName: "colourHex"
-                Layout.preferredWidth: 108
+                Layout.preferredWidth: Theme.px(108)
                 font.family: Theme.fontMono
                 maximumLength: 7
                 accessibleName: pick.roleName + " hex colour"
@@ -363,7 +363,7 @@ Dialog {
             Rectangle {
                 Layout.preferredWidth: Theme.controlHeight
                 Layout.preferredHeight: Theme.controlHeight
-                radius: 2
+                radius: Theme.px(2)
                 color: pick._original
                 border.color: Theme.outline
                 Accessible.name: "Previous " + pick.roleName
@@ -372,7 +372,7 @@ Dialog {
             Rectangle {
                 Layout.preferredWidth: Theme.controlHeight
                 Layout.preferredHeight: Theme.controlHeight
-                radius: 2
+                radius: Theme.px(2)
                 color: pick.currentColor
                 border.color: Theme.accent
                 Accessible.name: "New " + pick.roleName
@@ -406,8 +406,8 @@ Dialog {
         id: sampleLoupe
         visible: pick.dropping
         flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
-        width: 108
-        height: 36
+        width: Theme.px(108)
+        height: Theme.px(36)
         x: (pick.screenPicker ? pick.screenPicker.cursorX : 0) + 20
         y: (pick.screenPicker ? pick.screenPicker.cursorY : 0) + 20
         color: "transparent"
@@ -417,15 +417,15 @@ Dialog {
             color: Theme.surface
             border.color: Theme.accent
             border.width: 1
-            radius: 2
+            radius: Theme.px(2)
             Row {
                 anchors.fill: parent
-                anchors.margins: 4
-                spacing: 8
+                anchors.margins: Theme.s1
+                spacing: Theme.s2
                 Rectangle {
-                    width: 28
-                    height: 28
-                    radius: 2
+                    width: Theme.px(28)
+                    height: Theme.px(28)
+                    radius: Theme.px(2)
                     color: pick.currentColor
                     border.color: Theme.outline
                 }

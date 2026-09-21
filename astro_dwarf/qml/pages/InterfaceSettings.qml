@@ -328,8 +328,8 @@ ColumnLayout {
         Flow {
             Layout.columnSpan: 2
             Layout.fillWidth: true
-            Layout.minimumWidth: 240
-            spacing: 6
+            Layout.minimumWidth: Theme.px(240)
+            spacing: Theme.px(6)
             Repeater {
                 model: Theme.listedThemes
                 delegate: ThemePresetChip {
@@ -341,14 +341,14 @@ ColumnLayout {
             }
             HudButton {
                 text: iface.naming ? "CANCEL" : "SAVE AS"
-                implicitHeight: 40
+                implicitHeight: Theme.px(40)
                 enabled: iface.naming || Theme.savedThemeCount < Theme.maxSavedThemes
                 accessibleDescription: iface.naming ? "Cancel saving a new theme" : "Save the current palette as a new theme"
                 onClicked: iface.naming ? iface.naming = false : iface.startSaveAs()
             }
             HudButton {
                 text: "STOCK"
-                implicitHeight: 40
+                implicitHeight: Theme.px(40)
                 visible: (iface.tintCustom || Theme.activeThemeId !== "stock") && !iface.naming
                 accessibleDescription: "Return every palette colour to stock cyan"
                 onClicked: Theme.resetPalette()
@@ -392,11 +392,11 @@ ColumnLayout {
         RowLayout {
             visible: iface.naming || (Theme.themeEdited && !!Theme.activeTheme) || iface.savedSlot
             Layout.fillWidth: true
-            Layout.minimumWidth: 240
-            spacing: 6
+            Layout.minimumWidth: Theme.px(240)
+            spacing: Theme.px(6)
             HudButton {
                 text: "CONFIRM"
-                implicitHeight: 28
+                implicitHeight: Theme.px(28)
                 visible: iface.naming
                 enabled: themeNameField.text.trim().length > 0
                 accessibleDescription: "Save the current palette under this name"
@@ -404,7 +404,7 @@ ColumnLayout {
             }
             HudButton {
                 text: "REVERT"
-                implicitHeight: 28
+                implicitHeight: Theme.px(28)
                 visible: Theme.themeEdited && !!Theme.activeTheme && !iface.naming
                 accessibleDescription: "Reload the selected theme and discard edits"
                 onClicked: {
@@ -414,14 +414,14 @@ ColumnLayout {
             }
             HudButton {
                 text: "UPDATE"
-                implicitHeight: 28
+                implicitHeight: Theme.px(28)
                 visible: iface.savedSlot && Theme.themeEdited && !iface.naming
                 accessibleDescription: "Overwrite the selected saved theme with the current palette"
                 onClicked: Theme.updateTheme(Theme.activeThemeId)
             }
             HudButton {
                 text: "DELETE"
-                implicitHeight: 28
+                implicitHeight: Theme.px(28)
                 visible: iface.savedSlot && !iface.naming
                 accessibleDescription: "Delete the selected saved theme"
                 onClicked: Theme.deleteTheme(Theme.activeThemeId)
@@ -469,7 +469,7 @@ ColumnLayout {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignTop
-                Layout.minimumWidth: 260
+                Layout.minimumWidth: Theme.px(260)
                 spacing: Theme.s2
                 Repeater {
                     model: Theme.swatchGroups
@@ -477,7 +477,7 @@ ColumnLayout {
                         id: groupBlock
                         required property var modelData
                         Layout.fillWidth: true
-                        spacing: 4
+                        spacing: Theme.s1
                         Text {
                             text: groupBlock.modelData.title
                             color: Theme.muted
@@ -487,12 +487,12 @@ ColumnLayout {
                         }
                         Flow {
                             Layout.fillWidth: true
-                            spacing: 6
+                            spacing: Theme.px(6)
                             Repeater {
                                 model: groupBlock.modelData.keys
                                 delegate: PaletteSwatch {
                                     required property var modelData
-                                    width: 76
+                                    width: Theme.px(76)
                                     roleKey: modelData.key
                                     roleName: modelData.name
                                     selected: iface.tintRole === modelData.key
@@ -515,7 +515,7 @@ ColumnLayout {
             GridLayout {
                 Layout.fillWidth: true
                 Layout.preferredWidth: iface.colourSplit ? Theme.px(420) : -1
-                Layout.minimumWidth: 240
+                Layout.minimumWidth: Theme.px(240)
                 Layout.alignment: Qt.AlignTop
                 enabled: !iface.tintFixed
                 columns: 2
@@ -525,11 +525,11 @@ ColumnLayout {
                 FieldLabel { text: "HEX" }
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 6
+                    spacing: Theme.px(6)
                     HudField {
                         id: hexField
-                        Layout.preferredWidth: 120
-                        Layout.maximumWidth: 140
+                        Layout.preferredWidth: Theme.px(120)
+                        Layout.maximumWidth: Theme.px(140)
                         font.family: Theme.fontMono
                         maximumLength: 7
                         accessibleName: iface.tintRoleName + " hex colour"
@@ -580,7 +580,7 @@ ColumnLayout {
                 HudSlider {
                     id: hueSlider
                     Layout.fillWidth: true
-                    Layout.minimumWidth: 160
+                    Layout.minimumWidth: Theme.px(160)
                     from: 0
                     to: 1
                     stepSize: 0.001
@@ -612,7 +612,7 @@ ColumnLayout {
                 HudSlider {
                     id: satSlider
                     Layout.fillWidth: true
-                    Layout.minimumWidth: 160
+                    Layout.minimumWidth: Theme.px(160)
                     from: 0
                     to: 1
                     stepSize: 0.01
@@ -637,7 +637,7 @@ ColumnLayout {
                 HudSlider {
                     id: lightSlider
                     Layout.fillWidth: true
-                    Layout.minimumWidth: 160
+                    Layout.minimumWidth: Theme.px(160)
                     from: iface.seedRole ? -1 : 0.02
                     to: iface.seedRole ? 1 : 0.97
                     stepSize: iface.seedRole ? 0.01 : 0.005
@@ -671,11 +671,11 @@ ColumnLayout {
                 FieldLabel { text: "MATCH" }
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 6
+                    spacing: Theme.px(6)
                     HudCombo {
                         id: matchCombo
                         Layout.fillWidth: true
-                        Layout.minimumWidth: 100
+                        Layout.minimumWidth: Theme.px(100)
                         model: iface.matchNames
                         accessibleName: "Colour to match from"
                         tooltip: "Copy hue or the full colour from another swatch onto the selected one."
@@ -712,10 +712,10 @@ ColumnLayout {
                 RowLayout {
                     visible: iface.tintParentKey !== "" || Theme.roleCustom(iface.tintRole)
                     Layout.fillWidth: true
-                    spacing: 6
+                    spacing: Theme.px(6)
                     HudButton {
                         text: "FOLLOW PARENT"
-                        implicitHeight: 28
+                        implicitHeight: Theme.px(28)
                         visible: iface.tintParentKey !== ""
                         enabled: !iface.tintLinked
                         accessibleDescription: "Let this colour follow " + Theme.roleName(iface.tintParentKey) + " again"
@@ -723,7 +723,7 @@ ColumnLayout {
                     }
                     HudButton {
                         text: "RESET SWATCH"
-                        implicitHeight: 28
+                        implicitHeight: Theme.px(28)
                         visible: iface.tintParentKey === ""
                         enabled: Theme.roleCustom(iface.tintRole)
                         accessibleDescription: "Restore the selected colour to stock"
@@ -744,13 +744,13 @@ ColumnLayout {
                 RowLayout {
                     visible: iface.relatedKeys.length > 0
                     Layout.fillWidth: true
-                    spacing: 6
+                    spacing: Theme.px(6)
                     Repeater {
                         model: iface.relatedKeys
                         delegate: PaletteSwatch {
                             required property var modelData
                             Layout.fillWidth: true
-                            Layout.preferredWidth: 40
+                            Layout.preferredWidth: Theme.px(40)
                             roleKey: modelData
                             roleName: Theme.roleName(modelData)
                             selected: iface.tintRole === modelData

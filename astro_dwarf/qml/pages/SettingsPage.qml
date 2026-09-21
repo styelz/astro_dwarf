@@ -307,8 +307,8 @@ Item {
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: settingsFooter.top
-        anchors.bottomMargin: 8
-        spacing: 8
+        anchors.bottomMargin: Theme.s2
+        spacing: Theme.s2
 
         PageHeader {
             Layout.fillWidth: true
@@ -329,11 +329,11 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: 8
+            spacing: Theme.s2
 
             Rectangle {
-                Layout.preferredWidth: 190
-                Layout.minimumWidth: 170
+                Layout.preferredWidth: Theme.px(190)
+                Layout.minimumWidth: Theme.px(170)
                 Layout.fillHeight: true
                 color: Theme.panelFill
                 border.color: Theme.outline
@@ -341,17 +341,17 @@ Item {
                 radius: Theme.radius
                 Flickable {
                     anchors.fill: parent
-                    anchors.margins: 6
+                    anchors.margins: Theme.px(6)
                     clip: true
                     boundsBehavior: Flickable.StopAtBounds
                     flickableDirection: Flickable.VerticalFlick
                     contentWidth: width
                     contentHeight: railColumn.implicitHeight
-                    interactive: contentHeight > height + 1
+                    interactive: contentHeight > height + Theme.px(1)
                     ColumnLayout {
                         id: railColumn
                         width: parent.width
-                        spacing: 2
+                        spacing: Theme.px(2)
                         Repeater {
                             model: settingsPage.categories
                             delegate: ColumnLayout {
@@ -366,9 +366,9 @@ Item {
                                 Text {
                                     visible: railRow.showGroup
                                     Layout.fillWidth: true
-                                    Layout.topMargin: railRow.index === 0 ? 2 : Theme.s3
-                                    Layout.leftMargin: 12
-                                    Layout.bottomMargin: 2
+                                    Layout.topMargin: railRow.index === 0 ? Theme.px(2) : Theme.s3
+                                    Layout.leftMargin: Theme.s3
+                                    Layout.bottomMargin: Theme.px(2)
                                     text: railRow.modelData.group || ""
                                     color: Theme.muted
                                     font.pixelSize: Theme.fontXs
@@ -387,18 +387,18 @@ Item {
                                     activeFocusOnTab: true
                                     Rectangle {
                                         anchors.fill: parent
-                                        radius: 2
+                                        radius: Theme.px(2)
                                         color: railRow.current ? Theme.fillActive : (railHover.hovered || railButton.activeFocus ? Qt.rgba(Theme.outline.r, Theme.outline.g, Theme.outline.b, 0.13) : "transparent")
                                         border.color: railButton.activeFocus ? Theme.accent : "transparent"
-                                        border.width: railButton.activeFocus ? 1 : 0
+                                        border.width: railButton.activeFocus ? Theme.px(1) : 0
                                     }
                                     Rectangle {
                                         anchors.left: parent.left
                                         anchors.top: parent.top
                                         anchors.bottom: parent.bottom
-                                        anchors.margins: 6
-                                        width: 2
-                                        radius: 1
+                                        anchors.margins: Theme.px(6)
+                                        width: Theme.px(2)
+                                        radius: Theme.px(1)
                                         color: Theme.accent
                                         opacity: railRow.current ? 1 : 0
                                         Behavior on opacity { NumberAnimation { duration: Theme.quick } }
@@ -407,14 +407,14 @@ Item {
                                     TapHandler { onTapped: settingsPage.categoryIndex = railRow.index }
                                     RowLayout {
                                         anchors.fill: parent
-                                        anchors.leftMargin: 12
-                                        anchors.rightMargin: 8
-                                        spacing: 8
+                                        anchors.leftMargin: Theme.s3
+                                        anchors.rightMargin: Theme.s2
+                                        spacing: Theme.s2
                                         Text {
                                             text: railRow.modelData.glyph
                                             color: railRow.current ? Theme.accent : Theme.textSecondary
                                             font.pixelSize: Theme.fontBase
-                                            Layout.preferredWidth: 16
+                                            Layout.preferredWidth: Theme.s4
                                         }
                                         ColumnLayout {
                                             Layout.fillWidth: true
@@ -535,7 +535,7 @@ Item {
                                 },
                                 HudButton {
                                     text: "RESET"
-                                    implicitHeight: 28
+                                    implicitHeight: Theme.px(28)
                                     enabled: settingsPage.enhanceCustom
                                     accessibleDescription: "Return denoise and sky crush to full strength"
                                     onClicked: {
@@ -924,7 +924,7 @@ Item {
                         ColumnLayout {
                             visible: settingsPage.durationHintPending
                             Layout.fillWidth: true
-                            spacing: 6
+                            spacing: Theme.px(6)
                             Text {
                                 Layout.fillWidth: true
                                 text: settingsPage.durationHint.summary || ""
@@ -1040,17 +1040,17 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        height: 46
-        radius: 3
+        height: Theme.px(46)
+        radius: Theme.px(3)
         color: settingsPage.dirty ? Theme.fillWarning : Theme.panelFill
         border.color: settingsPage.dirty ? Qt.rgba(Theme.warning.r, Theme.warning.g, Theme.warning.b, 0.6) : Theme.outline
         Behavior on color { ColorAnimation { duration: Theme.normal } }
         Behavior on border.color { ColorAnimation { duration: Theme.normal } }
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 10
-            spacing: 10
+            anchors.leftMargin: Theme.px(14)
+            anchors.rightMargin: Theme.px(10)
+            spacing: Theme.px(10)
             LedDot { on: true; onColor: settingsPage.dirty ? Theme.warning : Theme.success; pulse: settingsPage.dirty }
             Text {
                 Layout.fillWidth: true

@@ -377,7 +377,7 @@ Item {
 
         PageHeader {
             id: skyHeader
-            readonly property bool tight: width < 1100
+            readonly property bool tight: width < Theme.px(1100)
             title: "SKY"
             subtitle: skyPage.targetSubtitle
             RowLayout {
@@ -395,8 +395,8 @@ Item {
                     to: 10
                     value: 1
                     implicitHeight: Theme.compactControlHeight
-                    implicitWidth: 72
-                    Layout.preferredWidth: 72
+                    implicitWidth: Theme.px(72)
+                    Layout.preferredWidth: Theme.px(72)
                     accessibleName: "Mosaic columns"
                     tooltip: skyPage.mosaicHint
                     onValueModified: skyPage.saveSkyGrid()
@@ -412,8 +412,8 @@ Item {
                     to: 10
                     value: 1
                     implicitHeight: Theme.compactControlHeight
-                    implicitWidth: 72
-                    Layout.preferredWidth: 72
+                    implicitWidth: Theme.px(72)
+                    Layout.preferredWidth: Theme.px(72)
                     accessibleName: "Mosaic rows"
                     tooltip: skyPage.mosaicHint
                     onValueModified: skyPage.saveSkyGrid()
@@ -430,8 +430,8 @@ Item {
                     stepSize: 5
                     value: 20
                     implicitHeight: Theme.compactControlHeight
-                    implicitWidth: 78
-                    Layout.preferredWidth: 78
+                    implicitWidth: Theme.px(78)
+                    Layout.preferredWidth: Theme.px(78)
                     accessibleName: "Mosaic overlap percent"
                     tooltip: skyPage.mosaicHint
                     textFromValue: (value, locale) => String(value) + "%"
@@ -453,8 +453,8 @@ Item {
                     wrap: true
                     value: 0
                     implicitHeight: Theme.compactControlHeight
-                    implicitWidth: 78
-                    Layout.preferredWidth: 78
+                    implicitWidth: Theme.px(78)
+                    Layout.preferredWidth: Theme.px(78)
                     accessibleName: "Camera position angle east of north"
                     tooltip: "Camera position angle east of north, as used for overlay, cache, STACK, and save. The box shows the resolved angle. Changing it stores that value on this telescope. Unset follows EQ 0°/180° or alt-az zenith of the locked target."
                     textFromValue: (value, locale) => String(value) + "°"
@@ -526,7 +526,7 @@ Item {
         Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.minimumHeight: 220
+            Layout.minimumHeight: Theme.px(220)
             color: Theme.panelFill
             border.color: Theme.outline
             clip: true
@@ -534,7 +534,7 @@ Item {
             Item {
                 id: mapSlot
                 anchors.fill: parent
-                anchors.margins: 1
+                anchors.margins: Theme.px(1)
             }
 
             Loader {
@@ -552,8 +552,8 @@ Item {
                     && (!mapLoader.nativeMapOverlay || skyPage.mapInitialReady)
                 readonly property real layoutTick: root.width + root.height + root.currentPage
                     + mapSlot.width + mapSlot.height
-                width: mapSlot.width > 1 ? mapSlot.width : Math.max(320, root.width - 24)
-                height: mapSlot.height > 1 ? mapSlot.height : Math.max(220, root.height - 180)
+                width: mapSlot.width > 1 ? mapSlot.width : Math.max(Theme.px(320), root.width - Theme.px(24))
+                height: mapSlot.height > 1 ? mapSlot.height : Math.max(Theme.px(220), root.height - Theme.px(180))
                 x: {
                     void mapLoader.layoutTick
                     if (!mapLoader.nativeMapVisible)
@@ -600,10 +600,10 @@ Item {
                 glyph: "✧"
                 text: backend.skyMapUsesStellariumWeb
                       ? (backend.skyWebBlockedByGpu
-                         ? "Stellarium Web cannot run inside this window. This session has no OpenGL, which is typical on Hyper-V. Open it in a browser, then import the target here."
+                         ? "Stellarium Web cannot run inside this window because OpenGL is disabled. Open it in a browser, then import the target here."
                          : "Stellarium Web is not available in this window. Open it in a browser to find a target, then come back if the map loads.")
                       : (backend.skyWebBlockedByGpu
-                         ? "Aladin Lite cannot run inside this window. This session has no OpenGL, which is typical on Hyper-V. Open the atlas in a browser, then import the target here."
+                         ? "Aladin Lite cannot run inside this window because OpenGL is disabled. Open the atlas in a browser, then import the target here."
                          : "Aladin Lite is not available in this window. Open it in a browser to find a target, then come back if the map loads.")
             }
 
@@ -611,7 +611,7 @@ Item {
                 visible: !skyPage.webReady
                 anchors.horizontalCenter: parent.horizontalCenter
                 anchors.bottom: parent.bottom
-                anchors.bottomMargin: 16
+                anchors.bottomMargin: Theme.s4
                 text: backend.skyMapUsesStellariumWeb ? "OPEN STELLARIUM WEB" : "OPEN ALADIN LITE"
                 onClicked: backend.openExternalUrl(backend.skyMapUsesStellariumWeb
                                                    ? backend.stellariumWebUrl
@@ -693,7 +693,7 @@ Item {
             Rectangle {
                 id: mapBootOverlay
                 anchors.fill: parent
-                anchors.margins: 1
+                anchors.margins: Theme.px(1)
                 color: Theme.surface
                 opacity: skyPage.mapBooting ? 1 : 0
                 visible: opacity > 0

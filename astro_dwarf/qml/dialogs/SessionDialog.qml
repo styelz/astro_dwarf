@@ -13,9 +13,9 @@ Dialog {
     objectName: "sessionDialog"
     modal: true
     anchors.centerIn: Overlay.overlay
-    width: Math.min(root.width - 80, 900)
+    width: Math.min(root.width - Theme.px(80), 900)
     // size to the form so the dialog doesn't float in a sea of empty surface
-    height: Math.min(root.height - 80, Math.max(420, contentItem.implicitHeight + 40))
+    height: Math.min(root.height - Theme.px(80), Math.max(Theme.px(420), contentItem.implicitHeight + Theme.px(40)))
     property string editingId: ""
     property string editingAnchorId: ""
     property string editingDeviceId: ""
@@ -674,8 +674,8 @@ Dialog {
     background: DialogFrame {}
     contentItem: ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 20
-        spacing: 10
+        anchors.margins: Theme.s5
+        spacing: Theme.px(10)
         RowLayout {
             Layout.fillWidth: true
             Text {
@@ -691,12 +691,12 @@ Dialog {
                 font.letterSpacing: 2
                 Layout.fillWidth: true
             }
-            HudButton { text: "×"; implicitWidth: 40; onClicked: sessionDialog.close() }
+            HudButton { text: "×"; implicitWidth: Theme.px(40); onClicked: sessionDialog.close() }
         }
         RowLayout {
             visible: sessionDialog.multiPane
             Layout.fillWidth: true
-            spacing: 8
+            spacing: Theme.s2
             HudButton {
                 text: "THIS PANE"
                 busyMs: 0
@@ -747,8 +747,8 @@ Dialog {
         GridLayout {
             Layout.fillWidth: true
             columns: 3
-            columnSpacing: 10
-            rowSpacing: 8
+            columnSpacing: Theme.px(10)
+            rowSpacing: Theme.s2
             FieldLabel { text: "SESSION NAME"; visible: sessionDialog.uniqueVisible }
             HudField { id: sessionName; objectName: "session-name"; accessibleName: "Session name"; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible }
             FieldLabel { text: "TARGET TYPE"; visible: sessionDialog.uniqueVisible }
@@ -764,17 +764,17 @@ Dialog {
             FieldLabel { text: "RA / DEC"; visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget }
             ColumnLayout {
                 visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget
-                spacing: 2
+                spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "RA HOURS" }
                 HudField { id: ra; objectName: "session-ra"; accessibleName: "Session RA hours"; Layout.fillWidth: true }
             }
             RowLayout {
                 visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget
-                spacing: 6
+                spacing: Theme.px(6)
                 Layout.fillWidth: true
                 ColumnLayout {
-                    spacing: 2
+                    spacing: Theme.px(2)
                     Layout.fillWidth: true
                     FieldCaption { text: "DEC °" }
                     HudField { id: dec; objectName: "session-dec"; accessibleName: "Session DEC"; Layout.fillWidth: true }
@@ -845,7 +845,7 @@ Dialog {
             }
             FieldLabel { text: "EXPOSURE / GAIN" }
             ColumnLayout {
-                spacing: 2
+                spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "SECONDS" }
                 HudField {
@@ -857,7 +857,7 @@ Dialog {
                 }
             }
             ColumnLayout {
-                spacing: 2
+                spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "GAIN" }
                 HudField {
@@ -870,7 +870,7 @@ Dialog {
             }
             FieldLabel { text: "FRAMES / BIN" }
             ColumnLayout {
-                spacing: 2
+                spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "FRAMES" }
                 HudField {
@@ -880,7 +880,7 @@ Dialog {
                 }
             }
             ColumnLayout {
-                spacing: 2
+                spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "BINNING" }
                 HudCombo {
@@ -894,7 +894,7 @@ Dialog {
             FieldLabel { text: "MOSAIC"; visible: sessionDialog.mosaicVisible }
             ColumnLayout {
                 visible: sessionDialog.mosaicVisible
-                spacing: 2
+                spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: sessionDialog.importedPlan ? "ROW" : "ROWS" }
                 HudField {
@@ -906,7 +906,7 @@ Dialog {
             }
             ColumnLayout {
                 visible: sessionDialog.mosaicVisible
-                spacing: 2
+                spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: sessionDialog.importedPlan ? "COLUMN" : "COLUMNS" }
                 HudField {
@@ -929,7 +929,7 @@ Dialog {
             FieldLabel { text: "ROTATION / SCALE"; visible: sessionDialog.mosaicScaleVisible }
             ColumnLayout {
                 visible: sessionDialog.mosaicScaleVisible
-                spacing: 2
+                spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "ROTATION °" }
                 HudField { id: rotation; Layout.fillWidth: true }
@@ -937,15 +937,15 @@ Dialog {
             RowLayout {
                 visible: sessionDialog.mosaicScaleVisible
                 Layout.fillWidth: true
-                spacing: 10
+                spacing: Theme.px(10)
                 ColumnLayout {
-                    spacing: 2
+                    spacing: Theme.px(2)
                     Layout.fillWidth: true
                     FieldCaption { text: "H SCALE %" }
                     HudField { id: hScale; Layout.fillWidth: true; Layout.minimumWidth: 0 }
                 }
                 ColumnLayout {
-                    spacing: 2
+                    spacing: Theme.px(2)
                     Layout.fillWidth: true
                     FieldCaption { text: "V SCALE %" }
                     HudField { id: vScale; Layout.fillWidth: true; Layout.minimumWidth: 0 }
@@ -953,7 +953,7 @@ Dialog {
             }
             FieldLabel { text: "WAIT S" }
             ColumnLayout {
-                spacing: 2
+                spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "BEFORE" }
                 HudField {
@@ -963,7 +963,7 @@ Dialog {
                 }
             }
             ColumnLayout {
-                spacing: 2
+                spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "AFTER" }
                 HudField {
@@ -974,12 +974,12 @@ Dialog {
             }
             FieldLabel { text: "NOTES"; visible: sessionDialog.mosaicVisible }
             HudField { id: notes; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.mosaicVisible }
-            FieldLabel { text: "WORKFLOW"; Layout.alignment: Qt.AlignTop; Layout.topMargin: 8 }
+            FieldLabel { text: "WORKFLOW"; Layout.alignment: Qt.AlignTop; Layout.topMargin: Theme.s2 }
             Flow {
                 Layout.fillWidth: true
                 Layout.columnSpan: 2
-                Layout.topMargin: 4
-                spacing: 22
+                Layout.topMargin: Theme.s1
+                spacing: Theme.px(22)
                 HudCheck {
                     id: calibrate
                     text: "Calibrate"

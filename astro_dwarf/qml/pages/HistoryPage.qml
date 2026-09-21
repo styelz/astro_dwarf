@@ -216,17 +216,17 @@ Item {
         flickableDirection: Flickable.VerticalFlick
         contentWidth: width
         contentHeight: Math.max(height, historyColumn.implicitHeight)
-        interactive: contentHeight > height + 1
+        interactive: contentHeight > height + Theme.px(1)
         ScrollBar.vertical: HiddenBar {}
         ScrollBar.horizontal: HiddenBar {}
     ColumnLayout {
         id: historyColumn
         width: historyFlick.width
         height: Math.max(implicitHeight, historyFlick.height)
-        spacing: 10
+        spacing: Theme.px(10)
         PageHeader {
             id: historyHeader
-            readonly property bool tight: width < 760
+            readonly property bool tight: width < Theme.px(760)
             title: "HISTORY"
             subtitle: {
                 const n = historyPage.scopedHistory.length
@@ -299,10 +299,10 @@ Item {
                     id: statTile
                     required property var modelData
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 108
+                    Layout.preferredHeight: Theme.px(108)
                     overlay: [
                         Text {
-                            anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12
+                            anchors.right: parent.right; anchors.top: parent.top; anchors.margins: Theme.s3
                             text: statTile.modelData[2]
                             color: statTile.modelData[3]
                             opacity: 0.35
@@ -324,7 +324,7 @@ Item {
                 onTextChanged: historyPage.query = text
             }
             HudCombo {
-                Layout.preferredWidth: 160
+                Layout.preferredWidth: Theme.px(160)
                 accessibleName: "Filter by outcome"
                 model: ["All outcomes", "Completed", "Failed"]
                 currentIndex: historyPage.outcomeFilter
@@ -400,11 +400,11 @@ Item {
         HudPanel {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.minimumHeight: 240
+            Layout.minimumHeight: Theme.px(240)
             Layout.preferredHeight: 0
             EmptyHint {
                 Layout.alignment: Qt.AlignHCenter
-                Layout.topMargin: 40
+                Layout.topMargin: Theme.px(40)
                 visible: historyPage.filteredCount === 0
                 glyph: historyPage.scopedHistory.length === 0 ? "◷" : "⌕"
                 text: historyPage.scopedHistory.length === 0
@@ -421,7 +421,7 @@ Item {
                 spacing: 0
                 Item {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 32
+                    Layout.preferredHeight: Theme.px(32)
                     Row {
                         anchors.fill: parent
                         Item { width: historyPage.gutterWidth; height: parent.height }
@@ -441,7 +441,7 @@ Item {
                                 font.bold: true
                                 verticalAlignment: Text.AlignVCenter
                                 elide: Text.ElideRight
-                                leftPadding: 6
+                                leftPadding: Theme.px(6)
                             }
                         }
                     }
@@ -459,7 +459,7 @@ Item {
                         onCollapseAllRequested: historyPage.collapseAll()
                     }
                 }
-                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.outline }
+                Rectangle { Layout.fillWidth: true; height: Theme.px(1); color: Theme.outline }
                 ListView {
                     id: historyList
                     Layout.fillWidth: true
@@ -497,14 +497,14 @@ Item {
                         border.color: expanded || historyRow.showHeader ? Theme.outline : "transparent"
                         Behavior on color { ColorAnimation { duration: Theme.quick } }
                         HoverHandler { id: rowHover }
-                        Rectangle { x: 0; y: 0; width: 2; height: parent.height; color: historyRow.outcomeTone; opacity: historyRow.expanded ? 1 : 0.55 }
+                        Rectangle { x: 0; y: 0; width: Theme.px(2); height: parent.height; color: historyRow.outcomeTone; opacity: historyRow.expanded ? 1 : 0.55 }
                         Column {
                             id: rowBody
                             width: parent.width
                             Item {
                                 visible: historyRow.showHeader
                                 width: parent.width
-                                height: visible ? 26 : 0
+                                height: visible ? Theme.px(26) : 0
                                 Accessible.role: Accessible.Button
                                 Accessible.name: "Collapse " + String(historyRow.modelData.group_title || historyRow.modelData.target_name || "mosaic")
                                 TapHandler {
@@ -525,7 +525,7 @@ Item {
                             }
                             Item {
                                 width: parent.width
-                                height: 42
+                                height: Theme.px(42)
                                 activeFocusOnTab: true
                                 Accessible.role: Accessible.Button
                                 Accessible.name: (historyRow.modelData.date || "") + " " + (historyRow.modelData.target_name || "") + " " + (historyRow.modelData.outcome || "")
@@ -557,7 +557,7 @@ Item {
                                         z: 2
                                         Text {
                                             anchors.fill: parent
-                                            anchors.leftMargin: 2
+                                            anchors.leftMargin: Theme.px(2)
                                             text: historyRow.collapsedGroup ? "▸" : (historyRow.expanded ? "▾" : "▸")
                                             color: Theme.accent
                                             font.pixelSize: Theme.fontSm
@@ -601,9 +601,9 @@ Item {
                                             height: parent.height
                                             Rectangle {
                                                 visible: !!parent.modelData.dot
-                                                anchors.left: parent.left; anchors.leftMargin: 6
+                                                anchors.left: parent.left; anchors.leftMargin: Theme.px(6)
                                                 anchors.verticalCenter: parent.verticalCenter
-                                                width: 6; height: 6; radius: 3
+                                                width: Theme.px(6); height: Theme.px(6); radius: Theme.px(3)
                                                 color: parent.modelData.dot || "transparent"
                                             }
                                             Text {
@@ -615,8 +615,8 @@ Item {
                                                 font.family: parent.modelData.mono ? Theme.fontMono : Theme.fontUi
                                                 elide: Text.ElideRight
                                                 verticalAlignment: Text.AlignVCenter
-                                                leftPadding: parent.modelData.dot ? 16 : 6
-                                                rightPadding: 6
+                                                leftPadding: parent.modelData.dot ? Theme.s4 : Theme.px(6)
+                                                rightPadding: Theme.px(6)
                                             }
                                         }
                                     }
@@ -699,12 +699,12 @@ Item {
                             Item {
                                 visible: historyRow.expanded && !historyRow.collapsedGroup
                                 width: parent.width
-                                height: visible ? detailCol.implicitHeight + 16 : 0
+                                height: visible ? detailCol.implicitHeight + Theme.s4 : 0
                                 ColumnLayout {
                                     id: detailCol
                                     x: historyPage.gutterWidth + 6
                                     width: parent.width - x - 8
-                                    y: 4
+                                    y: Theme.s1
                                     spacing: Theme.s2
                                     Text {
                                         visible: !!(historyRow.modelData.summary)

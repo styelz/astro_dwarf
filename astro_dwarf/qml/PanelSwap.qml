@@ -147,7 +147,7 @@ QtObject {
         const vertical = !split || split.orientation === Qt.Vertical
         const span = vertical ? panel.height : panel.width
         const along = vertical ? local.y : local.x
-        const edge = Math.max(20, Math.min(56, span * 0.33))
+        const edge = Math.max(Theme.s5, Math.min(Theme.px(56), span * 0.33))
         if (along < edge)
             return "before"
         if (along > span - edge)
@@ -276,8 +276,8 @@ QtObject {
             coord.applyProps(split, saved.attached)
         else if (split.SplitView) {
             split.SplitView.maximumWidth = Number.POSITIVE_INFINITY
-            split.SplitView.minimumWidth = 196
-            split.SplitView.preferredWidth = 280
+            split.SplitView.minimumWidth = Theme.px(196)
+            split.SplitView.preferredWidth = Theme.px(280)
             split.SplitView.fillWidth = false
         }
         split.visible = true
@@ -392,7 +392,7 @@ QtObject {
         if (!dest)
             return null
         const local = columns.mapFromItem(host, position.x, position.y)
-        if (local.y < -8 || local.y > columns.height + 8)
+        if (local.y < -Theme.s2 || local.y > columns.height + Theme.s2)
             return null
         const vis = coord.visibleColumns()
         if (!vis.length)

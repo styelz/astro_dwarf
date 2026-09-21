@@ -29,7 +29,7 @@ Window {
     modality: Qt.NonModal
     color: "transparent"
     visible: false
-    width: 420
+    width: Theme.px(420)
     height: body.implicitHeight + Theme.s4 * 2
 
     component IconBtn: HudButton {

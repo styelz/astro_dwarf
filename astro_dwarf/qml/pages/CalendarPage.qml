@@ -293,7 +293,7 @@ Item {
         const laneW = (nightTimeline.columnWidth - laneGap * (lanes - 1)) / lanes
         return {
             x: nightTimeline.columnX(layout.column) + lane * (laneW + laneGap),
-            width: Math.max(28, laneW * span + laneGap * (span - 1))
+            width: Math.max(Theme.px(28), laneW * span + laneGap * (span - 1))
         }
     }
     function deviceConnected(deviceId) {
@@ -544,11 +544,11 @@ Item {
         orientation: Qt.Horizontal
         ColumnLayout {
             SplitView.fillWidth: true
-            SplitView.minimumWidth: 420
-            spacing: 10
+            SplitView.minimumWidth: Theme.px(420)
+            spacing: Theme.px(10)
             PageHeader {
                 id: calendarHeader
-                readonly property bool tight: width < 860
+                readonly property bool tight: width < Theme.px(860)
                 title: calendarPage.viewMode === 0
                     ? Qt.formatDate(calendarPage.shownMonth, "MMMM yyyy").toUpperCase()
                     : Qt.formatDate(calendarPage.selectedDate, "dddd d MMMM").toUpperCase()
@@ -578,7 +578,7 @@ Item {
                     onClicked: calendarPage.showAllDevices = false
                 }
                 HudButton {
-                    text: "‹"; implicitWidth: 40
+                    text: "‹"; implicitWidth: Theme.px(40)
                     Accessible.name: calendarPage.viewMode === 0 ? "Previous month" : "Previous night"
                     onClicked: {
                         if (calendarPage.viewMode === 0)
@@ -597,7 +597,7 @@ Item {
                     calendarPage.requestNowLineScroll()
                 } }
                 HudButton {
-                    text: "›"; implicitWidth: 40
+                    text: "›"; implicitWidth: Theme.px(40)
                     Accessible.name: calendarPage.viewMode === 0 ? "Next month" : "Next night"
                     onClicked: {
                         if (calendarPage.viewMode === 0)
@@ -693,7 +693,7 @@ Item {
                 }
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: 10
+                    spacing: Theme.px(10)
                     RowLayout {
                         Layout.fillWidth: true
                         Repeater { model: ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]; Text { required property string modelData; text: modelData; color: Theme.accent; font.pixelSize: Theme.fontSm; font.bold: true; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter } }
@@ -704,8 +704,8 @@ Item {
                         Layout.fillHeight: true
                         columns: 7
                         rows: 6
-                        rowSpacing: 5
-                        columnSpacing: 5
+                        rowSpacing: Theme.px(5)
+                        columnSpacing: Theme.px(5)
                     Repeater {
                         id: monthDays
                         model: 42
@@ -730,10 +730,10 @@ Item {
                             readonly property bool isSelected: calendarPage.isDaySelected(key)
                             readonly property bool inMonth: cellDate.getMonth() === calendarPage.shownMonth.getMonth()
                             readonly property int chipLimit: {
-                                const inner = Math.max(0, height - 12)
-                                const dateH = 16
-                                const moreH = 14
-                                const chipH = 25
+                                const inner = Math.max(0, height - Theme.s3)
+                                const dateH = Theme.fontSm + Theme.px(6)
+                                const moreH = Theme.fontXs + Theme.px(4)
+                                const chipH = Theme.px(22) + Theme.px(3)
                                 let room = inner - dateH
                                 if (dayCell.daySessions.length <= 0)
                                     return 0
@@ -749,7 +749,7 @@ Item {
                             clip: true
                             color: isSelected ? Theme.fillChecked : cellHover.hovered ? Theme.surfaceHigh : inMonth ? Theme.panelFill : otherMonthFill
                             border.color: dayCell.activeFocus || dropArea.containsDrag ? Theme.accent : isSelected ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.7) : Theme.outline
-                            border.width: dayCell.activeFocus ? 2 : 1
+                            border.width: dayCell.activeFocus ? Theme.px(2) : Theme.px(1)
                             Behavior on color { ColorAnimation { duration: Theme.quick } }
                             HoverHandler { id: cellHover }
                             WheelHandler {
@@ -777,7 +777,7 @@ Item {
                             Rectangle {
                                 // animated accent ring on tonight's cell
                                 anchors.fill: parent
-                                anchors.margins: 2
+                                anchors.margins: Theme.px(2)
                                 radius: Theme.radius
                                 color: "transparent"
                                 border.color: Theme.accent
@@ -792,7 +792,7 @@ Item {
                                 }
                             }
                             Text {
-                                anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 5
+                                anchors.right: parent.right; anchors.top: parent.top; anchors.margins: Theme.px(5)
                                 visible: dayCell.isToday
                                 text: "TONIGHT"
                                 color: Theme.accent
@@ -812,8 +812,8 @@ Item {
                             }
                             Column {
                                 anchors.fill: parent
-                                anchors.margins: 6
-                                spacing: 3
+                                anchors.margins: Theme.px(6)
+                                spacing: Theme.px(3)
                                 Text { text: dayCell.cellDate.getDate(); color: dayCell.isToday ? Theme.accent : dayCell.inMonth ? Theme.textPrimary : Theme.muted; font.pixelSize: Theme.fontSm; font.bold: dayCell.isToday; font.family: Theme.fontMono }
                                 Repeater {
                                     id: chipRepeater
@@ -825,20 +825,20 @@ Item {
                                         property string sessionId: modelData.id
                                         readonly property color deviceTone: Util.sessionTone(modelData)
                                         width: parent.width
-                                        height: 22
-                                        radius: 2
+                                        height: Theme.px(22)
+                                        radius: Theme.px(2)
                                         color: Util.statusFill(modelData.status)
                                         border.color: Qt.rgba(Util.statusColor(modelData.status).r, Util.statusColor(modelData.status).g, Util.statusColor(modelData.status).b, 0.55)
                                         opacity: DragCoordinator.active && Util.sameSessionGroup(DragCoordinator.data, modelData) ? 0.35 : 1
                                         Accessible.name: calendarPage.chipText(modelData)
-                                        Rectangle { x: 1; y: 1; width: 3; height: parent.height - 2; radius: 1; color: sessionChip.deviceTone }
+                                        Rectangle { x: Theme.px(1); y: Theme.px(1); width: Theme.px(3); height: parent.height - Theme.px(2); radius: Theme.px(1); color: sessionChip.deviceTone }
                                         Rectangle {
-                                            anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 3
-                                            width: 5; height: 5; radius: 2.5
+                                            anchors.right: parent.right; anchors.top: parent.top; anchors.margins: Theme.px(3)
+                                            width: Theme.px(5); height: Theme.px(5); radius: 2.5
                                             color: Util.statusColor(modelData.status)
                                             visible: String(modelData.status) !== "planned"
                                         }
-                                        Text { anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 10; anchors.topMargin: 4; anchors.bottomMargin: 4; text: calendarPage.chipText(modelData); color: Theme.textPrimary; font.pixelSize: Theme.fontXs; elide: Text.ElideRight }
+                                        Text { anchors.fill: parent; anchors.leftMargin: Theme.s2; anchors.rightMargin: Theme.px(10); anchors.topMargin: Theme.s1; anchors.bottomMargin: Theme.s1; text: calendarPage.chipText(modelData); color: Theme.textPrimary; font.pixelSize: Theme.fontXs; elide: Text.ElideRight }
                                         SessionDragArea {
                                             dragItem: sessionChip.modelData
                                             editOnDoubleTap: false
@@ -936,17 +936,17 @@ Item {
                 visible: calendarPage.viewMode === 1
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                property real hourHeight: 64
-                property real itemOffset: 5
+                property real hourHeight: Theme.px(64)
+                property real itemOffset: Theme.px(5)
                 // A whole night at a fixed scale leaves an hour of sessions squeezed into
                 // a sliver of a very tall, empty track, so the scale follows the content
                 // until the user zooms with Ctrl+wheel.
                 property real hoverMinutes: -1
                 property bool zoomLocked: false
-                readonly property real minHourHeight: 32
-                readonly property real maxHourHeight: 2880
-                readonly property real autoFitMinHourHeight: 56
-                readonly property real autoFitMaxHourHeight: 220
+                readonly property real minHourHeight: Theme.px(32)
+                readonly property real maxHourHeight: Theme.px(2880)
+                readonly property real autoFitMinHourHeight: Theme.px(56)
+                readonly property real autoFitMaxHourHeight: Theme.px(220)
                 readonly property real trackHeight: 24 * hourHeight + 24
                 // Hour fraction under the cursor, kept on screen across the
                 // Flickable contentHeight update that follows a scale change.
@@ -973,10 +973,10 @@ Item {
                 }
                 function autoFit() {
                     const items = calendarPage.nightSessions
-                    if (nightTimeline.zoomLocked || timelineFlick.height < 80)
+                    if (nightTimeline.zoomLocked || timelineFlick.height < Theme.px(80))
                         return
                     if (!items.length) {
-                        nightTimeline.hourHeight = 64
+                        nightTimeline.hourHeight = Theme.px(64)
                         return
                     }
                     let lo = 1440
@@ -999,7 +999,7 @@ Item {
                     const next = Math.max(nightTimeline.minHourHeight, Math.min(nightTimeline.maxHourHeight, before * factor))
                     if (Math.abs(next - before) < 0.01)
                         return
-                    const viewH = Math.max(1, timelineFlick.height)
+                    const viewH = Math.max(Theme.px(1), timelineFlick.height)
                     const offset = Math.max(0, Math.min(viewH, Number(anchorY)))
                     nightTimeline.zoomAnchorHour = (timelineFlick.contentY + offset) / before
                     nightTimeline.zoomAnchorOffset = offset
@@ -1035,7 +1035,7 @@ Item {
                     const lo = Math.log(nightTimeline.minHourHeight)
                     const hi = Math.log(nightTimeline.maxHourHeight)
                     const next = Math.exp(lo + Math.max(0, Math.min(1, Number(t))) * (hi - lo))
-                    nightTimeline.zoomBy(next / Math.max(1, nightTimeline.hourHeight), anchorY)
+                    nightTimeline.zoomBy(next / Math.max(Theme.px(1), nightTimeline.hourHeight), anchorY)
                 }
                 function visibleStartMinutes() {
                     return Math.max(0, Math.min(1440, timelineFlick.contentY / nightTimeline.hourHeight * 60))
@@ -1051,7 +1051,7 @@ Item {
                     return (nightTimeline.hourHeight / 64).toFixed(nightTimeline.hourHeight >= 640 ? 0 : 1) + "×"
                 }
                 function panToRatio(ratio) {
-                    const viewH = Math.max(1, timelineFlick.height)
+                    const viewH = Math.max(Theme.px(1), timelineFlick.height)
                     const maxY = Math.max(0, nightTimeline.trackHeight - viewH)
                     const y = Number(ratio) * nightTimeline.trackHeight - viewH / 2
                     timelineFlick.contentY = Math.max(0, Math.min(maxY, y))
@@ -1067,7 +1067,7 @@ Item {
                 readonly property var columnIds: calendarPage.showAllDevices ? calendarPage.nightDeviceIds(calendarPage.nightSessions) : []
                 readonly property int columnCount: Math.max(1, columnIds.length)
                 readonly property bool columnsVisible: columnIds.length > 1
-                readonly property real trackWidth: Math.max(120, timelineTrack.width - trackLeft - trackPadRight)
+                readonly property real trackWidth: Math.max(Theme.px(120), timelineTrack.width - trackLeft - trackPadRight)
                 readonly property real columnWidth: (trackWidth - columnGap * (columnCount - 1)) / columnCount
                 function columnX(index) {
                     return trackLeft + Math.max(0, index) * (columnWidth + columnGap)
@@ -1080,7 +1080,7 @@ Item {
                     if (!DragCoordinator.active || !DragCoordinator.contentItem || timelineFlick.height < 8)
                         return 0
                     const local = timelineFlick.mapFromItem(DragCoordinator.contentItem, DragCoordinator.pos.x, DragCoordinator.pos.y)
-                    if (local.x < -80 || local.x > timelineFlick.width + 80)
+                    if (local.x < -80 || local.x > timelineFlick.width + Theme.px(80))
                         return 0
                     const edge = Math.min(nightTimeline.dragScrollEdge, timelineFlick.height / 3)
                     let ratio = 0
@@ -1115,7 +1115,7 @@ Item {
                 }
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: 4
+                    spacing: Theme.s1
                     Item {
                         id: columnHeader
                         visible: nightTimeline.columnsVisible
@@ -1137,9 +1137,9 @@ Item {
                                     anchors.right: parent.right
                                     anchors.top: parent.top
                                     anchors.bottom: parent.bottom
-                                    anchors.bottomMargin: 4
-                                    spacing: 6
-                                    Rectangle { width: 6; height: 6; radius: 3; anchors.verticalCenter: parent.verticalCenter; color: columnHead.tone }
+                                    anchors.bottomMargin: Theme.s1
+                                    spacing: Theme.px(6)
+                                    Rectangle { width: Theme.px(6); height: Theme.px(6); radius: Theme.px(3); anchors.verticalCenter: parent.verticalCenter; color: columnHead.tone }
                                     Text {
                                         text: calendarPage.deviceName(columnHead.modelData).toUpperCase()
                                         color: columnHead.tone
@@ -1147,7 +1147,7 @@ Item {
                                         font.bold: true
                                         font.letterSpacing: Theme.tracking1
                                         elide: Text.ElideRight
-                                        width: Math.max(20, columnHead.width - 18 - countLabel.implicitWidth)
+                                        width: Math.max(Theme.s5, columnHead.width - Theme.px(18) - countLabel.implicitWidth)
                                         anchors.verticalCenter: parent.verticalCenter
                                     }
                                     Text {
@@ -1161,8 +1161,8 @@ Item {
                                 Rectangle {
                                     anchors.bottom: parent.bottom
                                     width: parent.width
-                                    height: 2
-                                    radius: 1
+                                    height: Theme.px(2)
+                                    radius: Theme.px(1)
                                     color: columnHead.tone
                                     opacity: 0.7
                                 }
@@ -1248,7 +1248,7 @@ Item {
                                 color: Qt.rgba(tone.r, tone.g, tone.b, 0.035)
                                 Rectangle {
                                     visible: index > 0
-                                    width: 1
+                                    width: Theme.px(1)
                                     height: parent.height
                                     color: Theme.outline
                                     opacity: 0.5
@@ -1289,14 +1289,14 @@ Item {
                                 const ctx = getContext("2d")
                                 ctx.reset()
                                 const hh = timeScale.hourHeight
-                                if (hh <= 0 || width < 8 || height < 8)
+                                if (hh <= 0 || width < Theme.s2 || height < Theme.s2)
                                     return
                                 const step = Math.max(1, timeScale.tickMinutes)
                                 const contentTop = timeScale.originY
                                 const startMin = Math.max(0, Math.floor((contentTop / hh) * 60 / step) * step)
                                 const endMin = Math.min(1440, Math.ceil(((contentTop + height) / hh) * 60 / step) * step)
                                 const gutter = nightTimeline.gutterWidth
-                                const trackW = Math.max(8, width - gutter - nightTimeline.trackPadRight)
+                                const trackW = Math.max(Theme.s2, width - gutter - nightTimeline.trackPadRight)
                                 const ppm = hh / 60
                                 ctx.lineWidth = 1
                                 ctx.textAlign = "left"
@@ -1315,7 +1315,7 @@ Item {
                                     else if (halfMark)
                                         lineW = trackW * 0.82
                                     else if (quarterMark)
-                                        lineW = Math.max(64, trackW * 0.42)
+                                        lineW = Math.max(Theme.px(64), trackW * 0.42)
                                     else if (fiveMark)
                                         lineW = 40
                                     if (hourMark && minutes % 360 === 0) {
@@ -1379,10 +1379,10 @@ Item {
                                     return minutes / 60 * nightTimeline.hourHeight + nightTimeline.itemOffset
                                 }
                                 width: slot.width
-                                height: Math.max(26, calendarPage.sessionSpanSeconds(modelData) / 3600 * nightTimeline.hourHeight - 4)
+                                height: Math.max(Theme.px(26), calendarPage.sessionSpanSeconds(modelData) / 3600 * nightTimeline.hourHeight - Theme.s1)
                                 z: calendarPage.nightBarZ(modelData)
-                                readonly property bool tight: height < 44
-                                readonly property bool narrow: width < 210
+                                readonly property bool tight: height < Theme.px(44)
+                                readonly property bool narrow: width < Theme.px(210)
                                 radius: Theme.radius
                                 clip: true
                                 color: Util.statusFill(modelData.status)
@@ -1399,7 +1399,7 @@ Item {
                                         const actual = calendarPage.sessionActualSeconds(timelineSession.modelData)
                                         if (planned <= 0 || actual <= 0)
                                             return 0
-                                        return Math.max(2, timelineSession.height * Math.min(1, actual / planned))
+                                        return Math.max(Theme.px(2), timelineSession.height * Math.min(1, actual / planned))
                                     }
                                     color: Util.statusColor(timelineSession.modelData.status)
                                     opacity: 0.28
@@ -1418,11 +1418,11 @@ Item {
                                 RowLayout {
                                     anchors.fill: parent
                                     anchors.margins: timelineSession.tight ? 2 : 6
-                                    anchors.leftMargin: 2
-                                    spacing: timelineSession.narrow ? 4 : 6
+                                    anchors.leftMargin: Theme.px(2)
+                                    spacing: timelineSession.narrow ? Theme.s1 : Theme.px(6)
                                     RowGutter {
-                                        Layout.preferredWidth: 18
-                                        Layout.maximumWidth: 18
+                                        Layout.preferredWidth: Theme.px(18)
+                                        Layout.maximumWidth: Theme.px(18)
                                         Layout.fillHeight: true
                                         spineInset: 2
                                         spineColor: Util.sessionTone(timelineSession.modelData)
@@ -1436,7 +1436,7 @@ Item {
                                         spacing: 0
                                         RowLayout {
                                             Layout.fillWidth: true
-                                            spacing: timelineSession.narrow ? 5 : 8
+                                            spacing: timelineSession.narrow ? Theme.px(5) : Theme.s2
                                             Text { text: modelData.start_time; color: Theme.accent; font.family: Theme.fontMono; font.pixelSize: timelineSession.narrow ? Theme.fontSm : Theme.fontMd; font.bold: true }
                                             Text { text: calendarPage.sessionLabel(modelData); color: Theme.textPrimary; font.pixelSize: timelineSession.narrow ? Theme.fontSm : Theme.fontBase; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                             StatusChip { status: modelData.status; visible: modelData.status !== "planned" && timelineSession.width > 200 }
@@ -1453,10 +1453,10 @@ Item {
                                             Layout.fillWidth: true
                                         }
                                     }
-                                    HudButton { text: "EDIT"; implicitHeight: 24; visible: !timelineSession.tight && timelineSession.width > 260; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: calendarPage.editItem(timelineSession.modelData) }
+                                    HudButton { text: "EDIT"; implicitHeight: Theme.px(24); visible: !timelineSession.tight && timelineSession.width > 260; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: calendarPage.editItem(timelineSession.modelData) }
                                     HudButton {
                                         text: modelData.status === "running" ? "STOP" : "RUN"
-                                        implicitHeight: 24
+                                        implicitHeight: Theme.px(24)
                                         visible: !timelineSession.tight && timelineSession.width > 260
                                         enabled: calendarPage.sessionRunEnabled(modelData)
                                         tooltip: modelData.status === "running" || calendarPage.deviceConnected(modelData.device_id) ? "" : "Connect the telescope to run"
@@ -1479,7 +1479,7 @@ Item {
                                      && nightTimeline.hoverMinutes >= 0
                             x: nightTimeline.gutterWidth
                             width: parent.width - nightTimeline.gutterWidth - nightTimeline.trackPadRight
-                            height: 1
+                            height: Theme.px(1)
                             z: 19
                             color: Theme.accent
                             opacity: 0.35
@@ -1500,7 +1500,7 @@ Item {
                             visible: calendarPage.dateKey(calendarPage.selectedDate) === calendarPage.currentObservingKey()
                             x: nightTimeline.gutterWidth
                             width: parent.width - nightTimeline.gutterWidth - nightTimeline.trackPadRight
-                            height: 2
+                            height: Theme.px(2)
                             z: 20
                             color: Theme.warning
                             y: {
@@ -1516,7 +1516,7 @@ Item {
                             visible: DragCoordinator.active && DragCoordinator.previewMinutes >= 0
                             x: nightTimeline.gutterWidth
                             width: parent.width - nightTimeline.gutterWidth - nightTimeline.trackPadRight
-                            height: 2
+                            height: Theme.px(2)
                             color: Theme.accent
                             y: DragCoordinator.previewMinutes / 60 * nightTimeline.hourHeight
                             z: 30
@@ -1536,17 +1536,17 @@ Item {
                             x: slot.x
                             y: DragCoordinator.previewMinutes / 60 * nightTimeline.hourHeight + nightTimeline.itemOffset
                             width: slot.width
-                            height: Math.max(26, calendarPage.sessionSpanSeconds(DragCoordinator.data) / 3600 * nightTimeline.hourHeight - 4)
-                            radius: 3
+                            height: Math.max(Theme.px(26), calendarPage.sessionSpanSeconds(DragCoordinator.data) / 3600 * nightTimeline.hourHeight - Theme.s1)
+                            radius: Theme.px(3)
                             color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.12)
                             border.color: Theme.accent
                             border.width: 2
                             z: 25
                             Text {
                                 anchors.left: parent.left
-                                anchors.leftMargin: 12
+                                anchors.leftMargin: Theme.s3
                                 anchors.top: parent.top
-                                anchors.topMargin: 8
+                                anchors.topMargin: Theme.s2
                                 text: DragCoordinator.previewTime
                                 color: Theme.accent
                                 font.family: Theme.fontMono
@@ -1566,8 +1566,8 @@ Item {
                     anchors.bottom: parent.bottom
                     anchors.rightMargin: Theme.s2
                     anchors.bottomMargin: Theme.s2
-                    width: 118
-                    height: 196
+                    width: Theme.px(118)
+                    height: Theme.px(196)
                     HoverHandler { id: zoomHudHover }
                     Accessible.role: Accessible.Dial
                     Accessible.name: "Night zoom"
@@ -1584,7 +1584,7 @@ Item {
                     ColumnLayout {
                         anchors.fill: parent
                         anchors.margins: Theme.s1
-                        spacing: 4
+                        spacing: Theme.s1
 
                         Text {
                             Layout.fillWidth: true
@@ -1607,12 +1607,12 @@ Item {
 
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 4
+                            spacing: Theme.s1
                             HudButton {
                                 objectName: "night-zoom-out"
                                 text: "−"
                                 implicitHeight: Theme.compactControlHeight
-                                Layout.preferredWidth: 24
+                                Layout.preferredWidth: Theme.px(24)
                                 Layout.preferredHeight: Theme.compactControlHeight
                                 tooltip: "Zoom out"
                                 onClicked: nightTimeline.zoomBy(1 / 1.22, timelineFlick.height / 2)
@@ -1620,7 +1620,7 @@ Item {
                             Item {
                                 id: zoomMeter
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: 10
+                                Layout.preferredHeight: Theme.px(10)
                                 Accessible.role: Accessible.Slider
                                 Accessible.name: "Zoom level"
                                 Rectangle {
@@ -1629,10 +1629,10 @@ Item {
                                     border.color: Theme.outlineSoft
                                     radius: height / 2
                                     Rectangle {
-                                        x: 1
-                                        y: 1
-                                        height: parent.height - 2
-                                        width: Math.max(0, (parent.width - 2) * nightTimeline.zoomT())
+                                        x: Theme.px(1)
+                                        y: Theme.px(1)
+                                        height: parent.height - Theme.px(2)
+                                        width: Math.max(0, (parent.width - Theme.px(2)) * nightTimeline.zoomT())
                                         radius: height / 2
                                         color: Theme.accent
                                         opacity: 0.7
@@ -1641,10 +1641,10 @@ Item {
                                 MouseArea {
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
-                                    onPressed: mouse => nightTimeline.setZoomT(mouse.x / Math.max(1, width), timelineFlick.height / 2)
+                                    onPressed: mouse => nightTimeline.setZoomT(mouse.x / Math.max(Theme.px(1), width), timelineFlick.height / 2)
                                     onPositionChanged: mouse => {
                                         if (pressed)
-                                            nightTimeline.setZoomT(mouse.x / Math.max(1, width), timelineFlick.height / 2)
+                                            nightTimeline.setZoomT(mouse.x / Math.max(Theme.px(1), width), timelineFlick.height / 2)
                                     }
                                 }
                             }
@@ -1652,7 +1652,7 @@ Item {
                                 objectName: "night-zoom-in"
                                 text: "+"
                                 implicitHeight: Theme.compactControlHeight
-                                Layout.preferredWidth: 24
+                                Layout.preferredWidth: Theme.px(24)
                                 Layout.preferredHeight: Theme.compactControlHeight
                                 tooltip: "Zoom in"
                                 onClicked: nightTimeline.zoomBy(1.22, timelineFlick.height / 2)
@@ -1664,7 +1664,7 @@ Item {
                             objectName: "nightZoomMini"
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            Layout.minimumHeight: 72
+                            Layout.minimumHeight: Theme.px(72)
 
                             Rectangle {
                                 anchors.fill: parent
@@ -1678,28 +1678,28 @@ Item {
                                     required property var modelData
                                     readonly property real startMin: Math.max(0, Math.min(1440, calendarPage.timelineMinutesFromEpoch(modelData.start_epoch_ms, calendarPage.nightKey(), modelData.device_id)))
                                     readonly property real spanMin: Math.max(2, calendarPage.sessionSpanSeconds(modelData) / 60)
-                                    x: 3
-                                    width: parent.width - 6
+                                    x: Theme.px(3)
+                                    width: parent.width - Theme.px(6)
                                     y: startMin / 1440 * nightMini.height
-                                    height: Math.max(2, spanMin / 1440 * nightMini.height)
-                                    radius: 1
+                                    height: Math.max(Theme.px(2), spanMin / 1440 * nightMini.height)
+                                    radius: Theme.px(1)
                                     color: Util.statusColor(modelData.status)
                                     opacity: 0.55
                                 }
                             }
                             Rectangle {
                                 id: miniThumb
-                                x: 1
-                                width: parent.width - 2
+                                x: Theme.px(1)
+                                width: parent.width - Theme.px(2)
                                 y: {
-                                    const h = Math.max(1, nightTimeline.trackHeight)
+                                    const h = Math.max(Theme.px(1), nightTimeline.trackHeight)
                                     return timelineFlick.contentY / h * nightMini.height
                                 }
                                 height: {
-                                    const h = Math.max(1, nightTimeline.trackHeight)
-                                    return Math.max(10, timelineFlick.height / h * nightMini.height)
+                                    const h = Math.max(Theme.px(1), nightTimeline.trackHeight)
+                                    return Math.max(Theme.px(10), timelineFlick.height / h * nightMini.height)
                                 }
-                                radius: 2
+                                radius: Theme.px(2)
                                 color: "transparent"
                                 border.color: Theme.accent
                                 border.width: 1
@@ -1708,10 +1708,10 @@ Item {
                             MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.PointingHandCursor
-                                onPressed: mouse => nightTimeline.panToRatio(mouse.y / Math.max(1, height))
+                                onPressed: mouse => nightTimeline.panToRatio(mouse.y / Math.max(Theme.px(1), height))
                                 onPositionChanged: mouse => {
                                     if (pressed)
-                                        nightTimeline.panToRatio(mouse.y / Math.max(1, height))
+                                        nightTimeline.panToRatio(mouse.y / Math.max(Theme.px(1), height))
                                 }
                                 onDoubleClicked: calendarPage.fitNightZoom()
                             }
@@ -1776,11 +1776,11 @@ Item {
                 calendarPage.selectedDate
                 return calendarPage.selectedNightsTitle()
             }
-            SplitView.preferredWidth: 312
-            SplitView.minimumWidth: 220
+            SplitView.preferredWidth: Theme.px(312)
+            SplitView.minimumWidth: Theme.px(220)
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 6
+                spacing: Theme.px(6)
                 HudChip { visible: calendarPage.selectedDayCount > 1; label: calendarPage.selectedDayCount + " NIGHTS"; tone: Theme.accent }
                 HudChip { label: nightPanel.nightSessions.length + (nightPanel.nightSessions.length === 1 ? " SESSION" : " SESSIONS"); tone: nightPanel.nightSessions.length > 0 ? Theme.accent : Theme.textSecondary }
                 HudChip { visible: nightPanel.nightSeconds > 0; label: "PLAN"; value: Util.formatDuration(nightPanel.nightSeconds); tone: Theme.textSecondary }
@@ -1834,13 +1834,13 @@ Item {
                     id: daySessionInsert
                     anchors.fill: parent
                     targetList: daySessionList
-                    rowHeight: 76
+                    rowHeight: Theme.px(76)
                     observingDate: calendarPage.selectedDayCount <= 1 ? calendarPage.dateKey(calendarPage.selectedDate) : ""
                     ListView {
                         id: daySessionList
                         anchors.fill: parent
                         clip: true
-                        spacing: 6
+                        spacing: Theme.px(6)
                         boundsBehavior: Flickable.StopAtBounds
                         ScrollBar.vertical: HiddenBar {}
                         ScrollBar.horizontal: HiddenBar {}
@@ -1851,7 +1851,7 @@ Item {
                             property string sessionId: modelData.id
                             objectName: "calendar-sidebar-" + modelData.id
                             width: ListView.view.width
-                            height: 76
+                            height: Theme.px(76)
                             radius: Theme.radius
                             color: Util.statusFill(modelData.status)
                             border.color: Qt.rgba(Util.statusColor(modelData.status).r, Util.statusColor(modelData.status).g, Util.statusColor(modelData.status).b, 0.5)
@@ -1868,8 +1868,8 @@ Item {
                                 onTapped: calendarPage.selectClick(daySessionRow.modelData.id, true, nightPanel.nightSessions)
                             }
                             RowGutter {
-                                x: 2
-                                width: 20
+                                x: Theme.px(2)
+                                width: Theme.s5
                                 anchors.top: parent.top
                                 anchors.bottom: parent.bottom
                                 spineColor: Util.sessionTone(daySessionRow.modelData)
@@ -1879,23 +1879,23 @@ Item {
                             }
                             ColumnLayout {
                                 anchors.fill: parent
-                                anchors.margins: 8
-                                anchors.leftMargin: 28
-                                spacing: 2
+                                anchors.margins: Theme.s2
+                                anchors.leftMargin: Theme.px(28)
+                                spacing: Theme.px(2)
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    spacing: 6
+                                    spacing: Theme.px(6)
                                     Text { text: calendarPage.sessionWhenText(modelData); color: Theme.accent; font.pixelSize: Theme.fontMd; font.bold: true; font.family: Theme.fontMono }
                                     Text { text: calendarPage.sessionLabel(modelData); color: Theme.textPrimary; font.pixelSize: Theme.fontMd; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                                     StatusChip { status: modelData.status; visible: modelData.status !== "planned" }
                                 }
                                 Text { text: calendarPage.sessionDetail(modelData, modelData.subtitle + " · " + modelData.duration_text); color: Theme.textSecondary; font.pixelSize: Theme.fontSm; elide: Text.ElideRight; Layout.fillWidth: true }
                                 RowLayout {
-                                    HudButton { text: "EDIT"; implicitHeight: 24; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: calendarPage.editItem(modelData) }
-                                    HudButton { text: "RESET"; implicitHeight: 24; visible: Util.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
+                                    HudButton { text: "EDIT"; implicitHeight: Theme.px(24); enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: calendarPage.editItem(modelData) }
+                                    HudButton { text: "RESET"; implicitHeight: Theme.px(24); visible: Util.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
                                     HudButton {
                                         text: modelData.status === "running" ? "STOP" : "RUN"
-                                        implicitHeight: 24
+                                        implicitHeight: Theme.px(24)
                                         enabled: calendarPage.sessionRunEnabled(modelData)
                                         tooltip: modelData.status === "running" || calendarPage.deviceConnected(modelData.device_id) ? "" : "Connect the telescope to run"
                                         busy: root.sessionStopping(modelData)

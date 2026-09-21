@@ -10,7 +10,7 @@ SpinBox {
     property string accessibleDescription: ""
     editable: true
     implicitHeight: Theme.controlHeight
-    implicitWidth: 140
+    implicitWidth: Theme.px(140)
     Layout.minimumWidth: 0
     Layout.preferredWidth: implicitWidth
     font.pixelSize: Theme.fontBase
@@ -78,8 +78,8 @@ SpinBox {
         readOnly: !box.editable
         validator: box.validator
         inputMethodHints: box.inputMethodHints
-        leftPadding: 22
-        rightPadding: 22
+        leftPadding: Theme.px(22)
+        rightPadding: Theme.px(22)
         text: box.textFromValue(box.value, box.locale)
         Binding {
             target: spinText
@@ -118,12 +118,12 @@ SpinBox {
         }
     }
     up.indicator: Item {
-        x: box.width - width - 2
-        y: 2
+        x: box.width - width - Theme.px(2)
+        y: Theme.px(2)
         height: box.height / 2 - 2
-        width: 20
-        implicitWidth: 20
-        implicitHeight: 14
+        width: Theme.s5
+        implicitWidth: Theme.s5
+        implicitHeight: Theme.px(14)
         HoverHandler { id: upHover }
         Text {
             anchors.centerIn: parent
@@ -134,12 +134,12 @@ SpinBox {
         }
     }
     down.indicator: Item {
-        x: box.width - width - 2
+        x: box.width - width - Theme.px(2)
         y: box.height / 2
         height: box.height / 2 - 2
-        width: 20
-        implicitWidth: 20
-        implicitHeight: 14
+        width: Theme.s5
+        implicitWidth: Theme.s5
+        implicitHeight: Theme.px(14)
         HoverHandler { id: downHover }
         Text {
             anchors.centerIn: parent
@@ -153,7 +153,7 @@ SpinBox {
         implicitHeight: Theme.controlHeight
         HudFrame {
             anchors.fill: parent
-            anchors.margins: -2
+            anchors.margins: Theme.px(-2)
             topLeft: Theme.notchSmall + 1
             bottomRight: Theme.notchSmall + 1
             strokeColor: Theme.accent
@@ -171,9 +171,9 @@ SpinBox {
         }
         Rectangle {
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: 1
+            anchors.bottomMargin: Theme.px(1)
             anchors.horizontalCenter: parent.horizontalCenter
-            height: 2
+            height: Theme.px(2)
             width: box.activeFocus ? parent.width - Theme.notchSmall * 2 - 6 : 0
             color: Theme.accent
             opacity: 0.8

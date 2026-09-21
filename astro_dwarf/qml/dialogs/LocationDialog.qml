@@ -24,9 +24,9 @@ Dialog {
     modal: true
     closePolicy: Popup.NoAutoClose
     anchors.centerIn: Overlay.overlay
-    width: 560
+    width: Theme.px(560)
     padding: Theme.s4
-    height: Math.min(root.height - 60, locationColumn.implicitHeight + padding * 2)
+    height: Math.min(root.height - Theme.px(60), locationColumn.implicitHeight + padding * 2)
     background: DialogFrame {}
     function wifiModeIndex(mode) {
         return Math.max(0, locationDialog.wifiModeValues.indexOf(String(mode || "auto").toLowerCase()))
@@ -169,7 +169,7 @@ Dialog {
         flickableDirection: Flickable.VerticalFlick
         contentWidth: width
         contentHeight: locationColumn.implicitHeight
-        interactive: contentHeight > height + 1
+        interactive: contentHeight > height + Theme.px(1)
         ColumnLayout {
             id: locationColumn
             width: parent.width

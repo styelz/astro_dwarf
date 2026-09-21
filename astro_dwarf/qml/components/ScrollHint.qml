@@ -20,7 +20,7 @@ Item {
     height: flick ? flick.height : 0
     z: 50
 
-    readonly property bool scrollable: flick && flick.contentHeight > flick.height + 1
+    readonly property bool scrollable: flick && flick.contentHeight > flick.height + Theme.px(1)
     readonly property real hiddenAbove: flick ? flick.contentY - flick.originY : 0
     readonly property real hiddenBelow: flick ? (flick.originY + flick.contentHeight) - (flick.contentY + flick.height) : 0
 
@@ -46,7 +46,7 @@ Item {
         Column {
             anchors.horizontalCenter: parent.horizontalCenter
             y: hint.pointsDown ? parent.height - height - hint.bob : hint.bob
-            spacing: -4
+            spacing: -Theme.s1
             Repeater {
                 model: 3
                 Text {

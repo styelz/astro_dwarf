@@ -71,8 +71,8 @@ Item {
     Item {
         id: tapMarker
         z: 2
-        width: 44
-        height: 44
+        width: Theme.px(44)
+        height: Theme.px(44)
         opacity: 0
         visible: opacity > 0
         function showAt(px, py) {
@@ -87,8 +87,8 @@ Item {
             border.color: Theme.accent
             border.width: 2
         }
-        Rectangle { anchors.centerIn: parent; width: 14; height: 1.5; color: Theme.accent }
-        Rectangle { anchors.centerIn: parent; width: 1.5; height: 14; color: Theme.accent }
+        Rectangle { anchors.centerIn: parent; width: Theme.px(14); height: 1.5; color: Theme.accent }
+        Rectangle { anchors.centerIn: parent; width: 1.5; height: Theme.px(14); color: Theme.accent }
         SequentialAnimation {
             id: tapMarkerAnim
             PropertyAction { target: tapMarker; property: "opacity"; value: 1 }

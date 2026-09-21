@@ -16,11 +16,11 @@ ApplicationWindow {
     objectName: "astroWindow"
     width: {
         Theme.screenHeight = Screen.height
-        Math.min(Math.max(Theme.px(1480), Math.round(Screen.desktopAvailableWidth * 0.72)), Screen.desktopAvailableWidth - 24)
+        Math.min(Math.max(Theme.px(1480), Math.round(Screen.desktopAvailableWidth * 0.72)), Screen.desktopAvailableWidth - Theme.px(24))
     }
     height: {
         Theme.screenHeight = Screen.height
-        Math.min(Math.max(Theme.px(920), Math.round(Screen.desktopAvailableHeight * 0.80)), Screen.desktopAvailableHeight - 48)
+        Math.min(Math.max(Theme.px(920), Math.round(Screen.desktopAvailableHeight * 0.80)), Screen.desktopAvailableHeight - Theme.px(48))
     }
     minimumWidth: Theme.px(1040)
     minimumHeight: Theme.px(620)
@@ -315,7 +315,7 @@ ApplicationWindow {
         if (!chrome)
             return
         const local = chrome.mapFromItem(null, scenePos.x, scenePos.y)
-        if (local.x >= -2 && local.y >= -2 && local.x <= chrome.width + 2 && local.y <= chrome.height + 2)
+        if (local.x >= -2 && local.y >= -2 && local.x <= chrome.width + Theme.px(2) && local.y <= chrome.height + Theme.px(2))
             return
         focused.focus = false
         if (chrome.focus)
@@ -757,7 +757,7 @@ ApplicationWindow {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                height: 2
+                height: Theme.px(2)
                 gradient: Gradient {
                     orientation: Gradient.Horizontal
                     GradientStop { position: 0.0; color: "transparent" }
@@ -785,7 +785,7 @@ ApplicationWindow {
                         onDoubleClicked: root.toggleMaximized()
                     }
                 }
-                Rectangle { width: 1; Layout.fillHeight: true; Layout.topMargin: Theme.s3; Layout.bottomMargin: Theme.s3; color: Theme.outline }
+                Rectangle { width: Theme.px(1); Layout.fillHeight: true; Layout.topMargin: Theme.s3; Layout.bottomMargin: Theme.s3; color: Theme.outline }
                 DeviceCombo {
                     Layout.preferredWidth: titleBar.compact ? 150 : 200
                     Layout.maximumWidth: Layout.preferredWidth
@@ -857,7 +857,7 @@ ApplicationWindow {
                     }
                 }
                 RowLayout {
-                    spacing: titleBar.compact ? 6 : 10
+                    spacing: titleBar.compact ? Theme.px(6) : Theme.px(10)
                     Repeater {
                         model: [
                             {label: "LINK", on: root.scopeOnline, color: Theme.success},
@@ -866,33 +866,33 @@ ApplicationWindow {
                         ]
                         delegate: RowLayout {
                             required property var modelData
-                            spacing: 4
+                            spacing: Theme.s1
                             Accessible.role: Accessible.Indicator
                             Accessible.name: modelData.label + (modelData.on ? " active" : " off")
                             LedDot { on: modelData.on; onColor: modelData.color; pulse: true }
                             Text { visible: !titleBar.compact; text: modelData.label; color: modelData.on ? Theme.textPrimary : Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true }
                         }
                     }
-                    Rectangle { width: 1; Layout.preferredHeight: 18; color: Theme.outline; visible: root.scopeOnline }
+                    Rectangle { width: Theme.px(1); Layout.preferredHeight: Theme.px(18); color: Theme.outline; visible: root.scopeOnline }
                     RowLayout {
                         id: titleBattery
                         readonly property var t: root.scopeTelemetry
                         readonly property int percent: root.scopeOnline && t.battery_percent !== undefined ? Number(t.battery_percent) : -1
                         readonly property color tone: percent < 0 ? Theme.muted : Util.toneColor(Util.batteryTone(percent))
                         visible: root.scopeOnline
-                        spacing: 5
+                        spacing: Theme.px(5)
                         Item {
-                            implicitWidth: 22
-                            implicitHeight: 11
+                            implicitWidth: Theme.px(22)
+                            implicitHeight: Theme.px(11)
                             Rectangle {
                                 anchors.left: parent.left; anchors.top: parent.top
-                                width: 19; height: 11; radius: 2
+                                width: Theme.px(19); height: Theme.px(11); radius: Theme.px(2)
                                 color: "transparent"
                                 border.color: titleBattery.tone
                                 Rectangle {
-                                    x: 2; y: 2
-                                    height: parent.height - 4
-                                    width: Math.max(0, (parent.width - 4) * Math.max(0, titleBattery.percent) / 100)
+                                    x: Theme.px(2); y: Theme.px(2)
+                                    height: parent.height - Theme.s1
+                                    width: Math.max(0, (parent.width - Theme.s1) * Math.max(0, titleBattery.percent) / 100)
                                     color: titleBattery.tone
                                     Behavior on width { NumberAnimation { duration: 500 } }
                                     SequentialAnimation on opacity {
@@ -903,7 +903,7 @@ ApplicationWindow {
                                     }
                                 }
                             }
-                            Rectangle { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; width: 2; height: 5; color: titleBattery.tone }
+                            Rectangle { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; width: Theme.px(2); height: Theme.px(5); color: titleBattery.tone }
                         }
                         Text {
                             text: titleBattery.percent >= 0 ? titleBattery.percent + "%" + (titleBattery.t.charging ? "⚡" : "") : "—"
@@ -920,7 +920,7 @@ ApplicationWindow {
                         id: titleStorage
                         readonly property var t: root.scopeTelemetry
                         visible: root.scopeOnline && !titleBar.narrow
-                        spacing: 5
+                        spacing: Theme.px(5)
                         Text { text: "▤"; color: titleStorage.t.storage_tone === "bad" ? Theme.danger : titleStorage.t.storage_tone === "warn" ? Theme.warning : Theme.accent; font.pixelSize: Theme.fontPx(11) }
                         Text {
                             text: root.scopeOnline && titleStorage.t.storage_text && titleStorage.t.storage_text !== "—" ? String(titleStorage.t.storage_free_text || titleStorage.t.storage_text) : "—"
@@ -936,18 +936,18 @@ ApplicationWindow {
                 }
                 Column {
                     visible: !titleBar.compact
-                    Text { text: backend.selectedDevice.status || "OFFLINE"; color: backend.selectedDevice.connected ? Theme.success : Theme.textSecondary; font.pixelSize: Theme.fontPx(11); font.bold: true; horizontalAlignment: Text.AlignRight; width: 160 }
-                    Text { text: root.deviceLabel(); color: Theme.textSecondary; font.pixelSize: Theme.fontSm; horizontalAlignment: Text.AlignRight; width: 160; elide: Text.ElideRight }
+                    Text { text: backend.selectedDevice.status || "OFFLINE"; color: backend.selectedDevice.connected ? Theme.success : Theme.textSecondary; font.pixelSize: Theme.fontPx(11); font.bold: true; horizontalAlignment: Text.AlignRight; width: Theme.px(160) }
+                    Text { text: root.deviceLabel(); color: Theme.textSecondary; font.pixelSize: Theme.fontSm; horizontalAlignment: Text.AlignRight; width: Theme.px(160); elide: Text.ElideRight }
                 }
                 Column {
-                    Text { text: backend.clockText; color: Theme.accent; font.pixelSize: titleBar.compact ? 18 : Theme.fontXl; font.family: Theme.fontMono; font.letterSpacing: 1; horizontalAlignment: Text.AlignRight; width: titleBar.compact ? 124 : 168 }
+                    Text { text: backend.clockText; color: Theme.accent; font.pixelSize: titleBar.compact ? Theme.fontPx(18) : Theme.fontXl; font.family: Theme.fontMono; font.letterSpacing: 1; horizontalAlignment: Text.AlignRight; width: titleBar.compact ? Theme.px(124) : Theme.px(168) }
                     Text {
                         text: backend.selectedDevice.timezone_name || "UTC"
                         color: Theme.textSecondary
                         font.pixelSize: Theme.fontPx(9)
                         font.family: Theme.fontMono
                         horizontalAlignment: Text.AlignRight
-                        width: titleBar.compact ? 124 : 168
+                        width: titleBar.compact ? Theme.px(124) : Theme.px(168)
                         elide: Text.ElideRight
                     }
                 }
@@ -963,7 +963,7 @@ ApplicationWindow {
             Layout.fillHeight: false
             visible: shown
             color: Theme.hsl(0.082, 0.565, 0.045, 0.502)
-            Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 1; color: Theme.outline }
+            Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: Theme.px(1); color: Theme.outline }
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: Theme.s4
@@ -976,12 +976,12 @@ ApplicationWindow {
                     font.bold: true
                     font.letterSpacing: Theme.tracking2
                 }
-                Rectangle { width: 1; Layout.preferredHeight: 14; color: Theme.outline }
+                Rectangle { width: Theme.px(1); Layout.preferredHeight: Theme.px(14); color: Theme.outline }
                 HudButton {
                     text: "‹"
                     busyMs: 0
-                    Layout.preferredWidth: 26
-                    Layout.maximumWidth: 26
+                    Layout.preferredWidth: Theme.px(26)
+                    Layout.maximumWidth: Theme.px(26)
                     implicitHeight: Theme.compactControlHeight
                     enabled: deviceChips.contentX > deviceChips.originX + 1
                     Accessible.name: "Scroll devices left"
@@ -992,7 +992,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     orientation: ListView.Horizontal
-                    spacing: 4
+                    spacing: Theme.s1
                     clip: true
                     model: backend.devices
                     function scrollBy(distance) {
@@ -1015,7 +1015,7 @@ ApplicationWindow {
                         id: deviceCard
                         required property var modelData
                         readonly property bool selected: modelData.id === backend.selectedDeviceId
-                        width: chipRow.implicitWidth + 24
+                        width: chipRow.implicitWidth + Theme.px(24)
                         height: deviceChips.height
                         activeFocusOnTab: true
                         Accessible.role: Accessible.Button
@@ -1025,24 +1025,24 @@ ApplicationWindow {
                         Keys.onSpacePressed: backend.selectDevice(deviceCard.modelData.id)
                         Rectangle {
                             anchors.fill: parent
-                            anchors.topMargin: 3
-                            anchors.bottomMargin: 3
-                            radius: 3
+                            anchors.topMargin: Theme.px(3)
+                            anchors.bottomMargin: Theme.px(3)
+                            radius: Theme.px(3)
                             color: deviceCard.selected ? Theme.hsl(0.036, 0.640, 0.196, 0.627) : (chipHover.hovered || deviceCard.activeFocus ? Theme.hsl(0.057, 0.548, 0.122, 0.314) : "transparent")
                             Behavior on color { ColorAnimation { duration: 120 } }
                         }
                         Rectangle {
                             anchors.bottom: parent.bottom
                             anchors.horizontalCenter: parent.horizontalCenter
-                            height: 2
-                            width: deviceCard.selected ? parent.width - 16 : 0
+                            height: Theme.px(2)
+                            width: deviceCard.selected ? parent.width - Theme.s4 : 0
                             color: Theme.accent
                             Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                         }
                         Rectangle {
                             anchors.fill: parent
-                            anchors.margins: 1
-                            radius: 3
+                            anchors.margins: Theme.px(1)
+                            radius: Theme.px(3)
                             color: "transparent"
                             border.color: Theme.accent
                             border.width: Theme.focusStroke
@@ -1051,8 +1051,8 @@ ApplicationWindow {
                         RowLayout {
                             id: chipRow
                             anchors.centerIn: parent
-                            spacing: 7
-                            Rectangle { width: 8; height: 8; radius: 4; color: deviceCard.modelData.color }
+                            spacing: Theme.px(7)
+                            Rectangle { width: Theme.s2; height: Theme.s2; radius: Theme.s1; color: deviceCard.modelData.color }
                             Text {
                                 text: deviceCard.modelData.name
                                 color: deviceCard.selected ? Theme.textPrimary : Theme.textSecondary
@@ -1078,13 +1078,13 @@ ApplicationWindow {
                                 label: t.capture_active ? "STACK" : "IMAGING"
                                 value: String(t.capture_text || "")
                                 tone: Theme.danger
-                                implicitHeight: 16
+                                implicitHeight: Theme.s4
                             }
                             Rectangle {
-                                width: 6; height: 6; radius: 3
+                                width: Theme.px(6); height: Theme.px(6); radius: Theme.px(3)
                                 color: deviceCard.modelData.connected ? (deviceCard.modelData.busy ? Theme.danger : Theme.success) : Theme.muted
                                 border.color: deviceCard.modelData.connected ? Theme.hsl(-0.021, 1.000, 0.924) : "transparent"
-                                border.width: deviceCard.modelData.connected ? 1 : 0
+                                border.width: deviceCard.modelData.connected ? Theme.px(1) : 0
                                 SequentialAnimation on opacity {
                                     running: deviceCard.modelData.connecting || deviceCard.modelData.cancelling || deviceCard.modelData.disconnecting
                                     loops: Animation.Infinite
@@ -1155,8 +1155,8 @@ ApplicationWindow {
                 HudButton {
                     text: "›"
                     busyMs: 0
-                    Layout.preferredWidth: 26
-                    Layout.maximumWidth: 26
+                    Layout.preferredWidth: Theme.px(26)
+                    Layout.maximumWidth: Theme.px(26)
                     implicitHeight: Theme.compactControlHeight
                     enabled: deviceChips.contentX + deviceChips.width < deviceChips.originX + deviceChips.contentWidth - 1
                     Accessible.name: "Scroll devices right"
@@ -1167,7 +1167,7 @@ ApplicationWindow {
 
         PageNavBar {
             visible: layoutSettings.navBarOnTop
-            Layout.topMargin: 8
+            Layout.topMargin: Theme.s2
             currentIndex: root.currentPage
             skyToolsEnabled: layoutSettings.skyToolsEnabled
             barOnTop: true
@@ -1182,8 +1182,8 @@ ApplicationWindow {
             currentIndex: root.currentPage
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.minimumHeight: 360
-            Layout.margins: 10
+            Layout.minimumHeight: Theme.px(360)
+            Layout.margins: Theme.px(10)
 
             ControlPage { id: controlPage; objectName: "controlPage" }
             CalendarPage { id: calendarPage; objectName: "calendarPage" }
@@ -1196,7 +1196,7 @@ ApplicationWindow {
 
         PageNavBar {
             visible: !layoutSettings.navBarOnTop
-            Layout.bottomMargin: 8
+            Layout.bottomMargin: Theme.s2
             currentIndex: root.currentPage
             skyToolsEnabled: layoutSettings.skyToolsEnabled
             barOnTop: false
@@ -1226,7 +1226,7 @@ ApplicationWindow {
         z: 4000
         width: Theme.px(220)
         height: Theme.px(30)
-        radius: 2
+        radius: Theme.px(2)
         property string sessionId: ""
         color: Util.statusFill(DragCoordinator.data.group_collapsed ? (DragCoordinator.data.group_status || DragCoordinator.data.status) : DragCoordinator.data.status)
         border.color: Util.statusColor(DragCoordinator.data.group_collapsed ? (DragCoordinator.data.group_status || DragCoordinator.data.status) : DragCoordinator.data.status)
@@ -1265,18 +1265,18 @@ ApplicationWindow {
         }
         Row {
             anchors.fill: parent
-            anchors.margins: 5
-            spacing: 6
+            anchors.margins: Theme.px(5)
+            spacing: Theme.px(6)
             Text {
                 text: DragCoordinator.previewTime || (DragCoordinator.data.start_time || "")
                 color: Theme.accent
                 font.pixelSize: Theme.fontSm
                 font.bold: true
                 font.family: Theme.fontMono
-                width: 40
+                width: Theme.px(40)
             }
             Text {
-                width: Math.max(20, sessionDragProxy.width - 56)
+                width: Math.max(Theme.s5, sessionDragProxy.width - Theme.px(56))
                 text: DragCoordinator.data.group_collapsed
                       ? (DragCoordinator.data.group_title || DragCoordinator.data.target_name || "Mosaic")
                       : (DragCoordinator.data.pane_name || DragCoordinator.data.target_name || DragCoordinator.data.name || "Session")
@@ -1298,9 +1298,9 @@ ApplicationWindow {
         parent: Overlay.overlay
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.topMargin: 74
-        anchors.rightMargin: 14
-        width: Math.min(380, root.width - 40)
+        anchors.topMargin: Theme.px(74)
+        anchors.rightMargin: Theme.px(14)
+        width: Math.min(Theme.px(380), root.width - Theme.px(40))
         height: toastColumn.implicitHeight
         z: 900
         readonly property int maxToasts: 4
@@ -1374,7 +1374,7 @@ ApplicationWindow {
             id: toastColumn
             anchors.right: parent.right
             width: parent.width
-            spacing: 8
+            spacing: Theme.s2
             add: Transition {
                 NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 220 }
                 NumberAnimation { property: "x"; from: 60; to: 0; duration: 260; easing.type: Easing.OutCubic }
@@ -1400,8 +1400,8 @@ ApplicationWindow {
                     Accessible.role: Accessible.AlertMessage
                     Accessible.name: message + (detail ? ". " + detail : "")
                     width: toastColumn.width
-                    height: toastBody.implicitHeight + 18
-                    radius: 4
+                    height: toastBody.implicitHeight + Theme.px(18)
+                    radius: Theme.s1
                     color: Theme.hsl(0.085, 0.524, 0.082, 0.941)
                     border.color: Qt.rgba(tone.r, tone.g, tone.b, 0.75)
                     border.width: 1
@@ -1413,20 +1413,20 @@ ApplicationWindow {
                     }
                     Rectangle {
                         // soft glow
-                        anchors.fill: parent; anchors.margins: -3; radius: 7
+                        anchors.fill: parent; anchors.margins: Theme.px(-3); radius: Theme.px(7)
                         color: "transparent"; border.color: toastCard.tone; opacity: 0.18
                     }
-                    Rectangle { x: 0; y: 0; width: 3; height: parent.height; color: toastCard.tone }
+                    Rectangle { x: 0; y: 0; width: Theme.px(3); height: parent.height; color: toastCard.tone }
                     RowLayout {
                         id: toastBody
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
-                        anchors.leftMargin: 12
-                        anchors.rightMargin: 10
-                        spacing: 10
+                        anchors.leftMargin: Theme.s3
+                        anchors.rightMargin: Theme.px(10)
+                        spacing: Theme.px(10)
                         Rectangle {
-                            width: 26; height: 26; radius: 13
+                            width: Theme.px(26); height: Theme.px(26); radius: Theme.px(13)
                             color: Qt.rgba(toastCard.tone.r, toastCard.tone.g, toastCard.tone.b, 0.16)
                             border.color: Qt.rgba(toastCard.tone.r, toastCard.tone.g, toastCard.tone.b, 0.6)
                             Layout.alignment: Qt.AlignTop
@@ -1434,10 +1434,10 @@ ApplicationWindow {
                         }
                         ColumnLayout {
                             Layout.fillWidth: true
-                            spacing: 2
+                            spacing: Theme.px(2)
                             RowLayout {
                                 Layout.fillWidth: true
-                                spacing: 6
+                                spacing: Theme.px(6)
                                 Text {
                                     text: toastCard.message
                                     color: Theme.textPrimary
@@ -1450,7 +1450,7 @@ ApplicationWindow {
                                 }
                                 Rectangle {
                                     visible: toastCard.count > 1
-                                    width: toastCount.implicitWidth + 10; height: 16; radius: 8
+                                    width: toastCount.implicitWidth + Theme.px(10); height: Theme.s4; radius: Theme.s2
                                     color: toastCard.tone
                                     Text { id: toastCount; anchors.centerIn: parent; text: "×" + toastCard.count; color: Theme.windowBase; font.pixelSize: Theme.fontPx(9); font.bold: true }
                                 }
@@ -1467,8 +1467,8 @@ ApplicationWindow {
                             }
                             RowLayout {
                                 visible: toastCard.level === "error" || toastCard.level === "warning" || toastCard.actionKind === "template"
-                                spacing: 10
-                                Layout.topMargin: 2
+                                spacing: Theme.px(10)
+                                Layout.topMargin: Theme.px(2)
                                 Text {
                                     visible: toastCard.actionKind === "template"
                                     text: toastCard.actionLabel || "VIEW TEMPLATE"
@@ -1519,14 +1519,14 @@ ApplicationWindow {
                         id: toastProgress
                         anchors.left: parent.left
                         anchors.bottom: parent.bottom
-                        anchors.leftMargin: 3
-                        height: 2
+                        anchors.leftMargin: Theme.px(3)
+                        height: Theme.px(2)
                         color: toastCard.tone
                         opacity: 0.8
-                        width: parent.width - 3
+                        width: parent.width - Theme.px(3)
                         function restartSweep() {
                             sweep.stop()
-                            width = toastCard.width - 3
+                            width = toastCard.width - Theme.px(3)
                             sweep.restart()
                         }
                         NumberAnimation on width {

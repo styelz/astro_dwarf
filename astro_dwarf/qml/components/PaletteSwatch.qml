@@ -40,8 +40,8 @@ Item {
     signal clicked()
     signal resetRequested()
 
-    implicitWidth: 72
-    implicitHeight: 48
+    implicitWidth: Theme.px(72)
+    implicitHeight: Theme.px(48)
     Accessible.role: Accessible.Button
     Accessible.name: roleName + " colour"
     Accessible.description: {
@@ -75,23 +75,23 @@ Item {
 
     Column {
         anchors.fill: parent
-        spacing: 3
+        spacing: Theme.px(3)
         Rectangle {
             width: parent.width
-            height: 22
-            radius: 2
+            height: Theme.px(22)
+            radius: Theme.px(2)
             color: swatch.tint
             border.color: swatch.selected || swatch.activeFocus ? Theme.accent : (hover.hovered ? Theme.outlineStrong : Theme.outline)
-            border.width: swatch.selected || swatch.activeFocus ? 2 : 1
+            border.width: swatch.selected || swatch.activeFocus ? Theme.px(2) : Theme.px(1)
             Behavior on border.color { ColorAnimation { duration: Theme.quick } }
             Rectangle {
                 // Near-black roles (WINDOW, CARD) hide hue in the fill; this strip keeps it readable.
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
-                anchors.margins: 1
-                height: 3
-                radius: 1
+                anchors.margins: Theme.px(1)
+                height: Theme.px(3)
+                radius: Theme.px(1)
                 color: {
                     void Theme.paletteJson
                     void Theme.hue
@@ -103,27 +103,27 @@ Item {
                 visible: swatch.customized
                 anchors.right: parent.right
                 anchors.top: parent.top
-                anchors.margins: 2
-                width: 5
-                height: 5
-                radius: 1
+                anchors.margins: Theme.px(2)
+                width: Theme.px(5)
+                height: Theme.px(5)
+                radius: Theme.px(1)
                 color: Theme.warning
             }
             Rectangle {
                 visible: swatch.linked && !swatch.customized
                 anchors.right: parent.right
                 anchors.top: parent.top
-                anchors.margins: 2
-                width: 5
-                height: 5
-                radius: 1
+                anchors.margins: Theme.px(2)
+                width: Theme.px(5)
+                height: Theme.px(5)
+                radius: Theme.px(1)
                 color: Theme.accent
                 opacity: 0.7
             }
         }
         Text {
             width: parent.width
-            height: 20
+            height: Theme.s5
             text: swatch.roleName
             color: swatch.selected ? Theme.accent : Theme.textSecondary
             font.pixelSize: Theme.fontXs

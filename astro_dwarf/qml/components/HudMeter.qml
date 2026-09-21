@@ -11,8 +11,8 @@ Item {
     readonly property string labelText: determinate
         ? text + "  " + Math.round(progress * 100) + "%"
         : text
-    implicitWidth: compact ? 96 : 176
-    implicitHeight: label.implicitHeight + Theme.s1 + (compact ? 3 : 4)
+    implicitWidth: compact ? Theme.px(96) : Theme.px(176)
+    implicitHeight: label.implicitHeight + Theme.s1 + (compact ? Theme.px(3) : Theme.s1)
     Accessible.role: Accessible.Indicator
     Accessible.name: labelText
     Accessible.description: running ? "Loading" : ""
@@ -36,22 +36,22 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        height: meter.compact ? 3 : 4
+        height: meter.compact ? Theme.px(3) : Theme.s1
         color: Theme.inputBg
         border.color: Theme.outlineSoft
         radius: Theme.radius
         Rectangle {
             id: fill
-            y: 1
-            height: parent.height - 2
-            radius: 1
+            y: Theme.px(1)
+            height: parent.height - Theme.px(2)
+            radius: Theme.px(1)
             color: Theme.accent
             opacity: meter.running ? 0.92 : 0.35
             visible: meter.running
             width: meter.determinate
-                ? Math.max(0, (track.width - 2) * Math.min(1, meter.progress))
-                : Math.max(Theme.s4, (track.width - 2) * 0.32)
-            x: meter.determinate ? 1 : 1 + Math.max(0, track.width - 2 - width) * scan
+                ? Math.max(0, (track.width - Theme.px(2)) * Math.min(1, meter.progress))
+                : Math.max(Theme.s4, (track.width - Theme.px(2)) * 0.32)
+            x: meter.determinate ? Theme.px(1) : Theme.px(1) + Math.max(0, track.width - Theme.px(2) - width) * scan
             property real scan: 0
             SequentialAnimation on scan {
                 running: meter.visible && meter.running && !meter.determinate

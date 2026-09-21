@@ -10,48 +10,77 @@ from pathlib import Path
 def running_in_wsl() -> bool:
     if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
         return True
-    for candidate in (Path("/proc/sys/kernel/osrelease"), Path("/proc/version")):
-        try:
-            text = candidate.read_text(encoding="utf-8", errors="ignore").lower()
-        except OSError:
-            continue
-        if "microsoft" in text or "wsl" in text:
-            return True
-    return False
+    try:
+        text = Path("/proc/sys/kernel/osrelease").read_text(
+            encoding="utf-8", errors="ignore"
+        ).lower()
+    except OSError:
+        return False
+    return "microsoft" in text or "wsl" in text
 
 
-def running_in_hypervisor() -> bool:
-    """True on Hyper-V and similar VMs where host GLX/EGL often abort Qt."""
-    tokens = (
-        "microsoft",
-        "hyper-v",
-        "hyperv",
-        "virtual machine",
-        "kvm",
-        "qemu",
-        "vmware",
-        "virtualbox",
-        "xen",
-        "bochs",
-    )
+def _dmi_text() -> str:
+    chunks: list[str] = []
     for candidate in (
         Path("/sys/class/dmi/id/sys_vendor"),
         Path("/sys/class/dmi/id/product_name"),
         Path("/sys/devices/virtual/dmi/id/sys_vendor"),
         Path("/sys/devices/virtual/dmi/id/product_name"),
-        Path("/sys/hypervisor/type"),
     ):
         try:
-            text = candidate.read_text(encoding="utf-8", errors="ignore").lower()
+            chunks.append(candidate.read_text(encoding="utf-8", errors="ignore"))
         except OSError:
             continue
-        if any(token in text for token in tokens):
-            return True
+    return "\n".join(chunks).lower()
+
+
+def running_in_hyperv() -> bool:
+    """True on Hyper-V guests, not Surface PCs or native Microsoft-branded DMI."""
+    text = _dmi_text()
+    if "hyper-v" in text or "hyperv" in text:
+        return True
+    if "microsoft" in text and "virtual machine" in text:
+        return True
     try:
         cpu = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore").lower()
     except OSError:
         return False
-    return "hypervisor" in cpu and any(token in cpu for token in ("microsoft", "hyperv", "hyper-v", "kvm"))
+    return "hypervisor" in cpu and any(
+        token in cpu for token in ("microsoft", "hyperv", "hyper-v")
+    )
+
+
+def running_in_hypervisor() -> bool:
+    """True on Hyper-V and similar VMs. GPU passthrough guests still match."""
+    if running_in_hyperv():
+        return True
+    text = _dmi_text()
+    tokens = ("kvm", "qemu", "vmware", "virtualbox", "xen", "bochs", "virtual machine")
+    if any(token in text for token in tokens):
+        return True
+    try:
+        kind = Path("/sys/hypervisor/type").read_text(
+            encoding="utf-8", errors="ignore"
+        ).lower()
+    except OSError:
+        kind = ""
+    if any(token in kind for token in tokens):
+        return True
+    try:
+        cpu = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    return "hypervisor" in cpu and "kvm" in cpu
+
+
+def has_drm_render_node() -> bool:
+    dri = Path("/dev/dri")
+    try:
+        if not dri.is_dir():
+            return False
+        return any(path.name.startswith("renderD") for path in dri.iterdir())
+    except OSError:
+        return False
 
 
 def running_frozen() -> bool:
@@ -65,15 +94,18 @@ def needs_software_qt(
     frozen: bool | None = None,
     wsl: bool | None = None,
     hypervisor: bool | None = None,
+    hyperv: bool | None = None,
+    has_drm: bool | None = None,
     system_qt: bool | None = None,
     software_qt: bool | None = None,
 ) -> bool:
     """True when Qt would abort without a software scene graph.
 
-    Frozen Linux installers, WSL, and Hyper-V/QEMU guests often cannot
-    initialize GLX or EGL. Qt then qFatal("Could not initialize GLX") and
-    the window never opens. Skip platform GL there. ASTRO_DWARF_QT_SYSTEM=1
-    uses the host GPU instead.
+    WSL and Hyper-V guests often cannot initialize GLX or EGL, and Qt then
+    qFatal("Could not initialize GLX"). Native Linux desktops — including
+    frozen NVIDIA/AMD/Intel installers — must keep host OpenGL so Stellarium
+    Web can run. ASTRO_DWARF_QT_SYSTEM=1 forces the host GPU. ASTRO_DWARF_QT_SOFTWARE=1
+    forces the fallback.
     """
     os_name = os.name if os_name is None else os_name
     platform = sys.platform if platform is None else platform
@@ -93,13 +125,14 @@ def needs_software_qt(
         wsl = running_in_wsl()
     if wsl:
         return True
-    if hypervisor is None:
-        hypervisor = running_in_hypervisor()
-    if hypervisor:
+    if hyperv is None:
+        hyperv = bool(hypervisor) if hypervisor is not None else running_in_hyperv()
+    if hyperv:
         return True
-    if frozen is None:
-        frozen = running_frozen()
-    return bool(frozen)
+    _ = frozen
+    if has_drm is None:
+        has_drm = has_drm_render_node()
+    return not has_drm
 
 
 # Chromium still needs WebGL for Stellarium. --disable-gpu leaves a black atlas.
@@ -153,8 +186,8 @@ def _strip_readline_library_path() -> None:
 
 def apply_software_qt_env() -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-    # none skips GLX/EGL init. xcb_egl/xcb_glx qFatal on Hyper-V and many
-    # NVIDIA/XWayland hosts ("Could not initialize GLX").
+    # none skips GLX/EGL init. xcb_egl/xcb_glx qFatal on Hyper-V/WSL guests
+    # with no usable GPU ("Could not initialize GLX").
     os.environ["QT_XCB_GL_INTEGRATION"] = "none"
     os.environ.setdefault("QT_QUICK_BACKEND", "software")
     if os.environ.get("QSG_RHI_BACKEND", "").strip().lower() == "software":

@@ -12,7 +12,7 @@ Rectangle {
     property string highlightRole: ""
     signal rolePicked(string key)
 
-    implicitHeight: 86
+    implicitHeight: Theme.px(86)
     color: Theme.windowBase
     border.color: preview.lit("windowBase") ? Theme.accentSoft : Theme.outline
     border.width: 2
@@ -36,12 +36,12 @@ Rectangle {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 6
-        spacing: 6
+        anchors.margins: Theme.px(6)
+        spacing: Theme.px(6)
 
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 36
+            Layout.preferredHeight: Theme.px(36)
             color: Theme.panelFill
             border.color: preview.lit("panelFill") || preview.lit("outline") ? Theme.accentSoft : Theme.outline
             border.width: 2
@@ -53,9 +53,9 @@ Rectangle {
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 6
-                anchors.rightMargin: 6
-                spacing: 6
+                anchors.leftMargin: Theme.px(6)
+                anchors.rightMargin: Theme.px(6)
+                spacing: Theme.px(6)
 
                 Text {
                     text: "PREVIEW"
@@ -70,12 +70,12 @@ Rectangle {
                     }
                     Rectangle {
                         anchors.fill: parent
-                        anchors.margins: -2
+                        anchors.margins: Theme.px(-2)
                         z: -1
                         color: "transparent"
                         border.color: preview.lit("accent") ? Theme.accentSoft : "transparent"
                         border.width: 2
-                        radius: 2
+                        radius: Theme.px(2)
                     }
                 }
                 Item {
@@ -95,11 +95,11 @@ Rectangle {
                     }
                     Rectangle {
                         anchors.fill: parent
-                        anchors.margins: -1
+                        anchors.margins: Theme.px(-1)
                         color: "transparent"
                         border.color: preview.lit("surfaceHigh") ? Theme.accentSoft : "transparent"
                         border.width: 2
-                        radius: 2
+                        radius: Theme.px(2)
                     }
                 }
                 Item {
@@ -110,8 +110,8 @@ Rectangle {
                     Layout.alignment: Qt.AlignVCenter
                     Rectangle {
                         anchors.fill: liveBtn
-                        anchors.margins: -3
-                        radius: 3
+                        anchors.margins: Theme.px(-3)
+                        radius: Theme.px(3)
                         color: Theme.glowAccent
                         visible: preview.lit("glowAccent") || preview.highlightRole === ""
                         opacity: preview.lit("glowAccent") ? 1 : 0.35
@@ -129,11 +129,11 @@ Rectangle {
                     }
                     Rectangle {
                         anchors.fill: liveBtn
-                        anchors.margins: -1
+                        anchors.margins: Theme.px(-1)
                         color: "transparent"
                         border.color: preview.lit("fillActive") || preview.lit("glowAccent") ? Theme.accentSoft : "transparent"
                         border.width: 2
-                        radius: 2
+                        radius: Theme.px(2)
                     }
                 }
                 PreviewHit {
@@ -154,13 +154,13 @@ Rectangle {
                     id: fieldSample
                     objectName: "previewField"
                     signal clicked()
-                    Layout.preferredWidth: 72
+                    Layout.preferredWidth: Theme.px(72)
                     Layout.preferredHeight: Theme.compactControlHeight
                     Layout.alignment: Qt.AlignVCenter
                     color: Theme.inputBg
                     border.color: preview.lit("inputBg") || preview.lit("outline") || preview.lit("textPrimary") ? Theme.accentSoft : Theme.outline
                     border.width: 2
-                    radius: 2
+                    radius: Theme.px(2)
                     HoverHandler { cursorShape: Qt.PointingHandCursor }
                     onClicked: preview.pick(preview.lit("textPrimary") ? "textPrimary" : (preview.lit("outline") ? "outline" : "inputBg"))
                     TapHandler {
@@ -169,8 +169,8 @@ Rectangle {
                     }
                     Text {
                         anchors.fill: parent
-                        anchors.leftMargin: 6
-                        anchors.rightMargin: 6
+                        anchors.leftMargin: Theme.px(6)
+                        anchors.rightMargin: Theme.px(6)
                         text: "FIELD"
                         color: Theme.textPrimary
                         font.pixelSize: Theme.fontSm
@@ -190,12 +190,12 @@ Rectangle {
                     }
                     Rectangle {
                         anchors.fill: parent
-                        anchors.margins: -2
+                        anchors.margins: Theme.px(-2)
                         z: -1
                         color: "transparent"
                         border.color: preview.lit("textSecondary") ? Theme.accentSoft : "transparent"
                         border.width: 2
-                        radius: 2
+                        radius: Theme.px(2)
                     }
                 }
                 Item { Layout.fillWidth: true }
@@ -234,7 +234,7 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: 6
+            spacing: Theme.px(6)
 
             PreviewChip {
                 label: "WINDOW"
@@ -306,12 +306,12 @@ Rectangle {
                 }
                 Rectangle {
                     anchors.fill: parent
-                    anchors.margins: -2
+                    anchors.margins: Theme.px(-2)
                     z: -1
                     color: "transparent"
                     border.color: preview.lit("muted") ? Theme.accentSoft : "transparent"
                     border.width: 2
-                    radius: 2
+                    radius: Theme.px(2)
                 }
             }
             Item { Layout.fillWidth: true }
@@ -334,11 +334,11 @@ Rectangle {
         }
         Rectangle {
             anchors.fill: parent
-            anchors.margins: -1
+            anchors.margins: Theme.px(-1)
             color: "transparent"
             border.color: preview.lit(hit.roleKey) || (hit.alsoRole && preview.lit(hit.alsoRole)) ? Theme.accentSoft : "transparent"
             border.width: 2
-            radius: 2
+            radius: Theme.px(2)
         }
     }
 
@@ -351,12 +351,12 @@ Rectangle {
         property string roleKey: ""
         property string alsoRole: ""
 
-        Layout.preferredWidth: 56
-        Layout.preferredHeight: 22
+        Layout.preferredWidth: Theme.px(56)
+        Layout.preferredHeight: Theme.px(22)
         color: chip.fill
         border.color: preview.lit(chip.roleKey) || (chip.alsoRole && preview.lit(chip.alsoRole)) ? Theme.accentSoft : chip.line
         border.width: 2
-        radius: 2
+        radius: Theme.px(2)
         HoverHandler { cursorShape: Qt.PointingHandCursor }
         TapHandler {
             gesturePolicy: TapHandler.ReleaseWithinBounds

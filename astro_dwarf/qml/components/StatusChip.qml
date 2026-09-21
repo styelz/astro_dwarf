@@ -15,7 +15,7 @@ Rectangle {
     border.color: Qt.rgba(tone.r, tone.g, tone.b, 0.7)
     Accessible.name: normalizedStatus || "Unknown status"
     Rectangle {
-        anchors.fill: parent; anchors.margins: -2; radius: 5
+        anchors.fill: parent; anchors.margins: Theme.px(-2); radius: Theme.px(5)
         color: "transparent"; border.color: statusChip.tone
         opacity: 0.3
         visible: statusChip.running || statusChip.pending

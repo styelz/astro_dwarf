@@ -11,7 +11,7 @@ Text {
     lineHeight: 1.15
     wrapMode: Text.Wrap
     Layout.fillWidth: true
-    Layout.minimumWidth: 120
-    Layout.maximumWidth: 620
+    Layout.minimumWidth: Theme.px(120)
+    Layout.maximumWidth: Theme.px(620)
     Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
 }

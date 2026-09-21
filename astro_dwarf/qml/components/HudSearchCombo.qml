@@ -14,7 +14,7 @@ Item {
     property string accessibleName: ""
     signal itemChosen(var item)
     implicitHeight: Theme.controlHeight
-    implicitWidth: 240
+    implicitWidth: Theme.px(240)
     Accessible.role: Accessible.ComboBox
     Accessible.name: accessibleName || searchField.placeholderText || "Search"
     Accessible.description: backend.locationLookupBusy ? "Looking up location" : ""
@@ -137,7 +137,7 @@ Item {
         height: parent.height
         placeholderText: "Search city or timezone"
         accessibleName: searchCombo.accessibleName
-        rightPadding: 26
+        rightPadding: Theme.px(26)
         releaseFocusOnEnter: false
         Keys.priority: Keys.BeforeItem
         onTextEdited: {
@@ -151,7 +151,7 @@ Item {
         }
         MouseArea {
             anchors.fill: parent
-            anchors.rightMargin: 26
+            anchors.rightMargin: Theme.px(26)
             propagateComposedEvents: true
             onPressed: function (mouse) {
                 if (!searchCombo.listOpen)
@@ -188,11 +188,11 @@ Item {
         color: Theme.accent
         z: 2
         anchors.right: searchField.right
-        anchors.rightMargin: 8
+        anchors.rightMargin: Theme.s2
         anchors.verticalCenter: searchField.verticalCenter
         MouseArea {
             anchors.fill: parent
-            anchors.margins: -8
+            anchors.margins: -Theme.s2
             onClicked: {
                 if (searchCombo.listOpen) {
                     searchCombo.listOpen = false
@@ -205,10 +205,10 @@ Item {
     }
     Popup {
         id: suggestionPopup
-        y: searchField.height + 3
+        y: searchField.height + Theme.px(3)
         width: Math.max(searchCombo.width, 360)
         height: Math.min(Math.max(searchCombo.filtered.length, 1), 10) * 32 + 2
-        padding: 1
+        padding: Theme.px(1)
         modal: false
         focus: false
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
@@ -242,14 +242,14 @@ Item {
                 }
                 delegate: Rectangle {
                     width: suggestionView.width
-                    height: 32
+                    height: Theme.px(32)
                     readonly property var item: modelData
                     readonly property int row: index
                     color: suggestionView.currentIndex === row ? Theme.fillChecked : Theme.popupBg
                     Text {
                         anchors.fill: parent
-                        leftPadding: 10
-                        rightPadding: 10
+                        leftPadding: Theme.px(10)
+                        rightPadding: Theme.px(10)
                         text: item && (item.label || item.name) || ""
                         color: suggestionView.currentIndex === row ? Theme.accent : Theme.textPrimary
                         font.pixelSize: Theme.fontBase
@@ -267,7 +267,7 @@ Item {
             Text {
                 anchors.fill: parent
                 visible: searchCombo.filtered.length === 0
-                leftPadding: 10
+                leftPadding: Theme.px(10)
                 text: "No matches"
                 color: Theme.textSecondary
                 font.pixelSize: Theme.fontBase

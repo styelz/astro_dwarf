@@ -189,8 +189,8 @@ Item {
         width: timer.padSize
         height: width
         readonly property real padScale: width / 96
-        readonly property real tickMargin: Math.max(6, Math.round(10 * padScale))
-        readonly property real hairInset: Math.max(12, Math.round(18 * padScale))
+        readonly property real tickMargin: Math.max(Theme.px(6), Math.round(10 * padScale))
+        readonly property real hairInset: Math.max(Theme.s3, Math.round(18 * padScale))
 
         Rectangle {
             anchors.fill: parent
@@ -208,7 +208,7 @@ Item {
             readonly property color trackInk: Theme.outline
             readonly property color arcInk: Theme.accent
             readonly property real fill: timer.progress
-            readonly property real padRadius: analogPad.width / 2 - Math.max(4, Math.round(6 * analogPad.padScale))
+            readonly property real padRadius: analogPad.width / 2 - Math.max(Theme.s1, Math.round(6 * analogPad.padScale))
             onMajorInkChanged: requestPaint()
             onMinorInkChanged: requestPaint()
             onTrackInkChanged: requestPaint()
@@ -234,7 +234,7 @@ Item {
                 }
                 const r = padRadius
                 ctx.lineCap = "round"
-                ctx.lineWidth = Math.max(3, 4 * scale)
+                ctx.lineWidth = Math.max(Theme.px(3), 4 * scale)
                 ctx.strokeStyle = trackInk
                 ctx.beginPath()
                 ctx.arc(cx, cy, r, 0, Math.PI * 2)
@@ -253,7 +253,7 @@ Item {
         }
         Rectangle {
             anchors.centerIn: parent
-            width: 2
+            width: Theme.px(2)
             height: parent.height - analogPad.hairInset
             color: Theme.outlineStrong
             opacity: 0.45
@@ -261,7 +261,7 @@ Item {
         Rectangle {
             anchors.centerIn: parent
             width: parent.width - analogPad.hairInset
-            height: 2
+            height: Theme.px(2)
             color: Theme.outlineStrong
             opacity: 0.45
         }
@@ -275,7 +275,7 @@ Item {
         }
         Column {
             anchors.centerIn: parent
-            spacing: -1
+            spacing: Theme.px(-1)
             Text {
                 id: secondsLabel
                 anchors.horizontalCenter: parent.horizontalCenter

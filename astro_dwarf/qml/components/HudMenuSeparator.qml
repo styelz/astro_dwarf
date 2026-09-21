@@ -3,13 +3,13 @@ import QtQuick.Templates as T
 import ".."
 
 T.MenuSeparator {
-    implicitHeight: 9
+    implicitHeight: Theme.px(9)
     contentItem: Rectangle {
-        implicitHeight: 1
+        implicitHeight: Theme.px(1)
         color: Theme.outline
     }
-    leftPadding: 8
-    rightPadding: 8
-    topPadding: 4
-    bottomPadding: 4
+    leftPadding: Theme.s2
+    rightPadding: Theme.s2
+    topPadding: Theme.s1
+    bottomPadding: Theme.s1
 }

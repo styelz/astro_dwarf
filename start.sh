@@ -108,23 +108,46 @@ printf '\n'
 step "Starting Astro Dwarf..."
 info "The app window should open in a moment."
 printf '\n'
-# WSL and Hyper-V guests usually have no GLX/EGL. Python also applies this
-# in qt_display; set it here so a leftover host-GL export cannot abort Qt.
-if [ "${ASTRO_DWARF_QT_SYSTEM:-}" != "1" ]; then
-    in_wsl=0
-    in_hv=0
-    if [ -r /proc/sys/kernel/osrelease ] && grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease; then
-        in_wsl=1
+# WSL and Hyper-V guests usually have no GLX/EGL. Native NVIDIA/AMD
+# desktops must keep host OpenGL so Stellarium Web can run. Python also
+# applies this in qt_display; set it here so a leftover host-GL export
+# cannot abort Qt on the guests that actually need the fallback.
+astro_dwarf_needs_software_qt() {
+    [ "${ASTRO_DWARF_QT_SOFTWARE:-}" = "1" ] && return 0
+    [ "${ASTRO_DWARF_QT_SYSTEM:-}" = "1" ] && return 1
+    if [ -n "${WSL_DISTRO_NAME:-}" ] || [ -n "${WSL_INTEROP:-}" ]; then
+        return 0
     fi
-    for dmi in /sys/class/dmi/id/sys_vendor /sys/class/dmi/id/product_name; do
-        if [ -r "$dmi" ] && grep -qiE 'microsoft|hyper-v|virtual machine' "$dmi"; then
-            in_hv=1
+    if [ -r /proc/sys/kernel/osrelease ] && grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease; then
+        return 0
+    fi
+    vendor=""
+    product=""
+    [ -r /sys/class/dmi/id/sys_vendor ] && vendor=$(cat /sys/class/dmi/id/sys_vendor)
+    [ -r /sys/class/dmi/id/product_name ] && product=$(cat /sys/class/dmi/id/product_name)
+    dmi=$(printf '%s\n%s\n' "$vendor" "$product" | tr '[:upper:]' '[:lower:]')
+    case "$dmi" in
+        *hyper-v*|*hyperv*) return 0 ;;
+    esac
+    case "$dmi" in
+        *microsoft*)
+            case "$dmi" in
+                *virtual*machine*) return 0 ;;
+            esac
+            ;;
+    esac
+    has_drm=0
+    for n in /dev/dri/renderD*; do
+        if [ -e "$n" ]; then
+            has_drm=1
+            break
         fi
     done
-    if [ "$in_wsl" -eq 1 ] || [ "$in_hv" -eq 1 ]; then
-        [ -n "$QT_QPA_PLATFORM" ] || export QT_QPA_PLATFORM=xcb
-        [ -n "$QT_XCB_GL_INTEGRATION" ] || export QT_XCB_GL_INTEGRATION=none
-        [ -n "$QT_QUICK_BACKEND" ] || export QT_QUICK_BACKEND=software
-    fi
+    [ "$has_drm" -eq 0 ]
+}
+if astro_dwarf_needs_software_qt; then
+    [ -n "$QT_QPA_PLATFORM" ] || export QT_QPA_PLATFORM=xcb
+    [ -n "$QT_XCB_GL_INTEGRATION" ] || export QT_XCB_GL_INTEGRATION=none
+    [ -n "$QT_QUICK_BACKEND" ] || export QT_QUICK_BACKEND=software
 fi
 exec "$VENV_PYTHON" app.py

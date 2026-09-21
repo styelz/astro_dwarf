@@ -41,8 +41,8 @@ CheckBox {
         // soft glow that breathes in on hover / focus
         Rectangle {
             anchors.fill: parent
-            anchors.margins: -4
-            radius: 4
+            anchors.margins: -Theme.s1
+            radius: Theme.s1
             color: "transparent"
             border.color: Theme.accent
             border.width: 1
@@ -51,8 +51,8 @@ CheckBox {
         }
         HudFrame {
             anchors.fill: parent
-            topLeft: 5
-            bottomRight: 5
+            topLeft: Theme.notchSmall
+            bottomRight: Theme.notchSmall
             strokeWidth: box.lit || box.visualFocus ? Theme.focusStroke : 1
             strokeColor: box.lineColor
             fillColor: !box.enabled ? Theme.disabledBg : box.lit ? Theme.fillChecked : box.down ? Theme.fillActive : Theme.inputBg
@@ -62,22 +62,22 @@ CheckBox {
         // inner lit fill pulse when checked
         Rectangle {
             anchors.fill: parent
-            anchors.margins: 3
+            anchors.margins: Theme.px(3)
             color: Theme.accent
             opacity: box.ticked ? 0.10 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.normal } }
         }
         HudCheckMark {
             anchors.fill: parent
-            anchors.margins: 3
+            anchors.margins: Theme.px(3)
             on: box.ticked
             color: box.enabled ? Theme.accent : Theme.textSecondary
         }
         Rectangle {
             // partial state dash
             anchors.centerIn: parent
-            width: parent.width - 10
-            height: 2
+            width: parent.width - Theme.px(10)
+            height: Theme.px(2)
             color: Theme.accent
             visible: box.checkState === Qt.PartiallyChecked
         }

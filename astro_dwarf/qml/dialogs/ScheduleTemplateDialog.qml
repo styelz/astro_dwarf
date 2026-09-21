@@ -25,9 +25,9 @@ Dialog {
     readonly property bool canSchedule: templateId.length > 0 && startTime.text.trim().length > 0 && captureValid && !!windowHint.ok && !windowHint.conflict
     modal: true
     anchors.centerIn: Overlay.overlay
-    width: 460
-    padding: 16
-    height: Math.min(root.height - 60, scheduleColumn.implicitHeight + padding * 2)
+    width: Theme.px(460)
+    padding: Theme.s4
+    height: Math.min(root.height - Theme.px(60), scheduleColumn.implicitHeight + padding * 2)
     background: DialogFrame {}
     function defaultStart() {
         return backend.deviceNowStamp(scheduleDialog.deviceId || backend.selectedDeviceId)
@@ -80,7 +80,7 @@ Dialog {
     }
     contentItem: ColumnLayout {
         id: scheduleColumn
-        spacing: 12
+        spacing: Theme.s3
         Text { text: "SCHEDULE TEMPLATE"; color: Theme.accent; font.pixelSize: Theme.fontLg; font.letterSpacing: 1.4 }
         Text {
             text: scheduleDialog.templateName
@@ -131,7 +131,7 @@ Dialog {
         FieldLabel { text: "START" }
         RowLayout {
             Layout.fillWidth: true
-            spacing: 8
+            spacing: Theme.s2
             HudTimeField {
                 id: startTime
                 Layout.fillWidth: true
@@ -139,16 +139,16 @@ Dialog {
             }
             HudButton {
                 text: "NOW"
-                implicitWidth: 72
+                implicitWidth: Theme.px(72)
                 onClicked: startTime.text = scheduleDialog.defaultStart()
             }
         }
         FieldLabel { text: "CAPTURE" }
         RowLayout {
             Layout.fillWidth: true
-            spacing: 8
+            spacing: Theme.s2
             ColumnLayout {
-                spacing: 2
+                spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldLabel { text: "EXPOSURE (SECONDS)" }
                 HudField {
@@ -160,7 +160,7 @@ Dialog {
                 }
             }
             ColumnLayout {
-                spacing: 2
+                spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldLabel { text: "FRAMES" }
                 HudField {
@@ -190,7 +190,7 @@ Dialog {
         }
         ColumnLayout {
             visible: !!(scheduleDialog.windowHint && scheduleDialog.windowHint.conflict)
-            spacing: 8
+            spacing: Theme.s2
             Layout.fillWidth: true
             Text {
                 text: "Overlaps " + (scheduleDialog.windowHint.conflict || "") + "."

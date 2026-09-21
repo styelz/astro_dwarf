@@ -10,15 +10,15 @@ Item {
     property bool revealed: false
     property int spineInset: 6
     signal toggled(bool shiftHeld)
-    implicitWidth: 20
-    width: 20
+    implicitWidth: Theme.s5
+    width: Theme.s5
 
     Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         x: Math.round((parent.width - width) / 2)
-        width: 4
-        height: Math.max(8, parent.height - gutter.spineInset * 2)
-        radius: 2
+        width: Theme.s1
+        height: Math.max(Theme.s2, parent.height - gutter.spineInset * 2)
+        radius: Theme.px(2)
         color: gutter.spineColor
         opacity: select.shown ? 0.3 : 1
         Behavior on opacity { NumberAnimation { duration: Theme.quick } }

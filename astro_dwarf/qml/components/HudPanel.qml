@@ -12,8 +12,8 @@ Item {
     property color fill: Theme.panelFill
     property color titleColor: Theme.accent
     default property alias contents: body.data
-    implicitWidth: 240
-    implicitHeight: (headerRow.visible ? headerRow.implicitHeight + 17 : 0) + body.implicitHeight + 24
+    implicitWidth: Theme.px(240)
+    implicitHeight: (headerRow.visible ? headerRow.implicitHeight + Theme.px(17) : 0) + body.implicitHeight + Theme.px(24)
     clip: true
 
     property string panelId: ""
@@ -56,7 +56,7 @@ Item {
         const dx = mouse.x - item.pressPos.x
         const dy = mouse.y - item.pressPos.y
         if (!panel.moveStarted) {
-            if (dx * dx + dy * dy < 36)
+            if (dx * dx + dy * dy < Theme.px(6) * Theme.px(6))
                 return
             panel.beginMoveAt(item, mouse.x, mouse.y)
             return
@@ -85,8 +85,8 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.margins: 2
-        height: Math.min(64, parent.height * 0.35)
+        anchors.margins: Theme.px(2)
+        height: Math.min(Theme.px(64), parent.height * 0.35)
         gradient: Gradient {
             GradientStop { position: 0.0; color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, panel.lit ? 0.10 : 0.05) }
             GradientStop { position: 1.0; color: "transparent" }
@@ -135,19 +135,19 @@ Item {
     }
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 12
-        spacing: 8
+        anchors.margins: Theme.s3
+        spacing: Theme.s2
         RowLayout {
             id: headerRow
             visible: heading.text.length || headerExtraRow.children.length
             Layout.fillWidth: true
-            spacing: 8
+            spacing: Theme.s2
             Item {
                 id: dragHandle
                 objectName: panel.panelId !== "" ? "panelDrag-" + panel.panelId : ""
                 Layout.fillWidth: true
                 Layout.minimumWidth: 0
-                Layout.preferredHeight: Math.max(heading.implicitHeight, 14)
+                Layout.preferredHeight: Math.max(heading.implicitHeight, Theme.px(14))
                 Accessible.role: Accessible.Button
                 Accessible.name: "Move " + (panel.moveLabel || heading.text || "panel")
                 Accessible.description: "Drag onto another panel to swap, or onto an edge to insert"
@@ -155,19 +155,19 @@ Item {
                 Row {
                     id: handleRow
                     anchors.fill: parent
-                    spacing: 6
+                    spacing: Theme.px(6)
                     Item {
                         id: grip
                         visible: panel.movable
-                        width: visible ? 8 : 0
+                        width: visible ? Theme.s2 : 0
                         height: parent.height
                         readonly property color dot: headerMove.pressed || headerMove.containsMouse ? Theme.accent : Theme.textSecondary
                         Column {
                             anchors.centerIn: parent
-                            spacing: 2
-                            Row { spacing: 2; Rectangle { width: 2; height: 2; color: grip.dot } Rectangle { width: 2; height: 2; color: grip.dot } }
-                            Row { spacing: 2; Rectangle { width: 2; height: 2; color: grip.dot } Rectangle { width: 2; height: 2; color: grip.dot } }
-                            Row { spacing: 2; Rectangle { width: 2; height: 2; color: grip.dot } Rectangle { width: 2; height: 2; color: grip.dot } }
+                            spacing: Theme.px(2)
+                            Row { spacing: Theme.px(2); Rectangle { width: Theme.px(2); height: Theme.px(2); color: grip.dot } Rectangle { width: Theme.px(2); height: Theme.px(2); color: grip.dot } }
+                            Row { spacing: Theme.px(2); Rectangle { width: Theme.px(2); height: Theme.px(2); color: grip.dot } Rectangle { width: Theme.px(2); height: Theme.px(2); color: grip.dot } }
+                            Row { spacing: Theme.px(2); Rectangle { width: Theme.px(2); height: Theme.px(2); color: grip.dot } Rectangle { width: Theme.px(2); height: Theme.px(2); color: grip.dot } }
                         }
                     }
                     Text {
@@ -215,15 +215,15 @@ Item {
             }
             Row {
                 id: headerExtraRow
-                spacing: 4
+                spacing: Theme.s1
                 Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
             }
         }
         Rectangle {
             visible: headerRow.visible
             Layout.fillWidth: true
-            Layout.preferredHeight: 1
-            implicitHeight: 1
+            Layout.preferredHeight: Theme.px(1)
+            implicitHeight: Theme.px(1)
             gradient: Gradient {
                 orientation: Gradient.Horizontal
                 GradientStop { position: 0.0; color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.6) }
@@ -240,7 +240,7 @@ Item {
             flickableDirection: Flickable.VerticalFlick
             contentWidth: width
             contentHeight: Math.max(height, body.implicitHeight)
-            interactive: contentHeight > height + 1
+            interactive: contentHeight > height + Theme.px(1)
             ScrollBar.vertical: HiddenBar {}
             ScrollBar.horizontal: HiddenBar {}
             Item {
@@ -249,7 +249,7 @@ Item {
                 ColumnLayout {
                     id: body
                     anchors.fill: parent
-                    spacing: 8
+                    spacing: Theme.s2
                 }
             }
             ScrollHint { flick: panelFlick; active: panelHover.hovered }
@@ -261,7 +261,7 @@ Item {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.top: parent.top
-        anchors.topMargin: headerRow.visible ? 12 + headerRow.height + 8 : 0
+        anchors.topMargin: headerRow.visible ? Theme.s3 + headerRow.height + Theme.s2 : 0
         z: 5
     }
     Item {
@@ -271,7 +271,7 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        height: 14
+        height: Theme.px(14)
         objectName: panel.panelId !== "" ? "panelEdge-" + panel.panelId : ""
         property point pressPos: Qt.point(0, 0)
         Accessible.role: Accessible.Button
@@ -279,14 +279,14 @@ Item {
         Accessible.description: "Drag onto another panel to swap, or onto an edge to insert"
         Row {
             anchors.centerIn: parent
-            spacing: 3
+            spacing: Theme.px(3)
             readonly property color dot: edgeMove.pressed || edgeMove.containsMouse ? Theme.accent : Theme.textSecondary
             readonly property real dim: edgeMove.pressed || edgeMove.containsMouse ? 0.95 : 0.45
-            Rectangle { width: 3; height: 3; radius: 1; color: parent.dot; opacity: parent.dim }
-            Rectangle { width: 3; height: 3; radius: 1; color: parent.dot; opacity: parent.dim }
-            Rectangle { width: 3; height: 3; radius: 1; color: parent.dot; opacity: parent.dim }
-            Rectangle { width: 3; height: 3; radius: 1; color: parent.dot; opacity: parent.dim }
-            Rectangle { width: 3; height: 3; radius: 1; color: parent.dot; opacity: parent.dim }
+            Rectangle { width: Theme.px(3); height: Theme.px(3); radius: Theme.px(1); color: parent.dot; opacity: parent.dim }
+            Rectangle { width: Theme.px(3); height: Theme.px(3); radius: Theme.px(1); color: parent.dot; opacity: parent.dim }
+            Rectangle { width: Theme.px(3); height: Theme.px(3); radius: Theme.px(1); color: parent.dot; opacity: parent.dim }
+            Rectangle { width: Theme.px(3); height: Theme.px(3); radius: Theme.px(1); color: parent.dot; opacity: parent.dim }
+            Rectangle { width: Theme.px(3); height: Theme.px(3); radius: Theme.px(1); color: parent.dot; opacity: parent.dim }
         }
         MouseArea {
             id: edgeMove
@@ -321,19 +321,19 @@ Item {
     }
     Rectangle {
         anchors.fill: parent
-        anchors.topMargin: headerRow.visible ? 12 + headerRow.height + 8 : (panel.movable ? 14 : 0)
+        anchors.topMargin: headerRow.visible ? Theme.s3 + headerRow.height + Theme.s2 : (panel.movable ? Theme.px(14) : 0)
         z: 20
         enabled: false
         visible: panel.dragging || panel.dropMode === "swap"
         color: panel.dropMode === "swap" ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.12) : Qt.rgba(0, 0, 0, 0.22)
         border.color: panel.dropMode === "swap" ? Theme.accent : Theme.outlineStrong
-        border.width: panel.dropMode === "swap" ? 2 : 1
+        border.width: panel.dropMode === "swap" ? Theme.px(2) : Theme.px(1)
     }
     Rectangle {
         z: 21
         enabled: false
         visible: panel.dropMode === "before" || panel.dropMode === "after"
-        height: 3
+        height: Theme.px(3)
         width: parent.width
         y: panel.dropMode === "after" ? parent.height - height : 0
         color: Theme.accent
