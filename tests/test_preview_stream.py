@@ -29,6 +29,7 @@ from astro_dwarf.qt_backend import (
     mosaic_result_should_drop_sheet,
     mosaic_should_copy_live_still,
     mosaic_should_hold_last_live_frame,
+    mosaic_should_hold_slew_frame,
     mosaic_should_publish_pane_url,
     mosaic_should_refresh_slew_placeholder,
     mosaic_slew_frame_ready,
@@ -44,7 +45,12 @@ from astro_dwarf.qt_backend import (
     preview_should_reuse_player,
     preview_should_skip_go_live,
 )
-from astro_dwarf.stream_preview import MosaicFrames, MosaicLiveItem, live_frame_data_url
+from astro_dwarf.stream_preview import (
+    MosaicFrames,
+    MosaicLiveItem,
+    live_frame_data_url,
+    mosaic_live_overlay_ready,
+)
 from astro_dwarf.telemetry_view import camera_params_to_telemetry
 
 
@@ -63,6 +69,22 @@ def test_mosaic_live_item_font_pixel_size() -> None:
     _assert(item.fontPixelSize == 16, "scaled mosaic index font")
     item.fontPixelSize = 0
     _assert(item.fontPixelSize == 11, "invalid mosaic index font falls back")
+    from PySide6.QtGui import QColor, QImage
+
+    previous = QImage(8, 8, QImage.Format.Format_RGB32)
+    previous.fill(QColor(12, 34, 56))
+    nxt = QImage(8, 8, QImage.Format.Format_RGB32)
+    nxt.fill(QColor(78, 90, 12))
+    _assert(not mosaic_live_overlay_ready(QImage(), previous.cacheKey()), "empty live is not overlay")
+    _assert(
+        not mosaic_live_overlay_ready(previous, previous.cacheKey()),
+        "leftover previous-pane JPEG must not overlay the next cell",
+    )
+    _assert(
+        mosaic_live_overlay_ready(nxt, previous.cacheKey()),
+        "a new frame may overlay the current pane",
+    )
+    _assert(mosaic_live_overlay_ready(nxt, 0), "first frame after a blank pane is live")
     del app
 
 
@@ -368,6 +390,14 @@ def test_mosaic_keeps_preview_open_between_panes() -> None:
         "stacking still uses the HTTP preview",
     )
     _assert(mosaic_progress_phase("GOTO pane 3/4 failed") == "failed", "failed GOTO is not a slew freeze")
+    _assert(
+        mosaic_progress_phase("Still slewing · plate-solving · 120s") == "goto",
+        "a live plate-solve wait is not a failed mosaic",
+    )
+    _assert(
+        mosaic_progress_phase("will not plate-solve. Not stacking this pane.") == "failed",
+        "clouded-out GOTO fail still marks the pane failed",
+    )
     _assert(mosaic_hold_pane(1, "goto") == 1, "slew pane keeps the last live frame")
     _assert(mosaic_hold_pane(2, "stacking") == 2, "stacking pane keeps the last live frame")
     _assert(mosaic_hold_pane(2, "complete") == 0, "finished panes are not live placeholders")
@@ -379,6 +409,22 @@ def test_mosaic_keeps_preview_open_between_panes() -> None:
     _assert(
         not mosaic_should_hold_last_live_frame(0),
         "single STACK must switch to stacking preview immediately",
+    )
+    _assert(
+        mosaic_should_hold_slew_frame(pane=2),
+        "after GOTO, the last camera frame may fill the stacking pane",
+    )
+    _assert(
+        not mosaic_should_hold_slew_frame(pane=2, stacking_preview=True),
+        "leftover stacked.jpg must not stamp the next pane",
+    )
+    _assert(
+        not mosaic_should_hold_slew_frame(pane=2, pane_changed=True),
+        "a pane advance must not copy the previous field into the new cell",
+    )
+    _assert(
+        not mosaic_should_hold_slew_frame(pane=0),
+        "a single STACK has no mosaic cell to fill",
     )
     _assert(
         not mosaic_should_refresh_slew_placeholder(
@@ -744,6 +790,14 @@ def test_mosaic_preview_hides_after_capture_without_held_result() -> None:
     _assert(
         not mosaic_preview_keep_live_sheet(live_phase="stacking", live_stopping=True),
         "a stopping mosaic without a worker is not a live capture",
+    )
+    _assert(
+        not mosaic_preview_keep_live_sheet(live_phase="failed", worker_running=False),
+        "a failed leftover mosaic must not keep MOSAIC STACK latched",
+    )
+    _assert(
+        mosaic_preview_keep_live_sheet(live_phase="failed", worker_running=True),
+        "a worker still running through a failed pane report owns the sheet until finish",
     )
 
 

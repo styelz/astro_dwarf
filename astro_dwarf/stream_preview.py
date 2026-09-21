@@ -13,7 +13,7 @@ from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPen
 from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
 
 from .runtime import PROCESS_CREATION_FLAGS, ffmpeg_mjpeg_command, ffmpeg_path, kill_pid_tree
-from .services import mosaic_sheet_column, mosaic_sheet_row
+from .services import mosaic_camera_up_is_south, mosaic_sheet_column, mosaic_sheet_row
 
 _live_frames: LiveFrames | None = None
 _mosaic_frames: MosaicFrames | None = None
@@ -455,6 +455,23 @@ class MosaicFrames(QObject):
         self.changed.emit()
 
 
+def mosaic_live_overlay_ready(image: QImage | None, stale_key: int) -> bool:
+    """True when this live frame belongs to the current pane, not the previous one.
+
+    Switching live_pane used to paint the leftover stacked.jpg of pane N into
+    N+1 until a new HTTP/RTSP frame arrived.
+    """
+    if image is None or image.isNull():
+        return False
+    try:
+        stale = int(stale_key or 0)
+    except (TypeError, ValueError):
+        stale = 0
+    if not stale:
+        return True
+    return image.cacheKey() != stale
+
+
 class MosaicLiveItem(QQuickPaintedItem):
     """Contact-sheet live preview while a mosaic is capturing."""
 
@@ -483,6 +500,8 @@ class MosaicLiveItem(QQuickPaintedItem):
         self._font_pixel_size = 11
         self._held_pane = 0
         self._held_image = QImage()
+        self._await_live_frame = False
+        self._stale_live_key = 0
         hub = live_frames()
         if hub is not None:
             hub.frameChanged.connect(self._on_live_frame)
@@ -532,9 +551,16 @@ class MosaicLiveItem(QQuickPaintedItem):
             return
         if pane < 1:
             self._capture_hold()
-        elif pane != self._held_pane:
-            self._held_pane = 0
-            self._held_image = QImage()
+            self._await_live_frame = False
+            self._stale_live_key = 0
+        else:
+            if pane != self._held_pane:
+                self._held_pane = 0
+                self._held_image = QImage()
+            live = live_frames()
+            current = live.peek(self._camera) if live is not None else QImage()
+            self._stale_live_key = 0 if current is None or current.isNull() else current.cacheKey()
+            self._await_live_frame = True
         self._live_pane = pane
         self.livePaneChanged.emit()
         self.update()
@@ -633,6 +659,13 @@ class MosaicLiveItem(QQuickPaintedItem):
             return
         if key not in ("*", self._camera):
             return
+        if self._await_live_frame:
+            live = live_frames()
+            image = live.peek(self._camera) if live is not None else QImage()
+            if not mosaic_live_overlay_ready(image, self._stale_live_key):
+                return
+            self._await_live_frame = False
+            self._stale_live_key = 0
         self.update()
 
     def _cell_rect(self, columns: int, rows: int, index: int) -> QRectF | None:
@@ -702,6 +735,7 @@ class MosaicLiveItem(QQuickPaintedItem):
         font.setPixelSize(max(1, int(self._font_pixel_size or 11)))
         font.setBold(True)
         painter.setFont(font)
+        flip = mosaic_camera_up_is_south(self._south_up, self._position_angle)
         count = columns * rows
         for index in range(1, count + 1):
             cell = self._cell_rect(columns, rows, index)
@@ -709,7 +743,12 @@ class MosaicLiveItem(QQuickPaintedItem):
                 continue
             painter.fillRect(cell, QColor(0, 0, 0, 160))
             image = images.get(index) or QImage()
-            if index == self._live_pane and self._live_active and not live_image.isNull():
+            if (
+                index == self._live_pane
+                and self._live_active
+                and not self._await_live_frame
+                and mosaic_live_overlay_ready(live_image, self._stale_live_key)
+            ):
                 image = live_image
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
             elif (
@@ -723,6 +762,8 @@ class MosaicLiveItem(QQuickPaintedItem):
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
             fitted = self._fit_in(image, cell)
             if fitted is not None:
+                if flip:
+                    image = image.flipped(Qt.Orientation.Horizontal | Qt.Orientation.Vertical)
                 painter.drawImage(fitted, image)
             else:
                 painter.setPen(self._accent)

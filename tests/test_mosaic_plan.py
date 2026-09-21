@@ -15,6 +15,7 @@ from astro_dwarf.services import (
     SKY_WEB_FOV_JS,
     device_mosaic_pa,
     generate_mosaic_plan,
+    mosaic_camera_up_is_south,
     mosaic_chart_tilt,
     mosaic_overlay_pa_fields,
     mosaic_pa_chip,
@@ -92,7 +93,7 @@ def test_stored_zero_stays_north_up_at_southern_site() -> None:
         longitude=144.96,
         ra_hours=5.36,
         dec_degrees=-69.67,
-        mount_mode="AZ",
+        mount_mode="EQ",
     )
     _assert(resolved.degrees == 0.0, resolved)
     _assert(resolved.source == "stored", resolved.source)
@@ -100,6 +101,7 @@ def test_stored_zero_stays_north_up_at_southern_site() -> None:
     fields = mosaic_overlay_pa_fields(resolved)
     _assert(fields["pa_source"] == "stored", fields)
     _assert(fields["position_angle"] == 0.0, fields)
+    _assert(fields["mount_mode"] == "EQ", fields)
     _assert(mosaic_pa_chip(resolved.source, resolved.degrees) == "N-UP", "stored 0 is N-UP")
 
 
@@ -134,10 +136,21 @@ def test_unset_altaz_uses_locked_target_parallactic() -> None:
     )
     _assert(resolved.source == "parallactic", resolved.source)
     _close(resolved.degrees, float(expected), 6)
-    _assert(mosaic_pa_chip(resolved.source, resolved.degrees) == "ZENITH", "alt-az chip")
+    _assert(mosaic_pa_chip(resolved.source, resolved.degrees) == f"ZENITH {float(expected):.0f}°", "alt-az chip")
     fields = mosaic_overlay_pa_fields(resolved)
     _assert(fields["pa_source"] == "parallactic", fields)
     _close(float(fields["position_angle"]), float(expected), 6)
+    stored = resolve_device_mosaic_pa(
+        lat,
+        295,
+        longitude=lon,
+        ra_hours=ra,
+        dec_degrees=dec,
+        mount_mode="AZ",
+        when=when,
+    )
+    _assert(stored.source == "parallactic", "alt-az cannot honour a stored PA")
+    _close(stored.degrees, float(expected), 6)
     view = resolve_device_mosaic_pa(lat, None, longitude=lon, mount_mode="AZ", when=when)
     _assert(view.source == "default", "no locked target must not use view-centre parallactic")
     _assert(view.degrees == 180.0, view.degrees)
@@ -152,7 +165,9 @@ def test_overlay_payload_includes_pa_source() -> None:
     _assert("_overlay_pa_target" in src, "overlay PA follows the locked target")
     _assert("_log_overlay_mosaic_pa" in src, "log PA once per overlay rebuild")
     _assert("has_site" in src and "latitude" in src, "overlay JS needs site for field rotation")
-    _assert("pa_source" not in SKY_WEB_FOV_JS, "Phase 1 overlay drawers must not consume pa_source")
+    _assert("function liveCameraPa" in SKY_WEB_FOV_JS, "1×1 alt-az HUD uses live parallactic")
+    _assert("p.mount_mode" in SKY_WEB_FOV_JS, "overlay JS must see mount mode")
+    _assert("mosaicPaManual" in inspect.getsource(AppBackend), "Sky PA editor is EQ-only")
 
 
 def test_south_up_pane_one_is_east_and_south() -> None:
@@ -167,17 +182,26 @@ def test_south_up_pane_one_is_east_and_south() -> None:
     _assert(panes[4]["dec_degrees"] > -69.7, panes[4])
 
 
-def test_contact_sheet_matches_sky_chart() -> None:
-    # PA 180 S-up: pane 1 top-right, pane 2 top-left, pane 3 bottom-right, pane 4 bottom-left.
-    _assert(mosaic_sheet_column(1, 2, south_up=True, position_angle=180) == 1, "pane 1 right")
-    _assert(mosaic_sheet_column(2, 2, south_up=True, position_angle=180) == 0, "pane 2 left")
-    _assert(mosaic_sheet_row(1, 2, 2, south_up=True, position_angle=180) == 0, "pane 1 top")
-    _assert(mosaic_sheet_row(4, 2, 2, south_up=True, position_angle=180) == 1, "pane 4 bottom")
+def test_contact_sheet_matches_zenith_up_overlay() -> None:
+    # Stellarium is zenith-up (N-up when looking south). PA 180 pane 1 is SE =
+    # bottom-left, matching the ICRS overlay — not a south-up paper chart.
+    _assert(mosaic_camera_up_is_south(True, 180), "PA 180 camera-up is south")
+    _assert(mosaic_sheet_column(1, 2, south_up=True, position_angle=180) == 0, "pane 1 left")
+    _assert(mosaic_sheet_column(2, 2, south_up=True, position_angle=180) == 1, "pane 2 right")
+    _assert(mosaic_sheet_row(1, 2, 2, south_up=True, position_angle=180) == 1, "pane 1 bottom")
+    _assert(mosaic_sheet_row(3, 2, 2, south_up=True, position_angle=180) == 0, "pane 3 top")
+    _assert(mosaic_sheet_row(4, 2, 2, south_up=True, position_angle=180) == 0, "pane 4 top")
     _assert(mosaic_chart_tilt(True, 180) == 0.0, mosaic_chart_tilt(True, 180))
     _assert(mosaic_chart_tilt(False, 0) == 0.0, mosaic_chart_tilt(False, 0))
-    # PA 0 on a southern site: pane 1 is NW = bottom-left of the S-up chart.
-    _assert(mosaic_sheet_column(1, 2, south_up=True, position_angle=0) == 0, "PA 0 pane 1 left")
-    _assert(mosaic_sheet_row(1, 2, 2, south_up=True, position_angle=0) == 1, "PA 0 pane 1 bottom")
+    # PA 0: pane 1 is NW = top-right of the zenith-up / N-up view.
+    _assert(not mosaic_camera_up_is_south(True, 0), "PA 0 camera-up is north")
+    _assert(mosaic_sheet_column(1, 2, south_up=True, position_angle=0) == 1, "PA 0 pane 1 right")
+    _assert(mosaic_sheet_row(1, 2, 2, south_up=True, position_angle=0) == 0, "PA 0 pane 1 top")
+    _assert(mosaic_sheet_column(1, 2, south_up=False, position_angle=0) == 1, "N-up pane 1 right")
+    _assert(mosaic_sheet_row(1, 2, 2, south_up=False, position_angle=0) == 0, "N-up pane 1 top")
+    preview = (ROOT / "astro_dwarf" / "stream_preview.py").read_text(encoding="utf-8")
+    _assert("mosaic_camera_up_is_south" in preview, "PA 180 JPEGs rotate to match zenith-up")
+    _assert("flipped(" in preview, "stacked frames flip with camera-up")
 
 
 def test_center_view_script_uses_engine_lookat() -> None:
@@ -192,9 +216,11 @@ def test_atlas_overlay_labels_icrs_pane_centres() -> None:
     _assert("if (!quad) return [];" not in ATLAS_ASTRO_JS, "missing corners must not drop the mosaic")
     _assert("p.south_up" in SKY_WEB_FOV_JS, "stellarium screen grid follows site hemisphere")
     _assert("payload.south_up" in ATLAS_ASTRO_JS, "atlas screen grid follows site hemisphere")
-    _assert("rotateChartGroup" in SKY_WEB_FOV_JS, "stellarium must not rotate numbered panes by full PA")
+    _assert("rotateChartGroup" in SKY_WEB_FOV_JS, "stellarium keeps a 1×1 HUD helper")
     _assert("chartTilt" in SKY_WEB_FOV_JS, "stellarium screen grid uses residual chart tilt")
-    _assert("function rotateGroup" not in SKY_WEB_FOV_JS, "1×1 HUD must use chart tilt, not full PA")
+    _assert("function cameraHudTilt" in SKY_WEB_FOV_JS, "1×1 HUD uses full camera PA, not southern chart tilt")
+    _assert("function mosaicGridTilt" in SKY_WEB_FOV_JS, "numbered mosaic fallback keeps chart tilt")
+    _assert("function rotateGroup" not in SKY_WEB_FOV_JS, "do not reintroduce a shared full-PA mosaic rotator")
     _assert("function livePointingQuad" in SKY_WEB_FOV_JS, "1×1 and mosaic live video share one ICRS footprint")
     _assert("panes[i].ra_hours, panes[i].dec_degrees" in SKY_WEB_FOV_JS, "stellarium labels ICRS centres")
     _assert("fovH * (1 - overlap)" in SKY_WEB_FOV_JS, "stellarium mosaic keeps overlap")
@@ -202,11 +228,14 @@ def test_atlas_overlay_labels_icrs_pane_centres() -> None:
     _assert("function overlayPixRoll" in ATLAS_ASTRO_JS, "atlas HUD must follow map rotation")
     _assert("function liveGridPanes" in ATLAS_ASTRO_JS, "atlas HUD rebuilds ICRS corners while panning")
     _assert("function viewRollDeg" in SKY_WEB_FOV_JS, "stellarium HUD must follow zenith-up field rotation")
-    _assert("function hudTilt" in SKY_WEB_FOV_JS, "stellarium screen grid adds view roll to chart tilt")
+    _assert("function hudTilt" in SKY_WEB_FOV_JS, "stellarium screen HUD adds view roll to camera PA")
+    _assert("function mosaicGridTilt" in SKY_WEB_FOV_JS, "stellarium mosaic fallback adds view roll to chart tilt")
     _assert("function haloInk" in SKY_WEB_FOV_JS, "stellarium FOV strokes need a dark halo on daytime sky")
     _assert("function framedOpen" in SKY_WEB_FOV_JS, "stellarium mosaic panes share the halo plus accent stroke")
     _assert("function haloLine" in SKY_WEB_FOV_JS, "stellarium up-tick uses a halo under the accent")
-    _assert("if (mosaic && hasQuads)" in ATLAS_ASTRO_JS, "atlas 1×1 HUD stays on the rotating screen box")
+    _assert("mosaic ? chartTilt : pa" in ATLAS_ASTRO_JS, "atlas 1×1 HUD uses camera PA on a zenith-up map")
+    _assert("liveQ" in ATLAS_ASTRO_JS, "atlas 1×1 alt-az uses live parallactic")
+    _assert("if (mosaic && hasQuads)" in ATLAS_ASTRO_JS, "atlas mosaics still project ICRS quads")
     _assert("isFinite(q) ? -q : 0" in SKY_WEB_FOV_JS, "stellarium view roll matches Aladin zenithRotation")
 
 
@@ -241,7 +270,7 @@ if __name__ == "__main__":
     test_unset_altaz_uses_locked_target_parallactic()
     test_overlay_payload_includes_pa_source()
     test_south_up_pane_one_is_east_and_south()
-    test_contact_sheet_matches_sky_chart()
+    test_contact_sheet_matches_zenith_up_overlay()
     test_center_view_script_uses_engine_lookat()
     test_atlas_overlay_labels_icrs_pane_centres()
     test_stellarium_wide_fov_keeps_camera_overlay_small()

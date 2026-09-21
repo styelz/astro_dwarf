@@ -1258,7 +1258,7 @@ SKY_WEB_FOV_JS = r"""
     var pos = currentPointing(p, stel);
     var fovH = Number(p && p.fov_h), fovV = Number(p && p.fov_v);
     if (!pos || !(fovH > 0) || !(fovV > 0)) return [];
-    return cameraCorners(pos.ra_hours, pos.dec_degrees, fovH, fovV, framePa(p));
+    return cameraCorners(pos.ra_hours, pos.dec_degrees, fovH, fovV, liveCameraPa(p, stel));
   }
   function livePointingQuad(p, stel, box) {
     return projectedImageQuad(stel, livePointingCorners(p, stel), box);
@@ -1294,6 +1294,28 @@ SKY_WEB_FOV_JS = r"""
     var pa = Number(p && p.position_angle);
     if (isFinite(pa)) return ((pa % 360) + 360) % 360;
     return p && p.south_up ? 180 : 0;
+  }
+  function overlayMountMode(p) {
+    return String(p && p.mount_mode || "").toUpperCase();
+  }
+  function isMosaicGrid(p) {
+    return Math.max(1, Number(p && p.columns) || 1) > 1
+      || Math.max(1, Number(p && p.rows) || 1) > 1;
+  }
+  function liveCameraPa(p, stel) {
+    // Alt-az 1×1 is the real camera: zenith-up at this instant. Stored mosaic
+    // PA cannot rotate the mount. Mosaics and EQ keep payload PA.
+    if (!isMosaicGrid(p) && overlayMountMode(p) !== "EQ") {
+      try {
+        var pos = currentPointing(p, stel);
+        var site = observerLatLonDeg(stel);
+        if (pos && site) {
+          var q = parallacticDeg(pos.ra_hours, pos.dec_degrees, site.lat, site.lon);
+          if (isFinite(q)) return wrapDeg(q);
+        }
+      } catch (err) {}
+    }
+    return framePa(p);
   }
   function chartTilt(p) {
     var base = p && p.south_up ? 180 : 0;
@@ -1339,9 +1361,9 @@ SKY_WEB_FOV_JS = r"""
     ) * 180 / Math.PI;
   }
   function viewRollDeg(stel, box) {
-    // Aladin zenithRotation: -parallactic. Added to chart tilt, then SVG
-    // rotate(-tilt). PA 0 rolls with the sky; alt-az parallactic PA stays
-    // zenith-up (chart tilt cancels this). Never project ICRS here.
+    // Aladin zenithRotation: -parallactic. 1×1 HUD adds camera PA, then SVG
+    // rotate(-tilt), so alt-az PA=q stays zenith-up. Mosaic screen-grid still
+    // adds chart tilt (PA − 180° in the south) so pane 1 stays top-right.
     try {
       var c = viewCenter(stel);
       var site = observerLatLonDeg(stel);
@@ -1352,14 +1374,22 @@ SKY_WEB_FOV_JS = r"""
       return 0;
     }
   }
-  function hudTilt(p, stel, box) {
+  function cameraHudTilt(p, stel, box) {
+    return wrapDeg(viewRollDeg(stel, box) + liveCameraPa(p, stel));
+  }
+  function mosaicGridTilt(p, stel, box) {
     return wrapDeg(viewRollDeg(stel, box) + chartTilt(p));
   }
-  function rotateChartGroup(box, p, stel, inner) {
-    var tilt = hudTilt(p, stel, box);
+  function hudTilt(p, stel, box) {
+    return cameraHudTilt(p, stel, box);
+  }
+  function rotateOverlay(box, tilt, inner) {
     var cx = (box.width / 2).toFixed(1);
     var cy = (box.height / 2).toFixed(1);
     return '<g transform="rotate(' + (-tilt).toFixed(2) + " " + cx + " " + cy + ')">' + inner + "</g>";
+  }
+  function rotateChartGroup(box, p, stel, inner) {
+    return rotateOverlay(box, cameraHudTilt(p, stel, box), inner);
   }
   function upTick(cx, top, color) {
     return haloLine(cx.toFixed(1), top.toFixed(1), cx.toFixed(1), (top - 10).toFixed(1), color);
@@ -1378,7 +1408,7 @@ SKY_WEB_FOV_JS = r"""
     var color = String(p.color || "#7ee0d0");
     var left = (box.width - size.w) / 2;
     var top = (box.height - size.h) / 2;
-    var tilt = hudTilt(p, stel, box);
+    var tilt = cameraHudTilt(p, stel, box);
     paintSvg(el, box, rotateChartGroup(box, p, stel,
       liveImageRect(left, top, size.w, size.h)
       + framedEmpty('<rect x="' + left.toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + size.w.toFixed(1)
@@ -1403,7 +1433,7 @@ SKY_WEB_FOV_JS = r"""
     var originY = (box.height - totalH) / 2;
     var color = String(p.color || "#7ee0d0");
     var pa = framePa(p);
-    var tilt = hudTilt(p, stel, box);
+    var tilt = mosaicGridTilt(p, stel, box);
     // Pane 1 is camera-right. On a north-up chart that is the right edge;
     // on a south-up chart it is only the right edge near PA 180°.
     var col1OnRight = (pa > 90 && pa < 270) === !!p.south_up;
@@ -1436,7 +1466,7 @@ SKY_WEB_FOV_JS = r"""
     if (!mosaicUsesPaneImages())
       svg += liveImageRect((box.width - size.w) / 2, (box.height - size.h) / 2, size.w, size.h);
     svg += upTick(box.width / 2, originY, color);
-    paintSvg(el, box, rotateChartGroup(box, p, stel, svg)
+    paintSvg(el, box, rotateOverlay(box, tilt, svg)
       + labels
       + labelOnFrame(p, hudCorners(box.width / 2, box.height / 2, totalW, totalH, tilt), stel, box));
     return "grid";
@@ -1583,9 +1613,7 @@ SKY_WEB_FOV_JS = r"""
     var el = overlayFor(box);
     var panes = [];
     try { panes = resolvePanes(stel, p); } catch (err) { panes = []; }
-    var mosaic = Math.max(1, Number(p.columns) || 1) > 1
-      || Math.max(1, Number(p.rows) || 1) > 1;
-    if (mosaic && panes.length) {
+    if (panes.length) {
       try {
         var projected = drawPanes(el, box, p, stel, panes);
         if (projected) {
@@ -2956,17 +2984,21 @@ def mosaic_south_up(latitude: Any) -> bool:
         return False
 
 
-def mosaic_column_one_on_right(south_up: bool, position_angle: Any = None) -> bool:
-    """True when pane 1 belongs on the right of a sky-chart sheet.
-
-    Pane 1 is camera-right. A north-up chart has west on the right, so PA 0°
-    puts pane 1 there. A south-up chart has east on the right; that only
-    matches camera-right near PA 180°. Southern sites with a near-north PA
-    must draw pane 1 on the left or the GOTO lands under the opposite pane.
-    """
+def mosaic_camera_up_is_south(south_up: bool, position_angle: Any = None) -> bool:
+    """True when camera-up lies in the southern half of the sky (PA ~180°)."""
     pa = mosaic_position_angle(south_up, position_angle)
-    camera_right_is_east = 90.0 < pa < 270.0
-    return camera_right_is_east == bool(south_up)
+    return 90.0 < pa < 270.0
+
+
+def mosaic_column_one_on_right(south_up: bool, position_angle: Any = None) -> bool:
+    """True when pane 1 belongs on the right of the control contact sheet.
+
+    The sheet matches Stellarium/Aladin: zenith-up, which is an N-up chart
+    (east left, west right) for a southern-sky target. Pane 1 is camera-right,
+    west at PA 0°, so it sits on the right. A south-up paper chart is 180°
+    from that overlay (1↔4) and must not drive the HUD sheet.
+    """
+    return not mosaic_camera_up_is_south(south_up, position_angle)
 
 
 def mosaic_sheet_column(index: int, columns: int, *, south_up: bool = False, position_angle: Any = None) -> int:
@@ -2988,19 +3020,18 @@ def mosaic_sheet_row(
 ) -> int:
     """0-based contact-sheet row for a 1-based pane index.
 
-    Row 1 is camera-up. That sits at the top of a matching sky chart when
-    camera-up is north on an N-up view or south on an S-up view.
+    Row 1 is camera-up. The sheet is zenith-up / N-up like the SKY overlay,
+    so camera-up sits at the top when it is north and at the bottom when it
+    is south (PA ~180°).
     """
     cols = max(1, int(columns or 1))
     row_count = max(1, int(rows or 1))
     raw = (max(1, int(index or 1)) - 1) // cols
     if raw >= row_count:
         return row_count - 1
-    pa = mosaic_position_angle(south_up, position_angle)
-    camera_up_is_south = 90.0 < pa < 270.0
-    if camera_up_is_south == bool(south_up):
-        return raw
-    return (row_count - 1) - raw
+    if mosaic_camera_up_is_south(south_up, position_angle):
+        return (row_count - 1) - raw
+    return raw
 
 
 def mosaic_chart_tilt(south_up: bool, position_angle: Any = None) -> float:
@@ -3016,17 +3047,18 @@ def mosaic_chart_tilt(south_up: bool, position_angle: Any = None) -> float:
 
 
 def mosaic_overlay_hud_tilt(south_up: bool, position_angle: Any = None) -> float:
-    """1×1 HUD box and mosaic screen-grid share this tilt.
+    """1×1 HUD residual before adding zenith-up view roll (−parallactic).
 
-    Using full camera PA on 1×1 and chart tilt on 2×2 flipped the live JPEG
-    180° at a southern site with PA 0. Numbered panes still use chart tilt so
-    1↔4 do not swap; the live image must follow the same residual.
+    Stellarium and Aladin are zenith-up, not south-up charts. Camera-up on
+    that view is PA − q, so this residual is the full camera PA. Mosaic
+    screen-grid numbering still uses ``mosaic_chart_tilt`` (PA − 180° in
+    the south) so pane 1 stays top-right of the matching chart.
 
-    Live overlay JS adds ``overlay_view_roll_deg`` on top so the box follows
-    zenith-up field rotation as the sky pans. This residual stays camera-PA
-    only.
+    Using chart tilt on 1×1 made the live JPEG match only when the operator
+    stored PA = q+180° (Atria ~295° at a southern site). Mosaic ICRS then
+    used that same PA and landed 1↔4.
     """
-    return mosaic_chart_tilt(south_up, position_angle)
+    return mosaic_position_angle(south_up, position_angle)
 
 
 def overlay_view_roll_deg(
@@ -3039,8 +3071,8 @@ def overlay_view_roll_deg(
     """Rotation of a north-up overlay onto a zenith-up view.
 
     Same value as Aladin ``zenithRotation``: ``-parallactic``. Stellarium's
-    SVG path adds ``+parallactic`` to chart tilt because it already draws
-    with ``rotate(-tilt)``.
+    1×1 HUD adds this to camera PA, then SVG ``rotate(-tilt)``. When PA
+    equals the parallactic angle, net tilt is 0° (zenith-up camera).
     """
     angle = parallactic_angle_deg(ra_hours, dec_degrees, latitude, longitude, when)
     if angle is None:
@@ -3165,13 +3197,13 @@ class MosaicPa:
 
 
 def mosaic_pa_chip(source: str, degrees: float) -> str:
-    """SKY HUD chip: zenith-up alt-az, otherwise N-up / S-up from camera PA."""
-    if str(source or "") == MOSAIC_PA_PARALLACTIC:
-        return "ZENITH"
+    """SKY HUD chip: zenith-up alt-az with live PA, otherwise N-up / S-up."""
     try:
         pa = float(degrees) % 360.0
     except (TypeError, ValueError):
         pa = 0.0
+    if str(source or "") == MOSAIC_PA_PARALLACTIC:
+        return f"ZENITH {pa:.0f}°"
     return "S-UP" if 90.0 < pa < 270.0 else "N-UP"
 
 
@@ -3180,6 +3212,7 @@ def mosaic_overlay_pa_fields(resolved: MosaicPa) -> dict[str, Any]:
         "position_angle": float(resolved.degrees),
         "pa_source": resolved.source,
         "south_up": bool(resolved.south_up),
+        "mount_mode": str(resolved.mount_mode or ""),
     }
 
 
@@ -3195,20 +3228,15 @@ def resolve_device_mosaic_pa(
 ) -> MosaicPa:
     """Camera PA for overlay, cache, STACK, and save.
 
-    Stored mosaic_pa is an explicit override, including 0°. Unset EQ keeps the
-    celestial 0° N / 180° S default. Unset alt-az uses the parallactic angle of
-    the locked target (caller must not pass the view centre). Without a target
-    or site, fall back to the celestial default.
+    Alt-az camera-up is the parallactic angle of the pointing; a stored mosaic
+    PA cannot rotate the mount, so it is ignored while a target and site exist.
+    EQ uses stored mosaic_pa as an explicit override, including 0°. Unset EQ
+    keeps the celestial 0° N / 180° S default. Without a target or site, fall
+    back to stored or the celestial default.
     """
     south_up = mosaic_south_up(latitude)
     mode = str(mount_mode or "").strip().upper()
-    if position_angle is not None and position_angle != "":
-        return MosaicPa(
-            mosaic_position_angle(south_up, position_angle),
-            MOSAIC_PA_STORED,
-            south_up,
-            mode,
-        )
+    stored = position_angle is not None and position_angle != ""
     if mode != "EQ":
         try:
             has_site = abs(float(latitude or 0)) >= 1e-9 or abs(float(longitude or 0)) >= 1e-9
@@ -3218,6 +3246,13 @@ def resolve_device_mosaic_pa(
             angle = parallactic_angle_deg(ra_hours, dec_degrees, latitude, longitude, when)
             if angle is not None:
                 return MosaicPa(angle, MOSAIC_PA_PARALLACTIC, south_up, mode)
+    if stored:
+        return MosaicPa(
+            mosaic_position_angle(south_up, position_angle),
+            MOSAIC_PA_STORED,
+            south_up,
+            mode,
+        )
     return MosaicPa(mosaic_position_angle(south_up, None), MOSAIC_PA_DEFAULT, south_up, mode)
 
 

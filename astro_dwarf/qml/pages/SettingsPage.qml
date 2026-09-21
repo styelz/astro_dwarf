@@ -771,7 +771,7 @@ Item {
                                 accessibleName: "Camera position angle east of north"
                                 placeholderText: "0"
                             }
-                            FieldHint { text: "Camera rotation east of north for mosaics on this telescope. Blank is unset: EQ uses 0° north-up, or 180° south-up in the south; alt-az uses the locked target's zenith-up (parallactic) angle. Stored 0° is explicit N-up even at a southern site." }
+                            FieldHint { text: "Camera rotation east of north for EQ mosaics on this telescope. Blank is unset: EQ uses 0° north-up, or 180° south-up in the south. Alt-az ignores this and uses the locked target's zenith-up (parallactic) angle, because the mount cannot choose a different camera PA. Stored 0° is explicit N-up for EQ even at a southern site." }
                         }
                     }
 

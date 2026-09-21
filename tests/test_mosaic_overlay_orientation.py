@@ -30,18 +30,47 @@ def _target() -> Target:
     return Target(name="Centre", ra_hours=5.0, dec_degrees=20.0)
 
 
-def test_hud_tilt_matches_chart_tilt_not_full_pa() -> None:
+def test_hud_tilt_is_full_camera_pa_not_south_up_chart() -> None:
     cases = (
         (False, 0.0, 0.0),
         (False, 180.0, 180.0),
-        (True, 180.0, 0.0),
-        (True, 0.0, 180.0),
+        (True, 180.0, 180.0),
+        (True, 0.0, 0.0),
+        (True, 295.0, 295.0),
     )
     for south_up, pa, expected in cases:
         tilt = mosaic_overlay_hud_tilt(south_up, pa)
         _assert(tilt == expected, (south_up, pa, tilt, expected))
-        _assert(tilt == mosaic_chart_tilt(south_up, pa), (south_up, pa))
-        _assert(tilt != 180.0 or pa != 0.0 or south_up, "N-up PA 0 must not HUD-flip")
+    _assert(mosaic_chart_tilt(True, 180.0) == 0.0, "mosaic screen-grid still uses PA − 180° in the south")
+    _assert(mosaic_chart_tilt(True, 295.0) == 115.0, mosaic_chart_tilt(True, 295.0))
+    _assert(mosaic_overlay_hud_tilt(True, 180.0) != mosaic_chart_tilt(True, 180.0), "1×1 is not chart tilt")
+
+
+def test_southern_altaz_one_by_one_upright_at_parallactic() -> None:
+    """1×1 live JPEG on a zenith-up view is upright when PA equals q.
+
+    The old HUD used southern chart tilt (PA − 180°) plus view roll (−q).
+    That sat upright only when the operator stored PA = q+180° (Atria ~295°),
+    which then rotated mosaic ICRS 180°.
+    """
+    when = datetime(2026, 9, 21, 13, 50, 27, tzinfo=timezone.utc)
+    lat, lon = -37.81, 144.96
+    ra, dec = 16.811, -69.027
+    q = parallactic_angle_deg(ra, dec, lat, lon, when)
+    _assert(q is not None, "parallactic of Atria")
+    roll = overlay_view_roll_deg(ra, dec, lat, lon, when)
+    one = (roll + mosaic_overlay_hud_tilt(True, q)) % 360.0
+    _assert(one < 1e-6 or abs(one - 360.0) < 1e-6, (one, q, roll))
+    old = (roll + mosaic_chart_tilt(True, q)) % 360.0
+    _assert(abs(old - 180.0) < 1e-6, (old, q, "chart-tilt HUD is upside-down"))
+    workaround = (float(q) + 180.0) % 360.0
+    old_fix = (roll + mosaic_chart_tilt(True, workaround)) % 360.0
+    _assert(old_fix < 1e-6 or abs(old_fix - 360.0) < 1e-6, (old_fix, workaround))
+    _assert(abs(workaround - 295.0) < 2.0, (workaround, "Atria at 23:50 needed stored PA ~295"))
+    later = datetime(2026, 9, 21, 14, 12, 29, tzinfo=timezone.utc)
+    later_q = parallactic_angle_deg(ra, dec, lat, lon, later)
+    _assert(later_q is not None, "parallactic at 00:12")
+    _assert(abs(float(later_q) - 120.0) < 1.0, (later_q, "Atria at 00:12 is PA ~120, not a new HUD offset"))
 
 
 def test_overlay_view_roll_is_minus_parallactic() -> None:
@@ -91,7 +120,11 @@ def test_one_by_one_and_mosaic_centre_share_camera_up() -> None:
 def test_stellarium_js_unifies_one_by_one_and_mosaic_live() -> None:
     _assert("function livePointingQuad" in SKY_WEB_FOV_JS, "1×1 and mosaic share one live quad")
     _assert("return [3, 0, 1, 2];" in SKY_WEB_FOV_JS, "JPEG TL is camera left-up")
-    _assert("rotateChartGroup(box, p, stel," in SKY_WEB_FOV_JS, "1×1 HUD uses chart tilt")
+    _assert("rotateChartGroup(box, p, stel," in SKY_WEB_FOV_JS or "function rotateChartGroup" in SKY_WEB_FOV_JS,
+            "1×1 HUD helper remains")
+    _assert("function rotateOverlay" in SKY_WEB_FOV_JS, "1×1 and mosaic grid pass distinct tilts")
+    _assert("function cameraHudTilt" in SKY_WEB_FOV_JS, "1×1 HUD uses camera PA plus view roll")
+    _assert("function mosaicGridTilt" in SKY_WEB_FOV_JS, "numbered mosaic fallback keeps chart tilt")
     _assert("function rotateGroup" not in SKY_WEB_FOV_JS, "full-PA HUD rotation flipped S-UP mosaics")
     resolve = SKY_WEB_FOV_JS.split("function resolvePanes")[1].split("function viewKey")[0]
     _assert('=== "center"' not in resolve, "1×1 must still project ICRS panes")
@@ -99,14 +132,18 @@ def test_stellarium_js_unifies_one_by_one_and_mosaic_live() -> None:
     _assert("livePointingQuad(p, stel, box)" in SKY_WEB_FOV_JS, "mosaic live uses the centre footprint")
     _assert("function unitDir" in SKY_WEB_FOV_JS, "VIEW convertFrame needs a unit vector")
     _assert("function viewRollDeg" in SKY_WEB_FOV_JS, "screen HUD must pick up zenith-up field rotation")
-    _assert("function hudTilt" in SKY_WEB_FOV_JS, "screen HUD tilt is view roll plus chart tilt")
+    _assert("function hudTilt" in SKY_WEB_FOV_JS, "screen HUD tilt helper exists")
+    _assert("function cameraHudTilt" in SKY_WEB_FOV_JS, "1×1 HUD is view roll plus live camera PA")
+    _assert("function liveCameraPa" in SKY_WEB_FOV_JS, "1×1 alt-az uses live parallactic, not stored PA")
+    _assert("liveCameraPa(p, stel)" in SKY_WEB_FOV_JS, "live JPEG corners follow live camera PA")
     _assert("isFinite(q) ? -q : 0" in SKY_WEB_FOV_JS, "view roll is -parallactic like Aladin zenithRotation")
-    _assert("var mosaic = Math.max(1, Number(p.columns) || 1) > 1" in SKY_WEB_FOV_JS, "1×1 stays on the screen HUD")
-    _assert("if (mosaic && panes.length)" in SKY_WEB_FOV_JS, "only mosaics use ICRS pane projection")
+    _assert("var projected = drawPanes(el, box, p, stel, panes);" in SKY_WEB_FOV_JS, "1×1 and mosaics share ICRS drawPanes")
+    _assert("if (mosaic && panes.length)" not in SKY_WEB_FOV_JS, "1×1 must not skip ICRS projection")
 
 
 if __name__ == "__main__":
-    test_hud_tilt_matches_chart_tilt_not_full_pa()
+    test_hud_tilt_is_full_camera_pa_not_south_up_chart()
+    test_southern_altaz_one_by_one_upright_at_parallactic()
     test_overlay_view_roll_is_minus_parallactic()
     test_jpeg_top_is_camera_up_on_north_up_chart()
     test_one_by_one_and_mosaic_centre_share_camera_up()

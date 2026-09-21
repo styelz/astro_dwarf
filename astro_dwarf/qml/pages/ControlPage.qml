@@ -62,7 +62,10 @@ Item {
         selectionAnchorId = result.anchor
     }
     readonly property var mosaicPreview: backend.mosaicPreview || ({})
-    readonly property bool mosaicRunning: !!(mosaicPreview.active && mosaicPreview.phase)
+    readonly property bool mosaicRunning: {
+        const phase = String(mosaicPreview.phase || "")
+        return !!(mosaicPreview.active && phase && phase !== "failed")
+    }
     readonly property bool mosaicGridArmed: !!(backend.mosaicGridActive && !mosaicRunning)
     readonly property string mosaicGridText: backend.mosaicColumns + "×" + backend.mosaicRows
     readonly property string mosaicPaneText: {

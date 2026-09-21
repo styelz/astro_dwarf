@@ -443,11 +443,13 @@ Item {
                 }
                 FieldLabel {
                     text: "PA"
+                    visible: backend.mosaicPaManual
                     Layout.preferredWidth: implicitWidth
                 }
                 HudSpinBox {
                     id: paBox
                     objectName: "skyPa"
+                    visible: backend.mosaicPaManual
                     from: 0
                     to: 359
                     wrap: true
@@ -456,7 +458,7 @@ Item {
                     implicitWidth: Theme.px(78)
                     Layout.preferredWidth: Theme.px(78)
                     accessibleName: "Camera position angle east of north"
-                    tooltip: "Camera position angle east of north, as used for overlay, cache, STACK, and save. The box shows the resolved angle. Changing it stores that value on this telescope. Unset follows EQ 0°/180° or alt-az zenith of the locked target."
+                    tooltip: "Equatorial mosaic camera-up, east of north. Blank/unset in Settings is 0° N-up or 180° S-up. Alt-az hides this control: the live camera PA is the zenith-up chip."
                     textFromValue: (value, locale) => String(value) + "°"
                     valueFromText: (text, locale) => {
                         const n = parseInt(String(text).replace("°", "").trim(), 10)
@@ -475,6 +477,10 @@ Item {
                     label: backend.mosaicPaChip
                     tone: Theme.accent
                     Layout.alignment: Qt.AlignVCenter
+                    Accessible.name: "Camera position angle"
+                    Accessible.description: backend.mosaicPaManual
+                                           ? "Equatorial mosaic north-up or south-up"
+                                           : "Live alt-az zenith-up camera angle"
                 }
                 HudChip {
                     visible: !skyHeader.tight
@@ -576,7 +582,7 @@ Item {
                     map.mosaicColumns = Qt.binding(() => columnsBox.value)
                     map.mosaicRows = Qt.binding(() => rowsBox.value)
                     map.mosaicOverlap = Qt.binding(() => overlapBox.value / 100)
-                    map.mosaicPa = Qt.binding(() => paBox.value)
+                    map.mosaicPa = Qt.binding(() => backend.mosaicPaManual ? paBox.value : backend.mosaicPa)
                     map.liveOverlay = Qt.binding(() => skyStore.liveFovOverlay)
                     map.liveOpacity = Qt.binding(() => skyPage.clampOpacity(skyStore.liveFovOpacity))
                     map.savedView = Qt.binding(() => skyStore.viewSaved ? ({

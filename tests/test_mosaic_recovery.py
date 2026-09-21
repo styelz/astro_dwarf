@@ -323,6 +323,21 @@ def test_stop_on_pane_2_keeps_sheet() -> None:
     _assert(live_mosaic_keep_sheet(True, False, 2, 2, {1: object(), 2: object()}), "success keeps sheet")
 
 
+def test_failed_mosaic_does_not_keep_live_hud() -> None:
+    from astro_dwarf.qt_backend import mosaic_goto_failed_result, mosaic_preview_keep_live_sheet
+
+    result = (
+        "Mosaic pane 2/4 GOTO failed · RA 14.5518h Dec -61.964° (Toliman pane 2) · "
+        "will not plate-solve. Not stacking this pane."
+    )
+    _assert(mosaic_goto_failed_result(result), "clouded-out pane GOTO is a mosaic fail")
+    _assert(
+        not mosaic_preview_keep_live_sheet(live_phase="failed", worker_running=False),
+        "HUD must leave live mosaic after the worker returns a GOTO fail",
+    )
+    _assert(not live_mosaic_keep_sheet(False, False, 2, 2, {1: object()}), "failed mosaic drops the sheet")
+
+
 def main() -> int:
     test_firmware_mosaic_detection()
     test_mosaic_busy_and_idle_timeout()
@@ -341,6 +356,7 @@ def main() -> int:
     test_live_mosaic_persist_roundtrip()
     test_session_continues_after_astro_autofocus_soft_fail()
     test_stop_on_pane_2_keeps_sheet()
+    test_failed_mosaic_does_not_keep_live_hud()
     print("mosaic recovery tests ok")
     return 0
 

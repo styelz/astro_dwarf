@@ -895,8 +895,19 @@ def mosaic_preview_keep_live_sheet(
     capturing: bool = False,
     capture_continues: bool = False,
 ) -> bool:
-    """True while a mosaic still owns the contact sheet as a live capture."""
-    if worker_running or (str(live_phase or "").strip() and not live_stopping):
+    """True while a mosaic still owns the contact sheet as a live capture.
+
+    A leftover phase after the worker has finished (clouds / GOTO fail) must
+    not keep MOSAIC STACK and STOP SESSION latched on the HUD.
+    """
+    if live_stopping:
+        return False
+    if worker_running:
+        return True
+    phase = str(live_phase or "").strip().lower()
+    if phase == "failed":
+        return False
+    if phase:
         return True
     return bool(mosaic_active and (capturing or capture_continues))
 
@@ -1091,6 +1102,29 @@ def mosaic_should_hold_last_live_frame(pane: int) -> bool:
         return False
 
 
+def mosaic_should_hold_slew_frame(
+    *,
+    pane: int,
+    stacking_preview: bool = False,
+    frozen: bool = False,
+    may_copy: bool = False,
+    pane_changed: bool = False,
+) -> bool:
+    """Last camera RTSP may fill a pane until that pane's stacking JPEG starts.
+
+    Leftover stacked.jpg must not be stamped into the next cell when a pane
+    completes. That previous-field still is what showed in pane N+1 before
+    the new live preview arrived.
+    """
+    try:
+        index = int(pane or 0)
+    except (TypeError, ValueError):
+        return False
+    if index < 1 or stacking_preview or frozen or may_copy or pane_changed:
+        return False
+    return True
+
+
 def mosaic_slew_preview_should_restore(
     *,
     stacking: bool,
@@ -1129,8 +1163,14 @@ def mosaic_progress_phase(step: str) -> str:
     lowered = str(step or "").strip().lower()
     if not lowered:
         return ""
-    if "fail" in lowered or "not calibrated" in lowered or "plate-solv" in lowered:
+    if (
+        "fail" in lowered
+        or "not calibrated" in lowered
+        or "will not plate-solve" in lowered
+    ):
         return "failed"
+    if "plate-solving" in lowered or "slewing" in lowered:
+        return "goto"
     if lowered.startswith("settling after"):
         return "complete"
     if "goto" in lowered or lowered.startswith("settling") or "astro engine" in lowered:
@@ -3060,6 +3100,11 @@ class AppBackend(QObject):
         state = self._mosaic_pa_state()
         return mosaic_pa_chip(state.source, state.degrees)
 
+    @Property(bool, notify=mosaicPaChanged)
+    def mosaicPaManual(self) -> bool:
+        """True when the operator can choose mosaic PA (equatorial mount)."""
+        return str(self._mosaic_pa_state().mount_mode or "").strip().upper() == "EQ"
+
     @Slot(float)
     def setMosaicPa(self, position_angle: float) -> None:
         device = self._schedule_device()
@@ -4208,7 +4253,7 @@ class AppBackend(QObject):
             for live in self._live_mosaic.values():
                 if not isinstance(live, dict) or live.get("group") != group:
                     continue
-                if live.get("phase") or live.get("worker_running") or live.get("stopping"):
+                if live.get("worker_running") or live.get("stopping"):
                     return True
         if session is None:
             return False
@@ -4348,13 +4393,19 @@ class AppBackend(QObject):
         """Keep the last RTSP frame in the cell until stacking JPEG arrives.
 
         Unfrozen so the pane's own stack can replace it. Not published as a
-        completed still.
+        completed still. HTTP leftover from the previous pane must not land
+        here — that is the previous field, not this one.
         """
         try:
             index = int(pane or 0)
         except (TypeError, ValueError):
             return False
-        if index < 1 or self.mosaic_frames.frozen(index) or self._mosaic_may_copy_live(index):
+        if not mosaic_should_hold_slew_frame(
+            pane=index,
+            stacking_preview=bool(self._preview_stack_mode),
+            frozen=self.mosaic_frames.frozen(index),
+            may_copy=self._mosaic_may_copy_live(index),
+        ):
             return False
         frame = image
         if frame is None or frame.isNull():
@@ -4413,6 +4464,8 @@ class AppBackend(QObject):
 
     def _refresh_mosaic_slew_placeholder(self, image: QImage) -> None:
         if self._preview_stack_mode or image is None or image.isNull():
+            return
+        if not str(self._preview_tele_url or "").startswith("rtsp://"):
             return
         pane = self._mosaic_hold_pane()
         if pane < 1:
@@ -4800,9 +4853,6 @@ class AppBackend(QObject):
             target = parse_sky_web_target(snapshot)
         except (TypeError, ValueError, json.JSONDecodeError):
             target = None
-        pa_state = self._resolved_mosaic_pa_state(self._overlay_pa_target(target), position_angle)
-        self._log_overlay_mosaic_pa(pa_state)
-        pa = pa_state.degrees
         grid_ok = True
         try:
             columns_n = int(columns)
@@ -4817,6 +4867,24 @@ class AppBackend(QObject):
             mosaic_columns > 1 or mosaic_rows > 1
         )
         mosaic_grid = mosaic_active or (grid_ok and (columns_n > 1 or rows_n > 1))
+        view_ra = view_dec = float("nan")
+        if isinstance(snapshot, dict):
+            try:
+                view_ra = float(snapshot.get("view_ra_hours"))
+                view_dec = float(snapshot.get("view_dec_degrees"))
+            except (TypeError, ValueError):
+                view_ra = view_dec = float("nan")
+        overlay_sky = self._overlay_pa_target(target)
+        if (
+            overlay_sky is None
+            and not mosaic_grid
+            and view_ra == view_ra
+            and view_dec == view_dec
+        ):
+            overlay_sky = Target(name="FOV centre", ra_hours=view_ra, dec_degrees=view_dec)
+        pa_state = self._resolved_mosaic_pa_state(overlay_sky, position_angle)
+        self._log_overlay_mosaic_pa(pa_state)
+        pa = pa_state.degrees
         fov_h, fov_v, camera = self._sky_map_fov(mosaic_grid=mosaic_grid)
         payload: dict[str, Any] = {
             "color": str(color or "").strip() or "#7ee0d0",
@@ -4847,16 +4915,9 @@ class AppBackend(QObject):
             payload["columns"] = columns_n
             payload["rows"] = rows_n
             payload["overlap"] = max(0.0, min(0.8, overlap_n))
-        view_ra = view_dec = float("nan")
-        if isinstance(snapshot, dict):
-            try:
-                view_ra = float(snapshot.get("view_ra_hours"))
-                view_dec = float(snapshot.get("view_dec_degrees"))
-            except (TypeError, ValueError):
-                view_ra = view_dec = float("nan")
-            if view_ra == view_ra and view_dec == view_dec:
-                payload["view_ra_hours"] = view_ra
-                payload["view_dec_degrees"] = view_dec
+        if view_ra == view_ra and view_dec == view_dec:
+            payload["view_ra_hours"] = view_ra
+            payload["view_dec_degrees"] = view_dec
         if target is not None and target.ra_hours is not None and target.dec_degrees is not None:
             payload["target_ra_hours"] = float(target.ra_hours)
             payload["target_dec_degrees"] = float(target.dec_degrees)
@@ -7582,7 +7643,14 @@ class AppBackend(QObject):
                 # Do not freeze leftover live video into a pane that never stacked.
                 self._reset_mosaic_last_frame_hold()
             elif phase == "stacking":
-                self._hold_mosaic_slew_frame(index)
+                if mosaic_should_hold_slew_frame(
+                    pane=index,
+                    stacking_preview=bool(self._preview_stack_mode),
+                    frozen=self.mosaic_frames.frozen(index),
+                    may_copy=self._mosaic_may_copy_live(index),
+                    pane_changed=bool(previous and index != previous),
+                ):
+                    self._hold_mosaic_slew_frame(index)
         if 1 <= index <= len(members):
             current = replace(
                 members[index - 1],
@@ -7625,43 +7693,45 @@ class AppBackend(QObject):
         label = str((live or {}).get("label") or "mosaic")
         keep_sheet = False
         captured = dict((live or {}).get("captured") or {})
+        goto_failed = mosaic_goto_failed_result(result)
+        phase = str((live or {}).get("phase") or "")
+        stacked_now = stacked_capture_count(self._device_telemetry.get(device_id) or {})
+        if goto_failed or phase in {"goto", "failed"}:
+            stacked_now = 0
         if index >= 1:
             try:
                 captured[index] = max(
                     int(captured.get(index) or captured.get(str(index)) or 0),
-                    stacked_capture_count(self._device_telemetry.get(device_id) or {}),
+                    stacked_now,
                 )
             except (TypeError, ValueError):
-                captured[index] = stacked_capture_count(self._device_telemetry.get(device_id) or {})
+                captured[index] = stacked_now
         if live is not None:
             live["captured"] = captured
-        if mosaic_goto_failed_result(result) and live is not None:
+        if goto_failed and live is not None:
             live["phase"] = "failed"
         if live is not None:
-            if ok or stopped:
-                if not self._finish_command_mosaic_sessions(device_id, live, ok, stopped, result):
-                    self._write_live_mosaic_history(device_id, live, ok, stopped, result)
-            else:
-                self._sync_command_mosaic_members(device_id, live)
+            if not self._finish_command_mosaic_sessions(device_id, live, ok, stopped, result):
+                self._write_live_mosaic_history(device_id, live, ok, stopped, result)
+            if not (ok or stopped) and self._active_sessions.get(device_id):
+                self._cancel_command_mosaic_sessions(live, outcome=str(result or "Failed"))
         if (ok or stopped) and device_id == self._selected_device_id:
             if self._mosaic_result_dismissed:
                 keep_sheet = False
                 self._clear_mosaic_preview()
             else:
                 keep_sheet = self._hold_live_mosaic_sheet(device_id, index)
-        if ok or stopped:
-            self._discard_live_mosaic(device_id, notify=not keep_sheet)
-            if keep_sheet:
-                self.mosaicPreviewChanged.emit()
-                self._notify_devices()
-        elif live:
-            live["worker_running"] = False
-            live["stopping"] = False
-            self._persist_live_mosaic(device_id)
-            self._sync_mosaic_preview(device_id)
         else:
-            self.store.clear_live_mosaic(device_id)
-            self._clear_mosaic_preview()
+            # GOTO / stack failure used to persist the live mosaic with the
+            # worker idle. That left STOP SESSION, MOSAIC STACK, and pane N/M
+            # on the HUD as if the run were still waiting.
+            keep_sheet = False
+            if device_id == self._selected_device_id:
+                self._clear_mosaic_preview()
+        self._discard_live_mosaic(device_id, notify=not keep_sheet)
+        if keep_sheet:
+            self.mosaicPreviewChanged.emit()
+            self._notify_devices()
         if worker and device_id not in self._active_sessions:
             worker.busy = False
             worker.availabilityChanged.emit()
@@ -12104,9 +12174,10 @@ class AppBackend(QObject):
         current: dict[str, Any],
     ) -> None:
         live = self._live_mosaic.get(device_id)
+        live_phase = str((live or {}).get("phase") or "").strip().lower()
         mosaic_running = (
             self._live_mosaic_running(device_id, live)
-            or bool(live and live.get("phase"))
+            or bool(live_phase and live_phase != "failed")
             or self._mosaic_result_held
             or device_id in self._skip_manual_history
         )
@@ -12120,7 +12191,7 @@ class AppBackend(QObject):
         stacked = stacked_capture_count(current)
         session_id = self._active_sessions.get(device_id)
         if session_id and session_id in self._command_panel_sessions:
-            if self._live_mosaic_running(device_id, live) or bool(live and live.get("phase")):
+            if self._live_mosaic_running(device_id, live) or bool(live_phase and live_phase != "failed"):
                 if now:
                     self._manual_capture_started.pop(device_id, None)
                     self._manual_capture_peak.pop(device_id, None)

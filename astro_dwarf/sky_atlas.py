@@ -760,9 +760,18 @@ ATLAS_ASTRO_JS = r"""
       if (aladin && typeof aladin.getRotation === "function")
         viewRot = Number(aladin.getRotation()) || 0;
     } catch (err) {}
-    var tilt = (viewRot + chartTilt) * Math.PI / 180;
     var panes = (box.fovPanes && box.fovPanes.length) ? box.fovPanes : [];
     var mosaic = cols > 1 || rows > 1 || panes.length > 1;
+    if (!mosaic && String(payload.mount_mode || "").toUpperCase() !== "EQ" && box.hasSite) {
+      try {
+        var livePos = aladin && typeof aladin.getRaDec === "function" ? aladin.getRaDec() : null;
+        if (livePos) {
+          var liveQ = parallacticDeg(livePos[0], livePos[1], box.lat, box.lon, new Date());
+          if (isFinite(liveQ)) pa = ((liveQ % 360) + 360) % 360;
+        }
+      } catch (err) {}
+    }
+    var tilt = (viewRot + (mosaic ? chartTilt : pa)) * Math.PI / 180;
     var projected = collectProjected(aladin, panes);
     var hasQuads = false;
     for (var qi = 0; qi < projected.length; qi++) {

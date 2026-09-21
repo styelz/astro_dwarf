@@ -124,7 +124,8 @@ ApplicationWindow {
     readonly property bool previewStarting: backend.previewActive && !backend.previewPlaying && !previewFailed
     readonly property bool scopeMosaicRunning: {
         const mosaic = backend.mosaicPreview || ({})
-        return !!(mosaic.active && mosaic.phase)
+        const phase = String(mosaic.phase || "")
+        return !!(mosaic.active && phase && phase !== "failed")
     }
     readonly property bool scopeStacking: !!(scopeTelemetry && scopeTelemetry.capture_active)
         || scopeMosaicRunning
