@@ -8,7 +8,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from astro_dwarf.device_worker import _capture_running
-from astro_dwarf.qt_backend import control_restore_should_defer, stacking_blocks_action
+from astro_dwarf.qt_backend import (
+    command_required_shooting_mode,
+    command_should_auto_enter_dso,
+    control_restore_should_defer,
+    stacking_blocks_action,
+)
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -84,10 +89,24 @@ def test_control_restore_defers_while_firmware_still_stacking() -> None:
     )
 
 
+def test_photo_mode_auto_enters_dso_for_tracking() -> None:
+    _assert(command_required_shooting_mode("sky_track") == 2, "sky track needs DSO")
+    _assert(command_required_shooting_mode("track") == 2, "track needs DSO")
+    _assert(command_required_shooting_mode("photo") == 1, "photo stays PHOTO")
+    _assert(command_should_auto_enter_dso("sky_track", 1), "PHOTO sky track switches to DSO")
+    _assert(command_should_auto_enter_dso("track", 1), "PHOTO track switches to DSO")
+    _assert(not command_should_auto_enter_dso("sky_track", 2), "already DSO does not switch again")
+    _assert(not command_should_auto_enter_dso("sky_track", 8), "Sun mode stays gated")
+    _assert(not command_should_auto_enter_dso("stack", 1), "stack still asks for DSO")
+    _assert(not command_should_auto_enter_dso("calibrate", 1), "calibrate still asks for DSO")
+    _assert(not command_should_auto_enter_dso("photo", 2), "photo does not auto-switch from DSO")
+
+
 if __name__ == "__main__":
     test_stack_start_blocked_while_capturing()
     test_tracking_blocked_while_stacking()
     test_idle_scope_allows_stack_and_track()
     test_capture_running_helper()
     test_control_restore_defers_while_firmware_still_stacking()
+    test_photo_mode_auto_enters_dso_for_tracking()
     print("ok")

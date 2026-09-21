@@ -730,6 +730,9 @@ _STACKING_BLOCKED_ACTIONS = {
     "sky_track": "Stop the stack before changing tracking",
     "stop_goto": "Stop the stack before changing tracking",
 }
+_PHOTO_REQUIRED_ACTIONS = frozenset({"photo", "burst_start", "record_start", "timelapse_start"})
+_DSO_REQUIRED_ACTIONS = frozenset({"calibrate", "polar", "track", "sky_track", "stack", "infinity"})
+_DSO_AUTO_SWITCH_ACTIONS = frozenset({"track", "sky_track"})
 
 
 def stacking_blocks_action(
@@ -742,6 +745,29 @@ def stacking_blocks_action(
     if not (capturing or mosaic_running):
         return ""
     return _STACKING_BLOCKED_ACTIONS.get(str(operation or ""), "")
+
+
+def command_required_shooting_mode(operation: str) -> int | None:
+    """Firmware mode a HUD command needs, or None when any mode is allowed."""
+    name = str(operation or "")
+    if name in _PHOTO_REQUIRED_ACTIONS:
+        return 1
+    if name in _DSO_REQUIRED_ACTIONS:
+        return 2
+    return None
+
+
+def command_should_auto_enter_dso(operation: str, shooting_mode: Any) -> bool:
+    """True when PHOTO should switch to DSO instead of asking the operator.
+
+    Sky-map GOTO and TRACK already enter astro mode in the worker. The HUD
+    used to toast and stop; switch first so a target tap can continue.
+    """
+    return (
+        command_required_shooting_mode(operation) == 2
+        and _shooting_mode_int(shooting_mode) == 1
+        and str(operation or "") in _DSO_AUTO_SWITCH_ACTIONS
+    )
 
 
 def preview_needs_rtsp_restart(telemetry: dict[str, Any] | None) -> bool:
@@ -7799,6 +7825,29 @@ class AppBackend(QObject):
                 self._toast("Mosaic failed", "error", str(result or "Stack mosaic failed"))
         self._notify_devices()
 
+    def _enter_dso_then_action(self, device_id: str, operation: str) -> None:
+        """Switch PHOTO to DSO, then retry the original HUD command."""
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            return
+        self._patch_control_settings(device_id, shooting_mode=2)
+        self.add_log("info", "Switching to DSO mode", device_id)
+
+        def after_mode(ok: bool, result: Any) -> None:
+            if ok:
+                self._on_telemetry(
+                    device_id,
+                    {"shooting_mode": 2, "shooting_tech": 0, "photo_primed": False},
+                )
+                self._schedule_camera_param_refresh(device_id)
+                self.deviceAction(device_id, operation)
+                return
+            self.commandFeedback.emit(device_id, operation, False)
+            self.add_log("error", f"Could not switch to DSO mode: {result}", device_id)
+            self._toast("Could not switch to DSO mode", "error", str(result))
+
+        worker.send("astro_mode", callback=self._with_pending(device_id, "astro_mode", after_mode))
+
     @Slot(str, str)
     def deviceAction(self, device_id: str, operation: str) -> None:
         worker = self._workers.get(device_id)
@@ -7815,12 +7864,11 @@ class AppBackend(QObject):
             self._toast("Focus is only available on the tele camera", "warning")
             return
         shooting_mode = self._device_telemetry.get(device_id, {}).get("shooting_mode")
-        required_mode = (
-            1 if operation in {"photo", "burst_start", "record_start", "timelapse_start"}
-            else 2 if operation in {"calibrate", "polar", "track", "sky_track", "stack", "infinity"}
-            else None
-        )
+        required_mode = command_required_shooting_mode(operation)
         if required_mode is not None and shooting_mode != required_mode:
+            if command_should_auto_enter_dso(operation, shooting_mode):
+                self._enter_dso_then_action(device_id, operation)
+                return
             mode_name = "PHOTO" if required_mode == 1 else "DSO"
             self._toast(f"Select {mode_name} mode before running this command", "warning")
             return
