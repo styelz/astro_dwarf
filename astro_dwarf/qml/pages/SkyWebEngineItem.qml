@@ -5,6 +5,7 @@ Item {
     id: root
     anchors.fill: parent
     signal loadState(string state)
+    property int abortCount: 0
 
     function runJavaScript(script, callback) {
         view.runJavaScript(script, callback)
@@ -46,6 +47,14 @@ Item {
                 permission.deny()
             } catch (err) {
             }
+        }
+        onJavaScriptConsoleMessage: function(level, message, lineNumber, sourceID) {
+            const text = String(message || "")
+            if (text.indexOf("Aborted") < 0)
+                return
+            root.abortCount += 1
+            if (root.abortCount === 8)
+                root.loadState("failed")
         }
     }
 

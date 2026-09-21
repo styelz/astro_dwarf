@@ -28,6 +28,7 @@ from .domain import (
     Workflow,
     camera_fov,
     new_id,
+    utc_now,
 )
 
 STELLARIUM_WEB_URL = "https://stellarium-web.org/"
@@ -2882,6 +2883,70 @@ def mosaic_pane_workflow(workflow: Workflow, index: int) -> Workflow:
 def _mosaic_group_slug(name: str) -> str:
     text = re.sub(r"[^A-Za-z0-9]+", "-", str(name or "target").strip())
     return text.strip("-")[:40] or "mosaic"
+
+
+def new_mosaic_group_id(name: str) -> str:
+    return f"{_mosaic_group_slug(name)}-{new_id()[:8]}"
+
+
+def copy_session_name(name: str) -> str:
+    text = str(name or "").strip() or "Session"
+    if text.lower().endswith(" copy"):
+        return text
+    return f"{text} copy"
+
+
+def duplicate_session_scope(session: Session, siblings: list[Session], mode: str = "") -> str:
+    grouped = bool(session.mosaic.group_id) and len(siblings) > 1
+    wanted = str(mode or "").strip().lower()
+    if wanted == "pane":
+        return "pane" if grouped else "session"
+    if wanted == "mosaic":
+        return "mosaic" if grouped else "session"
+    if wanted == "session":
+        return "session"
+    return "mosaic" if grouped else "session"
+
+
+def duplicate_session_drafts(
+    source: Session,
+    siblings: list[Session],
+    *,
+    mode: str = "",
+    name: str = "",
+    device_id: str = "",
+    scheduled_start: str = "",
+) -> tuple[str, list[Session]]:
+    """Build planned copies for a session, mosaic group, or pane-in-mosaic."""
+    members = [item for item in siblings if item is not None] or [source]
+    scope = duplicate_session_scope(source, members, mode)
+    owner = str(device_id or source.device_id)
+    start = str(scheduled_start or source.scheduled_start)
+    label = str(name or "").strip()
+    if scope == "mosaic":
+        sources = sorted(members, key=lambda item: pane_sort_key(item.name))
+        group_id = new_mosaic_group_id(source.target.name or source.name)
+    else:
+        sources = [source]
+        group_id = source.mosaic.group_id if scope == "pane" else None
+    drafts: list[Session] = []
+    for item in sources:
+        pane_name = item.name if scope == "mosaic" else (label or copy_session_name(item.name))
+        drafts.append(replace(
+            item,
+            id=new_id(),
+            name=pane_name,
+            device_id=owner,
+            scheduled_start=start,
+            mosaic=replace(item.mosaic, group_id=group_id),
+            status=SessionStatus.PLANNED,
+            current_step="Waiting",
+            actual_started_at=None,
+            actual_ended_at=None,
+            outcome="",
+            created_at=utc_now(),
+        ))
+    return scope, drafts
 
 
 def mosaic_south_up(latitude: Any) -> bool:

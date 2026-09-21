@@ -128,6 +128,9 @@ from .services import (
     mosaic_pane_number,
     mosaic_pane_workflow,
     mosaic_session_footprints,
+    copy_session_name,
+    duplicate_session_drafts,
+    duplicate_session_scope,
     mosaic_south_up,
     next_free_start,
     observing_date,
@@ -10577,33 +10580,158 @@ class AppBackend(QObject):
             self.historyChanged.emit()
             self._toast(f"Deleted {deleted} recorded run{'s' if deleted != 1 else ''}", "success")
 
-    @Slot(str)
-    def duplicateSession(self, session_id: str) -> None:
+    def _duplicate_setup(self, session_id: str, mode: str, device_id: str, name: str = ""):
         source = self.store.sessions.get(session_id)
         if not source:
-            return
-        device = self._device_by_id(source.device_id)
-        tz = self._zone_for(device)
-        copy = self._with_duration(replace(
+            return None
+        siblings = self._mosaic_siblings(source)
+        scope = duplicate_session_scope(source, siblings, mode)
+        if scope == "pane":
+            device = self._device_by_id(source.device_id)
+        else:
+            device = self._schedule_device(device_id) or self._device_by_id(source.device_id)
+        if not device:
+            return None
+        _scope, drafts = duplicate_session_drafts(
             source,
-            id=uuid4().hex,
-            name=f"{source.name} copy",
+            siblings,
+            mode=scope,
+            name=name,
+            device_id=device.id,
             scheduled_start=source.scheduled_start,
-            status=SessionStatus.PLANNED,
-            actual_started_at=None,
-            actual_ended_at=None,
-        ))
-        start = parse_in_zone(copy.scheduled_start, tz)
-        if source.mosaic.group_id:
-            family = [
-                item for item in self._mosaic_siblings(source)
-                if item.status == SessionStatus.PLANNED
-            ]
-            if family:
-                start = max(self._session_window(item, tz)[1] for item in family)
-        span_start, span_end = self._session_window(copy, tz)
-        free = next_free_start(self._occupied_windows(device.id, set()), start, span_end - span_start)
-        self._save_session(replace(copy, scheduled_start=store_local_iso(free, tz)))
+        )
+        return source, siblings, scope, device, drafts
+
+    def _time_duplicate_drafts(
+        self,
+        drafts: list[Session],
+        device: Device,
+        start: datetime,
+    ) -> list[Session]:
+        tz = self._zone_for(device)
+        stamped = [replace(item, scheduled_start=store_local_iso(start, tz)) for item in drafts]
+        if len(stamped) > 1:
+            return stagger_mosaic_sessions(stamped, start, device.hardware)
+        return [self._with_duration(stamped[0])]
+
+    def _duplicate_span(self, drafts: list[Session], device: Device, start: datetime) -> timedelta:
+        timed = self._time_duplicate_drafts(drafts, device, start)
+        tz = self._zone_for(device)
+        begin = min(parse_in_zone(item.scheduled_start, tz) for item in timed)
+        end = max(self._session_window(item, tz)[1] for item in timed)
+        span = end - begin
+        if span <= timedelta(0):
+            return timedelta(minutes=1)
+        return span
+
+    @Slot(str, str, str, str, result="QVariantMap")
+    def duplicatePreview(
+        self,
+        session_id: str,
+        mode: str,
+        device_id: str,
+        scheduled_start: str,
+    ) -> dict[str, Any]:
+        setup = self._duplicate_setup(session_id, mode, device_id)
+        if not setup:
+            return {"ok": False}
+        source, siblings, scope, device, drafts = setup
+        tz = self._zone_for(device)
+        now = datetime.now(tz).replace(second=0, microsecond=0)
+        raw = str(scheduled_start or "").strip()
+        start = None
+        if raw:
+            try:
+                start = parse_in_zone(raw, tz).replace(second=0, microsecond=0)
+            except ValueError:
+                return {
+                    "ok": False,
+                    "mode": scope,
+                    "pane_count": len(drafts),
+                    "lock_device": scope == "pane",
+                    "default_name": copy_session_name(source.name),
+                    "device_name": device.name,
+                    "timezone": device.timezone_name,
+                }
+        probe = start or now
+        if scope == "pane" and start is None:
+            last_end = max(self._session_window(item, tz)[1] for item in siblings)
+            if last_end > probe:
+                probe = last_end
+        span = self._duplicate_span(drafts, device, probe)
+        occupied = self._occupied_windows(device.id, set())
+        suggested = next_free_start(occupied, probe, span)
+        heading = {
+            "mosaic": "DUPLICATE MOSAIC",
+            "pane": "DUPLICATE PANE",
+        }.get(scope, "DUPLICATE SESSION")
+        first = min(siblings, key=lambda item: item.scheduled_start) if scope == "mosaic" else source
+        original = parse_in_zone(first.scheduled_start, tz).replace(second=0, microsecond=0)
+        payload = {
+            "ok": False,
+            "mode": scope,
+            "heading": heading,
+            "pane_count": len(drafts),
+            "lock_device": scope == "pane",
+            "source_device_id": source.device_id,
+            "default_name": copy_session_name(source.name),
+            "device_name": device.name,
+            "timezone": device.timezone_name,
+            "original_start": original.strftime("%Y-%m-%dT%H:%M"),
+            "suggested_start": suggested.strftime("%Y-%m-%dT%H:%M"),
+            "target_name": mosaic_group_title(source.target.name, source.mosaic.group_id or "")
+            if scope == "mosaic" else source.name,
+        }
+        if start is None:
+            return payload
+        hint = self.scheduleWindow(device.id, start.strftime("%Y-%m-%dT%H:%M"), span.total_seconds())
+        payload.update(hint)
+        if not payload.get("next_free"):
+            payload["suggested_start"] = start.strftime("%Y-%m-%dT%H:%M")
+        else:
+            payload["suggested_start"] = payload["next_free"]
+        return payload
+
+    @Slot(str, str, result=bool)
+    @Slot(str, str, str, result=bool)
+    @Slot(str, str, str, str, result=bool)
+    @Slot(str, str, str, str, str, result=bool)
+    def duplicateSession(
+        self,
+        session_id: str,
+        scheduled_start: str,
+        device_id: str = "",
+        name: str = "",
+        mode: str = "",
+    ) -> bool:
+        setup = self._duplicate_setup(session_id, mode, device_id, name)
+        if not setup:
+            self._toast("This session is no longer on the calendar", "warning")
+            return False
+        source, _siblings, scope, device, drafts = setup
+        tz = self._zone_for(device)
+        try:
+            start = parse_in_zone(str(scheduled_start).strip(), tz).replace(second=0, microsecond=0)
+        except ValueError:
+            self._toast("Enter a start time like 2026-09-10T22:00", "error")
+            return False
+        timed = self._time_duplicate_drafts(drafts, device, start)
+        try:
+            self._commit_device_sessions(timed, device)
+        except ValueError as exc:
+            self._toast(str(exc), "warning")
+            return False
+        if scope == "mosaic":
+            count = len(timed)
+            self._toast(
+                f"Duplicated {count} mosaic pane{'s' if count != 1 else ''} on {device.name}",
+                "success",
+            )
+        elif scope == "pane":
+            self._toast(f"Duplicated pane into {mosaic_group_title(source.target.name, source.mosaic.group_id or '')}", "success")
+        else:
+            self._toast(f"Duplicated session on {device.name}", "success")
+        return True
 
     @Slot(str)
     def runNow(self, session_id: str) -> None:

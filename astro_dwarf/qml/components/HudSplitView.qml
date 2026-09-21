@@ -357,6 +357,8 @@ SplitView {
         splitStore.setValue(splitView.settingsKey, splitView.saveState())
         splitStore.setValue(splitView.countKey, splitView.count)
         splitStore.setValue(splitView.ratiosKey, JSON.stringify(splitView.lockedRatios || []))
+        if (typeof splitStore.sync === "function")
+            splitStore.sync()
     }
 
     function clearSaved() {

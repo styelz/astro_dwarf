@@ -657,6 +657,8 @@ QtObject {
             return false
         orderStore.panelOrderJson = JSON.stringify(out)
         coord.persistSplitSizes()
+        if (typeof orderStore.sync === "function")
+            orderStore.sync()
         return true
     }
 

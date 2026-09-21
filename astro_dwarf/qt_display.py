@@ -140,9 +140,16 @@ def needs_software_qt(
 # context; QT_XCB_GL_INTEGRATION=none is required so the window still opens.
 SOFTWARE_WEBENGINE_FLAGS = (
     "--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox "
-    "--enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader"
+    "--disable-features=Vulkan --enable-unsafe-swiftshader "
+    "--use-gl=angle --use-angle=swiftshader"
 )
-LINUX_WEBENGINE_FLAGS = "--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox"
+# GBM often fails on virtio / some Mesa stacks; Chromium then picks Vulkan
+# and Stellarium's WASM abort()s in a tight js: Aborted(undefined) loop.
+LINUX_WEBENGINE_FLAGS = (
+    "--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox "
+    "--disable-features=Vulkan --enable-unsafe-swiftshader "
+    "--use-gl=angle --use-angle=swiftshader"
+)
 
 
 def _chromium_flag_tokens(raw: str | None) -> list[str]:
@@ -195,14 +202,93 @@ def apply_software_qt_env() -> None:
     os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = SOFTWARE_WEBENGINE_FLAGS
 
 
+def _narrow_locale(value: str | None) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    if "UTF-8" in text.upper() or "UTF8" in text.upper():
+        return False
+    return text in ("C", "POSIX")
+
+
+def _ensure_utf8_locale() -> None:
+    """Qt text shaping needs UTF-8. SSH/cron often start with LANG=C."""
+    lang = os.environ.get("LANG", "")
+    if _narrow_locale(lang):
+        os.environ["LANG"] = "C.UTF-8"
+    lc_all = os.environ.get("LC_ALL", "")
+    if lc_all and _narrow_locale(lc_all):
+        os.environ["LC_ALL"] = "C.UTF-8"
+    lc_ctype = os.environ.get("LC_CTYPE", "")
+    if lc_ctype and _narrow_locale(lc_ctype):
+        os.environ["LC_CTYPE"] = "C.UTF-8"
+
+
+def isolate_bundled_fontconfig() -> Path | None:
+    """Point fontconfig at the shipped file so host conf.d cannot break matching."""
+    if not sys.platform.startswith("linux"):
+        return None
+    if os.environ.get("FONTCONFIG_FILE", "").strip():
+        current = Path(os.environ["FONTCONFIG_FILE"])
+        return current if current.is_file() else None
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "fonts" / "fonts.conf")
+    try:
+        candidates.append(Path(sys.executable).resolve().parent / "fonts" / "fonts.conf")
+    except OSError:
+        pass
+    candidates.append(Path(__file__).resolve().parent / "fonts" / "fonts.conf")
+    for path in candidates:
+        if path.is_file():
+            os.environ["FONTCONFIG_FILE"] = str(path)
+            os.environ.setdefault("FONTCONFIG_PATH", str(path.parent))
+            return path
+    return None
+
+
+def is_noisy_webengine_message(message: str) -> bool:
+    text = str(message or "")
+    if "Aborted(" in text or text.startswith("js: Aborted"):
+        return True
+    noisy = (
+        "Failed to get native pixmap",
+        "Compositor returned null texture",
+        "dma_buf acquisition failure",
+    )
+    return any(token in text for token in noisy)
+
+
+def install_qt_message_filter() -> None:
+    """Drop Stellarium WASM abort spam; keep every other Qt message."""
+    try:
+        from PySide6.QtCore import qInstallMessageHandler
+    except Exception:
+        return
+
+    def _handler(_mode, _context, message) -> None:
+        if is_noisy_webengine_message(str(message)):
+            return
+        sys.stderr.write(str(message) + "\n")
+
+    qInstallMessageHandler(_handler)
+
+
 def configure_qt_display() -> None:
     """Keep the Linux window opening when the guest has no usable GPU."""
     if sys.platform.startswith("linux"):
+        _ensure_utf8_locale()
+        isolate_bundled_fontconfig()
         _strip_readline_library_path()
         os.environ.setdefault("NO_AT_BRIDGE", "1")
         os.environ.setdefault("GTK_MODULES", "")
         os.environ.setdefault("GTK3_MODULES", "")
         os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+        rules = os.environ.get("QT_LOGGING_RULES", "")
+        if "js=" not in rules:
+            extra = "js.warning=false;js.critical=false"
+            os.environ["QT_LOGGING_RULES"] = f"{rules};{extra}" if rules else extra
     if needs_software_qt():
         apply_software_qt_env()
     elif sys.platform.startswith("linux"):
@@ -211,3 +297,7 @@ def configure_qt_display() -> None:
             os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = LINUX_WEBENGINE_FLAGS
         elif "--enable-webgl" not in _chromium_flag_tokens(flags):
             os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --enable-webgl"
+        elif "--disable-features=Vulkan" not in flags:
+            os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --disable-features=Vulkan --enable-unsafe-swiftshader"
+    if sys.platform.startswith("linux"):
+        install_qt_message_filter()

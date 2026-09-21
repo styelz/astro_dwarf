@@ -6,6 +6,18 @@ export GTK_MODULES GTK3_MODULES
 [ -n "$QTWEBENGINE_DISABLE_SANDBOX" ] || export QTWEBENGINE_DISABLE_SANDBOX=1
 [ -n "$NO_AT_BRIDGE" ] || export NO_AT_BRIDGE=1
 
+case "${LANG:-}" in
+    ""|C|POSIX) export LANG=C.UTF-8 ;;
+esac
+case "${LC_ALL:-}" in
+    C|POSIX) export LC_ALL=C.UTF-8 ;;
+esac
+if [ -z "${FONTCONFIG_FILE:-}" ] && [ -f /opt/astro-dwarf/_internal/fonts/fonts.conf ]; then
+    export FONTCONFIG_FILE=/opt/astro-dwarf/_internal/fonts/fonts.conf
+    export FONTCONFIG_PATH=/opt/astro-dwarf/_internal/fonts
+fi
+[ -n "$QT_LOGGING_RULES" ] || export QT_LOGGING_RULES="js.warning=false;js.critical=false"
+
 # Software Qt is only for WSL, Hyper-V guests, and machines with no DRM
 # render node. Native NVIDIA/AMD/Intel desktops must keep host OpenGL so
 # Stellarium Web can run. Do not treat every frozen Linux install as a VM.
@@ -49,6 +61,6 @@ if astro_dwarf_needs_software_qt; then
     [ -n "$QT_QPA_PLATFORM" ] || export QT_QPA_PLATFORM=xcb
     [ -n "$QT_XCB_GL_INTEGRATION" ] || export QT_XCB_GL_INTEGRATION=none
     [ -n "$QT_QUICK_BACKEND" ] || export QT_QUICK_BACKEND=software
-    [ -n "$QTWEBENGINE_CHROMIUM_FLAGS" ] || export QTWEBENGINE_CHROMIUM_FLAGS="--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader"
+    [ -n "$QTWEBENGINE_CHROMIUM_FLAGS" ] || export QTWEBENGINE_CHROMIUM_FLAGS="--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox --disable-features=Vulkan --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader"
 fi
 exec /opt/astro-dwarf/AstroDwarf "$@"

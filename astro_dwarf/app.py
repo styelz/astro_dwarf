@@ -16,6 +16,9 @@ from PySide6.QtCore import QTimer, Qt, QUrl
 from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
 from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
 
+from .qt_fonts import apply_hud_fonts
+from .qt_settings import flush_qt_settings
+
 from .qt_backend import AppBackend
 from .runtime import (
     configure_qml_import_path,
@@ -224,6 +227,7 @@ def run() -> int:
     application.setApplicationVersion(__version__)
     application.setOrganizationName("Astro Dwarf")
     application.setDesktopFileName("astro-dwarf")
+    apply_hud_fonts(application)
 
     resources = package_root()
     icon = _app_icon(resources)
@@ -302,6 +306,16 @@ def run() -> int:
         if interrupt.is_set():
             _request_quit()
 
+    def _persist_and_flush() -> None:
+        try:
+            persist = getattr(window, "persistLayout", None)
+            if callable(persist):
+                persist()
+        except RuntimeError:
+            pass
+        flush_qt_settings()
+
+    application.aboutToQuit.connect(_persist_and_flush)
     application.aboutToQuit.connect(_mark_quit)
     application.aboutToQuit.connect(_release_graphics)
     application.aboutToQuit.connect(backend.shutdown)
@@ -338,9 +352,11 @@ def run() -> int:
         QTimer.singleShot(test_exit_ms, application.quit)
     code = application.exec()
     try:
+        _persist_and_flush()
         backend.shutdown()
     except Exception:
         pass
+    flush_qt_settings()
     os._exit(int(code or 0))
 
 

@@ -710,6 +710,7 @@ Item {
                     canCollapseAll: scheduledPage.canCollapseAll
                     onEditRequested: session => scheduledPage.editItem(session)
                     onEditSelectedRequested: sessionDialog.openSelected(Util.itemsByIds(backend.sessions, scheduledPage.selectedIds))
+                    onDuplicateRequested: (session, mode) => duplicateSessionDialog.openFor(session, mode)
                     onSelectAllRequested: scheduledPage.selectedIds = Util.idSetAll(backend.sessions, true)
                     onUnselectAllRequested: {
                         scheduledPage.selectedIds = ({})

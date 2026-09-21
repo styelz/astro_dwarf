@@ -1038,10 +1038,48 @@ QtObject {
     readonly property color fillSuccess: "#143028"
     readonly property color fillWarning: "#3A2410"
 
-    // Type.
-    readonly property string fontUi: "Segoe UI"
-    readonly property string fontMono: "Cascadia Mono"
-    readonly property string fontIcon: "Segoe MDL2 Assets"
+    // Type. Windows ships Segoe/Cascadia; Linux often does not. Ask for an
+    // installed family instead of letting fontconfig map missing names onto a
+    // monospace face (Adwaita Mono on Arch XFCE). Keep candidates in sync with
+    // astro_dwarf/qt_fonts.py.
+    readonly property var fontUiCandidates: [
+        "Segoe UI", "Inter", "Noto Sans", "Ubuntu", "Liberation Sans",
+        "DejaVu Sans", "Cantarell", "Source Sans 3", "Source Sans Pro",
+        "Adwaita Sans", "FreeSans", "Nimbus Sans", "Helvetica Neue",
+        "Helvetica", "Sans Serif"
+    ]
+    readonly property var fontMonoCandidates: [
+        "Cascadia Mono", "Cascadia Code", "Consolas", "JetBrains Mono",
+        "Ubuntu Mono", "Liberation Mono", "DejaVu Sans Mono", "Noto Sans Mono",
+        "Source Code Pro", "Adwaita Mono", "FreeMono", "Menlo", "Monaco",
+        "monospace"
+    ]
+    readonly property var fontIconCandidates: [
+        "Segoe MDL2 Assets", "Segoe Fluent Icons"
+    ]
+    readonly property var installedFontMap: {
+        const map = ({})
+        const families = Qt.fontFamilies()
+        for (let i = 0; i < families.length; i++) {
+            const name = String(families[i])
+            const key = name.toLowerCase()
+            if (map[key] === undefined)
+                map[key] = name
+        }
+        return map
+    }
+    function pickInstalledFont(candidates, fallback) {
+        const map = theme.installedFontMap
+        for (let i = 0; i < candidates.length; i++) {
+            const found = map[String(candidates[i]).toLowerCase()]
+            if (found)
+                return found
+        }
+        return fallback
+    }
+    readonly property string fontUi: theme.pickInstalledFont(theme.fontUiCandidates, "Sans Serif")
+    readonly property string fontMono: theme.pickInstalledFont(theme.fontMonoCandidates, "monospace")
+    readonly property string fontIcon: theme.pickInstalledFont(theme.fontIconCandidates, theme.fontUi)
     readonly property int fontXs: theme.fontPx(8)
     readonly property int fontSm: theme.fontPx(10)
     readonly property int fontMd: theme.fontPx(12)

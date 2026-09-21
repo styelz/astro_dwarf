@@ -2,5 +2,6 @@ LocationDialog 1.0 LocationDialog.qml
 SettingsLeaveDialog 1.0 SettingsLeaveDialog.qml
 ConfirmDialog 1.0 ConfirmDialog.qml
 SessionDialog 1.0 SessionDialog.qml
+DuplicateSessionDialog 1.0 DuplicateSessionDialog.qml
 ColorPickDialog 1.0 ColorPickDialog.qml
 SkyRaDecDialog 1.0 SkyRaDecDialog.qml

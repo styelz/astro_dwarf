@@ -3489,6 +3489,7 @@ Item {
         selectedMap: controlPage.selectedUpcomingIds
         onEditRequested: session => sessionDialog.openExisting(session)
         onEditSelectedRequested: sessionDialog.openSelected(Util.itemsByIds(backend.upcomingSessions, controlPage.selectedUpcomingIds))
+        onDuplicateRequested: (session, mode) => duplicateSessionDialog.openFor(session, mode)
         onSelectAllRequested: controlPage.selectedUpcomingIds = Util.idSetAll(backend.upcomingSessions, true)
         onUnselectAllRequested: {
             controlPage.selectedUpcomingIds = ({})

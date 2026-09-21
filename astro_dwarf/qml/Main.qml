@@ -28,14 +28,23 @@ ApplicationWindow {
     title: "ASTRO DWARF"
     color: Theme.windowBase
     font.family: Theme.fontUi
+    font.hintingPreference: Font.PreferVerticalHinting
+    font.preferShaping: false
     flags: Qt.Window | Qt.WindowTitleHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint | Qt.WindowSystemMenuHint
     readonly property bool windowMaximized: visibility === Window.Maximized
-    onClosing: (close) => {
+    function persistLayout() {
         PanelSwap.persist()
+    }
+    onClosing: (close) => {
+        root.persistLayout()
         if (root.currentPage === root.settingsPageIndex && settingsPage.isDirty()) {
             close.accepted = false
             root.askLeaveSettings(-2, "")
         }
+    }
+    Connections {
+        target: Qt.application
+        function onAboutToQuit() { root.persistLayout() }
     }
 
     function dragWindow() {
@@ -64,6 +73,7 @@ ApplicationWindow {
         || settingsLeaveDialog.visible
         || confirmDialog.visible
         || scheduleTemplateDialog.visible
+        || duplicateSessionDialog.visible
         || sessionDialog.visible
     property real joySpeed: 1
     readonly property real joyMin: 0.004
@@ -1579,6 +1589,7 @@ ApplicationWindow {
         onViewerCloseRequested: mediaPage.closeViewer()
     }
     ScheduleTemplateDialog { id: scheduleTemplateDialog }
+    DuplicateSessionDialog { id: duplicateSessionDialog }
 
     FileDialog {
         id: telescopiusDialog

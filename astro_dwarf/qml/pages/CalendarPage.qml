@@ -1934,6 +1934,7 @@ Item {
         selectedMap: calendarPage.selectedIds
         onEditRequested: session => calendarPage.editItem(session)
         onEditSelectedRequested: sessionDialog.openSelected(Util.itemsByIds(calendarPage.contextItems, calendarPage.selectedIds))
+        onDuplicateRequested: (session, mode) => duplicateSessionDialog.openFor(session, mode)
         onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(calendarPage.contextItems, true)
         onUnselectAllRequested: {
             calendarPage.selectedIds = ({})

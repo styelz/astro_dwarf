@@ -19,6 +19,10 @@ HudMenu {
     signal unselectAllRequested()
     signal editRequested(var session)
     signal editSelectedRequested()
+    signal duplicateRequested(var session, string mode)
+    readonly property bool mosaicGrouped: !!(sessionData && sessionData.is_grouped)
+    readonly property bool mosaicCollapsed: !!(sessionData && sessionData.group_collapsed)
+    readonly property bool mosaicPaneRow: mosaicGrouped && !mosaicCollapsed
     property bool showExpandCollapse: false
     property bool canExpandAll: false
     property bool canCollapseAll: false
@@ -62,9 +66,23 @@ HudMenu {
         onTriggered: backend.resetSession(sessionContextMenu.sessionId)
     }
     HudMenuItem {
-        text: "Duplicate"
+        objectName: "session-duplicate"
+        text: sessionContextMenu.mosaicPaneRow
+              ? "Duplicate pane"
+              : (sessionContextMenu.mosaicGrouped ? "Duplicate mosaic" : "Duplicate")
         glyph: "\uE8C8"
-        onTriggered: backend.duplicateSession(sessionContextMenu.sessionId)
+        onTriggered: sessionContextMenu.duplicateRequested(
+            sessionContextMenu.sessionData,
+            sessionContextMenu.mosaicPaneRow ? "pane"
+                : (sessionContextMenu.mosaicGrouped ? "mosaic" : "session"))
+    }
+    HudMenuItem {
+        objectName: "session-duplicate-mosaic"
+        text: "Duplicate mosaic"
+        glyph: "\uE8C8"
+        visible: sessionContextMenu.mosaicPaneRow
+        height: visible ? implicitHeight : 0
+        onTriggered: sessionContextMenu.duplicateRequested(sessionContextMenu.sessionData, "mosaic")
     }
     MoveDeviceMenu {
         sessionIds: {

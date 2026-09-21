@@ -59,6 +59,7 @@ def collect_native_webview_plugins() -> list[tuple[str, str]]:
 datas = [
     (str(ROOT / "VERSION"), "."),
     (str(ROOT / "astro_dwarf" / "qml"), "qml"),
+    (str(ROOT / "astro_dwarf" / "fonts"), "fonts"),
 ]
 # Qt's title-bar icon comes from QIcon files, not the EXE resource PyInstaller embeds.
 for _icon_name in ("astro-dwarf.ico", "astro-dwarf.png"):
@@ -106,6 +107,8 @@ hiddenimports = [
     "astro_dwarf.device_worker",
     "astro_dwarf.domain",
     "astro_dwarf.qt_backend",
+    "astro_dwarf.qt_display",
+    "astro_dwarf.qt_fonts",
     "astro_dwarf.runtime",
     "astro_dwarf.services",
     "astro_dwarf.storage",
