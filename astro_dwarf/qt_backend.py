@@ -4139,6 +4139,49 @@ class AppBackend(QObject):
         worker.send("sky_pointing", {}, callback=done)
 
     @Slot()
+    def lockSkyToDevicePointing(self) -> None:
+        """Lock the sky map on the mount's current az/alt, converted to RA/Dec."""
+        if self._sky_lock_inflight:
+            return
+        device_id = str(self._selected_device_id or "")
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            self._toast("Connect a telescope before locking the sky map", "warning")
+            return
+        self._sky_lock_inflight = True
+
+        def done(ok: bool, result: Any) -> None:
+            self._sky_lock_inflight = False
+            data = result if isinstance(result, dict) else {}
+            coords = self._target_coords(data) if ok else None
+            if coords is None:
+                detail = str(result or "").strip() if not ok else ""
+                self._toast(
+                    "Could not read where the telescope is pointing",
+                    "warning",
+                    detail or "Mount position is unavailable",
+                )
+                return
+            self._set_live_pointing(device_id, coords[0], coords[1])
+            try:
+                az_text = f"{float(data.get('az')):.2f}"
+                alt_text = f"{float(data.get('alt')):.2f}"
+            except (TypeError, ValueError):
+                az_text = alt_text = "?"
+            self.add_log(
+                "warning",
+                f"Motor-derived pointing {self._format_sky_coords(coords)} "
+                f"(az {az_text}° alt {alt_text}°). "
+                "Firmware does not publish tracked RA/Dec; this is only a mount estimate.",
+                device_id,
+            )
+            # Name stays "Pointing" so the map locks these coordinates
+            # instead of a catalog object with the same tracked name.
+            self._emit_sky_lock("Pointing", coords)
+
+        worker.send("sky_pointing", {}, callback=done)
+
+    @Slot()
     def lockSkyToTrackedTarget(self) -> None:
         target = self.trackedSkyTarget
         if not target.get("available"):

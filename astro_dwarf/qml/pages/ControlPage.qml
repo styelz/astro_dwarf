@@ -1115,8 +1115,12 @@ Item {
                     }
                     readonly property bool stackEnhanceAvailable: backend.previewStacking || backend.previewResult || previewHost.awaitingFirstStack
                     readonly property bool pipPlaying: pipAvailable && pipEnabled
-                    readonly property bool mosaicPreview: !!(backend.mosaicPreview && backend.mosaicPreview.active)
-                    readonly property bool idlePreviewArt: !backend.previewPlaying && !backend.previewStacking && !backend.previewResult && !previewHost.awaitingFirstStack && !previewHost.mosaicPreview
+                    readonly property bool mosaicActive: !!(backend.mosaicPreview && backend.mosaicPreview.active)
+                    property bool showMosaicSheet: true
+                    onMosaicActiveChanged: if (mosaicActive) showMosaicSheet = true
+                    readonly property bool mosaicSheet: mosaicActive && showMosaicSheet
+                    readonly property bool paneView: mosaicActive && !showMosaicSheet
+                    readonly property bool idlePreviewArt: !backend.previewPlaying && !backend.previewStacking && !backend.previewResult && !previewHost.awaitingFirstStack && !previewHost.mosaicActive
                     readonly property real teleFovH: {
                         const tele = Number(root.scopeTelemetry.tele_fov_h)
                         const wide = Number(root.scopeTelemetry.wide_fov_h)
@@ -1160,7 +1164,7 @@ Item {
                     }
                     readonly property bool previewFailed: root.previewFailed
                     readonly property bool previewStartEnabled: backend.selectedDevice.connected && !root.scopeLinking && !root.scopeStopping && (!backend.previewActive || backend.previewPlaying || previewFailed)
-                    readonly property bool startBriefVisible: root.previewStarting && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicPreview
+                    readonly property bool startBriefVisible: root.previewStarting && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicActive
                     readonly property bool startBriefCompact: height < Theme.px(280)
                     readonly property string actionLabel: {
                         if (!backend.previewActive || backend.previewPlaying)
@@ -1302,10 +1306,10 @@ Item {
                         id: liveFrame
                         objectName: "livePane"
                         anchors.fill: parent
-                        visible: !previewHost.mosaicPreview
-                        playing: previewHost.mainPlaying && !previewHost.mosaicPreview
-                        wideView: previewHost.displayWide
-                        camera: previewHost.liveCamera(previewHost.displayWide)
+                        visible: !previewHost.mosaicSheet
+                        playing: previewHost.paneView || (previewHost.mainPlaying && !previewHost.mosaicSheet)
+                        wideView: previewHost.paneView ? false : previewHost.displayWide
+                        camera: previewHost.paneView ? "tele" : previewHost.liveCamera(previewHost.displayWide)
                         centerEnabled: playing && root.motionEnabled && !backend.previewResult && !backend.centerTapBusy
                         showFootprint: wideView
                         chromeShown: previewHost.chromeShown
@@ -1320,8 +1324,8 @@ Item {
                     MosaicViewPane {
                         id: mosaicFrame
                         anchors.fill: parent
-                        visible: previewHost.mosaicPreview
-                        playing: previewHost.mosaicPreview
+                        visible: previewHost.mosaicSheet
+                        playing: previewHost.mosaicSheet
                         camera: "tele"
                         accent: Theme.accent
                     }
@@ -1628,7 +1632,7 @@ Item {
                         anchors.centerIn: parent
                         spacing: Theme.px(10)
                         width: Math.min(parent.width - Theme.px(48), 520)
-                        visible: backend.previewHeld && !backend.previewPlaying && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicPreview
+                        visible: backend.previewHeld && !backend.previewPlaying && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicActive
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: "LIVE VIEW PAUSED"
@@ -1660,7 +1664,7 @@ Item {
                         z: 5
                         anchors.centerIn: parent
                         spacing: Theme.s2
-                        visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.startBriefVisible && !previewHost.mosaicPreview
+                        visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.startBriefVisible && !previewHost.mosaicActive
                         Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: Theme.textPrimary; font.pixelSize: Theme.fontLg; font.letterSpacing: 3; font.bold: true }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -1761,7 +1765,7 @@ Item {
                         id: stackWaitOverlay
                         z: 5
                         anchors.fill: parent
-                        visible: previewHost.awaitingFirstStack && !previewHost.mosaicPreview
+                        visible: previewHost.awaitingFirstStack && !previewHost.mosaicActive
                         Rectangle {
                             anchors.fill: parent
                             color: Theme.scrim
@@ -2003,9 +2007,21 @@ Item {
                         anchors.top: parent.top
                         anchors.margins: Theme.px(14)
                         spacing: Theme.s2
-                        opacity: (backend.previewActive || backend.previewResult) && previewHost.chromeShown ? 1 : 0
+                        opacity: previewHost.mosaicActive || ((backend.previewActive || backend.previewResult) && previewHost.chromeShown) ? 1 : 0
                         visible: opacity > 0
                         Behavior on opacity { NumberAnimation { duration: Theme.normal } }
+                        HudButton {
+                            objectName: "mosaicViewToggle"
+                            visible: previewHost.mosaicActive
+                            text: previewHost.showMosaicSheet ? "PANE" : "MOSAIC"
+                            tooltip: previewHost.showMosaicSheet
+                                     ? "Show the current pane full frame"
+                                     : "Show the mosaic contact sheet"
+                            buttonColor: Theme.fillActive
+                            foregroundColor: Theme.accent
+                            onHoveredChanged: previewHost.holdControls(hovered)
+                            onClicked: previewHost.showMosaicSheet = !previewHost.showMosaicSheet
+                        }
                         HudButton {
                             visible: previewHost.pipAvailable
                             text: previewHost.pipEnabled ? "HIDE PIP" : "SHOW PIP"
@@ -2020,7 +2036,7 @@ Item {
                             onClicked: previewHost.swapViews()
                         }
                         HudButton {
-                            visible: backend.previewResult
+                            visible: backend.previewResult && (!previewHost.mosaicActive || previewHost.chromeShown)
                             text: "START LIVE VIEW"
                             enabled: previewHost.previewStartEnabled
                             buttonColor: Theme.fillActive
@@ -2030,6 +2046,7 @@ Item {
                         }
                         HudButton {
                             id: stopPreviewButton
+                            visible: !previewHost.mosaicActive || previewHost.chromeShown
                             text: backend.previewResult ? "DISMISS" : "STOP PREVIEW"
                             busyText: backend.previewResult ? "DISMISSING…" : "STOPPING…"
                             onHoveredChanged: previewHost.holdControls(hovered)
@@ -2133,6 +2150,18 @@ Item {
                             glyph: "\uE8C8"
                             enabled: backend.selectedDevice.connected && backend.videoUrl !== ""
                             onTriggered: backend.copyText(backend.videoUrl)
+                        }
+                        HudMenuItem {
+                            objectName: "showPointingOnSkyMenuItem"
+                            text: "Show pointing on sky"
+                            glyph: "\uE1D2"
+                            enabled: root.skyToolsEnabled && !!(backend.selectedDevice && backend.selectedDevice.connected)
+                            accessibleDescription: !root.skyToolsEnabled
+                                                   ? "Turn on sky tools in interface settings first"
+                                                   : !(backend.selectedDevice && backend.selectedDevice.connected)
+                                                     ? "Connect a telescope first"
+                                                     : "Open Sky and target where the telescope is pointing"
+                            onTriggered: skyPage.showDevicePointingOnSky()
                         }
                         HudMenuItem {
                             readonly property var tracked: backend.trackedSkyTarget

@@ -215,6 +215,16 @@ Item {
             map.beginViewHold()
         map.setView(raHours, decDegrees)
     }
+    function showDevicePointingOnSky() {
+        if (!root.skyToolsEnabled)
+            return
+        if (!(backend.selectedDevice && backend.selectedDevice.connected))
+            return
+        skyPage.mapKeepAlive = true
+        if (root.currentPage !== root.skyPageIndex)
+            root.goToPage(root.skyPageIndex)
+        backend.lockSkyToDevicePointing()
+    }
     function lockToTrackedTarget() {
         const tracked = backend.trackedSkyTarget || ({})
         if (!tracked.available)
@@ -257,6 +267,8 @@ Item {
             if (status === "locked" || status === "view") {
                 if (typeof map.applyCoordinateTarget === "function")
                     map.applyCoordinateTarget(target)
+                if (status === "view" && typeof map.pinCoordinateTarget === "function")
+                    map.pinCoordinateTarget(target)
                 map.applyFovOverlay()
             } else if (status === "missing" || status === "error")
                 backend.reportSkyLockResult(status, String(target.name || ""))
