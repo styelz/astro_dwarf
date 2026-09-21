@@ -4,6 +4,7 @@ import QtWebView
 Item {
     id: root
     anchors.fill: parent
+    property bool shown: true
     signal loadState(string state)
 
     function runJavaScript(script, callback) {

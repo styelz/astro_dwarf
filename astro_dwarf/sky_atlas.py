@@ -88,11 +88,44 @@ def parse_atlas_harvest(raw: Any) -> dict[str, Any] | None:
     if ra != ra or dec != dec:
         return None
     name = str(data.get("name") or "").strip()
-    return {
+    out: dict[str, Any] = {
         "name": name,
         "ra_hours": round(((ra % 24.0) + 24.0) % 24.0, 6),
         "dec_degrees": round(max(-90.0, min(90.0, dec)), 6),
     }
+    obj_type = str(data.get("type") or "").strip()
+    if obj_type:
+        out["type"] = obj_type
+    try:
+        mag = float(data.get("magnitude"))
+    except (TypeError, ValueError):
+        mag = float("nan")
+    if mag == mag:
+        out["magnitude"] = mag
+    return out
+
+
+def atlas_set_fov_from_view(fov_x: Any, fov_y: Any = None) -> float | None:
+    """Aladin ``setFov`` argument from ``getFov()`` ``[x, y]`` degrees.
+
+    ``setFov`` is the inscribed (smaller) axis, so restoring ``getFov()[0]``
+    zooms the map. Persist ``min(x, y)`` so a restore is a no-op.
+    """
+    try:
+        x = float(fov_x)
+    except (TypeError, ValueError):
+        x = float("nan")
+    try:
+        y = float(fov_y) if fov_y is not None else float("nan")
+    except (TypeError, ValueError):
+        y = float("nan")
+    if x == x and x > 0 and y == y and y > 0:
+        return float(min(x, y))
+    if x == x and x > 0:
+        return float(x)
+    if y == y and y > 0:
+        return float(y)
+    return None
 
 
 def atlas_view_payload(ra_deg: float, dec_deg: float, fov: float | None = None) -> dict[str, Any]:
@@ -129,6 +162,21 @@ def sky_atlas_view_pos_script(ra_hours: float, dec_degrees: float) -> str:
     return (
         f"{ATLAS_VIEW_POS_JS}({float(ra_hours)}, {float(dec_degrees)})"
     )
+
+
+def sky_atlas_pin_target_script(payload: dict[str, Any] | None = None) -> str:
+    data = payload if isinstance(payload, dict) else {}
+    name = str(data.get("name") or "").strip() or "FOV centre"
+    body: dict[str, Any] = {"name": name}
+    try:
+        ra = float(data.get("ra_hours"))
+        dec = float(data.get("dec_degrees"))
+    except (TypeError, ValueError):
+        ra = dec = float("nan")
+    if ra == ra and dec == dec:
+        body["ra_hours"] = ra
+        body["dec_degrees"] = dec
+    return f"{ATLAS_PIN_TARGET_JS}({json.dumps(body)})"
 
 
 def sky_atlas_lock_target_script(payload: dict[str, Any]) -> str:
@@ -178,8 +226,11 @@ ATLAS_ASTRO_JS = r"""
   var box = window.__astroDwarfAtlas = window.__astroDwarfAtlas || {};
   if (box.astro && typeof box.astro.labelOnFov === "function" && typeof box.astro.drawScreenMosaic === "function"
       && typeof box.astro.drawPaneMedia === "function" && typeof box.astro.bindLiveOpacityWheel === "function"
-      && typeof box.astro.paneCenterXY === "function" && typeof box.astro.overlayPixRoll === "function")
+      && typeof box.astro.paneCenterXY === "function" && typeof box.astro.overlayPixRoll === "function"
+      && typeof box.astro.applyFov === "function" && typeof box.astro.markMoved === "function")
     return box.astro;
+  box.lookBound = false;
+  box.objectsBound = false;
   function deg(value) {
     return ((Number(value) % 360) + 360) % 360;
   }
@@ -374,9 +425,37 @@ ATLAS_ASTRO_JS = r"""
         aladin.setRotation(rot);
     } catch (err) {}
   }
+  function markMoved() {
+    box.userMoved = true;
+    box.userMovedAt = Date.now();
+  }
+  function inscribedFov(aladin) {
+    try {
+      var zoom = aladin.getFov();
+      if (Array.isArray(zoom)) {
+        var fx = Number(zoom[0]), fy = Number(zoom[1]);
+        if (isFinite(fx) && fx > 0 && isFinite(fy) && fy > 0) return Math.min(fx, fy);
+        if (isFinite(fx) && fx > 0) return fx;
+      }
+      var fov = Number(zoom);
+      if (isFinite(fov) && fov > 0) return fov;
+    } catch (err) {}
+    return 0;
+  }
+  function applyFov(aladin, fov) {
+    var n = Number(fov);
+    if (!(n > 0) || !aladin || typeof aladin.setFov !== "function") return;
+    box.applyingFov = true;
+    try { aladin.setFov(n); } catch (err) {}
+    box.applyingFov = false;
+    box.setFovValue = n;
+  }
+  function gotoCenter(aladin, raDeg, decDeg) {
+    try { aladin.gotoRaDec(raDeg, decDeg); } catch (err) {}
+  }
   function applyLook(aladin, raDeg, decDeg) {
     var rot = box.hasSite ? zenithRotation(raDeg, decDeg, box.lat, box.lon, new Date()) : 0;
-    try { aladin.gotoRaDec(raDeg, decDeg); } catch (err) {}
+    gotoCenter(aladin, raDeg, decDeg);
     applyRotation(aladin, rot);
     drawHorizon();
   }
@@ -393,7 +472,9 @@ ATLAS_ASTRO_JS = r"""
     hor.az = deg(hor.az - dx * azScale);
     hor.alt = clamp(hor.alt + dy * degPerPx, -12, 89.5);
     var eq = altazToRadec(hor.az, hor.alt, box.lat, box.lon, now);
-    applyLook(aladin, eq[0], eq[1]);
+    gotoCenter(aladin, eq[0], eq[1]);
+    markMoved();
+    drawHorizon();
   }
   function home() {
     var aladin = aladinRef();
@@ -401,13 +482,24 @@ ATLAS_ASTRO_JS = r"""
     if (!box.hasSite) return "no-site";
     var eq = altazToRadec(180, 28, box.lat, box.lon, new Date());
     applyLook(aladin, eq[0], eq[1]);
-    if (typeof aladin.setFov === "function") {
-      try { aladin.setFov(70); } catch (err) {}
-    }
+    applyFov(aladin, 70);
     return "ok";
+  }
+  var syncTimer = 0;
+  function requestSync() {
+    if (box.dragging) return;
+    if (syncTimer) return;
+    syncTimer = setTimeout(function() {
+      syncTimer = 0;
+      if (!box.dragging) syncRotation();
+    }, 90);
   }
   function syncRotation() {
     var aladin = aladinRef();
+    if (box.dragging) {
+      drawHorizon();
+      return;
+    }
     if (!aladin || !box.hasSite || typeof aladin.getRaDec !== "function") {
       drawHorizon();
       return;
@@ -677,10 +769,14 @@ ATLAS_ASTRO_JS = r"""
   function drawScreenMosaic(ctx, width, height, w, h, cols, rows, overlap, tilt, color) {
     var stepX = w * (1 - overlap), stepY = h * (1 - overlap);
     var totalW = stepX * (cols - 1) + w, totalH = stepY * (rows - 1) + h;
+    var payload = box.payload || {};
     var pa = Number(box.pa) || 0;
-    var southUp = !!(box.payload && box.payload.south_up);
-    var col1OnRight = (pa > 90 && pa < 270) === southUp;
-    var row1AtTop = (pa > 90 && pa < 270) === southUp;
+    var southUp = !!payload.south_up;
+    var zenithCamera = String(payload.mount_mode || "").toUpperCase() !== "EQ"
+      && String(payload.pa_source || "") === "parallactic";
+    var chartEdge = (pa > 90 && pa < 270) === southUp;
+    var col1OnRight = zenithCamera || chartEdge;
+    var row1AtTop = zenithCamera || chartEdge;
     var cells = [];
     var index = 0;
     for (var row = 1; row <= rows; row++) {
@@ -752,9 +848,9 @@ ATLAS_ASTRO_JS = r"""
     var rows = Math.max(1, Number(payload.rows) || 1);
     var overlap = Math.max(0, Math.min(0.8, Number(payload.overlap) || 0));
     var color = String(payload.color || "#7ee0d0");
-    var pa = Number(box.pa) || 0;
+    var chartPa = Number(box.pa) || 0;
     var southUp = !!(payload.south_up);
-    var chartTilt = ((pa - (southUp ? 180 : 0)) % 360 + 360) % 360;
+    var chartTilt = ((chartPa - (southUp ? 180 : 0)) % 360 + 360) % 360;
     var viewRot = 0;
     try {
       if (aladin && typeof aladin.getRotation === "function")
@@ -762,16 +858,23 @@ ATLAS_ASTRO_JS = r"""
     } catch (err) {}
     var panes = (box.fovPanes && box.fovPanes.length) ? box.fovPanes : [];
     var mosaic = cols > 1 || rows > 1 || panes.length > 1;
-    if (!mosaic && String(payload.mount_mode || "").toUpperCase() !== "EQ" && box.hasSite) {
+    var equatorial = String(payload.mount_mode || "").toUpperCase() === "EQ";
+    var zenithCamera = !equatorial && String(payload.pa_source || "") === "parallactic";
+    var cameraPa = chartPa;
+    if (!equatorial && box.hasSite) {
       try {
         var livePos = aladin && typeof aladin.getRaDec === "function" ? aladin.getRaDec() : null;
         if (livePos) {
           var liveQ = parallacticDeg(livePos[0], livePos[1], box.lat, box.lon, new Date());
-          if (isFinite(liveQ)) pa = ((liveQ % 360) + 360) % 360;
+          var pitch = Number(payload.mechanical_altitude);
+          var past = isFinite(pitch) && pitch > 90 && pitch < 270;
+          if (isFinite(liveQ)) cameraPa = ((liveQ + (past ? 180 : 0)) % 360 + 360) % 360;
         }
       } catch (err) {}
     }
-    var tilt = (viewRot + (mosaic ? chartTilt : pa)) * Math.PI / 180;
+    // Mosaic stays chart tilt; 1x1 uses camera PA (mosaic ? chartTilt : pa).
+    var tiltPa = mosaic && !zenithCamera ? chartTilt : (equatorial ? chartPa : cameraPa);
+    var tilt = (viewRot + tiltPa) * Math.PI / 180;
     var projected = collectProjected(aladin, panes);
     var hasQuads = false;
     for (var qi = 0; qi < projected.length; qi++) {
@@ -964,17 +1067,88 @@ ATLAS_ASTRO_JS = r"""
       drawHorizon();
     }, {capture: true, passive: false});
   }
+  function objectName(obj) {
+    if (!obj) return "";
+    if (typeof obj.name === "string" && obj.name.trim()) return obj.name.trim();
+    var data = obj.data || obj;
+    var keys = ["main_id", "MAIN_ID", "name", "NAME", "id", "ID", "oid", "target"];
+    for (var i = 0; i < keys.length; i++) {
+      var value = data[keys[i]];
+      if (value != null && String(value).trim()) return String(value).trim();
+    }
+    return "";
+  }
+  function objectType(obj) {
+    var data = (obj && obj.data) || obj || {};
+    var value = data.otype || data.OTYPE || data.type || data.o_type;
+    return value != null ? String(value).trim() : "";
+  }
+  function objectMag(obj) {
+    var data = (obj && obj.data) || obj || {};
+    var n = Number(data.V || data.mag || data.MAG || data.vmag || data.Vmag);
+    return isFinite(n) ? n : null;
+  }
+  function objectRaDec(obj) {
+    if (!obj) return null;
+    var ra = obj.ra != null ? Number(obj.ra) : Number(obj.data && obj.data.ra);
+    var dec = obj.dec != null ? Number(obj.dec) : Number(obj.data && obj.data.dec);
+    if (isFinite(ra) && isFinite(dec)) return [ra, dec];
+    return null;
+  }
+  function selectSky(obj, raDeg, decDeg) {
+    var ra = Number(raDeg), dec = Number(decDeg);
+    var loc = objectRaDec(obj);
+    if ((!isFinite(ra) || !isFinite(dec)) && loc) {
+      ra = loc[0];
+      dec = loc[1];
+    }
+    if (!isFinite(ra) || !isFinite(dec)) return;
+    var sel = {
+      name: objectName(obj),
+      ra_hours: ((ra / 15) % 24 + 24) % 24,
+      dec_degrees: Math.max(-90, Math.min(90, dec))
+    };
+    var typ = objectType(obj);
+    if (typ) sel.type = typ;
+    var mag = objectMag(obj);
+    if (mag != null) sel.magnitude = mag;
+    box.selected = sel;
+  }
+  function bindObjects(aladin) {
+    if (box.objectsBound || !aladin || typeof aladin.on !== "function") return;
+    box.objectsBound = true;
+    try {
+      aladin.on("objectClicked", function(obj) {
+        if (!obj) return;
+        box.lastObject = obj;
+        box.lastObjectAt = Date.now();
+        var loc = objectRaDec(obj);
+        if (loc) selectSky(obj, loc[0], loc[1]);
+      });
+    } catch (err) {}
+    try {
+      aladin.on("objectHovered", function(obj) {
+        box.hoveredObject = obj || null;
+      });
+    } catch (err) {}
+  }
   function bind() {
     bindLiveOpacityWheel();
+    var aladin = aladinRef();
+    bindObjects(aladin);
     if (box.lookBound) return;
     box.lookBound = true;
+    box.lookGen = (Number(box.lookGen) || 0) + 1;
+    var gen = box.lookGen;
     var host = document;
     var dragging = false;
     var lastX = 0;
     var lastY = 0;
     host.addEventListener("pointerdown", function(ev) {
+      if (box.lookGen !== gen) return;
       if (ev.button !== 0 || !box.hasSite || isChrome(ev.target)) return;
       dragging = true;
+      box.dragging = true;
       lastX = ev.clientX;
       lastY = ev.clientY;
       ev.preventDefault();
@@ -982,6 +1156,7 @@ ATLAS_ASTRO_JS = r"""
       if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
     }, true);
     host.addEventListener("pointermove", function(ev) {
+      if (box.lookGen !== gen) return;
       if (!dragging) return;
       ev.preventDefault();
       ev.stopPropagation();
@@ -993,16 +1168,33 @@ ATLAS_ASTRO_JS = r"""
       lookPan(dx, dy);
     }, true);
     function endDrag(ev) {
+      if (box.lookGen !== gen) return;
       if (!dragging) return;
       dragging = false;
+      box.dragging = false;
       ev.stopPropagation();
+      syncRotation();
     }
     host.addEventListener("pointerup", endDrag, true);
     host.addEventListener("pointercancel", endDrag, true);
-    var aladin = aladinRef();
+    host.addEventListener("wheel", function(ev) {
+      if (box.lookGen !== gen) return;
+      if (ev.ctrlKey || ev.metaKey) return;
+      if (isChrome(ev.target)) return;
+      markMoved();
+      box.setFovValue = 0;
+    }, true);
     if (aladin && typeof aladin.on === "function") {
-      try { aladin.on("positionChanged", function() { syncRotation(); }); } catch (err) {}
-      try { aladin.on("zoomChanged", function() { syncRotation(); }); } catch (err) {}
+      try { aladin.on("positionChanged", function() { if (box.lookGen !== gen) return; requestSync(); }); } catch (err) {}
+      try {
+        aladin.on("zoomChanged", function() {
+          if (box.lookGen !== gen) return;
+          if (box.applyingFov) return;
+          markMoved();
+          box.setFovValue = 0;
+          requestSync();
+        });
+      } catch (err) {}
     }
     window.addEventListener("resize", function() { drawHorizon(); });
   }
@@ -1011,6 +1203,14 @@ ATLAS_ASTRO_JS = r"""
     bindLiveOpacityWheel: bindLiveOpacityWheel,
     sync: syncRotation,
     home: home,
+    markMoved: markMoved,
+    applyFov: function(fov) {
+      applyFov(aladinRef(), fov);
+    },
+    inscribedFov: function() {
+      return inscribedFov(aladinRef());
+    },
+    selectSky: selectSky,
     applyLook: function(raDeg, decDeg) {
       var aladin = aladinRef();
       if (!aladin) return;
@@ -1165,11 +1365,15 @@ ATLAS_HARVEST_JS = r"""
     var ra = Number(sel.ra_hours);
     var dec = Number(sel.dec_degrees);
     if (!isFinite(ra) || !isFinite(dec)) return JSON.stringify({});
-    return JSON.stringify({
+    var out = {
       name: String(sel.name || ""),
       ra_hours: ra,
       dec_degrees: dec
-    });
+    };
+    if (sel.type) out.type = String(sel.type);
+    var mag = Number(sel.magnitude);
+    if (isFinite(mag)) out.magnitude = mag;
+    return JSON.stringify(out);
   } catch (err) {
     return JSON.stringify({error: String(err)});
   }
@@ -1183,17 +1387,30 @@ ATLAS_VIEW_POLL_JS = r"""
     if (!aladin || typeof aladin.getRaDec !== "function") return "";
     var pos = aladin.getRaDec();
     if (!pos || !isFinite(Number(pos[0])) || !isFinite(Number(pos[1]))) return "";
+    var box = window.__astroDwarfAtlas;
     var fov = 0;
-    try {
-      var zoom = aladin.getFov();
-      fov = Array.isArray(zoom) ? Number(zoom[0]) : Number(zoom);
-    } catch (err) {}
+    if (box && isFinite(Number(box.setFovValue)) && Number(box.setFovValue) > 0)
+      fov = Number(box.setFovValue);
+    else if (box && box.astro && typeof box.astro.inscribedFov === "function")
+      fov = Number(box.astro.inscribedFov());
+    else {
+      try {
+        var zoom = aladin.getFov();
+        if (Array.isArray(zoom)) {
+          var fx = Number(zoom[0]), fy = Number(zoom[1]);
+          if (isFinite(fx) && fx > 0 && isFinite(fy) && fy > 0) fov = Math.min(fx, fy);
+          else if (isFinite(fx) && fx > 0) fov = fx;
+        } else {
+          fov = Number(zoom);
+        }
+      } catch (err) {}
+    }
     var view = {
       ra_hours: ((Number(pos[0]) / 15) % 24 + 24) % 24,
       dec_degrees: Math.max(-90, Math.min(90, Number(pos[1])))
     };
     if (isFinite(fov) && fov > 0) view.fov = fov;
-    var box = window.__astroDwarfAtlas;
+    if (box && box.userMoved) view.user_moved = true;
     if (box && box.astro && typeof box.astro.horizonOf === "function") {
       var hor = box.astro.horizonOf(Number(pos[0]), Number(pos[1]));
       if (hor && isFinite(hor.az) && isFinite(hor.alt)) {
@@ -1216,15 +1433,21 @@ ATLAS_VIEW_APPLY_JS = r"""
     var ra = Number(p && p.ra_hours);
     var dec = Number(p && p.dec_degrees);
     if (!isFinite(ra) || !isFinite(dec)) return "missing";
-    aladin.gotoRaDec(ra * 15, dec);
-    var fov = Number(p && p.fov);
-    if (isFinite(fov) && fov > 0 && typeof aladin.setFov === "function")
-      aladin.setFov(fov);
     var box = window.__astroDwarfAtlas;
     if (box && box.astro && typeof box.astro.applyLook === "function")
       box.astro.applyLook(ra * 15, dec);
-    else if (box && box.astro && typeof box.astro.sync === "function")
-      box.astro.sync();
+    else {
+      aladin.gotoRaDec(ra * 15, dec);
+      if (box && box.astro && typeof box.astro.sync === "function")
+        box.astro.sync();
+    }
+    var fov = Number(p && p.fov);
+    if (isFinite(fov) && fov > 0) {
+      if (box && box.astro && typeof box.astro.applyFov === "function")
+        box.astro.applyFov(fov);
+      else if (typeof aladin.setFov === "function")
+        aladin.setFov(fov);
+    }
     return "ok";
   } catch (err) {
     return "error";
@@ -1240,12 +1463,34 @@ ATLAS_VIEW_POS_JS = r"""
     var ra = Number(raHours);
     var dec = Number(decDegrees);
     if (!isFinite(ra) || !isFinite(dec)) return "missing";
-    aladin.gotoRaDec(ra * 15, dec);
     var box = window.__astroDwarfAtlas;
     if (box && box.astro && typeof box.astro.applyLook === "function")
       box.astro.applyLook(ra * 15, dec);
-    else if (box && box.astro && typeof box.astro.sync === "function")
+    else if (box && box.astro && typeof box.astro.sync === "function") {
+      aladin.gotoRaDec(ra * 15, dec);
       box.astro.sync();
+    } else {
+      aladin.gotoRaDec(ra * 15, dec);
+    }
+    return "ok";
+  } catch (err) {
+    return "error";
+  }
+})
+"""
+
+ATLAS_PIN_TARGET_JS = r"""
+(function(p){
+  try {
+    var ra = Number(p && p.ra_hours);
+    var dec = Number(p && p.dec_degrees);
+    if (!isFinite(ra) || !isFinite(dec)) return "missing";
+    var box = window.__astroDwarfAtlas = window.__astroDwarfAtlas || {};
+    box.selected = {
+      name: String((p && p.name) || "FOV centre"),
+      ra_hours: ((ra % 24) + 24) % 24,
+      dec_degrees: Math.max(-90, Math.min(90, dec))
+    };
     return "ok";
   } catch (err) {
     return "error";
@@ -1263,12 +1508,12 @@ ATLAS_LOCK_JS = r"""
     var name = String((p && p.name) || "").trim();
     if (!isFinite(ra) || !isFinite(dec))
       return JSON.stringify({status: "missing"});
-    aladin.gotoRaDec(ra * 15, dec);
-    window.__astroDwarfAtlas = window.__astroDwarfAtlas || {};
-    var box = window.__astroDwarfAtlas;
+    var box = window.__astroDwarfAtlas = window.__astroDwarfAtlas || {};
     if (box.astro && typeof box.astro.applyLook === "function")
       box.astro.applyLook(ra * 15, dec);
-    window.__astroDwarfAtlas.selected = {
+    else
+      aladin.gotoRaDec(ra * 15, dec);
+    box.selected = {
       name: name,
       ra_hours: ((ra % 24) + 24) % 24,
       dec_degrees: Math.max(-90, Math.min(90, dec))
@@ -1293,30 +1538,82 @@ ATLAS_FOV_JS = r"""
     if (!isFinite(ra) || !isFinite(dec)) return [];
     return [{index: 1, ra_hours: ra, dec_degrees: dec, corners: []}];
   }
+  function skyPoint(ev) {
+    var aladin = window.aladin;
+    if (!aladin || typeof aladin.pix2world !== "function") return null;
+    var host = document.getElementById("aladin-lite-div");
+    if (!host) return null;
+    var rect = host.getBoundingClientRect();
+    var x = ev.clientX - rect.left;
+    var y = ev.clientY - rect.top;
+    if (x < 0 || y < 0 || x > rect.width || y > rect.height) return null;
+    try {
+      var world = aladin.pix2world(x, y);
+      if (!world || !isFinite(Number(world[0])) || !isFinite(Number(world[1]))) return null;
+      return world;
+    } catch (err) {
+      return null;
+    }
+  }
+  function simbadTooltipName() {
+    var nodes = document.querySelectorAll(
+      ".aladin-tooltip, #aladin-tooltip-mouse, .aladin-tooltip-container .aladin-tooltip"
+    );
+    for (var i = 0; i < nodes.length; i++) {
+      var text = String(nodes[i].textContent || "").trim();
+      if (!text) continue;
+      var line = text.split("\n")[0].trim();
+      if (line) return line;
+    }
+    return "";
+  }
+  function pickedObject(box) {
+    if (box.lastObject && (Date.now() - Number(box.lastObjectAt || 0)) < 500)
+      return box.lastObject;
+    return box.hoveredObject || null;
+  }
   function bindInput(box) {
-    if (box.bound) return;
-    box.bound = true;
-    document.addEventListener("dblclick", function() {
-      box.trackAt = Date.now();
-    }, true);
-    document.addEventListener("click", function(ev) {
-      var aladin = window.aladin;
-      if (!aladin || typeof aladin.pix2world !== "function") return;
-      var host = document.getElementById("aladin-lite-div");
-      if (!host) return;
-      var rect = host.getBoundingClientRect();
-      var x = ev.clientX - rect.left;
-      var y = ev.clientY - rect.top;
-      if (x < 0 || y < 0 || x > rect.width || y > rect.height) return;
-      try {
-        var world = aladin.pix2world(x, y);
-        if (!world || !isFinite(Number(world[0])) || !isFinite(Number(world[1]))) return;
+    if (box.clickBound === 2) return;
+    box.clickBound = 2;
+    document.addEventListener("dblclick", function(ev) {
+      var world = skyPoint(ev);
+      if (!world) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (typeof ev.stopImmediatePropagation === "function")
+        ev.stopImmediatePropagation();
+      if (box.astro && typeof box.astro.applyLook === "function")
+        box.astro.applyLook(world[0], world[1]);
+      else if (window.aladin)
+        window.aladin.gotoRaDec(world[0], world[1]);
+      var obj = pickedObject(box);
+      if (box.astro && typeof box.astro.selectSky === "function")
+        box.astro.selectSky(obj, world[0], world[1]);
+      else
         box.selected = {
-          name: "",
+          name: obj ? String(obj.name || "") : simbadTooltipName(),
           ra_hours: ((Number(world[0]) / 15) % 24 + 24) % 24,
           dec_degrees: Math.max(-90, Math.min(90, Number(world[1])))
         };
-      } catch (err) {}
+      if (box.astro && typeof box.astro.markMoved === "function")
+        box.astro.markMoved();
+      box.trackAt = Date.now();
+    }, true);
+    document.addEventListener("click", function(ev) {
+      var world = skyPoint(ev);
+      if (!world) return;
+      var obj = pickedObject(box);
+      if (!obj && simbadTooltipName())
+        obj = {name: simbadTooltipName()};
+      if (box.astro && typeof box.astro.selectSky === "function") {
+        box.astro.selectSky(obj, world[0], world[1]);
+        return;
+      }
+      box.selected = {
+        name: obj ? String(obj.name || simbadTooltipName() || "") : "",
+        ra_hours: ((Number(world[0]) / 15) % 24 + 24) % 24,
+        dec_degrees: Math.max(-90, Math.min(90, Number(world[1])))
+      };
     }, true);
   }
   try {

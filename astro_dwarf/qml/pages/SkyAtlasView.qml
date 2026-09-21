@@ -34,6 +34,11 @@ Item {
         : (backend.selectedDevice.camera === "wide" ? "wide" : "tele")
     onLiveCameraChanged: if (map.pageReady) map.applyFovOverlay()
     property string overlayKey: ""
+    property string fovPushKey: ""
+    property bool fovEngineReady: false
+    property string liveInjectedKey: ""
+    property string paneInjectedKey: ""
+    property bool shown: true
     signal contextMenuRequested(real x, real y)
     signal trackRequested()
     readonly property var engineItem: engineLoader.item
@@ -83,6 +88,23 @@ Item {
         backend.setSkyMapTarget(name, ra, dec)
         return true
     }
+    function coordinateHarvest(result) {
+        if (map.parseHarvest(result))
+            return result
+        const selected = map.selectedTarget || ({})
+        const ra = Number(selected.ra_hours)
+        const dec = Number(selected.dec_degrees)
+        if (!map.hasSelectedTarget || !isFinite(ra) || !isFinite(dec))
+            return result
+        return JSON.stringify({
+            name: String(selected.name || "").trim() || "FOV centre",
+            ra_hours: ra,
+            dec_degrees: dec
+        })
+    }
+    function pinCoordinateTarget(payload) {
+        map.runJavaScript(backend.skyAtlasPinTargetScript(payload || ({})))
+    }
     function runJavaScript(script, callback) {
         const view = map.engineItem
         if (!view || typeof view.runJavaScript !== "function")
@@ -128,15 +150,21 @@ Item {
     function readSelectedTarget(callback) {
         map.runJavaScript(backend.skyAtlasHarvestScript, result => {
             const target = map.parseHarvest(result)
+            const previous = map.selectedKey
             if (target) {
-                map.hasSelectedTarget = true
-                map.selectedTarget = target
-                map.selectedKey = target.name + "|" + Number(target.ra_hours).toFixed(5) + "|"
-                                  + Number(target.dec_degrees).toFixed(5)
-                backend.setSkyMapTarget(target.name, Number(target.ra_hours), Number(target.dec_degrees))
+                const key = target.name + "|" + Number(target.ra_hours).toFixed(5) + "|"
+                            + Number(target.dec_degrees).toFixed(5)
+                if (key !== map.selectedKey) {
+                    map.hasSelectedTarget = true
+                    map.selectedTarget = target
+                    map.selectedKey = key
+                    backend.setSkyMapTarget(target.name, Number(target.ra_hours), Number(target.dec_degrees))
+                }
             }
             if (typeof callback === "function")
-                callback(result)
+                callback(map.coordinateHarvest(result))
+            else if (map.selectedKey !== previous)
+                map.applyFovOverlay()
         })
     }
     function viewForOverlay() {
@@ -171,10 +199,40 @@ Item {
         }
         return data
     }
+    function fovInputKey() {
+        const grid = map.mosaicColumns > 1 || map.mosaicRows > 1
+        const view = grid ? map.viewForOverlay() : ({})
+        const ra = Number(view.ra_hours)
+        const dec = Number(view.dec_degrees)
+        const viewPart = grid && isFinite(ra) && isFinite(dec)
+            ? ra.toFixed(3) + "," + dec.toFixed(2)
+            : ""
+        const overlayFov = grid ? backend.mosaicFovText : backend.skyFovText
+        return [
+            map.selectedKey,
+            viewPart,
+            map.mosaicColumns,
+            map.mosaicRows,
+            Number(map.mosaicOverlap).toFixed(3),
+            Number(map.mosaicPa).toFixed(1),
+            overlayFov,
+            backend.mosaicPaChip,
+            backend.mosaicPaSource,
+            String(Theme.accent),
+            map.liveOverlay ? "live" : "off",
+            Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0),
+            Object.keys(backend.skyMosaicPaneUrls || {}).join(",")
+        ].join("|")
+    }
     function applyFovOverlay() {
-        if (!map.pageReady)
+        if (!map.pageReady || !map.shown)
+            return
+        const key = map.fovInputKey()
+        if (map.fovEngineReady && key === map.fovPushKey)
             return
         map.readSelectedTarget(raw => {
+            if (!map.shown)
+                return
             const script = backend.skyAtlasFovScript(
                 map.overlayPayload(raw),
                 map.mosaicColumns,
@@ -185,24 +243,11 @@ Item {
             )
             map.runJavaScript(script, result => {
                 const status = String(result || "")
-                const overlayFov = (map.mosaicColumns > 1 || map.mosaicRows > 1)
-                    ? backend.mosaicFovText
-                    : backend.skyFovText
-                if (status === "panes" || status === "center" || status === "grid" || status === "hidden")
-                    map.overlayKey = [
-                        map.mosaicColumns,
-                        map.mosaicRows,
-                        map.mosaicOverlap,
-                        map.mosaicPa,
-                        overlayFov,
-                        backend.mosaicPaChip,
-                        backend.mosaicPaSource,
-                        String(Theme.accent),
-                        map.liveOverlay ? "live" : "off",
-                        Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0),
-                        Object.keys(backend.skyMosaicPaneUrls || {}).join(","),
-                        status
-                    ].join("|")
+                if (status === "panes" || status === "center" || status === "grid" || status === "hidden") {
+                    map.fovEngineReady = true
+                    map.fovPushKey = map.fovInputKey()
+                    map.overlayKey = map.fovPushKey + "|" + status
+                }
                 if (map.liveOverlay)
                     map.applyLiveOverlay()
                 map.applyMosaicPaneImages()
@@ -210,22 +255,36 @@ Item {
         })
     }
     function applyLiveOverlay() {
-        if (!map.pageReady)
+        if (!map.pageReady || !map.shown)
             return
         if (!map.liveOverlay) {
+            if (map.liveInjectedKey === "off")
+                return
+            map.liveInjectedKey = "off"
             map.runJavaScript(backend.skyAtlasLiveScript("", false, map.liveOpacity, 0))
             return
         }
-        map.runJavaScript(backend.skyAtlasLiveScript(
-            backend.skyLiveFrameDataUrl(map.liveCamera),
-            true,
-            map.liveOpacity,
-            Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0)
-        ))
+        const pane = Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0)
+        const key = [
+            backend.skyLiveFrameRevision(map.liveCamera),
+            pane,
+            Number(map.liveOpacity).toFixed(3)
+        ].join("|")
+        if (key === map.liveInjectedKey)
+            return
+        const url = backend.skyLiveFrameDataUrl(map.liveCamera)
+        if (!url)
+            return
+        map.liveInjectedKey = key
+        map.runJavaScript(backend.skyAtlasLiveScript(url, true, map.liveOpacity, pane))
     }
     function applyMosaicPaneImages() {
-        if (!map.pageReady)
+        if (!map.pageReady || !map.shown)
             return
+        const key = Object.keys(backend.skyMosaicPaneUrls || {}).join(",")
+        if (key === map.paneInjectedKey)
+            return
+        map.paneInjectedKey = key
         map.runJavaScript(backend.skyAtlasPaneScript(backend.skyMosaicPaneUrls))
     }
     function openAtlasMenu(x, y) {
@@ -312,7 +371,7 @@ Item {
         map.runJavaScript(backend.skyAtlasViewScript(map.savedView))
     }
     function pollView() {
-        if (!map.pageReady)
+        if (!map.pageReady || !map.shown)
             return
         map.runJavaScript(backend.skyAtlasViewPollScript, result => {
             const text = String(result || "").trim()
@@ -334,7 +393,10 @@ Item {
                     return
                 }
                 if (!map.viewRestored) {
-                    if (map.viewMatchesSaved(data)) {
+                    if (data.user_moved) {
+                        map.viewRestored = true
+                        map.persistView = true
+                    } else if (map.viewMatchesSaved(data)) {
                         map.viewRestored = true
                         map.persistView = true
                     } else if (map.restoreStartedAt && Date.now() - map.restoreStartedAt > 12000) {
@@ -447,6 +509,7 @@ Item {
             map.hasSelectedTarget = false
             map.selectedTarget = ({})
             map.selectedKey = ""
+            map.liveInjectedKey = ""
             return
         }
         if (map.liveOverlay)
@@ -491,6 +554,10 @@ Item {
         id: engineLoader
         anchors.fill: parent
         source: Qt.resolvedUrl(Qt.platform.os === "linux" ? "SkyAtlasEngineItem.qml" : "SkyAtlasNativeItem.qml")
+        onLoaded: {
+            if (item)
+                item.shown = Qt.binding(() => map.shown)
+        }
         onStatusChanged: {
             if (status === Loader.Error && !map.initialLoadDone)
                 map.initialLoadFailed = true
@@ -518,7 +585,7 @@ Item {
     Timer {
         interval: 400
         repeat: true
-        running: map.documentReady && !map.initialLoadFailed
+        running: map.documentReady && map.shown && !map.initialLoadDone && !map.initialLoadFailed
         onTriggered: map.applyBootFixes()
     }
 
@@ -539,23 +606,30 @@ Item {
     }
 
     Timer {
-        interval: 700
+        interval: 1000
         repeat: true
-        running: map.pageReady
+        running: map.pageReady && map.shown
         onTriggered: map.applyFovOverlay()
     }
 
     Timer {
-        interval: 120
+        interval: 1000
         repeat: true
-        running: map.pageReady && map.liveOverlay
+        running: map.pageReady && map.shown
+        onTriggered: map.readSelectedTarget()
+    }
+
+    Timer {
+        interval: 250
+        repeat: true
+        running: map.pageReady && map.shown && map.liveOverlay
         onTriggered: map.applyLiveOverlay()
     }
 
     Timer {
-        interval: 80
+        interval: 200
         repeat: true
-        running: map.pageReady
+        running: map.pageReady && map.shown
         onTriggered: {
             map.pollContextMenu()
             map.pollTrackRequest()
@@ -573,21 +647,21 @@ Item {
     Timer {
         interval: 400
         repeat: true
-        running: map.pageReady && map.savedViewReady && !map.viewRestored && map.hasSavedView() && !map.holdView
+        running: map.pageReady && map.shown && map.savedViewReady && !map.viewRestored && map.hasSavedView() && !map.holdView
         onTriggered: map.restoreSavedView()
     }
 
     Timer {
         interval: 800
         repeat: true
-        running: map.pageReady && map.appliedSiteKey !== backend.skyAtlasSiteScript
+        running: map.pageReady && map.shown && map.appliedSiteKey !== backend.skyAtlasSiteScript
         onTriggered: map.applyObservingSite()
     }
 
     Timer {
-        interval: 120
+        interval: 300
         repeat: true
-        running: map.pageReady
+        running: map.pageReady && map.shown
         onTriggered: map.pollView()
     }
 }

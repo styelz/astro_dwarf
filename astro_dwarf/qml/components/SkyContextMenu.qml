@@ -6,13 +6,15 @@ HudMenu {
     id: skyMenu
     objectName: "skyContextMenu"
     popupType: Popup.Window
-    implicitWidth: Theme.px(300)
+    implicitWidth: Theme.px(360)
     property bool overlayEnabled: false
     property real overlayOpacity: 0.65
     readonly property int overlayOpacityPct: Math.round(Math.max(0, Math.min(1, overlayOpacity)) * 100)
     property bool dblclickTrack: false
     property bool trackEnabled: false
     property bool hasTarget: false
+    property bool hasFovCenter: false
+    property string fovCenterText: ""
     property bool atlasMenuAvailable: false
     property bool clipboardValid: false
     property string clipboardText: ""
@@ -23,6 +25,7 @@ HudMenu {
     signal previewToggled()
     signal dblclickTrackToggled()
     signal trackSelected()
+    signal fovTargetRequested()
     signal atlasMenuRequested()
     signal clipboardGotoRequested()
     signal enterRaDecRequested()
@@ -83,7 +86,7 @@ HudMenu {
         onTriggered: skyMenu.previewToggled()
     }
     HudMenuItem {
-        text: skyMenu.dblclickTrack ? "Double-click only centers" : "Double-click starts tracking"
+        text: skyMenu.dblclickTrack ? "Double-click starts tracking" : "Double-click only centers"
         glyph: "\uE734"
         trailingText: skyMenu.dblclickTrack ? "ON" : "OFF"
         accessibleDescription: skyMenu.dblclickTrack
@@ -92,11 +95,24 @@ HudMenu {
         onTriggered: skyMenu.dblclickTrackToggled()
     }
     HudMenuItem {
+        objectName: "fovTargetMenuItem"
+        text: "Set target to FOV centre"
+        glyph: "\uE1D2"
+        enabled: skyMenu.hasFovCenter
+        trailingText: skyMenu.hasFovCenter ? skyMenu.fovCenterText : ""
+        trailingMaxWidth: Theme.px(120)
+        accessibleDescription: skyMenu.hasFovCenter
+                               ? "Use the sky-map field centre as the target without picking a catalog object, "
+                                 + skyMenu.fovCenterText
+                               : "Pan the sky map until the field centre is known"
+        onTriggered: skyMenu.fovTargetRequested()
+    }
+    HudMenuItem {
         text: "Track selected target"
         glyph: "\uE1D2"
         enabled: skyMenu.trackEnabled && skyMenu.hasTarget
         accessibleDescription: !skyMenu.hasTarget
-                               ? "Select a target in the sky map first"
+                               ? "Select a sky-map object, or set the FOV centre as the target"
                                : !skyMenu.trackEnabled
                                  ? "Connect the telescope and wait until it is idle"
                                  : "Slew the telescope to the selected sky-map target and start tracking"
