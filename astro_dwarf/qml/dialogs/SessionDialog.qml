@@ -782,16 +782,14 @@ Dialog {
                 HudButton {
                     objectName: "copy-ra-dec"
                     text: "\uE8C8"
+                    iconButton: true
                     font.family: Theme.fontIcon
                     font.pixelSize: Theme.fontMd
-                    font.letterSpacing: 0
                     implicitWidth: Theme.compactControlHeight
                     implicitHeight: Theme.compactControlHeight
                     Layout.preferredWidth: Theme.compactControlHeight
                     Layout.preferredHeight: Theme.compactControlHeight
                     Layout.alignment: Qt.AlignBottom
-                    leftPadding: 0
-                    rightPadding: 0
                     buttonColor: "transparent"
                     foregroundColor: Theme.textSecondary
                     tooltip: "Copy RA / Dec"

@@ -1040,7 +1040,8 @@ QtObject {
 
     // Type. Windows ships Segoe/Cascadia; Linux often does not. Ask for an
     // installed family instead of letting fontconfig map missing names onto a
-    // monospace face (Adwaita Mono on Arch XFCE). Keep candidates in sync with
+    // monospace face (Adwaita Mono on Arch XFCE). Icon glyphs use the bundled
+    // Astro Dwarf Icons face first. Keep candidates in sync with
     // astro_dwarf/qt_fonts.py.
     readonly property var fontUiCandidates: [
         "Segoe UI", "Inter", "Noto Sans", "Ubuntu", "Liberation Sans",
@@ -1054,8 +1055,11 @@ QtObject {
         "Source Code Pro", "Adwaita Mono", "FreeMono", "Menlo", "Monaco",
         "monospace"
     ]
+    property string iconFamilyOverride: ""
+    // Qt Quick will not atlas PUA glyphs from addApplicationFont alone.
+    // Main.qml FontLoader writes iconFamilyOverride when the shipped face is ready.
     readonly property var fontIconCandidates: [
-        "Segoe MDL2 Assets", "Segoe Fluent Icons"
+        "Astro Dwarf Icons", "Segoe MDL2 Assets", "Segoe Fluent Icons"
     ]
     readonly property var installedFontMap: {
         const map = ({})
@@ -1079,7 +1083,14 @@ QtObject {
     }
     readonly property string fontUi: theme.pickInstalledFont(theme.fontUiCandidates, "Sans Serif")
     readonly property string fontMono: theme.pickInstalledFont(theme.fontMonoCandidates, "monospace")
-    readonly property string fontIcon: theme.pickInstalledFont(theme.fontIconCandidates, theme.fontUi)
+    readonly property string fontIcon: {
+        const loaded = String(theme.iconFamilyOverride || "")
+        if (loaded)
+            return loaded
+        // Literal system name: families() often omits symbol fonts, and
+        // falling back to the UI sans blanks every Private Use glyph.
+        return "Segoe MDL2 Assets"
+    }
     readonly property int fontXs: theme.fontPx(8)
     readonly property int fontSm: theme.fontPx(10)
     readonly property int fontMd: theme.fontPx(12)

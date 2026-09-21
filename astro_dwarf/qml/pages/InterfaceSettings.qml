@@ -558,13 +558,11 @@ ColumnLayout {
                     }
                     HudButton {
                         text: "\uEF3C"
+                        iconButton: true
                         font.family: Theme.fontIcon
                         font.pixelSize: Theme.fontPx(15)
-                        font.letterSpacing: 0
                         implicitWidth: Theme.controlHeight
                         implicitHeight: Theme.controlHeight
-                        leftPadding: 0
-                        rightPadding: 0
                         tooltip: "Eyedropper. Sample a pixel on screen, then APPLY."
                         accessibleDescription: "Eyedropper. Sample a colour from the screen."
                         onClicked: {

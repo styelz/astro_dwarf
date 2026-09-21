@@ -16,7 +16,7 @@ from PySide6.QtCore import QTimer, Qt, QUrl
 from PySide6.QtGui import QGuiApplication, QIcon, QPixmap
 from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
 
-from .qt_fonts import apply_hud_fonts
+from .qt_fonts import apply_hud_fonts, bundled_font_dir
 from .qt_settings import flush_qt_settings
 
 from .qt_backend import AppBackend
@@ -239,6 +239,12 @@ def run() -> int:
     engine = QQmlApplicationEngine()
     engine.warnings.connect(lambda warnings: [print(warning.toString(), file=sys.stderr) for warning in warnings])
     engine.rootContext().setContextProperty("backend", backend)
+    icon_dir = bundled_font_dir()
+    icon_ttf = icon_dir / "AstroDwarfIcons.ttf" if icon_dir is not None else None
+    engine.rootContext().setContextProperty(
+        "hudIconFontUrl",
+        QUrl.fromLocalFile(str(icon_ttf)) if icon_ttf is not None and icon_ttf.is_file() else QUrl(),
+    )
     engine.load(QUrl.fromLocalFile(str(resources / "qml" / "Main.qml")))
 
     if not engine.rootObjects():

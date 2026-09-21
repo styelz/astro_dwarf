@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import ".."
 
 // Named-theme picker. Paints that theme's panel, line and accent so looks
@@ -69,7 +68,8 @@ Item {
         }
     }
 
-    ToolTip.visible: hover.hovered
-    ToolTip.delay: Theme.tooltipDelay
-    ToolTip.text: chip.selected ? chip.themeLabel + " is active." : "Apply " + chip.themeLabel + "."
+    HudToolTip {
+        visible: hover.hovered
+        text: chip.selected ? chip.themeLabel + " is active." : "Apply " + chip.themeLabel + "."
+    }
 }

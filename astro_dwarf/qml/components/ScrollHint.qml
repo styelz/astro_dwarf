@@ -55,6 +55,7 @@ Item {
                     text: hint.pointsDown ? "\uE70D" : "\uE70E"   // Segoe MDL2 ChevronDown / ChevronUp
                     font.family: Theme.fontIcon
                     font.pixelSize: Theme.fontPx(9)
+                    font.preferShaping: true
                     color: hint.tint
                     opacity: 0.35 + 0.3 * (hint.pointsDown ? index : 2 - index)
                 }

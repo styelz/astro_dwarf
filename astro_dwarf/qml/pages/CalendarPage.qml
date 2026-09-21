@@ -1611,10 +1611,12 @@ Item {
                             HudButton {
                                 objectName: "night-zoom-out"
                                 text: "−"
+                                iconButton: true
                                 implicitHeight: Theme.compactControlHeight
                                 Layout.preferredWidth: Theme.px(24)
                                 Layout.preferredHeight: Theme.compactControlHeight
                                 tooltip: "Zoom out"
+                                Accessible.name: "Zoom out"
                                 onClicked: nightTimeline.zoomBy(1 / 1.22, timelineFlick.height / 2)
                             }
                             Item {
@@ -1651,10 +1653,12 @@ Item {
                             HudButton {
                                 objectName: "night-zoom-in"
                                 text: "+"
+                                iconButton: true
                                 implicitHeight: Theme.compactControlHeight
                                 Layout.preferredWidth: Theme.px(24)
                                 Layout.preferredHeight: Theme.compactControlHeight
                                 tooltip: "Zoom in"
+                                Accessible.name: "Zoom in"
                                 onClicked: nightTimeline.zoomBy(1.22, timelineFlick.height / 2)
                             }
                         }

@@ -87,9 +87,10 @@ Item {
                 border.width: 2
                 Behavior on border.color { ColorAnimation { duration: Theme.quick } }
             }
-            ToolTip.visible: currentHover.hovered
-            ToolTip.delay: Theme.tooltipDelay
-            ToolTip.text: field.colorHex + ". Click to pick a custom colour."
+            HudToolTip {
+                visible: currentHover.hovered
+                text: field.colorHex + ". Click to pick a custom colour."
+            }
         }
 
         Repeater {
@@ -122,9 +123,10 @@ Item {
                     Behavior on width { NumberAnimation { duration: Theme.quick } }
                     Behavior on border.color { ColorAnimation { duration: Theme.quick } }
                 }
-                ToolTip.visible: chipHover.hovered
-                ToolTip.delay: Theme.tooltipDelay
-                ToolTip.text: chip.hex
+                HudToolTip {
+                    visible: chipHover.hovered
+                    text: chip.hex
+                }
             }
         }
 

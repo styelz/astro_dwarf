@@ -52,4 +52,4 @@ packages = ["astro_dwarf"]
 version = {file = "VERSION"}
 
 [tool.setuptools.package-data]
-astro_dwarf = ["qml/**/*"]
+astro_dwarf = ["qml/**/*", "fonts/**/*"]

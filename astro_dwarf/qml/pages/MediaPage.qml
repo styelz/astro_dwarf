@@ -923,10 +923,9 @@ Item {
                     anchors.leftMargin: Theme.s3
                     visible: lightbox.hasPrev
                     text: "‹"
+                    iconButton: true
                     tooltip: "Previous file"
                     accessibleDescription: "Show the previous file"
-                    leftPadding: Theme.s2
-                    rightPadding: Theme.s2
                     implicitWidth: Theme.controlHeight
                     onClicked: lightbox.step(-1)
                 }
@@ -937,10 +936,9 @@ Item {
                     anchors.rightMargin: Theme.s3
                     visible: lightbox.hasNext
                     text: "›"
+                    iconButton: true
                     tooltip: "Next file"
                     accessibleDescription: "Show the next file"
-                    leftPadding: Theme.s2
-                    rightPadding: Theme.s2
                     implicitWidth: Theme.controlHeight
                     onClicked: lightbox.step(1)
                 }

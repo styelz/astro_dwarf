@@ -1,15 +1,12 @@
 """Pick HUD typefaces that are actually installed.
 
-Theme.qml requests Segoe UI / Cascadia Mono / Segoe MDL2 Assets. Those exist
-on Windows. On a typical Linux box they do not, and Qt/fontconfig then
-fuzzy-matches the names. Arch XFCE with Adwaita fonts maps the icon family
-onto Adwaita Mono, so the HUD looks like a fixed-width terminal.
+Theme.qml requests Segoe UI / Cascadia Mono / an icon face. Windows may have
+Segoe MDL2 Assets, but QFontDatabase.families() often omits symbol fonts, and
+Linux usually has none of them. The package ships Astro Dwarf Icons (original
+geometry at the MDL2 codepoints QML already uses) plus Liberation Sans/Mono.
 
-Frozen Linux builds also ship Liberation Sans/Mono and register them before
-QML loads, so an AppImage does not depend on the host fontconfig guess.
-
-Always choose a family QFontDatabase lists. Keep the candidate order in sync
-with Theme.qml.
+Never substitute a missing icon family onto the UI sans — that blanks every
+Private Use glyph. Keep the candidate order in sync with Theme.qml.
 """
 
 from __future__ import annotations
@@ -53,7 +50,9 @@ MONO_FONT_CANDIDATES = (
     "monospace",
 )
 
+BUNDLED_ICON_FAMILY = "Astro Dwarf Icons"
 ICON_FONT_CANDIDATES = (
+    BUNDLED_ICON_FAMILY,
     "Segoe MDL2 Assets",
     "Segoe Fluent Icons",
 )
@@ -90,6 +89,10 @@ def load_bundled_fonts() -> list[str]:
     for path in sorted(folder.iterdir()):
         if path.suffix.lower() not in {".ttf", ".otf"}:
             continue
+        # On Windows, registering this face next to Segoe MDL2 makes Qt Quick
+        # merge PUA glyphs onto the bundled font and the HUD icons go blank.
+        if sys.platform == "win32" and path.stem.lower() == "astrodwarficons":
+            continue
         handle = QFontDatabase.addApplicationFont(str(path))
         if handle < 0:
             continue
@@ -113,16 +116,47 @@ def pick_family(candidates: tuple[str, ...], available: dict[str, str], fallback
     return fallback
 
 
-def resolve_hud_fonts(families: list[str] | None = None) -> HudFonts:
+def _icon_candidate_names() -> set[str]:
+    return {name.casefold() for name in ICON_FONT_CANDIDATES}
+
+
+def supplement_icon_families(available: dict[str, str]) -> dict[str, str]:
+    """Symbol faces can exist without appearing in QFontDatabase.families()."""
+    try:
+        from PySide6.QtGui import QFontDatabase
+    except Exception:
+        return available
+    has_family = getattr(QFontDatabase, "hasFamily", None)
+    if not callable(has_family):
+        return available
+    filled = dict(available)
+    for name in ICON_FONT_CANDIDATES:
+        key = name.casefold()
+        if key in filled:
+            continue
+        try:
+            if QFontDatabase.hasFamily(name):
+                filled[key] = name
+        except Exception:
+            continue
+    return filled
+
+
+def resolve_hud_fonts(families: list[str] | None = None, *, probe_system: bool | None = None) -> HudFonts:
     if families is None:
         from PySide6.QtGui import QFontDatabase
 
         families = list(QFontDatabase.families())
+        probe = True if probe_system is None else probe_system
+    else:
+        probe = False if probe_system is None else probe_system
     available = installed_font_map(families)
+    if probe:
+        available = supplement_icon_families(available)
     ui = pick_family(UI_FONT_CANDIDATES, available, "Sans Serif")
     mono = pick_family(MONO_FONT_CANDIDATES, available, "monospace")
     icon = pick_family(ICON_FONT_CANDIDATES, available, ui)
-    has_icon = icon.casefold() in {name.casefold() for name in ICON_FONT_CANDIDATES}
+    has_icon = icon.casefold() in _icon_candidate_names()
     return HudFonts(ui=ui, mono=mono, icon=icon, has_icon_font=has_icon)
 
 
@@ -144,5 +178,4 @@ def apply_hud_fonts(application, fonts: HudFonts | None = None) -> HudFonts:
     application.setFont(ui_font)
     QFont.insertSubstitutions("Segoe UI", [fonts.ui])
     QFont.insertSubstitutions("Cascadia Mono", [fonts.mono])
-    QFont.insertSubstitutions("Segoe MDL2 Assets", [fonts.icon])
     return fonts

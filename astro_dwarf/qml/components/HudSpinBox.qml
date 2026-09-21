@@ -130,6 +130,7 @@ SpinBox {
             text: "\uE70E"
             font.family: Theme.fontIcon
             font.pixelSize: Theme.fontSm
+            font.preferShaping: true
             color: box.up.pressed || upHover.hovered ? Theme.accent : Theme.textSecondary
         }
     }
@@ -146,6 +147,7 @@ SpinBox {
             text: "\uE70D"
             font.family: Theme.fontIcon
             font.pixelSize: Theme.fontSm
+            font.preferShaping: true
             color: box.down.pressed || downHover.hovered ? Theme.accent : Theme.textSecondary
         }
     }

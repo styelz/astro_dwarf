@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import ".."
 
 // Clickable theme-role sample. Hue/saturation/lightness sliders edit the
@@ -135,16 +134,18 @@ Item {
         }
     }
 
-    ToolTip.visible: hover.hovered
-    ToolTip.delay: Theme.tooltipDelay
-    ToolTip.text: {
-        const parentName = Theme.parentOf(swatch.roleKey) ? Theme.roleName(Theme.parentOf(swatch.roleKey)) : ""
-        let line = (selected ? "Editing " : "Edit ") + roleName + "  " + swatch.hex + "."
-        if (swatch.roleHint)
-            line += " " + swatch.roleHint
-        if (parentName)
-            line += linked ? " Follows " + parentName + "." : " Unlocked from " + parentName + "."
-        line += " Double-click restores this colour."
-        return line
+    HudToolTip {
+        visible: hover.hovered
+        wrapWidth: Theme.px(280)
+        text: {
+            const parentName = Theme.parentOf(swatch.roleKey) ? Theme.roleName(Theme.parentOf(swatch.roleKey)) : ""
+            let line = (selected ? "Editing " : "Edit ") + roleName + "  " + swatch.hex + "."
+            if (swatch.roleHint)
+                line += " " + swatch.roleHint
+            if (parentName)
+                line += linked ? " Follows " + parentName + "." : " Unlocked from " + parentName + "."
+            line += " Double-click restores this colour."
+            return line
+        }
     }
 }

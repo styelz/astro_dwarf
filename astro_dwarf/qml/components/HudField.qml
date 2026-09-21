@@ -81,6 +81,7 @@ TextField {
             text: field.passwordRevealed ? "\uE7ED" : "\uE7B3"
             font.family: Theme.fontIcon
             font.pixelSize: Theme.fontPx(14)
+            font.preferShaping: true
             color: !field.enabled ? Theme.textSecondary
                  : revealBtn.activeFocus || revealClick.containsMouse ? Theme.accent
                  : Theme.textSecondary
@@ -95,9 +96,10 @@ TextField {
             border.width: Theme.focusStroke
             visible: revealBtn.activeFocus
         }
-        ToolTip.visible: revealClick.containsMouse
-        ToolTip.delay: Theme.tooltipDelay
-        ToolTip.text: field.passwordRevealed ? "Hide password" : "Show password"
+        HudToolTip {
+            visible: revealClick.containsMouse
+            text: field.passwordRevealed ? "Hide password" : "Show password"
+        }
     }
     implicitWidth: Theme.px(160)
     implicitHeight: Theme.controlHeight

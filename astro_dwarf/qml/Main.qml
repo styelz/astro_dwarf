@@ -31,6 +31,17 @@ ApplicationWindow {
     font.hintingPreference: Font.PreferVerticalHinting
     font.preferShaping: false
     flags: Qt.Window | Qt.WindowTitleHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint | Qt.WindowSystemMenuHint
+    FontLoader {
+        id: hudIconFont
+        source: Qt.platform.os === "windows" ? "" : hudIconFontUrl
+        function applyFamily() {
+            if (status !== FontLoader.Ready || !font.family)
+                return
+            Theme.iconFamilyOverride = String(font.family)
+        }
+        onStatusChanged: applyFamily()
+        Component.onCompleted: applyFamily()
+    }
     readonly property bool windowMaximized: visibility === Window.Maximized
     function persistLayout() {
         PanelSwap.persist()
@@ -989,6 +1000,7 @@ ApplicationWindow {
                 Rectangle { width: Theme.px(1); Layout.preferredHeight: Theme.px(14); color: Theme.outline }
                 HudButton {
                     text: "‹"
+                    iconButton: true
                     busyMs: 0
                     Layout.preferredWidth: Theme.px(26)
                     Layout.maximumWidth: Theme.px(26)
@@ -1103,9 +1115,10 @@ ApplicationWindow {
                                 }
                             }
                         }
-                        ToolTip.visible: chipHover.hovered && !deviceMenu.visible
-                        ToolTip.delay: 600
-                        ToolTip.text: deviceCard.modelData.status + (deviceCard.modelData.ip_address ? "  ·  " + deviceCard.modelData.ip_address : "")
+                        HudToolTip {
+                            visible: chipHover.hovered && !deviceMenu.visible
+                            text: deviceCard.modelData.status + (deviceCard.modelData.ip_address ? "  ·  " + deviceCard.modelData.ip_address : "")
+                        }
                         HoverHandler { id: chipHover; cursorShape: Qt.PointingHandCursor }
                         TapHandler {
                             acceptedButtons: Qt.LeftButton
@@ -1164,6 +1177,7 @@ ApplicationWindow {
                 }
                 HudButton {
                     text: "›"
+                    iconButton: true
                     busyMs: 0
                     Layout.preferredWidth: Theme.px(26)
                     Layout.maximumWidth: Theme.px(26)

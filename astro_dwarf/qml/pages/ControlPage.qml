@@ -2073,7 +2073,7 @@ Item {
                             anchors.leftMargin: Theme.px(14)
                             anchors.rightMargin: Theme.px(14)
                             spacing: Theme.px(10)
-                            Text { text: "\uE962"; font.family: Theme.fontIcon; font.pixelSize: Theme.fontMd; color: Theme.accent; Layout.alignment: Qt.AlignVCenter }
+                            Text { text: "\uE962"; font.family: Theme.fontIcon; font.pixelSize: Theme.fontMd; font.preferShaping: true; color: Theme.accent; Layout.alignment: Qt.AlignVCenter }
                             Text {
                                 text: "MOVE THE POINTER OVER THE STREAM FOR CONTROLS  ·  DOUBLE-CLICK THE WIDE VIEW TO CENTRE"
                                 color: Theme.textPrimary
@@ -3146,6 +3146,7 @@ Item {
                                     font.pixelSize: logPanel.compactChrome ? Theme.fontPx(11) : Theme.fontPx(8)
                                     font.bold: !logPanel.compactChrome
                                     font.letterSpacing: logPanel.compactChrome ? 0 : 1
+                                    font.preferShaping: logPanel.compactChrome
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
                                 Rectangle {
@@ -3171,14 +3172,16 @@ Item {
                             }
                             HoverHandler { id: pillHover; cursorShape: Qt.PointingHandCursor }
                             TapHandler { onTapped: backend.setLogFilter(pill.modelData.key) }
-                            ToolTip.visible: pillHover.hovered && logPanel.compactChrome
-                            ToolTip.delay: 400
-                            ToolTip.text: pill.modelData.label
+                            HudToolTip {
+                                visible: pillHover.hovered && logPanel.compactChrome
+                                text: pill.modelData.label
+                            }
                         }
                     }
                     Rectangle { width: Theme.px(1); height: Theme.s4; color: Theme.outline; anchors.verticalCenter: parent.verticalCenter }
                     HudButton {
                         text: logPanel.compactChrome ? "\uE8C8" : "COPY"
+                        iconButton: logPanel.compactChrome
                         implicitHeight: Theme.s5
                         implicitWidth: logPanel.compactChrome ? Theme.px(22) : Theme.px(46)
                         font.family: logPanel.compactChrome ? Theme.fontIcon : Theme.fontUi
@@ -3196,6 +3199,7 @@ Item {
                     }
                     HudButton {
                         text: logPanel.compactChrome ? "\uE74D" : "CLEAR"
+                        iconButton: logPanel.compactChrome
                         implicitHeight: Theme.s5
                         implicitWidth: logPanel.compactChrome ? Theme.px(22) : Theme.px(50)
                         font.family: logPanel.compactChrome ? Theme.fontIcon : Theme.fontUi
@@ -3397,9 +3401,11 @@ Item {
                                 }
                             }
                             HoverHandler { id: rowHover }
-                            ToolTip.visible: rowHover.hovered && logText.truncated
-                            ToolTip.delay: 500
-                            ToolTip.text: logRow.message
+                            HudToolTip {
+                                visible: rowHover.hovered && logText.truncated
+                                text: logRow.message
+                                wrapWidth: Theme.px(360)
+                            }
                             TapHandler {
                                 acceptedButtons: Qt.RightButton
                                 grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything

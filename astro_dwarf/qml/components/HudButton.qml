@@ -11,8 +11,11 @@ Button {
     property string accessibleDescription: ""
     property bool busy: false
     property int busyMs: 1400
+    property bool iconButton: false
     property bool _clickBusy: false
     readonly property bool isBusy: busy || _clickBusy
+    // iconButton only — using width here loops with Button.implicitWidth.
+    readonly property bool tightChrome: iconButton
     // state model: disabled < idle < hover < down/busy
     readonly property bool inactive: !enabled && !isBusy
     readonly property bool lit: hovered || down || isBusy || visualFocus
@@ -30,9 +33,10 @@ Button {
     }
     opacity: inactive ? 0.45 : 1
     font.pixelSize: Theme.fontMd
-    font.letterSpacing: Theme.tracking1
-    leftPadding: Theme.s3
-    rightPadding: Theme.s3
+    font.letterSpacing: tightChrome ? 0 : Theme.tracking1
+    font.preferShaping: hudBtn.iconButton
+    leftPadding: tightChrome ? 0 : Theme.s3
+    rightPadding: tightChrome ? 0 : Theme.s3
     implicitHeight: Theme.controlHeight
     Behavior on opacity { NumberAnimation { duration: Theme.quick } }
 
@@ -113,6 +117,6 @@ Button {
         font: hudBtn.font
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
-        elide: Text.ElideRight
+        elide: hudBtn.tightChrome ? Text.ElideNone : Text.ElideRight
     }
 }

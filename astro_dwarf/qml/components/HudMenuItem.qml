@@ -42,6 +42,7 @@ T.MenuItem {
             color: hudMenuItem.info ? Theme.muted : (hudMenuItem.destructive ? Theme.danger : Theme.textSecondary)
             font.family: Theme.fontIcon
             font.pixelSize: Theme.fontPx(14)
+            font.preferShaping: true
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
         }
@@ -60,6 +61,7 @@ T.MenuItem {
             color: Theme.textSecondary
             font.family: hudMenuItem.subMenu ? Theme.fontIcon : Theme.fontUi
             font.pixelSize: hudMenuItem.subMenu ? Theme.fontPx(12) : Theme.fontPx(11)
+            font.preferShaping: hudMenuItem.subMenu
             elide: Text.ElideMiddle
             Layout.maximumWidth: hudMenuItem.trailingMaxWidth
             verticalAlignment: Text.AlignVCenter

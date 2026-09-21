@@ -33,15 +33,13 @@ Window {
     height: body.implicitHeight + Theme.s4 * 2
 
     component IconBtn: HudButton {
+        iconButton: true
         implicitWidth: Theme.controlHeight
         implicitHeight: Theme.controlHeight
         Layout.preferredWidth: Theme.controlHeight
         Layout.preferredHeight: Theme.controlHeight
-        leftPadding: 0
-        rightPadding: 0
         font.family: Theme.fontIcon
         font.pixelSize: Theme.fontBase
-        font.letterSpacing: 0
         buttonColor: "transparent"
         foregroundColor: Theme.textSecondary
     }

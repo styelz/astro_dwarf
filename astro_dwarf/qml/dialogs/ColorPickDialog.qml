@@ -150,6 +150,7 @@ Dialog {
                         text: "\uEF3C"
                         font.family: Theme.fontIcon
                         font.pixelSize: Theme.fontPx(14)
+                        font.preferShaping: true
                         color: dropperBtn.enabled || dropperBtn.isBusy ? dropperBtn.foregroundColor : Theme.textSecondary
                     }
                     Text {

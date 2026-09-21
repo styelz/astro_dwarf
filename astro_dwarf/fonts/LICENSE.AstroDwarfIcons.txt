@@ -1,0 +1,6 @@
+These outlines are original HUD geometry for Astro Dwarf chrome icons.
+They reuse the Segoe MDL2 Private Use codepoints already referenced in QML
+so Windows and Linux resolve the same glyphs. They are not a copy of
+Microsoft Segoe MDL2 Assets or Segoe Fluent Icons.
+
+Licensed with the rest of this repository.
