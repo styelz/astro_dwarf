@@ -154,6 +154,7 @@ from .services import (
     resolve_sky_catalog_target,
     parse_in_zone,
     SKY_WEB_CONTEXT_POLL_JS,
+    SKY_WEB_DISMISS_POLL_JS,
     SKY_WEB_DBLCLICK_POLL_JS,
     SKY_WEB_OPACITY_POLL_JS,
     SKY_WEB_VIEW_POLL_JS,
@@ -177,6 +178,7 @@ from .sky_atlas import (
     atlas_page_url,
     stop_atlas_server,
     sky_atlas_context_poll_script,
+    sky_atlas_dismiss_poll_script,
     sky_atlas_dblclick_poll_script,
     sky_atlas_fov_script,
     sky_atlas_harvest_script,
@@ -3668,6 +3670,10 @@ class AppBackend(QObject):
         return SKY_WEB_CONTEXT_POLL_JS
 
     @Property(str, constant=True)
+    def skyWebDismissPollScript(self) -> str:
+        return SKY_WEB_DISMISS_POLL_JS
+
+    @Property(str, constant=True)
     def skyWebDblclickPollScript(self) -> str:
         return SKY_WEB_DBLCLICK_POLL_JS
 
@@ -5135,6 +5141,10 @@ class AppBackend(QObject):
     @Property(str, constant=True)
     def skyAtlasContextPollScript(self) -> str:
         return sky_atlas_context_poll_script()
+
+    @Property(str, constant=True)
+    def skyAtlasDismissPollScript(self) -> str:
+        return sky_atlas_dismiss_poll_script()
 
     @Property(str, constant=True)
     def skyAtlasDblclickPollScript(self) -> str:
@@ -11722,21 +11732,6 @@ class AppBackend(QObject):
             }
 
         self._run_async("stellariumMosaic", work)
-
-    @Slot(str)
-    def importLegacy(self, raw_path: str) -> None:
-        path = self._local_path(raw_path)
-        device = self._schedule_device(self._selected_device_id)
-        count, failed = self.store.import_old_sessions(
-            path.rglob("*.json"),
-            self._selected_device_id,
-            device.capture_defaults if device else None,
-        )
-        for session in self.store.sessions.all():
-            if session.planned_duration_seconds == 0:
-                self._save_session(session)
-        self._sequence_colliding_mosaics()
-        self._toast(f"Imported {count}; skipped {failed}", "success" if count else "warning")
 
     def _run_async(self, operation: str, function: Callable[[], Any]) -> None:
         if self._ui_busy:

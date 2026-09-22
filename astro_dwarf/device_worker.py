@@ -4203,6 +4203,10 @@ def _wait_goto_accepted(since: float) -> None:
 
 def _start_goto_for_tracking(ra: float, dec: float, name: str) -> None:
     """Send a tracking GOTO, and retry once if a stuck STOPPING still owns the engine."""
+    if not _session_active.is_set():
+        # stop_all leaves _stop set after the session is gone. Live TRACK is
+        # not a session; that latch must not abort the FUNCTION_BUSY retry.
+        _stop.clear()
     started = time.monotonic()
     if sdk_call("goto", ra, dec, name, False) is False:
         raise RuntimeError("GOTO to start tracking failed")

@@ -6,13 +6,12 @@ import time
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Generic, Iterable, TypeVar
+from typing import Callable, Generic, TypeVar
 
 from .domain import (
     DEFAULT_OBSERVING_DAY_CUTOFF_HOUR,
     DEFAULT_STELLARIUM_URL,
     AppSettings,
-    CaptureDefaults,
     Device,
     HistoryRecord,
     Session,
@@ -263,48 +262,3 @@ class SessionStore:
         if current:
             return current[0]
         return self.devices.save(Device(name="Dwarf 3"))
-
-    def import_old_sessions(
-        self,
-        paths: Iterable[Path],
-        device_id: str,
-        capture: CaptureDefaults | None = None,
-    ) -> tuple[int, int]:
-        imported = failed = 0
-        defaults = capture or CaptureDefaults()
-        for path in paths:
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))["command"]
-                meta = raw["id_command"]
-                goto = raw.get("goto_manual", {})
-                camera = raw.get("setup_camera", {})
-                start = f"{meta['date']}T{meta['time'][:5]}"
-                from .domain import CameraSettings, Target, Workflow
-
-                session = Session(
-                    name=meta.get("description") or goto.get("target") or path.stem,
-                    target=Target(
-                        name=goto.get("target", meta.get("description", path.stem)),
-                        ra_hours=float(goto["ra_coord"]) if goto.get("ra_coord") is not None else None,
-                        dec_degrees=float(goto["dec_coord"]) if goto.get("dec_coord") is not None else None,
-                    ),
-                    device_id=device_id,
-                    scheduled_start=start,
-                    camera=CameraSettings(
-                        exposure_seconds=float(camera.get("exposure", defaults.exposure_seconds)),
-                        gain=int(float(camera.get("gain", defaults.gain))),
-                        frame_count=int(camera.get("count", defaults.frame_count)),
-                    ),
-                    workflow=Workflow(
-                        calibrate=bool(raw.get("calibration", {}).get("do_action", False)),
-                        autofocus=bool(raw.get("auto_focus", {}).get("do_action", False)),
-                        infinite_focus=bool(raw.get("infinite_focus", {}).get("do_action", False)),
-                        polar_align=bool(raw.get("eq_solving", {}).get("do_action", False)),
-                        goto=bool(goto.get("do_action", False)),
-                    ),
-                )
-                self.sessions.save(session)
-                imported += 1
-            except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
-                failed += 1
-        return imported, failed

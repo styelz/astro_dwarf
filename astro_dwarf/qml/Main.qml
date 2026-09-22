@@ -1613,11 +1613,6 @@ ApplicationWindow {
         nameFilters: ["CSV files (*.csv)"]
         onAccepted: backend.importTelescopius(selectedFile)
     }
-    FolderDialog {
-        id: legacyDialog
-        title: "Select old Astro_Sessions folder"
-        onAccepted: backend.importLegacy(selectedFolder)
-    }
 
     SessionDialog { id: sessionDialog }
     SkyRaDecDialog {

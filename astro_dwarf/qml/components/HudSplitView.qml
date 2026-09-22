@@ -92,8 +92,9 @@ SplitView {
             const item = splitView.itemAt(i)
             if (!item || !item.SplitView)
                 continue
-            item.SplitView.preferredWidth = item.width
-            item.SplitView.preferredHeight = item.height
+            const size = splitView.itemAlong(item)
+            if (size >= 8)
+                splitView.setItemPreferred(item, size)
         }
     }
 
@@ -143,6 +144,17 @@ SplitView {
             const startPt = item.mapToItem(splitView, 0, 0)
             const start = splitView.verticalSplit ? startPt.y : startPt.x
             if (along < start)
+                return i
+        }
+        return -1
+    }
+
+    function neighborBefore(handleItem) {
+        const next = splitView.neighborAfter(handleItem)
+        if (next <= 0)
+            return -1
+        for (let i = next - 1; i >= 0; i--) {
+            if (splitView.isLaidOut(splitView.itemAt(i)))
                 return i
         }
         return -1
@@ -347,8 +359,10 @@ SplitView {
     }
 
     function persist() {
-        if (splitView.neighborResizeActive)
+        if (splitView.neighborResizeActive || splitView.handleDragCount > 0) {
             splitView.endNeighborResize()
+            splitView.handleDragCount = 0
+        }
         if (splitView.settingsKey === "")
             return
         if (splitView.viewAlong() < Theme.px(64))
@@ -401,17 +415,69 @@ SplitView {
         objectName: "splitHandle"
         implicitWidth: Theme.s2
         implicitHeight: Theme.s2
-        color: SplitHandle.pressed ? Theme.glowAccent : (SplitHandle.hovered ? Theme.hsl(0.039, 0.535, 0.253, 0.13) : "transparent")
-        property bool dragging: SplitHandle.pressed
-        onDraggingChanged: {
-            if (dragging) {
-                splitView.handleDragCount += 1
-                splitView.beginNeighborResize(grip)
+        // SplitHandle's own drag rewrites the layout while it still owns the
+        // pointer, so the panes snap and the grab sticks. This area owns the
+        // left-button drag instead. Fill is pinned on the first move, and only
+        // this split's axis is written.
+        color: gripDrag.pressed ? Theme.glowAccent : (gripDrag.containsMouse ? Theme.hsl(0.039, 0.535, 0.253, 0.13) : "transparent")
+        property real pressAlong: 0
+        property int beforeIndex: -1
+        property real beforeStart: 0
+        property real pairLimit: 0
+
+        function alongOf(mouse) {
+            const pt = grip.mapToItem(splitView, mouse.x, mouse.y)
+            return splitView.verticalSplit ? pt.y : pt.x
+        }
+
+        function finishDrag() {
+            if (splitView.handleDragCount <= 0 && !splitView.neighborResizeActive)
                 return
-            }
             splitView.endNeighborResize()
             splitView.handleDragCount = Math.max(0, splitView.handleDragCount - 1)
             Qt.callLater(splitView.captureLocked)
+        }
+
+        MouseArea {
+            id: gripDrag
+            anchors.fill: parent
+            hoverEnabled: true
+            preventStealing: true
+            acceptedButtons: Qt.LeftButton
+            cursorShape: splitView.verticalSplit ? Qt.SplitVCursor : Qt.SplitHCursor
+            onPressed: (mouse) => {
+                grip.pressAlong = grip.alongOf(mouse)
+                grip.beforeIndex = splitView.neighborBefore(grip)
+                const before = grip.beforeIndex >= 0 ? splitView.itemAt(grip.beforeIndex) : null
+                const afterIndex = splitView.neighborAfter(grip)
+                const after = afterIndex >= 0 ? splitView.itemAt(afterIndex) : null
+                grip.beforeStart = before ? splitView.itemAlong(before) : 0
+                grip.pairLimit = grip.beforeStart + (after ? splitView.itemAlong(after) : 0)
+                splitView.handleDragCount += 1
+                mouse.accepted = true
+            }
+            onPositionChanged: (mouse) => {
+                if (!(mouse.buttons & Qt.LeftButton) || grip.beforeIndex < 0)
+                    return
+                const along = grip.alongOf(mouse)
+                if (!splitView.neighborResizeActive) {
+                    splitView.beginNeighborResize(grip)
+                    if (!splitView.neighborResizeActive)
+                        return
+                }
+                const before = splitView.itemAt(grip.beforeIndex)
+                const afterIndex = splitView.neighborAfter(grip)
+                const after = afterIndex >= 0 ? splitView.itemAt(afterIndex) : null
+                if (!before)
+                    return
+                const minBefore = splitView.itemMinimum(before)
+                const minAfter = after ? splitView.itemMinimum(after) : 0
+                const limit = Math.max(minBefore, grip.pairLimit - minAfter)
+                const size = Math.max(minBefore, Math.min(limit, grip.beforeStart + along - grip.pressAlong))
+                splitView.setItemPreferred(before, size)
+            }
+            onReleased: grip.finishDrag()
+            onCanceled: grip.finishDrag()
         }
         TapHandler {
             acceptedButtons: Qt.RightButton
@@ -426,7 +492,7 @@ SplitView {
             width: parent.width >= parent.height ? Theme.px(22) : Theme.px(2)
             height: parent.width >= parent.height ? Theme.px(2) : Theme.px(22)
             radius: Theme.px(1)
-            color: SplitHandle.pressed ? Theme.accent : (SplitHandle.hovered ? Theme.accent : Theme.outline)
+            color: gripDrag.pressed ? Theme.accent : (gripDrag.containsMouse ? Theme.accent : Theme.outline)
         }
     }
 }

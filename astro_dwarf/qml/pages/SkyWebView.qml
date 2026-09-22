@@ -39,6 +39,7 @@ Item {
     property string paneInjectedKey: ""
     property bool shown: true
     signal contextMenuRequested(real x, real y)
+    signal menuDismissRequested()
     signal trackRequested()
     readonly property string appReadyScript: "(function(){try{var stel=window._stel;if(!stel||!stel.core||!stel.observer)return\"loading\";var app=document.getElementById(\"app\");if(!app||!app.__vue_app__)return\"loading\";return\"ok\"}catch(e){return\"loading\"}})()"
     readonly property var engineItem: engineLoader.item
@@ -344,6 +345,12 @@ Item {
                 map.contextMenuRequested(Number(data.x) || 0, Number(data.y) || 0)
             } catch (err) {
             }
+        })
+    }
+    function pollMenuDismiss() {
+        map.runJavaScript(backend.skyWebDismissPollScript, result => {
+            if (String(result || "").trim() === "dismiss")
+                map.menuDismissRequested()
         })
     }
     function pollTrackRequest() {
@@ -689,6 +696,7 @@ Item {
         running: map.pageReady && map.shown
         onTriggered: {
             map.pollContextMenu()
+            map.pollMenuDismiss()
             map.pollTrackRequest()
             map.pollLiveOpacity()
         }

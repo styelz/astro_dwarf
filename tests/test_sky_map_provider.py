@@ -16,11 +16,13 @@ from astro_dwarf.domain import (
     normalized_sky_map_provider,
     to_dict,
 )
+from astro_dwarf.services import SKY_WEB_DISMISS_POLL_JS, sky_web_fov_script
 from astro_dwarf.sky_atlas import (
     atlas_set_fov_from_view,
     atlas_view_payload,
     parse_atlas_harvest,
     sky_atlas_boot_script,
+    sky_atlas_dismiss_poll_script,
     sky_atlas_fov_script,
     sky_atlas_home_script,
     sky_atlas_live_script,
@@ -97,11 +99,14 @@ def test_atlas_view_and_lock_helpers() -> None:
     _assert("STG" in boot and "contextmenu" in boot, "boot")
     _assert("lookPan" in boot and "drawHorizon" in boot and "zenithRotation" in boot, "planetarium")
     _assert("gotoCenter" in boot and "box.dragging" in boot and "requestSync" in boot, "stable pan")
+    _assert("zenithRotation(eq[0], eq[1]" in boot, "pan keeps zenith up while dragging")
+    _assert("function nearestAngle" in boot, "parallactic branch cut must not spin the view")
     _assert("markMoved" in boot and "applyFov" in boot and "inscribedFov" in boot, "fov persist")
     _assert("objectClicked" in boot and "selectSky" in boot, "simbad harvest")
     _assert("paintFov" in boot and "drawHeadingLabels" in boot, "screen fov")
     _assert("hudInsets" in boot and "aladin-status-bar" in boot, "hud chrome")
     _assert("labelOnFov" in boot and "drawScreenMosaic" in boot and "drawPaneMedia" in boot, "fov on frame")
+    _assert("paintIndex" in boot and "strokeTargetQuad" in boot, "target corners and numbered cells")
     _assert("payload.columns" in boot and "col1OnRight" in boot, "mosaic grid")
     _assert("ctrlKey" in boot and "bindLiveOpacityWheel" in boot, "ctrl wheel opacity")
     _assert("drawPaneMedia" in boot and "rememberImage" in boot, "live preview on fov")
@@ -142,6 +147,20 @@ def test_atlas_target_tooltip_stays_above_location_box() -> None:
     _assert("transform:none" in boot.replace(" ", ""), "boot pins tooltip right")
 
 
+def test_map_left_click_dismisses_context_menu() -> None:
+    web = sky_web_fov_script({})
+    _assert("ctl.dismissAt = Date.now()" in web, "stellarium left click")
+    _assert("ev.button !== 0" in web, "stellarium ignores the opening right-click")
+    _assert("ctl.dismissAt = 0" in web, "stellarium right-click clears a stale dismiss")
+    _assert('return "dismiss"' in SKY_WEB_DISMISS_POLL_JS and "ctl.dismissAt = 0" in SKY_WEB_DISMISS_POLL_JS, "stellarium poll")
+    atlas = sky_atlas_boot_script()
+    _assert("box.dismissAt = Date.now()" in atlas, "aladin left click")
+    _assert("ev.button !== 0" in atlas, "aladin ignores the opening right-click")
+    _assert("box.dismissAt = 0" in atlas, "aladin right-click clears a stale dismiss")
+    poll = sky_atlas_dismiss_poll_script()
+    _assert('return "dismiss"' in poll and "box.dismissAt = 0" in poll, "aladin poll")
+
+
 if __name__ == "__main__":
     test_provider_defaults_to_stellarium_web()
     test_provider_aliases_and_unknown()
@@ -150,4 +169,5 @@ if __name__ == "__main__":
     test_atlas_set_fov_from_view()
     test_atlas_view_and_lock_helpers()
     test_atlas_target_tooltip_stays_above_location_box()
+    test_map_left_click_dismisses_context_menu()
     print("ok")

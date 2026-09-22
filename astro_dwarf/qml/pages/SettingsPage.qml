@@ -20,7 +20,6 @@ Item {
         { key: "connect", title: "CONNECT", hint: "Wi-Fi · Bluetooth", glyph: "⇌", device: true, group: "TELESCOPE" },
         { key: "capture", title: "CAPTURE", hint: "Session defaults", glyph: "▣", device: true, group: "TELESCOPE" },
         { key: "timing", title: "TIMING", hint: "Overhead estimates", glyph: "◷", device: true, group: "TELESCOPE" },
-        { key: "import", title: "IMPORT", hint: "Legacy sessions", glyph: "⇩", device: true, group: "TELESCOPE" },
         { key: "interface", title: "INTERFACE", hint: "Layout · theme", glyph: "◫", device: false, group: "APP" },
         { key: "image", title: "IMAGE", hint: "Enhance filters", glyph: "▦", device: false, group: "APP" },
         { key: "calendar", title: "CALENDAR", hint: "Night cutoff", glyph: "◑", device: false, group: "APP" },
@@ -31,7 +30,6 @@ Item {
         connect: ["ip_address", "ble_enabled", "wifi_mode", "wifi_ssid", "wifi_password", "ble_password", "auto_start_preview"],
         capture: ["capture_defaults"],
         timing: ["slew_seconds", "settle_seconds", "calibration_seconds", "autofocus_seconds", "infinite_focus_seconds", "polar_seconds", "readout_seconds", "pane_slew_seconds", "startup_seconds"],
-        import: [],
         interface: [],
         image: [],
         calendar: [],
@@ -964,27 +962,6 @@ Item {
                             font.family: Theme.fontMono
                             font.pixelSize: Theme.fontPx(11)
                             wrapMode: Text.Wrap
-                        }
-                    }
-
-                    // IMPORT
-                    ColumnLayout {
-                        visible: settingsPage.currentKey === "import"
-                        Layout.fillWidth: true
-                        Layout.alignment: Qt.AlignTop | Qt.AlignLeft
-                        spacing: Theme.s3
-                        FieldHint {
-                            text: "Bring sessions from the old Astro_Sessions scheduler onto the selected telescope. The old files are only read, never changed."
-                        }
-                        SettingGroup {
-                            title: "LEGACY SESSIONS"
-                            FieldLabel { text: "SOURCE" }
-                            HudButton {
-                                text: "CHOOSE FOLDER…"
-                                busyText: "OPENING…"
-                                onClicked: legacyDialog.open()
-                            }
-                            FieldHint { text: "Pick the folder holding the old app's JSON session files. Imported sessions appear on " + (nameField.text || "this telescope") + "'s calendar." }
                         }
                     }
                     Item { Layout.fillHeight: true }

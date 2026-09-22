@@ -246,6 +246,8 @@ def test_atlas_overlay_labels_icrs_pane_centres() -> None:
     _assert("function overlayPixRoll" in ATLAS_ASTRO_JS, "atlas HUD must follow map rotation")
     _assert("function liveGridPanes" in ATLAS_ASTRO_JS, "atlas HUD rebuilds ICRS corners while panning")
     _assert("function viewRollDeg" in SKY_WEB_FOV_JS, "stellarium HUD must follow zenith-up field rotation")
+    _assert("function levelHorizon" in SKY_WEB_FOV_JS, "stellarium drag must not wait for mouseup to level the field")
+    _assert("observer.roll = 0" in SKY_WEB_FOV_JS or "obj.roll = 0" in SKY_WEB_FOV_JS, "zenith-up roll is cleared while dragging")
     _assert("function hudTilt" in SKY_WEB_FOV_JS, "stellarium screen HUD adds view roll to camera PA")
     _assert("function mosaicGridTilt" in SKY_WEB_FOV_JS, "stellarium mosaic fallback adds view roll to chart tilt")
     _assert("function haloInk" in SKY_WEB_FOV_JS, "stellarium FOV strokes need a dark halo on daytime sky")
@@ -260,6 +262,12 @@ def test_atlas_overlay_labels_icrs_pane_centres() -> None:
     _assert("liveQ" in ATLAS_ASTRO_JS, "atlas 1×1 alt-az uses live parallactic")
     _assert("if (mosaic && hasQuads)" in ATLAS_ASTRO_JS, "atlas mosaics still project ICRS quads")
     _assert("isFinite(q) ? -q : 0" in SKY_WEB_FOV_JS, "stellarium view roll matches Aladin zenithRotation")
+    _assert("p.color" in SKY_WEB_FOV_JS and "payload.color" in ATLAS_ASTRO_JS, "FOV ink follows the theme accent")
+    _assert('stroke-dasharray="1 6.5"' in SKY_WEB_FOV_JS, "stellarium seams are round dots")
+    _assert("setLineDash([1, 6.5])" in ATLAS_ASTRO_JS, "aladin seams are round dots")
+    _assert("function targetCornersSvg" in SKY_WEB_FOV_JS, "stellarium frame uses target corners")
+    _assert("function strokeTargetQuad" in ATLAS_ASTRO_JS, "aladin frame uses target corners")
+    _assert("function paintIndex" in ATLAS_ASTRO_JS, "pane numbers sit in the cell")
 
 
 def _stereo_half(fov_rad: float) -> float:

@@ -40,7 +40,7 @@ Menu {
     function ownPopupWindow() {
         const popupWindow = hudMenu.contentItem ? hudMenu.contentItem.Window.window : null
         const owner = hudMenu.appWindow
-        if (!popupWindow || !owner || popupWindow === owner)
+        if (!popupWindow || !owner || popupWindow === owner || popupWindow.visible)
             return
         popupWindow.transientParent = owner
         popupWindow.flags = Qt.Tool | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
@@ -60,7 +60,6 @@ Menu {
         hudMenu.ownPopupWindow()
     }
     onOpened: {
-        hudMenu.ownPopupWindow()
         dismissArm.restart()
         if (Qt.application.state !== Qt.ApplicationActive)
             hudMenu.hideMenu()

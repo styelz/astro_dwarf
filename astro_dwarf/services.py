@@ -571,20 +571,21 @@ SKY_WEB_FOV_JS = r"""
     return nightModeOn() ? "#ff2200" : String((p && p.color) || "#7ee0d0");
   }
   function haloInk() {
-    return "rgba(6,18,15,0.88)";
+    return "rgba(0,0,0,0.72)";
   }
   function paneStroke(color, dotted) {
-    return 'stroke="' + color + '" stroke-width="1.2" stroke-opacity="0.95" stroke-linejoin="round"'
-      + (dotted ? ' stroke-dasharray="2 3.5" stroke-linecap="round"' : "");
+    return 'stroke="' + color + '" stroke-width="' + (dotted ? "1.15" : "1.6")
+      + '" stroke-opacity="1" stroke-linejoin="miter"'
+      + (dotted ? ' stroke-dasharray="1.15 3.4" stroke-linecap="round"' : "");
   }
   function haloStroke(dotted, width) {
-    var w = width || (dotted ? 2.8 : 3.6);
+    var w = width || (dotted ? 2.4 : 2.8);
     return 'fill="none" stroke="' + haloInk() + '" stroke-width="' + w
-      + '" stroke-opacity="0.9" stroke-linejoin="round"'
-      + (dotted ? ' stroke-dasharray="2 3.5" stroke-linecap="round"' : "");
+      + '" stroke-opacity="0.85" stroke-linejoin="miter"'
+      + (dotted ? ' stroke-dasharray="1.15 3.4" stroke-linecap="round"' : "");
   }
   function outerStroke(color) {
-    return 'fill="none" stroke="' + color + '" stroke-width="1.35" stroke-opacity="0.95" stroke-linejoin="round"';
+    return 'fill="none" stroke="' + color + '" stroke-width="1.6" stroke-opacity="1" stroke-linejoin="miter"';
   }
   function framedOpen(openTag, fill, fillOp, color, dotted) {
     return openTag + " " + haloStroke(dotted) + "/>"
@@ -593,6 +594,59 @@ SKY_WEB_FOV_JS = r"""
   function framedEmpty(openTag, color, dotted) {
     return openTag + " " + haloStroke(!!dotted) + "/>"
          + openTag + ' fill="none" ' + (dotted ? paneStroke(color, true) : outerStroke(color)) + "/>";
+  }
+  function dotStroke(color) {
+    return 'fill="none" stroke="' + color + '" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="1 6.5"';
+  }
+  function sideStroke(color) {
+    return 'fill="none" stroke="' + color + '" stroke-width="1.35" stroke-linejoin="miter" stroke-linecap="butt"';
+  }
+  function cornerStroke(color) {
+    return 'fill="none" stroke="' + color + '" stroke-width="4.4" stroke-linejoin="miter" stroke-linecap="square"';
+  }
+  function dottedLine(x1, y1, x2, y2, color) {
+    return '<line x1="' + Number(x1).toFixed(1) + '" y1="' + Number(y1).toFixed(1)
+      + '" x2="' + Number(x2).toFixed(1) + '" y2="' + Number(y2).toFixed(1) + '" ' + dotStroke(color) + "/>";
+  }
+  function targetCornersSvg(pts, color) {
+    if (!pts || pts.length < 4) return "";
+    var svg = "";
+    for (var i = 0; i < 4; i++) {
+      var b = pts[i];
+      var prev = pts[(i + 3) % 4];
+      var next = pts[(i + 1) % 4];
+      var ab = Math.hypot(prev.x - b.x, prev.y - b.y) || 1;
+      var cb = Math.hypot(next.x - b.x, next.y - b.y) || 1;
+      var reach = Math.max(14, Math.min(36, 0.28 * Math.min(ab, cb)));
+      var ax = b.x + (prev.x - b.x) / ab * reach;
+      var ay = b.y + (prev.y - b.y) / ab * reach;
+      var cx = b.x + (next.x - b.x) / cb * reach;
+      var cy = b.y + (next.y - b.y) / cb * reach;
+      svg += '<polyline points="' + ax.toFixed(1) + "," + ay.toFixed(1) + " "
+        + b.x.toFixed(1) + "," + b.y.toFixed(1) + " "
+        + cx.toFixed(1) + "," + cy.toFixed(1) + '" ' + cornerStroke(color) + "/>";
+    }
+    return svg;
+  }
+  function targetFrameSvg(pts, color) {
+    if (!pts || pts.length < 4) return "";
+    var points = pts.map(function(pt) { return pt.x.toFixed(1) + "," + pt.y.toFixed(1); }).join(" ");
+    return '<polygon points="' + points + '" ' + sideStroke(color) + "/>" + targetCornersSvg(pts, color);
+  }
+  function edgeIsOuter(a, b, outer) {
+    if (!outer || outer.length < 2) return false;
+    var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    var best = Infinity;
+    for (var i = 0; i < outer.length; i++) {
+      var c = outer[i], d = outer[(i + 1) % outer.length];
+      var dx = d.x - c.x, dy = d.y - c.y;
+      var len2 = dx * dx + dy * dy || 1;
+      var t = Math.max(0, Math.min(1, ((mx - c.x) * dx + (my - c.y) * dy) / len2));
+      var qx = c.x + t * dx, qy = c.y + t * dy;
+      var dist = Math.hypot(mx - qx, my - qy);
+      if (dist < best) best = dist;
+    }
+    return best < 6;
   }
   function haloLine(x1, y1, x2, y2, color) {
     return '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2
@@ -1064,7 +1118,7 @@ SKY_WEB_FOV_JS = r"""
     if (!(size > 0)) size = 11;
     var klass = cls ? ' class="' + cls + '"' : "";
     return "<text" + klass + ' x="0" y="0" fill="' + color
-      + '" font-size="' + size.toFixed(1) + '" font-family="monospace" text-anchor="middle" dominant-baseline="middle"'
+      + '" font-size="' + size.toFixed(1) + '" font-family="sans-serif" text-anchor="middle" dominant-baseline="middle"'
       + extra + ' transform="translate(' + Number(x).toFixed(1) + " " + Number(y).toFixed(1)
       + ") rotate(" + Number(angle).toFixed(2) + ')">' + text + "</text>";
   }
@@ -1096,8 +1150,7 @@ SKY_WEB_FOV_JS = r"""
     };
   }
   function outlineText(size) {
-    return ' font-weight="700" stroke="#06120f" stroke-width="' + Math.max(1.8, size * 0.16).toFixed(1)
-      + '" paint-order="stroke" stroke-linejoin="round"';
+    return ' font-weight="500" stroke="#041208" stroke-width="2" paint-order="stroke" stroke-linejoin="round"';
   }
   function formatSkyPos(center) {
     if (!center) return "";
@@ -1173,34 +1226,23 @@ SKY_WEB_FOV_JS = r"""
     var cap = frameCaption(p, stel);
     var color = String(p.color || "#7ee0d0");
     if ((!cap.spec && !cap.pos) || !pts || !pts.length) return "";
-    var size = labelFontSize(paneSpan(pts));
+    var size = 12;
     var extra = outlineText(size);
-    function stacked(x, y, ang, ox, oy) {
-      var svg = "";
-      if (cap.pos)
-        svg += textAt(x + ox * 13, y + oy * 13, ang, cap.pos, color, extra, size, "astro-dwarf-pos");
-      if (cap.spec)
-        svg += textAt(x, y, ang, cap.spec, color, extra, size);
-      return svg;
-    }
-    if (pts.length === 4 && pts[0] && pts[1] && pts[2] && pts[3]) {
-      var top = edgeSpec(pts[0], pts[1]);
-      var edge = invertedAngle(top.ang) ? edgeSpec(pts[2], pts[3]) : top;
-      var cx = (pts[0].x + pts[1].x + pts[2].x + pts[3].x) / 4;
-      var cy = (pts[0].y + pts[1].y + pts[2].y + pts[3].y) / 4;
-      var dx = edge.mx - cx, dy = edge.my - cy;
-      var len = Math.hypot(dx, dy) || 1;
-      var ox = dx / len, oy = dy / len;
-      return stacked(edge.mx + ox * 12, edge.my + oy * 12, uprightAngle(edge.ang), ox, oy);
-    }
-    var minX = Infinity, minY = Infinity;
+    var cx = 0, n = 0, maxY = -Infinity;
     for (var i = 0; i < pts.length; i++) {
       if (!pts[i] || !isFinite(pts[i].x) || !isFinite(pts[i].y)) continue;
-      if (pts[i].x < minX) minX = pts[i].x;
-      if (pts[i].y < minY) minY = pts[i].y;
+      cx += pts[i].x;
+      n += 1;
+      if (pts[i].y > maxY) maxY = pts[i].y;
     }
-    if (!isFinite(minX) || !isFinite(minY)) return "";
-    return stacked(minX, minY - 4, 0, 0, -1);
+    if (!n || !isFinite(maxY)) return "";
+    cx /= n;
+    var svg = "";
+    if (cap.spec)
+      svg += textAt(cx, maxY + 14, 0, cap.spec, color, extra, size);
+    if (cap.pos)
+      svg += textAt(cx, maxY + 14 + size + 2, 0, cap.pos, color, extra, size, "astro-dwarf-pos");
+    return svg;
   }
   function mosaicOuterQuad(drawn) {
     var quads = [];
@@ -1281,12 +1323,12 @@ SKY_WEB_FOV_JS = r"""
     return Math.min(w, h);
   }
   function indexFontSize(span) {
-    if (!(span > 0)) return 12;
-    return Math.max(12, Math.min(18, span * 0.08));
+    if (!(span > 0)) return 15;
+    return Math.max(14, Math.min(20, span * 0.16));
   }
   function indexText(x, y, index, color, angle, span) {
     var size = indexFontSize(span);
-    return textAt(x, y, uprightAngle(angle || 0), String(index), color, outlineText(size), size);
+    return textAt(x, y, 0, String(index), color, outlineText(size), size);
   }
   function paneSize(box, p, stel) {
     var fov = viewFovRad(stel);
@@ -1425,9 +1467,12 @@ SKY_WEB_FOV_JS = r"""
     var tilt = cameraHudTilt(p, stel, box);
     paintSvg(el, box, rotateChartGroup(box, p, stel,
       liveImageRect(left, top, size.w, size.h)
-      + framedEmpty('<rect x="' + left.toFixed(1) + '" y="' + top.toFixed(1) + '" width="' + size.w.toFixed(1)
-      + '" height="' + size.h.toFixed(1) + '"', color, false)
-      + upTick(box.width / 2, top, color))
+      + targetFrameSvg([
+          {x: left, y: top},
+          {x: left + size.w, y: top},
+          {x: left + size.w, y: top + size.h},
+          {x: left, y: top + size.h}
+        ], color))
       + labelOnFrame(p, hudCorners(box.width / 2, box.height / 2, size.w, size.h, tilt), stel, box));
     return "center";
   }
@@ -1456,33 +1501,39 @@ SKY_WEB_FOV_JS = r"""
     var col1OnRight = zenithCamera || chartEdge;
     var row1AtTop = zenithCamera || chartEdge;
     var media = "";
-    var frames = "";
     var labels = "";
     var index = 0;
-    var paneFill = mosaicUsesPaneImages() ? "none" : color;
-    var paneFillOp = mosaicUsesPaneImages() ? "0" : "0.05";
     for (var row = 1; row <= rows; row++) {
       for (var col = 1; col <= cols; col++) {
         index += 1;
         var x = originX + (col1OnRight ? (cols - col) : (col - 1)) * stepX;
         var y = originY + (row1AtTop ? (row - 1) : (rows - row)) * stepY;
         media += paneFillRect(x, y, size.w, size.h, index);
-        frames += framedOpen('<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + size.w.toFixed(1)
-          + '" height="' + size.h.toFixed(1) + '"', paneFill, paneFillOp, color, cols * rows > 1);
         if (cols * rows > 1) {
           var pc = rotatePoint(box.width / 2, box.height / 2, x + size.w / 2, y + size.h / 2, tilt);
           labels += indexText(pc.x, pc.y, index, color, -tilt, Math.min(size.w, size.h));
         }
       }
     }
-    var svg = mosaicMediaGroup(media) + frames;
+    var svg = mosaicMediaGroup(media);
     if (cols * rows > 1) {
-      svg += framedEmpty('<rect x="' + originX.toFixed(1) + '" y="' + originY.toFixed(1) + '" width="' + totalW.toFixed(1)
-        + '" height="' + totalH.toFixed(1) + '"', color, false);
+      for (var seamCol = 1; seamCol < cols; seamCol++) {
+        var sx = originX + (seamCol - 1) * stepX + (stepX + size.w) / 2;
+        svg += dottedLine(sx, originY, sx, originY + totalH, color);
+      }
+      for (var seamRow = 1; seamRow < rows; seamRow++) {
+        var sy = originY + (seamRow - 1) * stepY + (stepY + size.h) / 2;
+        svg += dottedLine(originX, sy, originX + totalW, sy, color);
+      }
     }
+    svg += targetFrameSvg([
+      {x: originX, y: originY},
+      {x: originX + totalW, y: originY},
+      {x: originX + totalW, y: originY + totalH},
+      {x: originX, y: originY + totalH}
+    ], color);
     if (!mosaicUsesPaneImages())
       svg += liveImageRect((box.width - size.w) / 2, (box.height - size.h) / 2, size.w, size.h);
-    svg += upTick(box.width / 2, originY, color);
     paintSvg(el, box, rotateOverlay(box, tilt, svg)
       + labels
       + labelOnFrame(p, hudCorners(box.width / 2, box.height / 2, totalW, totalH, tilt), stel, box));
@@ -1518,9 +1569,19 @@ SKY_WEB_FOV_JS = r"""
           if (cpt) quad.push(cpt);
         }
       }
+      var ring = [];
+      if (corners.length >= 4) {
+        for (var r = 0; r < 4; r++) {
+          var rpt = projectPoint(stel, corners[r].ra_hours, corners[r].dec_degrees, box);
+          if (rpt) ring.push(rpt);
+        }
+      }
       drawn.push({
         points: points, cx: cx, cy: cy, tick: tick,
         quad: quad.length === 4 ? quad : null,
+        ring: ring.length === 4 ? ring : null,
+        row: Number(panes[i].row) || 0,
+        column: Number(panes[i].column) || 0,
         index: panes[i].index || (i + 1)
       });
     }
@@ -1550,28 +1611,34 @@ SKY_WEB_FOV_JS = r"""
       );
     }
     var svg = mosaicUsesPaneImages() ? mosaicMediaGroup(media) : media;
-    var paneFill = mosaicUsesPaneImages() ? "none" : color;
-    var paneFillOp = mosaicUsesPaneImages() ? "0" : "0.05";
-    drawn.forEach(function(item) {
-      if (item.points)
-        svg += framedOpen('<polygon points="' + item.points + '"', paneFill, paneFillOp, color, mosaic);
-      if (!mosaic)
-        svg += item.tick || "";
-    });
     if (mosaic) {
       var outer = mosaicOuterQuad(drawn);
-      if (outer.length === 4) {
-        svg += framedEmpty('<polygon points="' + outer.map(function(pt) {
-          return pt.x.toFixed(1) + "," + pt.y.toFixed(1);
-        }).join(" ") + '"', color, false);
-        svg += edgeTick(outer[0], outer[1], color);
+      function seam(p1, p2, q1, q2) {
+        if (!p1 || !p2 || !q1 || !q2) return;
+        svg += dottedLine((p1.x + q1.x) / 2, (p1.y + q1.y) / 2, (p2.x + q2.x) / 2, (p2.y + q2.y) / 2, color);
       }
+      for (var i = 0; i < drawn.length; i++) {
+        var item = drawn[i];
+        if (!item.ring) continue;
+        for (var j = 0; j < drawn.length; j++) {
+          var other = drawn[j];
+          if (!other.ring || other === item) continue;
+          if (item.row && other.row === item.row && other.column === item.column + 1)
+            seam(item.ring[3], item.ring[2], other.ring[0], other.ring[1]);
+          else if (item.column && other.column === item.column && other.row === item.row + 1)
+            seam(item.ring[1], item.ring[2], other.ring[0], other.ring[3]);
+        }
+      }
+      if (outer.length === 4)
+        svg += targetFrameSvg(outer, color);
       drawn.forEach(function(item) {
         var ang = 0;
         if (item.quad)
           ang = edgeSpec(item.quad[0], item.quad[1]).ang;
         svg += indexText(item.cx, item.cy, item.index, color, ang, paneSpan(item.quad));
       });
+    } else if (drawn[0] && drawn[0].quad) {
+      svg += targetFrameSvg(drawn[0].quad, color);
     }
     svg += labelOnFrame(p, mosaicOuterQuad(drawn), stel, box);
     paintSvg(el, box, svg);
@@ -1616,10 +1683,26 @@ SKY_WEB_FOV_JS = r"""
     }
     return nodes.length;
   }
+  function levelHorizon(stel) {
+    // Dragging Stellarium twists observer.roll, then mouseup eases it back to
+    // zenith-up. The FOV, projected in that view, turns and snaps flat.
+    // Roll 0 is the horizontal frame: yaw/pitch stay, the field stays level.
+    if (!stel) return;
+    var targets = [stel.observer, stel.core];
+    for (var i = 0; i < targets.length; i++) {
+      var obj = targets[i];
+      if (!obj) continue;
+      var roll = Number(obj.roll);
+      if (!isFinite(roll) || Math.abs(roll) < 1e-4) continue;
+      try { obj.roll = 0; } catch (err) {}
+    }
+  }
   function draw(force) {
     var stel = window._stel;
     var box = canvasRect();
     var ctl = window[CTL];
+    if (ctl && ctl.levelUntil && Date.now() < ctl.levelUntil)
+      levelHorizon(stel);
     if (!ctl) return "loading";
     var p = Object.assign({}, ctl.payload || {});
     p.color = resolvedColor(p);
@@ -1702,6 +1785,32 @@ SKY_WEB_FOV_JS = r"""
         stel.core.lock = obj;
     } catch (err) {}
   }
+  function bindLevelDrag(ctl) {
+    if (!ctl || ctl.levelBound) return;
+    ctl.levelBound = true;
+    var down = false;
+    function arm() {
+      ctl.levelUntil = Date.now() + 500;
+      levelHorizon(window._stel);
+    }
+    document.addEventListener("pointerdown", function(ev) {
+      if (ev.button !== 0 || !onSky(ev.target)) return;
+      ctl.dismissAt = Date.now();
+      down = true;
+      arm();
+    }, true);
+    document.addEventListener("pointermove", function() {
+      if (!down) return;
+      arm();
+    }, false);
+    function endDrag() {
+      if (!down) return;
+      down = false;
+      arm();
+    }
+    document.addEventListener("pointerup", endDrag, true);
+    document.addEventListener("pointercancel", endDrag, true);
+  }
   function bindDoubleClick(ctl) {
     if (!ctl || ctl.dblBound) return;
     ctl.dblBound = true;
@@ -1736,6 +1845,7 @@ SKY_WEB_FOV_JS = r"""
       e.preventDefault();
       e.stopPropagation();
       ctl.menuAt = Date.now();
+      ctl.dismissAt = 0;
       ctl.menuX = e.clientX;
       ctl.menuY = e.clientY;
     }, true);
@@ -1773,6 +1883,7 @@ SKY_WEB_FOV_JS = r"""
         payload: p, payloadKey: "", lastKey: "", lastBase: "", lastPosKey: "", lastStatus: "", zSign: 0, raf: 0,
         liveEnabled: false, liveUrl: "", liveOpacity: 0.65, livePane: 0, paneUrls: {},
         menuAt: 0, menuX: 0, menuY: 0,
+        dismissAt: 0,
         trackAt: 0
       };
     }
@@ -1791,6 +1902,7 @@ SKY_WEB_FOV_JS = r"""
       } catch (err) {}
     }
     bindDoubleClick(ctl);
+    bindLevelDrag(ctl);
     bindContextMenu(ctl);
     bindLiveOpacityWheel(ctl);
     ctl.payload = p;
@@ -1905,6 +2017,16 @@ SKY_WEB_CONTEXT_POLL_JS = r"""
   var payload = JSON.stringify({x: ctl.menuX || 0, y: ctl.menuY || 0, at: ctl.menuAt});
   ctl.menuAt = 0;
   return payload;
+})()
+"""
+
+
+SKY_WEB_DISMISS_POLL_JS = r"""
+(function(){
+  var ctl = window.__astroDwarfFovCtl;
+  if (!ctl || !ctl.dismissAt) return "";
+  ctl.dismissAt = 0;
+  return "dismiss";
 })()
 """
 

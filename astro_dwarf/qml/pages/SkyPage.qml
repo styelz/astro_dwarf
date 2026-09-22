@@ -726,6 +726,10 @@ Item {
                 function onContextMenuRequested(x, y) {
                     skyPage.openSkyMenu(x, y)
                 }
+                function onMenuDismissRequested() {
+                    if (skyMenu.opened || skyMenu.visible)
+                        skyMenu.close()
+                }
                 function onTrackRequested() {
                     if (!skyStore.dblclickTrack)
                         return

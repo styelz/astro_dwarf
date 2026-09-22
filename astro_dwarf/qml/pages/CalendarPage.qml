@@ -1757,16 +1757,6 @@ Item {
                         glyph: "\uE9A6"
                         onTriggered: calendarPage.fitNightZoom()
                     }
-                    HudMenuSeparator {}
-                    HudMenuItem {
-                        info: true
-                        enabled: false
-                        text: calendarPage.dateKey(calendarPage.selectedDate)
-                              + "  ·  " + nightTimeline.visibleRangeText()
-                              + "  ·  " + nightTimeline.zoomFactorText()
-                              + "  ·  " + calendarPage.nightSessions.length
-                              + (calendarPage.nightSessions.length === 1 ? " session" : " sessions")
-                    }
                 }
             }
         }

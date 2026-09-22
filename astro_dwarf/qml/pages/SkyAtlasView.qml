@@ -40,6 +40,7 @@ Item {
     property string paneInjectedKey: ""
     property bool shown: true
     signal contextMenuRequested(real x, real y)
+    signal menuDismissRequested()
     signal trackRequested()
     readonly property var engineItem: engineLoader.item
 
@@ -302,6 +303,12 @@ Item {
                 map.contextMenuRequested(Number(data.x) || 0, Number(data.y) || 0)
             } catch (err) {
             }
+        })
+    }
+    function pollMenuDismiss() {
+        map.runJavaScript(backend.skyAtlasDismissPollScript, result => {
+            if (String(result || "").trim() === "dismiss")
+                map.menuDismissRequested()
         })
     }
     function pollTrackRequest() {
@@ -632,6 +639,7 @@ Item {
         running: map.pageReady && map.shown
         onTriggered: {
             map.pollContextMenu()
+            map.pollMenuDismiss()
             map.pollTrackRequest()
             map.pollLiveOpacity()
         }

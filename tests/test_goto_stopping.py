@@ -8,7 +8,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from unittest.mock import patch
+
+from astro_dwarf import device_worker
 from astro_dwarf.device_telemetry import GOTO_STOP_UNWIND_S, TelemetryTap, settle_goto_changes
+from astro_dwarf.device_worker import CODE_ASTRO_FUNCTION_BUSY
 from astro_dwarf.telemetry_view import AlertEngine, derive_activity
 
 
@@ -140,6 +144,83 @@ def test_synthetic_release_is_not_a_completed_goto() -> None:
     )
 
 
+class _BusyThenAcceptedTap:
+    def __init__(self) -> None:
+        self.gotos = 0
+
+    def snapshot(self) -> dict:
+        return {"goto_state": "idle", "tracking_state": "idle"}
+
+    def response_after(self, cmd: int, since: float) -> int:
+        if cmd != 11002:
+            return 0
+        if self.gotos < 2:
+            return CODE_ASTRO_FUNCTION_BUSY
+        return 0
+
+
+def test_live_track_retries_after_latched_stop() -> None:
+    """STOP ALL leaves _stop set. The FUNCTION_BUSY retry must still send GOTO."""
+    tap = _BusyThenAcceptedTap()
+    calls: list[str] = []
+
+    def fake_sdk(operation: str, *args: object) -> bool:
+        calls.append(operation)
+        if operation == "goto":
+            tap.gotos += 1
+        return True
+
+    def fake_wait(seconds: float, message: str | None = None, progress: object = None) -> None:
+        _assert(not device_worker._stop.is_set(), "latched stop must be clear before the retry wait")
+        _assert(seconds == 2.0, "retry still waits for the engine to release")
+
+    device_worker._stop.set()
+    device_worker._session_active.clear()
+    previous_tap = device_worker._tap
+    device_worker._tap = tap
+    try:
+        with (
+            patch.object(device_worker, "sdk_call", fake_sdk),
+            patch.object(device_worker, "_wait_seconds", fake_wait),
+        ):
+            device_worker._start_goto_for_tracking(1.25, -30.0, "Retry target")
+    finally:
+        device_worker._tap = previous_tap
+        device_worker._stop.clear()
+        device_worker._session_active.clear()
+    _assert(calls.count("goto") == 2, f"retry did not send the second GOTO: {calls}")
+    _assert("stop_goto" in calls, f"retry did not clear the stuck stop: {calls}")
+
+
+def test_session_stop_still_aborts_track_retry() -> None:
+    tap = _BusyThenAcceptedTap()
+    calls: list[str] = []
+
+    def fake_sdk(operation: str, *args: object) -> bool:
+        calls.append(operation)
+        if operation == "goto":
+            tap.gotos += 1
+        return True
+
+    device_worker._stop.set()
+    device_worker._session_active.set()
+    previous_tap = device_worker._tap
+    device_worker._tap = tap
+    try:
+        with patch.object(device_worker, "sdk_call", fake_sdk):
+            try:
+                device_worker._start_goto_for_tracking(1.25, -30.0, "Retry target")
+            except InterruptedError as exc:
+                _assert(str(exc) == "Tracking stopped", str(exc))
+            else:
+                raise AssertionError("an active session stop must abort the retry")
+    finally:
+        device_worker._tap = previous_tap
+        device_worker._stop.clear()
+        device_worker._session_active.clear()
+    _assert(calls.count("goto") == 1, f"session stop still sent another GOTO: {calls}")
+
+
 def main() -> None:
     test_leftover_stopping_is_dropped()
     test_watched_stop_stays_briefly()
@@ -148,6 +229,8 @@ def main() -> None:
     test_stale_release_does_not_clear_a_new_slew()
     test_tap_keeps_a_slew_that_starts_during_unwind()
     test_synthetic_release_is_not_a_completed_goto()
+    test_live_track_retries_after_latched_stop()
+    test_session_stop_still_aborts_track_retry()
     print("test_goto_stopping: ok")
 
 

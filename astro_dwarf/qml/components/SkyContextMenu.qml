@@ -118,6 +118,31 @@ HudMenu {
                                  : "Slew the telescope to the selected sky-map target and start tracking"
         onTriggered: skyMenu.trackSelected()
     }
+    HudMenuSeparator {}
+    HudMenuItem {
+        objectName: "skyMapStellariumItem"
+        text: "Stellarium Web"
+        glyph: backend.skyMapUsesStellariumWeb ? "\uE73E" : ""
+        accessibleDescription: backend.skyMapUsesStellariumWeb
+                               ? "Stellarium Web is the current sky map"
+                               : "Reload the sky view with Stellarium Web"
+        onTriggered: {
+            if (!backend.skyMapUsesStellariumWeb)
+                backend.setSkyMapProvider("stellarium_web")
+        }
+    }
+    HudMenuItem {
+        objectName: "skyMapAladinItem"
+        text: "Aladin Lite"
+        glyph: backend.skyMapUsesStellariumWeb ? "" : "\uE73E"
+        accessibleDescription: backend.skyMapUsesStellariumWeb
+                               ? "Reload the sky view with Aladin Lite"
+                               : "Aladin Lite is the current sky map"
+        onTriggered: {
+            if (backend.skyMapUsesStellariumWeb)
+                backend.setSkyMapProvider("aladin")
+        }
+    }
     HudMenuSeparator {
         visible: skyMenu.atlasMenuAvailable
         height: visible ? implicitHeight : 0
