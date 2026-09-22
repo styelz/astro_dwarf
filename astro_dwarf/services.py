@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 
 from .version import __version__
+from .sky_atlas import SKY_MAP_FOV_DEG
 from .domain import (
     Camera,
     CameraSettings,
@@ -568,32 +569,21 @@ SKY_WEB_FOV_JS = r"""
     return false;
   }
   function resolvedColor(p) {
-    return nightModeOn() ? "#ff2200" : String((p && p.color) || "#7ee0d0");
-  }
-  function haloInk() {
-    return "rgba(0,0,0,0.72)";
+    return nightModeOn() ? "#ff2200" : String((p && p.color) || "#02900A");
   }
   function paneStroke(color, dotted) {
     return 'stroke="' + color + '" stroke-width="' + (dotted ? "1.15" : "1.6")
       + '" stroke-opacity="1" stroke-linejoin="miter"'
       + (dotted ? ' stroke-dasharray="1.15 3.4" stroke-linecap="round"' : "");
   }
-  function haloStroke(dotted, width) {
-    var w = width || (dotted ? 2.4 : 2.8);
-    return 'fill="none" stroke="' + haloInk() + '" stroke-width="' + w
-      + '" stroke-opacity="0.85" stroke-linejoin="miter"'
-      + (dotted ? ' stroke-dasharray="1.15 3.4" stroke-linecap="round"' : "");
-  }
   function outerStroke(color) {
     return 'fill="none" stroke="' + color + '" stroke-width="1.6" stroke-opacity="1" stroke-linejoin="miter"';
   }
   function framedOpen(openTag, fill, fillOp, color, dotted) {
-    return openTag + " " + haloStroke(dotted) + "/>"
-         + openTag + ' fill="' + fill + '" fill-opacity="' + fillOp + '" ' + paneStroke(color, dotted) + "/>";
+    return openTag + ' fill="' + fill + '" fill-opacity="' + fillOp + '" ' + paneStroke(color, dotted) + "/>";
   }
   function framedEmpty(openTag, color, dotted) {
-    return openTag + " " + haloStroke(!!dotted) + "/>"
-         + openTag + ' fill="none" ' + (dotted ? paneStroke(color, true) : outerStroke(color)) + "/>";
+    return openTag + ' fill="none" ' + (dotted ? paneStroke(color, true) : outerStroke(color)) + "/>";
   }
   function dotStroke(color) {
     return 'fill="none" stroke="' + color + '" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="1 6.5"';
@@ -650,8 +640,6 @@ SKY_WEB_FOV_JS = r"""
   }
   function haloLine(x1, y1, x2, y2, color) {
     return '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2
-      + '" stroke="' + haloInk() + '" stroke-width="3.2" stroke-linecap="round"/>'
-      + '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2
       + '" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round"/>';
   }
   function viewFovRad(stel) {
@@ -994,6 +982,18 @@ SKY_WEB_FOV_JS = r"""
     if (op > 1) return 1;
     return Math.round(op * 100) / 100;
   }
+  function applyLiveOpacity(el) {
+    var ctl = window[CTL];
+    var op = clampLiveOpacity(ctl && ctl.liveOpacity);
+    var groups = el ? el.querySelectorAll("g.astro-dwarf-mosaic-media") : [];
+    for (var g = 0; g < groups.length; g++)
+      groups[g].setAttribute("opacity", String(op));
+    if (groups.length)
+      return;
+    var imgs = el ? el.querySelectorAll("image.astro-dwarf-live") : [];
+    for (var i = 0; i < imgs.length; i++)
+      imgs[i].setAttribute("opacity", String(op));
+  }
   function applyLiveImages(el) {
     var ctl = window[CTL];
     var href = ctl && ctl.liveEnabled ? String(ctl.liveUrl || "") : "";
@@ -1004,8 +1004,10 @@ SKY_WEB_FOV_JS = r"""
     var imgs = el ? el.querySelectorAll("image.astro-dwarf-live") : [];
     for (var i = 0; i < imgs.length; i++) {
       if (href) {
-        imgs[i].setAttribute("href", href);
-        try { imgs[i].setAttributeNS("http://www.w3.org/1999/xlink", "href", href); } catch (err) {}
+        if (imgs[i].getAttribute("href") !== href) {
+          imgs[i].setAttribute("href", href);
+          try { imgs[i].setAttributeNS("http://www.w3.org/1999/xlink", "href", href); } catch (err) {}
+        }
         var grouped = imgs[i].closest && imgs[i].closest("g.astro-dwarf-mosaic-media");
         imgs[i].setAttribute("opacity", grouped ? "1" : String(op));
       } else {
@@ -1150,7 +1152,7 @@ SKY_WEB_FOV_JS = r"""
     };
   }
   function outlineText(size) {
-    return ' font-weight="500" stroke="#041208" stroke-width="2" paint-order="stroke" stroke-linejoin="round"';
+    return ' font-weight="500"';
   }
   function formatSkyPos(center) {
     if (!center) return "";
@@ -1224,7 +1226,7 @@ SKY_WEB_FOV_JS = r"""
   }
   function labelOnFrame(p, pts, stel, box) {
     var cap = frameCaption(p, stel);
-    var color = String(p.color || "#7ee0d0");
+    var color = String(p.color || "#02900A");
     if ((!cap.spec && !cap.pos) || !pts || !pts.length) return "";
     var size = 12;
     var extra = outlineText(size);
@@ -1461,7 +1463,7 @@ SKY_WEB_FOV_JS = r"""
   function drawCenterBox(el, box, p, stel) {
     var size = paneSize(box, p, stel);
     if (!size) return "error";
-    var color = String(p.color || "#7ee0d0");
+    var color = String(p.color || "#02900A");
     var left = (box.width - size.w) / 2;
     var top = (box.height - size.h) / 2;
     var tilt = cameraHudTilt(p, stel, box);
@@ -1490,7 +1492,7 @@ SKY_WEB_FOV_JS = r"""
     var totalH = stepY * (rows - 1) + size.h;
     var originX = (box.width - totalW) / 2;
     var originY = (box.height - totalH) / 2;
-    var color = String(p.color || "#7ee0d0");
+    var color = String(p.color || "#02900A");
     var pa = framePa(p);
     // Parallactic alt-az is already zenith-up, so pane 1 (camera up-right)
     // stays top-right. EQ and the celestial default keep the chart formula
@@ -1540,7 +1542,7 @@ SKY_WEB_FOV_JS = r"""
     return "grid";
   }
   function drawPanes(el, box, p, stel, panes) {
-    var color = String(p.color || "#7ee0d0");
+    var color = String(p.color || "#02900A");
     var drawn = [];
     for (var i = 0; i < panes.length; i++) {
       var pts = projectCorners(stel, panes[i].corners, box);
@@ -1868,7 +1870,15 @@ SKY_WEB_FOV_JS = r"""
       ctl.liveOpacity = next;
       ctl.wheelOpacity = true;
       ctl.opacityAt = Date.now();
-      try { applyLiveImages(document.getElementById("astro-dwarf-sky-overlay")); } catch (err) {}
+      if (ctl.opacityRaf)
+        return;
+      ctl.opacityRaf = requestAnimationFrame(function() {
+        var live = window[CTL];
+        if (!live)
+          return;
+        live.opacityRaf = 0;
+        try { applyLiveOpacity(document.getElementById("astro-dwarf-sky-overlay")); } catch (err) {}
+      });
     }, {capture: true, passive: false});
   }
   try {
@@ -1940,6 +1950,7 @@ SKY_WEB_LIVE_JS = r"""
   var pane = Math.max(0, Number(livePane) || 0);
   var was = !!ctl.liveEnabled;
   var paneChanged = pane !== (Number(ctl.livePane) || 0);
+  var hrefChanged = href !== String(ctl.liveUrl || "");
   ctl.liveEnabled = on;
   ctl.liveUrl = href;
   if (ctl.wheelOpacity) {
@@ -1950,9 +1961,20 @@ SKY_WEB_LIVE_JS = r"""
   }
   ctl.livePane = pane;
   var el = document.getElementById("astro-dwarf-sky-overlay");
-  var imgs = el ? el.querySelectorAll("image.astro-dwarf-live") : [];
   op = Number(ctl.liveOpacity);
   if (!isFinite(op) || op < 0 || op > 1) op = 0.65;
+  if (!hrefChanged && on === was && !paneChanged) {
+    var groups = el ? el.querySelectorAll("g.astro-dwarf-mosaic-media") : [];
+    for (var g = 0; g < groups.length; g++)
+      groups[g].setAttribute("opacity", String(op));
+    if (!groups.length) {
+      var fades = el ? el.querySelectorAll("image.astro-dwarf-live") : [];
+      for (var f = 0; f < fades.length; f++)
+        fades[f].setAttribute("opacity", String(op));
+    }
+    return "opacity";
+  }
+  var imgs = el ? el.querySelectorAll("image.astro-dwarf-live") : [];
   if (on !== was || paneChanged || (on && !imgs.length)) {
     ctl.lastKey = "";
     try { if (typeof ctl.draw === "function") ctl.draw(true); } catch (err) {}
@@ -2073,8 +2095,27 @@ def sky_web_view_pos_script(ra_hours: float, dec_degrees: float) -> str:
     return f"{SKY_WEB_VIEW_POS_JS}({float(ra_hours)}, {float(dec_degrees)})"
 
 
+# Shared sky zoom is degrees of the vertical field (Aladin's inscribed axis).
+# Stellarium stores that angle in core.fov as radians.
+_SKY_WEB_FOV_JS = r"""
+  function skyFovDegrees(raw) {
+    var fov = Number(raw);
+    if (!(fov > 0) || !isFinite(fov)) return 0;
+    // Radians unless the value cannot be a view field (a degree write).
+    var rad = fov > 2 * Math.PI ? fov * Math.PI / 180 : fov;
+    return rad * 180 / Math.PI;
+  }
+  function skyFovRadians(degrees) {
+    var deg = Number(degrees);
+    if (!(deg > 0) || !isFinite(deg)) return 0;
+    return deg * Math.PI / 180;
+  }
+"""
+
+
 SKY_WEB_VIEW_POLL_JS = r"""
 (function(){
+""" + _SKY_WEB_FOV_JS + r"""
   function asVec(value) {
     if (!value) return null;
     if (value.length >= 3) {
@@ -2156,7 +2197,7 @@ SKY_WEB_VIEW_POLL_JS = r"""
     return JSON.stringify({
       ra_hours: pos.ra_hours,
       dec_degrees: pos.dec_degrees,
-      fov: Number(stel.core.fov),
+      fov: skyFovDegrees(stel.core.fov),
       yaw: pos.yaw,
       pitch: pos.pitch,
       roll: Number(stel.core.roll)
@@ -2170,7 +2211,7 @@ SKY_WEB_VIEW_POLL_JS = r"""
 
 SKY_WEB_VIEW_APPLY_JS = r"""
 (function(p) {
-""" + SKY_WEB_TIME_NOW_JS + r"""
+""" + SKY_WEB_TIME_NOW_JS + _SKY_WEB_FOV_JS + r"""
   function lookAtIcrf(stel, raHours, decDeg) {
     if (!stel || !stel.core || !stel.observer) return false;
     raHours = Number(raHours);
@@ -2216,8 +2257,8 @@ SKY_WEB_VIEW_APPLY_JS = r"""
     var stel = window._stel;
     if (!stel || !stel.core || !stel.observer) return "loading";
     keepSkyTimeNow(stel);
-    var fov = Number(p && p.fov);
-    if (fov > 0 && isFinite(fov))
+    var fov = skyFovRadians(p && p.fov);
+    if (fov > 0)
       stel.core.fov = fov;
     if (!lookAtIcrf(stel, p && p.ra_hours, p && p.dec_degrees))
       return "pending";
@@ -2244,8 +2285,9 @@ def sky_web_view_script(payload: dict[str, Any]) -> str:
         fov = float(data.get("fov"))
     except (TypeError, ValueError):
         fov = 0.0
-    if fov == fov and fov > 0:
-        body["fov"] = fov
+    if not (fov == fov and fov > 0):
+        fov = SKY_MAP_FOV_DEG
+    body["fov"] = fov
     return f"{SKY_WEB_VIEW_APPLY_JS}({json.dumps(body)})"
 
 

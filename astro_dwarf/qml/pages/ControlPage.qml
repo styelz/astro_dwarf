@@ -650,8 +650,16 @@ Item {
                 readonly property var burstIntervalItems: ["1", "2", "3", "5", "10", "15", "20"]
                 readonly property var timelapseIntervalItems: ["1", "2", "5", "10", "15", "30", "60"]
                 readonly property var timelapseDurationItems: ["30", "60", "120", "300", "600"]
+                readonly property string timelapsePlanText: {
+                    const video = Number(liveTimelapseDuration.currentText || 0)
+                    const interval = Number(liveTimelapseInterval.currentText || 0)
+                    if (!(video > 0) || !(interval > 0))
+                        return ""
+                    const shoot = video * 30 * Math.max(1, interval)
+                    return Util.clockLabel(video) + " VIDEO · " + Util.clockLabel(shoot) + " SHOOT"
+                }
                 readonly property bool stackParamsReady: liveExposure.matchesDevice && liveGain.matchesDevice
-                    && liveStackCount.text.trim() !== "" && liveStackCount.text.trim() === liveStackCount.appliedValue
+                    && liveStackCount.matchesDevice
                     && (!liveFilter.visible || liveFilter.appliedValue === "" || liveFilter.currentText === liveFilter.appliedValue)
                 function comboIndex(items, value) {
                     let wanted = String(value || "").trim()
@@ -697,10 +705,8 @@ Item {
                     if (gain && !liveGain.matchesDevice)
                         backend.setCameraParam(id, "gain", gain)
                     const count = liveStackCount.text.trim()
-                    if (count && count !== liveStackCount.appliedValue) {
+                    if (count && count !== liveStackCount.deviceValue)
                         backend.setCameraParam(id, "count", count)
-                        liveStackCount.appliedValue = count
-                    }
                     if (liveFilter.visible && liveFilter.appliedValue !== "" && liveFilter.currentText && liveFilter.currentText !== liveFilter.appliedValue) {
                         backend.setCameraParam(id, "ir", liveFilter.currentText)
                         liveFilter.appliedValue = liveFilter.currentText
@@ -912,35 +918,28 @@ Item {
                         enabled: root.commandEnabled("set_count") && cameraPanel.captureParamsEnabled
                         placeholderText: "frames"
                         accessibleName: "Stack count"
-                        tooltip: "Number of frames to stack in DSO mode."
+                        tooltip: "Number of frames to stack in DSO mode.\nThe camera keeps this as stackCount, from 1 to 999."
                         inputMethodHints: Qt.ImhDigitsOnly
-                        property string appliedValue: ""
                         readonly property string deviceValue: {
-                            const value = root.scopeTelemetry.stack_count
+                            const value = backend.selectedDevice.camera === "wide"
+                                ? root.scopeTelemetry.wide_stack_count
+                                : root.scopeTelemetry.stack_count
                             if (value !== undefined && value !== null && String(value) !== "" && value !== "—")
                                 return String(value)
                             return ""
                         }
                         readonly property bool matchesDevice: text.trim() !== "" && deviceValue !== "" && text.trim() === deviceValue
                         readonly property string liveValue: deviceValue || String(cameraPanel.captureDefaults.frame_count)
-                        onLiveValueChanged: if (!activeFocus) {
-                            text = liveValue
-                            appliedValue = liveValue
-                        }
-                        Component.onCompleted: {
-                            text = liveValue
-                            appliedValue = liveValue
-                        }
+                        onLiveValueChanged: if (!activeFocus) text = liveValue
+                        Component.onCompleted: text = liveValue
                         onEditingFinished: {
                             const value = text.trim()
                             if (!value) {
                                 text = liveValue
                                 return
                             }
-                            if (value !== appliedValue) {
+                            if (value !== deviceValue)
                                 backend.setCameraParam(backend.selectedDeviceId, "count", value)
-                                appliedValue = value
-                            }
                         }
                     }
                     HudCombo {
@@ -997,7 +996,7 @@ Item {
                         Layout.fillWidth: true
                         enabled: root.commandEnabled("set_timelapse_interval") && cameraPanel.photoMode
                         accessibleName: "Timelapse interval"
-                        tooltip: "Seconds between frames in a timelapse."
+                        tooltip: "Seconds between frames. 1 is one frame per second."
                         model: cameraPanel.timelapseIntervalItems
                         onActivated: backend.setCameraParam(backend.selectedDeviceId, "timelapse_interval", currentText)
                         readonly property int liveIndex: cameraPanel.comboIndex(cameraPanel.timelapseIntervalItems, root.scopeTelemetry.timelapse_interval)
@@ -1007,13 +1006,22 @@ Item {
                         id: liveTimelapseDuration
                         Layout.fillWidth: true
                         enabled: root.commandEnabled("set_timelapse_duration") && cameraPanel.photoMode
-                        accessibleName: "Timelapse duration"
-                        tooltip: "Total timelapse length in seconds."
+                        accessibleName: "Timelapse video length"
+                        tooltip: "Length of the finished video, in seconds.\nThe file is 30 fps, so 30 s at 1 frame per second is a 15 min shoot."
                         model: cameraPanel.timelapseDurationItems
                         onActivated: backend.setCameraParam(backend.selectedDeviceId, "timelapse_duration", currentText)
                         readonly property int liveIndex: cameraPanel.comboIndex(cameraPanel.timelapseDurationItems, root.scopeTelemetry.timelapse_duration)
                         onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                     }
+                }
+                Text {
+                    visible: cameraPanel.photoMode && cameraPanel.timelapsePlanText !== ""
+                    text: cameraPanel.timelapsePlanText
+                    color: Theme.textSecondary
+                    font.pixelSize: Theme.fontXs
+                    font.family: Theme.fontMono
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
                 }
                 HudCheck {
                     id: liveAutoCalibration
@@ -1247,6 +1255,89 @@ Item {
                             return "STARTING CAMERA…"
                         return "STARTING PREVIEW…"
                     }
+                    property int startBriefElapsed: 0
+                    onStartBriefVisibleChanged: if (startBriefVisible) startBriefElapsed = 0
+                    Timer {
+                        interval: 1000
+                        repeat: true
+                        running: previewHost.startBriefVisible
+                        onTriggered: previewHost.startBriefElapsed += 1
+                    }
+                    function startBriefTransport(status) {
+                        const s = String(status || "").toLowerCase()
+                        if (s.indexOf("attach") >= 0)
+                            return "attaching"
+                        if (root.previewStatusIsRetry(s) || s.indexOf("udp") >= 0)
+                            return "UDP fallback"
+                        if (s.indexOf("tcp") >= 0)
+                            return "TCP"
+                        return ""
+                    }
+                    readonly property bool startBriefWide: previewCamera === "wide"
+                    readonly property string startBriefFov: {
+                        const fov = String((startBriefWide ? root.scopeTelemetry.wide_fov : root.scopeTelemetry.tele_fov) || "").trim()
+                        return (fov && fov !== "—") ? fov : ""
+                    }
+                    readonly property string startBriefCameraLine: {
+                        const name = startBriefWide ? "WIDE" : "TELE"
+                        return startBriefFov ? (name + "  " + startBriefFov) : name
+                    }
+                    readonly property string startBriefProgress: {
+                        const parts = ["TELE + WIDE"]
+                        const transport = startBriefTransport(backend.previewStatus)
+                        if (transport)
+                            parts.push(transport)
+                        parts.push(startBriefElapsed + "s")
+                        return parts.join("  ·  ")
+                    }
+                    readonly property string startBriefCapture: {
+                        const t = root.scopeTelemetry
+                        const parts = []
+                        const mode = String(t.shooting_mode_text || "").trim()
+                        if (mode && mode !== "—")
+                            parts.push(mode)
+                        const exposure = String((startBriefWide ? t.wide_exposure_text : t.exposure_text) || "").trim()
+                        if (exposure && exposure !== "—")
+                            parts.push(exposure.toLowerCase().endsWith("s") ? exposure : exposure + "s")
+                        const gain = startBriefWide ? t.wide_gain : t.gain
+                        if (gain !== undefined && gain !== null && String(gain) !== "" && String(gain) !== "—")
+                            parts.push("GAIN " + gain)
+                        if (!startBriefWide) {
+                            const filter = String(t.ir_filter || "").trim().toLowerCase().replace(" filter", "")
+                            if (filter && filter !== "—")
+                                parts.push(filter.toUpperCase())
+                        }
+                        return parts.join("  ·  ")
+                    }
+                    readonly property string startBriefMount: {
+                        const mode = String(root.scopeTelemetry.mount_mode || "")
+                        if (mode === "EQ")
+                            return "EQ"
+                        if (mode === "AZ")
+                            return "ALT-AZ"
+                        return ""
+                    }
+                    readonly property string startBriefTarget: {
+                        const sessionName = String((backend.currentSession && backend.currentSession.target_name) || "").trim()
+                        if (sessionName)
+                            return sessionName
+                        const deviceTarget = String(root.scopeTelemetry.capture_target || root.scopeTelemetry.tracking_target || "").trim()
+                        if (root.scopeOnline && deviceTarget)
+                            return deviceTarget
+                        return backend.selectedDevice.connected ? "No active lock" : "No telescope link"
+                    }
+                    readonly property string startBriefAccessibleName: {
+                        const lines = [actionLabel, startBriefProgress, startBriefCameraLine]
+                        if (!startBriefCompact) {
+                            if (startBriefCapture)
+                                lines.push(startBriefCapture)
+                            if (startBriefMount)
+                                lines.push(startBriefMount)
+                            if (startBriefTarget)
+                                lines.push(startBriefTarget)
+                        }
+                        return lines.join(". ")
+                    }
 
                     function startPreview() {
                         if (!backend.selectedDevice.connected) {
@@ -1388,7 +1479,7 @@ Item {
                         visible: previewHost.mosaicSheet
                         playing: previewHost.mosaicSheet
                         camera: "tele"
-                        accent: Theme.accent
+                        accent: Theme.fov
                     }
 
                     Item {
@@ -1752,7 +1843,7 @@ Item {
                         z: 5
                         anchors.fill: parent
                         visible: previewHost.startBriefVisible
-                        Accessible.name: previewHost.actionLabel + ". " + previewHost.statusText + ". Double-click the wide view to centre, then TRACK and STACK."
+                        Accessible.name: previewHost.startBriefAccessibleName
                         Rectangle {
                             anchors.fill: parent
                             color: Theme.scrim
@@ -1778,9 +1869,10 @@ Item {
                                 width: parent.width
                                 wrapMode: Text.Wrap
                                 horizontalAlignment: Text.AlignHCenter
-                                text: previewHost.statusText
+                                text: previewHost.startBriefProgress
                                 color: Theme.textPrimary
                                 font.pixelSize: Theme.fontBase
+                                font.family: Theme.fontMono
                             }
                             Rectangle {
                                 anchors.horizontalCenter: parent.horizontalCenter
@@ -1788,37 +1880,48 @@ Item {
                                 height: Theme.px(1)
                                 color: Theme.outline
                             }
-                            Repeater {
-                                model: [
-                                    {key: "DOUBLE-CLICK WIDE", detail: "Slew TELE onto the target"},
-                                    {key: "TRACK THEN STACK", detail: "Sidereal tracking, then capture"},
-                                    {key: "HOVER FOR CONTROLS", detail: "STOP, PIP, and SWAP — SWAP only rearranges the live panes", extra: true}
-                                ]
-                                delegate: Column {
-                                    required property string key
-                                    required property string detail
-                                    property bool extra: false
-                                    visible: !extra || !previewHost.startBriefCompact
-                                    width: parent.width
-                                    spacing: Theme.px(2)
-                                    Text {
-                                        width: parent.width
-                                        text: key
-                                        color: Theme.accent
-                                        font.pixelSize: Theme.fontMd
-                                        font.bold: true
-                                        font.letterSpacing: Theme.tracking2
-                                        horizontalAlignment: Text.AlignHCenter
-                                    }
-                                    Text {
-                                        width: parent.width
-                                        text: detail
-                                        wrapMode: Text.Wrap
-                                        color: Theme.textSecondary
-                                        font.pixelSize: Theme.fontSm
-                                        horizontalAlignment: Text.AlignHCenter
-                                    }
-                                }
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: parent.width
+                                wrapMode: Text.Wrap
+                                horizontalAlignment: Text.AlignHCenter
+                                text: previewHost.startBriefCameraLine
+                                color: Theme.accent
+                                font.pixelSize: Theme.fontMd
+                                font.bold: true
+                                font.letterSpacing: Theme.tracking2
+                            }
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: parent.width
+                                visible: !previewHost.startBriefCompact && previewHost.startBriefCapture !== ""
+                                wrapMode: Text.Wrap
+                                horizontalAlignment: Text.AlignHCenter
+                                text: previewHost.startBriefCapture
+                                color: Theme.textPrimary
+                                font.pixelSize: Theme.fontSm
+                                font.family: Theme.fontMono
+                            }
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: parent.width
+                                visible: !previewHost.startBriefCompact && previewHost.startBriefMount !== ""
+                                wrapMode: Text.Wrap
+                                horizontalAlignment: Text.AlignHCenter
+                                text: previewHost.startBriefMount
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontSm
+                                font.family: Theme.fontMono
+                            }
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: parent.width
+                                visible: !previewHost.startBriefCompact && previewHost.startBriefTarget !== ""
+                                wrapMode: Text.Wrap
+                                horizontalAlignment: Text.AlignHCenter
+                                text: previewHost.startBriefTarget
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontSm
                             }
                         }
                     }
@@ -2029,7 +2132,7 @@ Item {
                         Rectangle {
                             id: recBadge
                             readonly property var t: root.scopeTelemetry
-                            readonly property bool rec: root.scopeOnline && (root.scopeActivity === "record" || !!t.capture_active)
+                            readonly property bool rec: root.scopeOnline && (root.scopeActivity === "record" || root.scopeActivity === "timelapse" || !!t.capture_active)
                             visible: rec
                             width: recRow.implicitWidth + Theme.s5
                             height: Theme.px(28)
@@ -2052,7 +2155,9 @@ Item {
                                 Text {
                                     text: {
                                         backend.clockText
-                                        return root.scopeActivity === "record"
+                                        return root.scopeActivity === "timelapse"
+                                            ? "TIMELAPSE " + (root.scopeActivityDetail || "00:00")
+                                            : root.scopeActivity === "record"
                                             ? "REC " + (root.scopeActivityDetail || "00:00")
                                             : "STACKING " + (recBadge.t.capture_text || "")
                                     }
@@ -2290,7 +2395,7 @@ Item {
                         {label: "AUTO FOCUS", glyph: "◉", start: "autofocus", stop: "stop_autofocus", state: "autofocus", detail: "OPTICS", mode: "both", camera: "tele"},
                         {label: "INFINITY", glyph: "∞", start: "infinity", stop: "stop_autofocus", state: "infinity", detail: "FOCUS", mode: "dso", camera: "tele"},
                         {label: "POLAR / EQ", glyph: "⌖", start: "polar", stop: "stop_polar", state: "polar", detail: "ALIGN", mode: "dso"},
-                        {label: "POLAR POS", glyph: "⊕", start: "polar_position", stop: "", state: "", detail: "MOUNT"},
+                        {label: "POLAR POS", glyph: "⊕", start: "polar_position", stop: "stop_polar_position", state: "polar_position", detail: "MOUNT"},
                         {label: "LIGHTS", glyph: "✦", start: "lights_on", stop: "lights_off", state: "lights", detail: "CHASSIS"},
                         {label: "INDICATOR", glyph: "◉", start: "indicator_on", stop: "indicator_off", state: "indicator", detail: "CHASSIS"},
                         {label: "PHOTO", glyph: "▣", start: "photo", stop: "", state: "", detail: "CAPTURE", mode: "photo"},
@@ -2378,12 +2483,7 @@ Item {
                             const total = captureTotalS
                             return total > 0 ? Math.min(Math.max(0, local), total) : Math.max(0, local)
                         }
-                        readonly property int captureTotalS: {
-                            const configured = Number(t.timelapse_duration || 0)
-                            if (configured > 0)
-                                return configured
-                            return Number(t.timelapse_total_s || 0)
-                        }
+                        readonly property int captureTotalS: Number(t.timelapse_shoot_s || t.timelapse_total_s || 0)
                         readonly property string liveClockText: {
                             backend.clockText
                             if (modelData.state === "record")
@@ -2391,11 +2491,14 @@ Item {
                             if (modelData.state === "timelapse") {
                                 const total = captureTotalS
                                 const elapsed = captureElapsedS
+                                const video = Number(t.timelapse_duration || 0)
                                 const outS = Number(t.timelapse_out_s || 0)
                                 let text = total > 0
                                     ? Util.clockLabel(elapsed) + " / " + Util.clockLabel(total)
                                     : Util.clockLabel(elapsed)
-                                if (outS > 0 && outS + 2 < elapsed)
+                                if (video > 0)
+                                    text += " · OUT " + Util.clockLabel(outS) + " / " + Util.clockLabel(video)
+                                else if (outS > 0 && outS + 2 < elapsed)
                                     text += " · OUT " + Util.clockLabel(outS)
                                 return text
                             }
@@ -2410,16 +2513,24 @@ Item {
                         }
                         readonly property bool stackTracking: !!t.tracking_active && root.scopeActivity !== "goto"
                         readonly property bool stackPrimed: modelData.start === "stack" && root.scopeOnline && cameraPanel.dsoMode && cameraPanel.stackParamsReady && stackTracking && !activeForState
-                        readonly property bool isPending: root.scopePending !== "" && (root.scopePending === modelData.start || root.scopePending === modelData.stop || (root.scopePending === "cancel_prime" && capturePrimed))
-                        readonly property bool canStopNow: {
-                            if (modelData.state === "lights" || modelData.state === "indicator")
+                        // Capture prime stays latched while BURST / RECORD / TIMELAPSE runs.
+                        readonly property bool primeMode: {
+                            if (!root.scopeOnline || !cameraPanel.photoMode)
                                 return false
-                            if (capturePrimed)
-                                return root.commandEnabled("cancel_prime")
-                            if (activeForState && modelData.stop !== "")
-                                return root.commandEnabled(modelData.stop)
+                            if (modelData.start === "photo")
+                                return !!t.photo_primed
+                            if (modelData.start === "burst_start")
+                                return shootingTech === 3 || (modelData.state === "burst" && activeForState)
+                            if (modelData.start === "record_start")
+                                return shootingTech === 4 || (modelData.state === "record" && activeForState)
+                            if (modelData.start === "timelapse_start")
+                                return shootingTech === 5 || (modelData.state === "timelapse" && activeForState)
                             return false
                         }
+                        readonly property bool polarRunning: modelData.start === "polar_position" && activeForState && root.scopePending === modelData.start
+                        readonly property bool isPending: root.scopePending !== "" && ((root.scopePending === modelData.start && !polarRunning) || root.scopePending === modelData.stop || (root.scopePending === "cancel_prime" && primeMode))
+                        readonly property bool canStopNow: primeMode && root.commandEnabled("cancel_prime")
+                        property bool awaitingPrimeCancel: false
                         readonly property string padLabel: {
                             if (modelData.start === "stack" && (controlPage.mosaicGridArmed || controlPage.mosaicRunning))
                                 return "MOSAIC STACK"
@@ -2431,7 +2542,11 @@ Item {
                                 return "TRACKING"
                             return "TRACK"
                         }
+                        readonly property bool firmwareSettling: Util.commandTransitionLocked(modelData.start, "", t)
+                            || (modelData.stop !== "" && Util.commandTransitionLocked(modelData.stop, "", t))
                         function deviceDetail() {
+                            if (firmwareSettling && (activeForState || root.scopeActivity === "" || root.scopeActivity === modelData.state || (trackingPad && root.scopeActivity === "goto")))
+                                return "STOPPING"
                             if (trackingPad && root.scopeStacking)
                                 return trackingNow
                                     ? (t.tracking_target ? "HOLDING · " + t.tracking_target : "HOLDING FOR STACK")
@@ -2481,6 +2596,8 @@ Item {
                                     : "SWITCH TO " + String(modelData.mode).toUpperCase()
                             }
                             if (!activeForState) {
+                                if (modelData.start === "calibrate" && !!t.tracking_active)
+                                    return "STOP TRACKING"
                                 if (modelData.state === "autofocus")
                                     return cameraPanel.photoMode || cameraPanel.dsoMode
                                         ? cameraPanel.shootingMode + " · OPTICS"
@@ -2501,12 +2618,14 @@ Item {
                                 if (t.eq_has_result && !activeForState)
                                     return t.eq_azi_text || "ALIGN"
                                 return root.scopeActivityDetail || "RUNNING"
+                            case "polar_position":
+                                return "HOMING · STOP"
                             case "record":
                                 return "REC · " + (pad.liveClockText || root.scopeActivityDetail || "00:00")
                             case "burst":
                                 return (pad.liveClockText || root.scopeActivityDetail || "BURST") + " · STOP"
                             case "timelapse":
-                                return (pad.liveClockText || root.scopeActivityDetail || "00:00") + " · STOP"
+                                return pad.liveClockText || root.scopeActivityDetail || "00:00"
                             case "imaging":
                                 return t.capture_text ? "STACK · " + t.capture_text : "STACKING"
                             case "lights":
@@ -2533,7 +2652,7 @@ Item {
                             pad.deviceDetail()
                         }
                         tooltip: trackingPad && root.scopeStacking
-                                 ? "Tracking stays on while stacking.\nUse the stop on STACK to end the capture."
+                                 ? "Tracking stays on while stacking.\nPress STACK to end the capture."
                                  : modelData.start === "stack" && stackTracking && cameraPanel.stackSettingsText()
                                  ? cameraPanel.stackSettingsText()
                                  : ""
@@ -2541,14 +2660,12 @@ Item {
                         pending: isPending
                         primed: capturePrimed || stackPrimed
                         canStop: canStopNow
-                        stopTooltip: capturePrimed ? "Cancel primed capture"
-                                     : trackingPad ? (slewingNow ? "Stop GOTO" : "Stop tracking")
-                                     : modelData.start === "stack" ? (controlPage.mosaicRunning ? "Stop mosaic stack" : "Stop stacking")
-                                     : "Stop " + String(modelData.label || padLabel).toLowerCase()
+                        stopTooltip: activeForState ? "Stop and cancel prime" : "Cancel primed capture"
                         destructive: !!modelData.destructive
+                        stopsOnClick: pad.enabled && modelData.stop !== "" && effectiveOperation === modelData.stop
                         enabled: cameraAllowed && modeAllowed && root.commandEnabled(effectiveOperation)
                         Accessible.description: trackingPad && root.scopeStacking
-                                                           ? "Tracking is required while stacking; use the stop on STACK to end the capture"
+                                                           ? "Tracking is required while stacking; press STACK to end the capture"
                                                            : capturePrimed ? (modelData.start === "photo"
                                                                 ? "Photo capture primed for a fast shot. Use stop to cancel."
                                                                 : modelData.label + " is primed; tap to start, or use stop to cancel")
@@ -2562,7 +2679,11 @@ Item {
                                                                : (modelData.start === "stack" && (controlPage.mosaicGridArmed || controlPage.mosaicRunning))
                                                                  ? ("Mosaic stack " + controlPage.mosaicGridText + " panes")
                                                                  : stackPrimed ? "Sidereal tracking is running and stack settings match the telescope. Stop tracking from TRACK, or press STACK to start capture."
-                                                                               : String(modelData.detail || modelData.label)
+                                                                               : (modelData.start === "calibrate" && !!t.tracking_active && !activeForState)
+                                                                                 ? "Stop tracking before calibrating"
+                                                                                 : (modelData.start === "polar_position" && activeForState)
+                                                                                   ? "Polar positioning is running. Press to stop."
+                                                                                   : String(modelData.detail || modelData.label)
                         onClicked: {
                             if (!pad.enabled || pad.stopPressed)
                                 return
@@ -2571,10 +2692,10 @@ Item {
                             root.requestDeviceAction(effectiveOperation, padLabel)
                         }
                         onStopClicked: {
-                            if (capturePrimed)
-                                root.requestDeviceAction("cancel_prime", padLabel)
-                            else if (modelData.stop !== "")
-                                root.requestDeviceAction(modelData.stop, padLabel)
+                            if (!root.commandEnabled("cancel_prime"))
+                                return
+                            pad.awaitingPrimeCancel = true
+                            root.requestDeviceAction("cancel_prime", padLabel)
                         }
                         Connections {
                             target: backend
@@ -2582,8 +2703,9 @@ Item {
                                 if (deviceId !== backend.selectedDeviceId)
                                     return
                                 if (operation === "cancel_prime") {
-                                    if (pad.capturePrimed)
+                                    if (pad.awaitingPrimeCancel || pad.primeMode)
                                         pad.showFlash(ok ? "success" : "error")
+                                    pad.awaitingPrimeCancel = false
                                     return
                                 }
                                 if (operation === pad.modelData.start || (pad.modelData.stop !== "" && operation === pad.modelData.stop))

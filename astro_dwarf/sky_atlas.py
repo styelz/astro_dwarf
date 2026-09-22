@@ -105,11 +105,17 @@ def parse_atlas_harvest(raw: Any) -> dict[str, Any] | None:
     return out
 
 
+# Vertical field shared with Stellarium Web. On a landscape map this is
+# Aladin's inscribed axis (``setFov``) and Stellarium's ``core.fov``.
+SKY_MAP_FOV_DEG = 70.0
+
+
 def atlas_set_fov_from_view(fov_x: Any, fov_y: Any = None) -> float | None:
     """Aladin ``setFov`` argument from ``getFov()`` ``[x, y]`` degrees.
 
     ``setFov`` is the inscribed (smaller) axis, so restoring ``getFov()[0]``
-    zooms the map. Persist ``min(x, y)`` so a restore is a no-op.
+    zooms the map. Persist ``min(x, y)`` so a restore is a no-op. That degree
+    value is the zoom Stellarium applies too.
     """
     try:
         x = float(fov_x)
@@ -515,6 +521,7 @@ ATLAS_ASTRO_JS = r"""
     if (!box.hasSite) return "no-site";
     var eq = altazToRadec(180, 28, box.lat, box.lon, new Date());
     applyLook(aladin, eq[0], eq[1]);
+    // SKY_MAP_FOV_DEG. Stellarium opens on this same vertical field.
     applyFov(aladin, 70);
     return "ok";
   }
@@ -632,10 +639,6 @@ ATLAS_ASTRO_JS = r"""
     ctx.font = "12px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    ctx.lineJoin = "round";
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = "rgba(0,0,0,0.72)";
-    ctx.strokeText(text, (minX + maxX) / 2, maxY + 8);
     ctx.fillStyle = color;
     ctx.fillText(text, (minX + maxX) / 2, maxY + 8);
   }
@@ -644,10 +647,6 @@ ATLAS_ASTRO_JS = r"""
     ctx.font = size.toFixed(0) + "px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.lineJoin = "round";
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = "rgba(0,0,0,0.72)";
-    ctx.strokeText(String(text), x, y);
     ctx.fillStyle = color;
     ctx.fillText(String(text), x, y);
   }
@@ -672,9 +671,6 @@ ATLAS_ASTRO_JS = r"""
     ctx.setLineDash([]);
     ctx.lineJoin = "miter";
     ctx.lineCap = "butt";
-    ctx.strokeStyle = "rgba(0,0,0,0.5)";
-    ctx.lineWidth = 2.4;
-    ctx.stroke();
     ctx.strokeStyle = color;
     ctx.lineWidth = 1.35;
     ctx.stroke();
@@ -690,9 +686,6 @@ ATLAS_ASTRO_JS = r"""
       ctx.moveTo(corner[0] + (prev[0] - corner[0]) / ab * reach, corner[1] + (prev[1] - corner[1]) / ab * reach);
       ctx.lineTo(corner[0], corner[1]);
       ctx.lineTo(corner[0] + (next[0] - corner[0]) / cb * reach, corner[1] + (next[1] - corner[1]) / cb * reach);
-      ctx.strokeStyle = "rgba(0,0,0,0.5)";
-      ctx.lineWidth = 6.2;
-      ctx.stroke();
       ctx.strokeStyle = color;
       ctx.lineWidth = 4.4;
       ctx.stroke();
@@ -707,12 +700,9 @@ ATLAS_ASTRO_JS = r"""
     ctx.closePath();
     ctx.lineJoin = "miter";
     ctx.lineCap = dashed ? "round" : "butt";
-    ctx.strokeStyle = "rgba(0,0,0,0.72)";
-    ctx.lineWidth = dashed ? 2.4 : 2.8;
-    if (dashed) ctx.setLineDash([1.15, 3.4]);
-    ctx.stroke();
     ctx.strokeStyle = color;
     ctx.lineWidth = dashed ? 1.15 : 1.6;
+    if (dashed) ctx.setLineDash([1.15, 3.4]);
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.lineCap = "butt";
@@ -834,6 +824,33 @@ ATLAS_ASTRO_JS = r"""
     if (pts) drawImageIn(ctx, img, pts, 1);
     else if (w > 1 && h > 1) ctx.drawImage(img, x, y, w, h);
   }
+  function mediaOverlay() {
+    var el = document.getElementById("astro-dwarf-mosaic-media");
+    if (el) return el;
+    el = document.createElement("canvas");
+    el.id = "astro-dwarf-mosaic-media";
+    el.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:45;";
+    var horizon = document.getElementById("astro-dwarf-horizon");
+    if (horizon && horizon.parentNode)
+      horizon.parentNode.insertBefore(el, horizon);
+    else
+      document.body.appendChild(el);
+    return el;
+  }
+  function applyMediaOpacity() {
+    var el = document.getElementById("astro-dwarf-mosaic-media");
+    if (!el) return false;
+    el.style.opacity = String(liveOpacity());
+    return true;
+  }
+  function clearMediaOverlay() {
+    var el = document.getElementById("astro-dwarf-mosaic-media");
+    if (!el || !(el.width > 0) || !(el.height > 0)) return;
+    var octx = el.getContext("2d");
+    if (!octx) return;
+    octx.setTransform(1, 0, 0, 1, 0, 0);
+    octx.clearRect(0, 0, el.width, el.height);
+  }
   function blitMosaicMedia(ctx, width, height, paint) {
     var off = mediaCanvas(width, height);
     var mctx = off.getContext("2d");
@@ -842,6 +859,25 @@ ATLAS_ASTRO_JS = r"""
     mctx.clearRect(0, 0, width, height);
     mctx.globalCompositeOperation = "lighten";
     paint(mctx);
+    var overlay = mediaOverlay();
+    if (overlay.width !== width) overlay.width = width;
+    if (overlay.height !== height) overlay.height = height;
+    var placed = false;
+    try {
+      var octx = overlay.getContext("2d");
+      var t = ctx.getTransform();
+      octx.setTransform(1, 0, 0, 1, 0, 0);
+      octx.clearRect(0, 0, width, height);
+      octx.setTransform(t.a, t.b, t.c, t.d, t.e, t.f);
+      octx.drawImage(off, 0, 0);
+      octx.setTransform(1, 0, 0, 1, 0, 0);
+      overlay.style.opacity = String(liveOpacity());
+      placed = true;
+    } catch (err) {
+      placed = false;
+    }
+    box.mediaCss = placed;
+    if (placed) return;
     ctx.save();
     ctx.globalAlpha = liveOpacity();
     ctx.drawImage(off, 0, 0);
@@ -850,12 +886,9 @@ ATLAS_ASTRO_JS = r"""
   function strokePaneRect(ctx, x, y, w, h, color, dotted) {
     ctx.lineJoin = "miter";
     ctx.lineCap = dotted ? "round" : "butt";
-    ctx.strokeStyle = "rgba(0,0,0,0.72)";
-    ctx.lineWidth = dotted ? 2.4 : 2.8;
-    if (dotted) ctx.setLineDash([1.15, 3.4]);
-    ctx.strokeRect(x, y, w, h);
     ctx.strokeStyle = color;
     ctx.lineWidth = dotted ? 1.15 : 1.6;
+    if (dotted) ctx.setLineDash([1.15, 3.4]);
     ctx.strokeRect(x, y, w, h);
     ctx.setLineDash([]);
     ctx.lineCap = "butt";
@@ -917,6 +950,7 @@ ATLAS_ASTRO_JS = r"""
     return rotatedRect(width / 2, height / 2, totalW, totalH, tilt);
   }
   function paintFov(ctx, width, height) {
+    clearMediaOverlay();
     var fovH = Number(box.fovH);
     var fovV = Number(box.fovV);
     if (!(fovH > 0) || !(fovV > 0)) return;
@@ -938,7 +972,7 @@ ATLAS_ASTRO_JS = r"""
     var cols = Math.max(1, Number(payload.columns) || 1);
     var rows = Math.max(1, Number(payload.rows) || 1);
     var overlap = Math.max(0, Math.min(0.8, Number(payload.overlap) || 0));
-    var color = String(payload.color || "#7ee0d0");
+    var color = String(payload.color || "#02900A");
     var chartPa = Number(box.pa) || 0;
     var southUp = !!(payload.south_up);
     var chartTilt = ((chartPa - (southUp ? 180 : 0)) % 360 + 360) % 360;
@@ -1177,6 +1211,8 @@ ATLAS_ASTRO_JS = r"""
       box.liveOpacity = next;
       box.wheelOpacity = true;
       box.opacityAt = Date.now();
+      if (box.mediaCss && applyMediaOpacity())
+        return;
       drawHorizon();
     }, {capture: true, passive: false});
   }
@@ -1333,6 +1369,7 @@ ATLAS_ASTRO_JS = r"""
       applyLook(aladin, raDeg, decDeg);
     },
     drawHorizon: drawHorizon,
+    applyMediaOpacity: applyMediaOpacity,
     paintFov: paintFov,
     project: project,
     paneCenterXY: paneCenterXY,
@@ -1561,12 +1598,11 @@ ATLAS_VIEW_APPLY_JS = r"""
         box.astro.sync();
     }
     var fov = Number(p && p.fov);
-    if (isFinite(fov) && fov > 0) {
-      if (box && box.astro && typeof box.astro.applyFov === "function")
-        box.astro.applyFov(fov);
-      else if (typeof aladin.setFov === "function")
-        aladin.setFov(fov);
-    }
+    if (!(isFinite(fov) && fov > 0)) fov = 70;
+    if (box && box.astro && typeof box.astro.applyFov === "function")
+      box.astro.applyFov(fov);
+    else if (typeof aladin.setFov === "function")
+      aladin.setFov(fov);
     return "ok";
   } catch (err) {
     return "error";
@@ -1768,8 +1804,14 @@ ATLAS_FOV_JS = r"""
 ATLAS_LIVE_JS = r"""
 (function(url, enabled, opacity, livePane){
   var box = window.__astroDwarfAtlas = window.__astroDwarfAtlas || {};
-  box.liveEnabled = !!enabled;
-  box.liveUrl = enabled ? String(url || "") : "";
+  var on = !!enabled;
+  var href = on ? String(url || "") : "";
+  var pane = Math.max(0, Number(livePane) || 0);
+  var was = !!box.liveEnabled;
+  var hrefChanged = href !== String(box.liveUrl || "");
+  var paneChanged = pane !== (Number(box.livePane) || 0);
+  box.liveEnabled = on;
+  box.liveUrl = href;
   var op = Number(opacity);
   if (!isFinite(op) || op < 0 || op > 1) op = 0.65;
   if (box.wheelOpacity) {
@@ -1778,7 +1820,21 @@ ATLAS_LIVE_JS = r"""
   } else {
     box.liveOpacity = op;
   }
-  box.livePane = Math.max(0, Number(livePane) || 0);
+  box.livePane = pane;
+  if (!hrefChanged && on === was && !paneChanged) {
+    var painted = false;
+    try {
+      if (box.mediaCss && box.astro && typeof box.astro.applyMediaOpacity === "function")
+        painted = !!box.astro.applyMediaOpacity();
+    } catch (err) {}
+    if (!painted) {
+      try {
+        if (box.astro && typeof box.astro.drawHorizon === "function")
+          box.astro.drawHorizon();
+      } catch (err) {}
+    }
+    return "opacity";
+  }
   try {
     if (box.astro && typeof box.astro.drawHorizon === "function")
       box.astro.drawHorizon();

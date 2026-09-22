@@ -9,7 +9,7 @@ Item {
     id: pane
     property bool playing: false
     property string camera: "tele"
-    property color accent: Theme.accent
+    property color accent: Theme.fov
     readonly property int livePane: {
         const n = Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0)
         return isFinite(n) && n >= 1 ? n : 0

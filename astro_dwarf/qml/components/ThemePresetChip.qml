@@ -15,7 +15,7 @@ Item {
     readonly property color typeTint: Theme.previewColor(chip.themeEntry, "textPrimary")
     signal clicked()
 
-    implicitWidth: Theme.px(100)
+    implicitWidth: Theme.px(88)
     implicitHeight: Theme.px(40)
     Accessible.role: Accessible.Button
     Accessible.name: chip.themeLabel

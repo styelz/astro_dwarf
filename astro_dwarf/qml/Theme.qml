@@ -22,6 +22,7 @@ QtObject {
         property string paletteJson: ""
         property string savedThemesJson: "[]"
         property string themeNamesJson: "{}"
+        property string deletedExampleThemesJson: "[]"
         property string activeThemeId: "stock"
         property bool previewChromeHintSeen: false
         property bool enhanceImages: true
@@ -40,6 +41,7 @@ QtObject {
     property alias paletteJson: appearanceStore.paletteJson
     property alias savedThemesJson: appearanceStore.savedThemesJson
     property alias themeNamesJson: appearanceStore.themeNamesJson
+    property alias deletedExampleThemesJson: appearanceStore.deletedExampleThemesJson
     property alias activeThemeId: appearanceStore.activeThemeId
     property alias previewChromeHintSeen: appearanceStore.previewChromeHintSeen
     property alias enhanceImages: appearanceStore.enhanceImages
@@ -165,6 +167,9 @@ QtObject {
             { key: "fillActive", name: "LIVE FILL", hint: "Fill of a live or selected action button." },
             { key: "fillChecked", name: "CHECKED", hint: "Fill of a ticked box, selected menu row, or on toggle." }
         ]},
+        { title: "SKY", keys: [
+            { key: "fov", name: "FOV", hint: "Sky-map field box, mosaic panes, and the wide-view tele footprint. This green is the default on every theme until you change it." }
+        ]},
         { title: "STATUS", keys: [
             { key: "success", name: "OK", hint: "Fixed status green. Not tinted by WINDOW or saved themes." },
             { key: "warning", name: "WARN", hint: "Fixed status amber. Not tinted by WINDOW or saved themes." },
@@ -184,12 +189,16 @@ QtObject {
     }
 
     readonly property var builtinThemes: [
-        { id: "stock", name: "Stock cyan", hue: 0.521, brightness: 0, palette: ({}) },
+        { id: "stock", name: "Cyan", hue: 0.521, brightness: 0, palette: ({}) },
         { id: "ice", name: "Ice", hue: 0.55, brightness: 0.14, palette: ({}) },
         { id: "violet", name: "Violet", hue: 0.76, brightness: 0.02, palette: ({}) },
         { id: "amber", name: "Amber", hue: 0.08, brightness: -0.08, palette: ({}) },
         { id: "forest", name: "Forest", hue: 0.36, brightness: -0.12, palette: ({}) },
-        { id: "crimson", name: "Crimson", hue: 0.985, brightness: -0.1, palette: ({}) },
+        { id: "crimson", name: "Crimson", hue: 0.985, brightness: -0.1, palette: ({}) }
+    ]
+
+    // Example user looks. Delete hides one permanently.
+    readonly property var exampleUserThemes: [
         { id: "custom1", name: "CUSTOM 1", hue: 0.399, brightness: 0.08, palette: ({
             accent: { hue: 0.435, brightness: -0.85 },
             outline: { hue: 0.109, brightness: -0.19 },
@@ -232,6 +241,7 @@ QtObject {
         textSecondary: { offset: 0.037, sat: 0.286, light: 0.610, alpha: 1, weight: 0.60, from: "" },
         muted: { offset: 0.046, sat: 0.255, light: 0.400, alpha: 1, weight: 0.50, from: "textSecondary" },
         accent: { offset: 0.000, sat: 1.000, light: 0.651, alpha: 1, weight: 1.00, from: "" },
+        fov: { offset: 0.000, sat: 0.973, light: 0.286, alpha: 1, weight: 1.00, from: "" },
         accentSoft: { offset: 0.000, sat: 1.000, light: 0.955, alpha: 1, weight: 1.00, from: "accent" },
         glowAccent: { offset: 0.000, sat: 1.000, light: 0.651, alpha: 0.2, weight: 1.00, from: "accent" },
         inputBg: { offset: 0.075, sat: 0.565, light: 0.090, alpha: 1, weight: 0.20, from: "surfaceHigh" },
@@ -284,9 +294,27 @@ QtObject {
         return ({})
     }
 
+    readonly property var parsedDeletedExamples: {
+        try {
+            const raw = JSON.parse(theme.deletedExampleThemesJson || "[]")
+            if (!Array.isArray(raw))
+                return []
+            const out = []
+            for (let i = 0; i < raw.length; i++) {
+                const id = String(raw[i] || "")
+                if (id && out.indexOf(id) < 0)
+                    out.push(id)
+            }
+            return out
+        } catch (exc) {
+        }
+        return []
+    }
+
     readonly property var listedThemes: {
         void theme.savedThemesJson
         void theme.themeNamesJson
+        void theme.deletedExampleThemesJson
         return theme.listThemes()
     }
 
@@ -295,6 +323,7 @@ QtObject {
     readonly property var activeTheme: {
         void theme.savedThemesJson
         void theme.themeNamesJson
+        void theme.deletedExampleThemesJson
         return theme.themeById(theme.activeThemeId)
     }
 
@@ -348,6 +377,12 @@ QtObject {
 
     function recipeOf(key) {
         return theme.recipes[key] || ({ offset: 0, sat: 1, light: 0.5, alpha: 1, weight: 0, from: "" })
+    }
+
+    function roleHasInk(overrides, key) {
+        const own = overrides && overrides[key] && typeof overrides[key] === "object" ? overrides[key] : null
+        return !!(own && (typeof own.hue === "number" || typeof own.brightness === "number"
+            || typeof own.sat === "number" || typeof own.light === "number"))
     }
 
     function roleOverride(key) {
@@ -446,6 +481,18 @@ QtObject {
         const ov = overrides && typeof overrides === "object" && !Array.isArray(overrides) ? overrides : {}
         const own = ov[key] && typeof ov[key] === "object" ? ov[key] : null
         const parentKey = recipe.from || ""
+        const ownsInk = own && (typeof own.hue === "number" || typeof own.brightness === "number"
+            || typeof own.sat === "number" || typeof own.light === "number")
+        if (!ownsInk && parentKey) {
+            const parentRecipe = theme.recipeOf(parentKey)
+            const sameInk = recipe.offset === parentRecipe.offset
+                && recipe.sat === parentRecipe.sat
+                && recipe.light === parentRecipe.light
+                && recipe.alpha === parentRecipe.alpha
+                && recipe.weight === parentRecipe.weight
+            if (sameInk)
+                return theme.paramsFromSnapshot(parentKey, hue, brightness, ov)
+        }
         const parentOv = parentKey && ov[parentKey] && typeof ov[parentKey] === "object" ? ov[parentKey] : null
         const hueSrc = own && (typeof own.hue === "number" || typeof own.brightness === "number")
             ? own
@@ -477,8 +524,11 @@ QtObject {
     }
 
     function previewColor(entry, key) {
-        if (!entry)
+        if (theme.roleFixed(key) || !entry)
             return theme.colorFor(key)
+        // Untouched FOV stays the same green on every theme. A saved edit still wins.
+        if (key === "fov" && !theme.roleHasInk(entry.palette, "fov"))
+            return theme.fovDefault
         const p = theme.paramsFromSnapshot(key, entry.hue, entry.brightness, entry.palette)
         return theme.bake(p.h, p.sat, p.light, p.alpha, p.weight, p.brightness)
     }
@@ -490,8 +540,12 @@ QtObject {
         theme.activeThemeId = id || "stock"
     }
 
+    function readsPaintedColor(key) {
+        return theme.roleFixed(key) || (key === "fov" && !theme.roleCustom("fov"))
+    }
+
     function effectiveHue(key) {
-        if (theme.roleFixed(key)) {
+        if (theme.readsPaintedColor(key)) {
             const h = theme.colorFor(key).hslHue
             return h >= 0 ? h : 0
         }
@@ -499,33 +553,41 @@ QtObject {
     }
 
     function effectiveSat(key) {
-        if (theme.roleFixed(key))
+        if (theme.readsPaintedColor(key))
             return theme.colorFor(key).hslSaturation
         return theme.paramsFor(key).sat
     }
 
     function effectiveBrightness(key) {
-        if (theme.roleFixed(key))
+        if (theme.readsPaintedColor(key))
             return 0
         return theme.paramsFor(key).brightness
     }
 
     function effectiveLight(key) {
-        if (theme.roleFixed(key))
+        if (theme.readsPaintedColor(key))
             return theme.colorFor(key).hslLightness
         const p = theme.paramsFor(key)
         return theme.bakedLight(p.light, p.weight, p.brightness)
     }
 
     function stockHue(key) {
+        if (key === "fov") {
+            const h = theme.fovDefault.hslHue
+            return h >= 0 ? h : 0
+        }
         return theme.wrapHue(theme.defaultHue + theme.recipeOf(key).offset)
     }
 
     function stockSat(key) {
+        if (key === "fov")
+            return theme.fovDefault.hslSaturation
         return theme.recipeOf(key).sat
     }
 
     function stockLight(key) {
+        if (key === "fov")
+            return theme.fovDefault.hslLightness
         const recipe = theme.recipeOf(key)
         return theme.bakedLight(recipe.light, recipe.weight, 0)
     }
@@ -796,12 +858,30 @@ QtObject {
 
     function listThemes() {
         const out = []
-        const builtins = theme.builtinThemes
-        for (let i = 0; i < builtins.length; i++)
-            out.push(theme.withDisplayName(builtins[i]))
         const saved = theme.parsedSavedThemes
-        for (let i = 0; i < saved.length; i++)
+        const savedById = {}
+        for (let i = 0; i < saved.length; i++) {
+            if (saved[i] && saved[i].id)
+                savedById[saved[i].id] = saved[i]
+        }
+        const builtins = theme.builtinThemes
+        for (let i = 0; i < builtins.length; i++) {
+            const id = builtins[i].id
+            out.push(theme.withDisplayName(savedById[id] || builtins[i]))
+        }
+        const examples = theme.exampleUserThemes
+        for (let i = 0; i < examples.length; i++) {
+            const id = examples[i] && examples[i].id
+            if (!id || theme.isDeletedExample(id) || savedById[id])
+                continue
+            out.push(theme.withDisplayName(examples[i]))
+        }
+        for (let i = 0; i < saved.length; i++) {
+            const id = saved[i] && saved[i].id
+            if (!id || theme.isBuiltinId(id))
+                continue
             out.push(theme.withDisplayName(saved[i]))
+        }
         return out
     }
 
@@ -834,6 +914,19 @@ QtObject {
 
     function isShippedCustomId(id) {
         return id === "custom1" || id === "custom2" || id === "custom3"
+    }
+
+    function isDeletedExample(id) {
+        return !!id && theme.parsedDeletedExamples.indexOf(id) >= 0
+    }
+
+    function hasSavedCopy(id) {
+        const saved = theme.parsedSavedThemes
+        for (let i = 0; i < saved.length; i++) {
+            if (saved[i] && saved[i].id === id)
+                return true
+        }
+        return false
     }
 
     function canRenameTheme(id) {
@@ -898,7 +991,7 @@ QtObject {
     }
 
     function updateTheme(id) {
-        if (!id || theme.isBuiltinId(id))
+        if (!id || !theme.themeById(id))
             return false
         const saved = theme.parsedSavedThemes.slice()
         const snap = theme.snapshot()
@@ -910,8 +1003,13 @@ QtObject {
             found = true
             break
         }
-        if (!found)
-            return false
+        if (!found) {
+            if (saved.length >= theme.maxSavedThemes)
+                return false
+            const entry = theme.themeById(id)
+            const name = entry && entry.name ? String(entry.name) : id
+            saved.push({ id: id, name: name, hue: snap.hue, brightness: snap.brightness, palette: snap.palette })
+        }
         theme.savedThemesJson = JSON.stringify(saved)
         theme.activeThemeId = id
         return true
@@ -942,9 +1040,39 @@ QtObject {
         return true
     }
 
+    function revertBuiltinTheme(id) {
+        if (!theme.isBuiltinId(id))
+            return false
+        if (theme.hasSavedCopy(id)) {
+            const saved = theme.parsedSavedThemes.filter(item => item.id !== id)
+            theme.savedThemesJson = JSON.stringify(saved)
+        }
+        return theme.applyTheme(id)
+    }
+
     function deleteTheme(id) {
         if (!id || theme.isBuiltinId(id))
             return false
+        if (theme.isShippedCustomId(id)) {
+            if (theme.isDeletedExample(id) && !theme.hasSavedCopy(id))
+                return false
+            const names = Object.assign({}, theme.parsedThemeNames)
+            if (names[id]) {
+                delete names[id]
+                theme.themeNamesJson = JSON.stringify(names)
+            }
+            const saved = theme.parsedSavedThemes.filter(item => item.id !== id)
+            if (saved.length !== theme.parsedSavedThemes.length)
+                theme.savedThemesJson = JSON.stringify(saved)
+            if (!theme.isDeletedExample(id)) {
+                const deleted = theme.parsedDeletedExamples.slice()
+                deleted.push(id)
+                theme.deletedExampleThemesJson = JSON.stringify(deleted)
+            }
+            if (theme.activeThemeId === id)
+                theme.activeThemeId = "stock"
+            return true
+        }
         const saved = theme.parsedSavedThemes.filter(item => item.id !== id)
         if (saved.length === theme.parsedSavedThemes.length)
             return false
@@ -1004,6 +1132,8 @@ QtObject {
             return theme.warning
         if (key === "danger")
             return theme.danger
+        if (key === "fov" && !theme.roleCustom("fov"))
+            return theme.fovDefault
         const p = theme.paramsFor(key)
         return theme.bake(p.h, p.sat, p.light, p.alpha, p.weight, p.brightness)
     }
@@ -1018,6 +1148,7 @@ QtObject {
     readonly property color textSecondary: theme.colorFor("textSecondary")
     readonly property color muted: theme.colorFor("muted")
     readonly property color accent: theme.colorFor("accent")
+    readonly property color fov: theme.colorFor("fov")
     readonly property color accentSoft: theme.colorFor("accentSoft")
     readonly property color glowAccent: theme.colorFor("glowAccent")
     readonly property color inputBg: theme.colorFor("inputBg")
@@ -1030,6 +1161,7 @@ QtObject {
     readonly property color scrim: theme.colorFor("scrim")
 
     // Fixed semantic colours.
+    readonly property color fovDefault: "#02900A"
     readonly property color success: "#3DFFB0"
     readonly property color danger: "#FF6B7A"
     readonly property color warning: "#F5C542"

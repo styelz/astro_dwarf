@@ -108,7 +108,7 @@ Item {
         x: pane.frameX + pane.paintedWidth * pane.footprintNx - width / 2
         y: pane.frameY + pane.paintedHeight * pane.footprintNy - height / 2
         color: "transparent"
-        border.color: Theme.accent
+        border.color: Theme.fov
         border.width: 1
         opacity: pane.chromeShown ? 0.85 : 0.4
         Behavior on opacity { NumberAnimation { duration: Theme.slow } }

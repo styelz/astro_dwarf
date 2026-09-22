@@ -45,6 +45,7 @@ CMD_NOTIFY_TELE_BURST_PROGRESS = 15218
 CMD_NOTIFY_WIDE_BURST_PROGRESS = 15220
 CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING = 15236
 CMD_NOTIFY_PROGRASS_WIDE_CAPTURE_RAW_LIVE_STACKING = 15237
+CMD_NOTIFY_STATE_CAPTURE_WIDE_RAW_DARK = 15247
 CMD_NOTIFY_EQ_SOLVING_STATE = 15239
 CMD_NOTIFY_TELE_LONG_EXP_PROGRESS = 15241
 CMD_NOTIFY_WIDE_LONG_EXP_PROGRESS = 15242
@@ -74,6 +75,8 @@ CMD_ASTRO_START_GOTO_SOLAR_SYSTEM = 11003
 CODE_ASTRO_NEED_CALIBRATION = -11511
 # Plate-solving retry during an in-progress GOTO/calibration.
 CODE_ASTRO_PLATE_SOLVING_FAILED = -11500
+# Terminal calibration reply. Firmware still notifies ASTRO_STATE_IDLE afterwards.
+CODE_ASTRO_CALIBRATION_FAILED = -11504
 CMD_ASTRO_START_EQ_SOLVING = 11018
 CMD_FOCUS_AUTO_FOCUS = 15000
 CMD_FOCUS_START_ASTRO_AUTO_FOCUS = 15004
@@ -103,6 +106,27 @@ ASTRO_STATES = {0: "idle", 1: "running", 2: "stopping", 3: "stopped", 4: "solvin
 # Keep a stop we just watched on screen briefly; a stopping state that
 # arrives on its own is leftover from an earlier slew and must not latch TRACK.
 GOTO_STOP_UNWIND_S = 12.0
+_CALIBRATION_BUSY = {"running", "solving"}
+
+
+def calibration_reply_failed(code: int) -> bool:
+    """True when a calibration reply ends the run.
+
+    ``CODE_ASTRO_PLATE_SOLVING_FAILED`` is a retry while calibration is still
+    going. ``0`` is not a failure. ``CODE_ASTRO_CALIBRATION_FAILED`` and any
+    other reject are.
+    """
+    return code not in (0, CODE_ASTRO_PLATE_SOLVING_FAILED)
+
+
+def _calibration_run_started(state: str, previous: Any) -> bool:
+    """True when firmware has started a calibration, not a later plate-solve.
+
+    Solving packets keep arriving after ``CODE_ASTRO_CALIBRATION_FAILED``.
+    Clearing the error on those would turn the following idle into a false
+    "Calibration complete".
+    """
+    return state == "running" and previous not in _CALIBRATION_BUSY
 
 
 def settle_goto_changes(
@@ -834,6 +858,12 @@ class TelemetryTap:
                 self.update({"goto_state": "idle", "goto_error": error}, force=True)
             elif code == 0:
                 self.update({"goto_error": ""}, force=True)
+        if cmd == CMD_ASTRO_START_CALIBRATION:
+            # Idle is sent for a finished solve and for a failed one. The reply
+            # code is what distinguishes them; a plate-solve retry is not the end.
+            failed = calibration_reply_failed(code)
+            if failed:
+                self.update({"calibration_error": "failed"}, force=True)
         if cmd == CMD_ASTRO_START_EQ_SOLVING:
             changes: dict[str, Any] = {}
             azi = getattr(message, "azi_err", None)
@@ -977,10 +1007,14 @@ class TelemetryTap:
             return changes
         if cmd == CMD_NOTIFY_STATE_ASTRO_CALIBRATION:
             message = self._parse("AstroCalibrationState", data)
-            return {
-                "calibration_state": ASTRO_STATES.get(int(message.state), str(message.state)),
+            state = ASTRO_STATES.get(int(message.state), str(message.state))
+            changes = {
+                "calibration_state": state,
                 "calibration_phase": int(message.plate_solving_times),
             }
+            if _calibration_run_started(state, self.snapshot().get("calibration_state")):
+                changes["calibration_error"] = ""
+            return changes
         if cmd == CMD_NOTIFY_EQ_SOLVING_STATE:
             message = self._parse("EqSolvingState", data)
             changes = {"eq_state": OPERATION_STATES.get(int(message.state), str(message.state))}
@@ -1014,7 +1048,7 @@ class TelemetryTap:
         if cmd == CMD_NOTIFY_PROGRESS_CAPTURE_MOSAIC:
             message = self._parse("ProgressCaptureMosaic", data)
             return self._fresh_stacking_progress(message, mosaic=True)
-        if cmd == CMD_NOTIFY_STATE_CAPTURE_RAW_DARK:
+        if cmd in (CMD_NOTIFY_STATE_CAPTURE_RAW_DARK, CMD_NOTIFY_STATE_CAPTURE_WIDE_RAW_DARK):
             message = self._parse("OperationStateNotify", data)
             state = OPERATION_STATES.get(int(message.state), str(message.state))
             changes = {"dark_state": state}
@@ -1063,7 +1097,6 @@ class TelemetryTap:
                 "timelapse_state": "running",
                 "timelapse_interval_s": int(message.interval),
                 "timelapse_out_s": int(message.out_time),
-                "timelapse_elapsed_s": int(message.out_time),
                 "timelapse_total_s": int(message.total_time),
             }
         if cmd in (
@@ -1221,8 +1254,11 @@ class TelemetryTap:
             exclusive = motion.exclusive_state
             which = exclusive.WhichOneof("current_state")
             if which == "astro_calibration_state":
-                changes["calibration_state"] = ASTRO_STATES.get(int(exclusive.astro_calibration_state.state), "idle")
+                state = ASTRO_STATES.get(int(exclusive.astro_calibration_state.state), "idle")
+                changes["calibration_state"] = state
                 changes["calibration_phase"] = int(exclusive.astro_calibration_state.plate_solving_times)
+                if _calibration_run_started(state, self.snapshot().get("calibration_state")):
+                    changes["calibration_error"] = ""
             elif which == "astro_goto_state":
                 changes["goto_state"] = ASTRO_STATES.get(int(exclusive.astro_goto_state.state), "idle")
                 changes["goto_target"] = str(exclusive.astro_goto_state.target_name or "")
@@ -1462,6 +1498,9 @@ def is_chatter(text: str) -> bool:
     """SDK plumbing lines that should be demoted to debug rather than shown as notices."""
     lowered = text.lower()
     if lowered.startswith(_DEMOTE_PREFIXES):
+        return True
+    # The HUD modal is the prompt. This SDK line stays out of the log.
+    if "code_astro_dark_not_found" in lowered or "code_astro_dark_temp_mismatch" in lowered:
         return True
     return bool(_SET_OK_RE.match(lowered))
 

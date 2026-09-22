@@ -20,8 +20,20 @@ from astro_dwarf.device_telemetry import (
     TYPE_NOTIFICATION,
     TelemetryTap,
 )
-from astro_dwarf.device_worker import camera_param_unchanged, capture_prime_needs_mode_reset, shooting_state_changes
-from astro_dwarf.telemetry_view import AlertEngine, derive_activity, photo_capture_seconds
+from astro_dwarf.device_worker import (
+    camera_param_unchanged,
+    capture_prime_needs_mode_reset,
+    running_photo_capture_stop,
+    shooting_state_changes,
+)
+from astro_dwarf.telemetry_view import (
+    AlertEngine,
+    camera_params_to_telemetry,
+    derive_activity,
+    photo_capture_seconds,
+    timelapse_shoot_seconds,
+    timelapse_video_seconds,
+)
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -37,6 +49,23 @@ def test_photo_capture_seconds_keeps_hud_seconds() -> None:
     _assert(photo_capture_seconds("1 s") == 1, "1 s strips the unit")
     _assert(photo_capture_seconds("Off") == 0, "Off is unlimited/zero")
     _assert(photo_capture_seconds("∞") == 0, "infinity is unlimited")
+
+
+def test_timelapse_video_length_uses_thirty_fps() -> None:
+    _assert(timelapse_shoot_seconds(30, 1) == 900, "30 s video at 1 fps is a 15 min shoot")
+    _assert(timelapse_video_seconds(900, 1) == 30, "900 s at 1 fps plays as 30 s")
+    _assert(timelapse_shoot_seconds(4, 5) == 600, "manual example: 4 s video, 5 s interval, 10 min shoot")
+    _assert(timelapse_video_seconds(600, 5) == 4, "10 min at 5 s is a 4 s video")
+    _assert(timelapse_shoot_seconds(30, 2) == 1800, "same video at 2 s between frames shoots twice as long")
+
+
+def test_camera_params_report_video_length_not_shoot_time() -> None:
+    changes = camera_params_to_telemetry(
+        {"cameras": [{"timelapse": {"interval": 1, "duration": 900}}]},
+    )
+    _assert(changes.get("timelapse_interval") == "1", changes)
+    _assert(changes.get("timelapse_shoot_s") == 900, changes)
+    _assert(changes.get("timelapse_duration") == "30", changes)
 
 
 def test_sdk_duration_by_name_would_have_sent_minutes() -> None:
@@ -89,7 +118,7 @@ def test_notify_decodes_burst_idle_and_timelapse_progress() -> None:
     progress.total_time = 30
     changes = tap._decode(CMD_NOTIFY_TIMELAPSE_OUT_TIME, TYPE_NOTIFICATION, progress.SerializeToString())
     _assert(changes.get("timelapse_state") == "running", changes)
-    _assert(changes.get("timelapse_elapsed_s") == 12, changes)
+    _assert("timelapse_elapsed_s" not in changes, changes)
     _assert(changes.get("timelapse_out_s") == 12, changes)
     _assert(changes.get("timelapse_total_s") == 30, changes)
 
@@ -147,8 +176,8 @@ def test_record_and_timelapse_clocks_tick_from_start_stamp() -> None:
             },
             now,
         )
-        == ("timelapse", "00:12 / 00:30 · OUT 00:01"),
-        "timelapse shows capture elapsed/total and assembled output separately",
+        == ("timelapse", "00:12 / 15:00 · OUT 00:01 / 00:30"),
+        "timelapse shows capture elapsed against the shoot and the 30 fps file separately",
     )
     _assert(
         derive_activity(
@@ -157,12 +186,13 @@ def test_record_and_timelapse_clocks_tick_from_start_stamp() -> None:
                 "timelapse_elapsed_s": 0,
                 "timelapse_total_s": 1800,
                 "timelapse_duration": "30",
+                "timelapse_interval": "1",
                 "timelapse_started_at": now - 8,
             },
             now,
         )
-        == ("timelapse", "00:08 / 00:30"),
-        "HUD 30s duration wins over leftover firmware 30-minute total",
+        == ("timelapse", "00:08 / 15:00 · OUT 00:00 / 00:30"),
+        "a 30 s video at 1 fps shoots for 15 min, not the leftover 30 min total",
     )
     _assert(
         derive_activity(
@@ -171,12 +201,13 @@ def test_record_and_timelapse_clocks_tick_from_start_stamp() -> None:
                 "timelapse_elapsed_s": 8,
                 "timelapse_total_s": 14,
                 "timelapse_duration": "30",
+                "timelapse_interval": "1",
                 "timelapse_started_at": now - 8,
             },
             now,
         )
-        == ("timelapse", "00:08 / 00:30"),
-        "firmware total_time must not replace the operator duration",
+        == ("timelapse", "00:08 / 15:00 · OUT 00:00 / 00:30"),
+        "firmware total_time must not replace the video length",
     )
 
 
@@ -196,11 +227,11 @@ def test_record_activity_beats_stale_stack() -> None:
 def test_camera_param_skips_matching_timelapse_duration() -> None:
     _assert(
         camera_param_unchanged("set_timelapse_duration", [30], {"timelapse_duration": "30"}, {}),
-        "30 seconds already on the telescope must not be rewritten as minutes",
+        "30 s of video already selected must not be sent again",
     )
     _assert(
         not camera_param_unchanged("set_timelapse_duration", [30], {"timelapse_duration": "1800"}, {}),
-        "a leftover 30-minute firmware value must be corrected to 30 seconds",
+        "a leftover shoot time is not the 30 s video",
     )
     _assert(
         camera_param_unchanged("set_burst_count", [3], {"burst_count": 3}, {}),
@@ -222,6 +253,12 @@ def test_cancel_prime_clears_stills_and_flags_burst_reset() -> None:
     _assert(capture_prime_needs_mode_reset({"shooting_mode": 1, "shooting_tech": 4}), "record technique")
     _assert(capture_prime_needs_mode_reset({"shooting_mode": 1, "shooting_tech": 5}), "timelapse technique")
     _assert(not capture_prime_needs_mode_reset({"shooting_mode": 2, "shooting_tech": 0}), "DSO is not capture-primed")
+    _assert(running_photo_capture_stop({"burst_state": "running"}) == "burst_stop", "running burst")
+    _assert(running_photo_capture_stop({"record_state": "running"}) == "record_stop", "running record")
+    _assert(running_photo_capture_stop({"timelapse_state": "running"}) == "timelapse_stop", "running timelapse")
+    _assert(running_photo_capture_stop({}, "burst") == "burst_stop", "activity latch")
+    _assert(running_photo_capture_stop({"shooting_tech": 3, "burst_state": "idle"}) == "", "primed burst is not running")
+    _assert(running_photo_capture_stop({"capture_active": True}, "imaging") == "", "stack is not a capture prime")
 
 
 def test_burst_start_packet_is_empty() -> None:
@@ -246,8 +283,60 @@ def test_tap_stamps_record_start_clock() -> None:
     _assert(later.get("record_started_at") == snap.get("record_started_at"), later)
 
 
+def test_wide_tap_autofocus_lights_only_when_focus_moves() -> None:
+    import time
+
+    from astro_dwarf import device_worker
+
+    class Tap:
+        def __init__(self, snap: dict) -> None:
+            self.data = dict(snap)
+            self._hold_photo_autofocus = False
+
+        def snapshot(self) -> dict:
+            return dict(self.data)
+
+        def update(self, changes: dict, force: bool = False) -> None:
+            self.data.update(changes)
+
+    previous = device_worker._tap
+    device_worker._reset_linkage_autofocus_watch()
+    device_worker._reset_photo_autofocus_watch()
+    try:
+        photo = Tap({"shooting_mode": 1, "focus_position": 1000, "autofocus_state": "idle"})
+        device_worker._tap = photo
+        device_worker._arm_linkage_autofocus_watch()
+        now = time.monotonic()
+        device_worker._maybe_latch_linkage_autofocus(
+            {"focus_position": 1001, "autofocus_state": "idle"}, now
+        )
+        _assert(photo.data.get("autofocus_state") != "running", "one step is not a hunt")
+        device_worker._maybe_latch_linkage_autofocus(
+            {"focus_position": 1020, "autofocus_state": "idle"}, now
+        )
+        _assert(photo.data.get("autofocus_state") == "running", photo.data)
+        activity, _detail = derive_activity(photo.snapshot())
+        _assert(activity == "autofocus", activity)
+
+        device_worker._reset_linkage_autofocus_watch()
+        device_worker._reset_photo_autofocus_watch()
+        dso = Tap({"shooting_mode": 2, "focus_position": 1000, "autofocus_state": "idle"})
+        device_worker._tap = dso
+        device_worker._arm_linkage_autofocus_watch()
+        device_worker._maybe_latch_linkage_autofocus(
+            {"focus_position": 1200, "autofocus_state": "idle"}, time.monotonic()
+        )
+        _assert(dso.data.get("autofocus_state") == "idle", dso.data)
+    finally:
+        device_worker._reset_linkage_autofocus_watch()
+        device_worker._reset_photo_autofocus_watch()
+        device_worker._tap = previous
+
+
 def main() -> None:
     test_photo_capture_seconds_keeps_hud_seconds()
+    test_timelapse_video_length_uses_thirty_fps()
+    test_camera_params_report_video_length_not_shoot_time()
     test_sdk_duration_by_name_would_have_sent_minutes()
     test_derive_activity_unlatches_burst_and_timelapse()
     test_burst_and_timelapse_complete_toasts()
@@ -259,6 +348,7 @@ def main() -> None:
     test_camera_param_skips_matching_timelapse_duration()
     test_cancel_prime_clears_stills_and_flags_burst_reset()
     test_burst_start_packet_is_empty()
+    test_wide_tap_autofocus_lights_only_when_focus_moves()
     print("test_photo_capture: ok")
 
 

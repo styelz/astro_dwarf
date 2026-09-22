@@ -13,6 +13,8 @@ Item {
     signal editRequested(var session)
     readonly property bool canEdit: {
         const item = root.dragItem || {}
+        if (item.from_history)
+            return false
         if (item.group_collapsed)
             return String(item.group_status || item.status || "") !== "running"
         return String(item.status || "") !== "running"
@@ -26,9 +28,14 @@ Item {
             : (item.pane_name || item.target_name || "Session")
         return (when ? when + " " : "") + label
     }
-        Accessible.description: !root.canEdit
-                                ? "Running"
-                                : (root.editOnDoubleTap ? "Drag to reschedule, double-click to edit" : "Drag to reschedule")
+    Accessible.description: {
+        const item = root.dragItem || {}
+        if (item.from_history)
+            return "Completed run from history"
+        if (!root.canEdit)
+            return "Running"
+        return root.editOnDoubleTap ? "Drag to reschedule, double-click to edit" : "Drag to reschedule"
+    }
 
     TapHandler {
         parent: root.parent

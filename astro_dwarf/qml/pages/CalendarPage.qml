@@ -22,8 +22,10 @@ Item {
         id: calendarStore
         category: "calendar"
         property bool showAllDevices: true
+        property bool showHistory: false
     }
     property alias showAllDevices: calendarStore.showAllDevices
+    property alias showHistory: calendarStore.showHistory
     readonly property int selectedCount: Util.idSetCount(selectedIds)
     function selectClick(id, shift, items) {
         const result = Util.clickSelect(selectedIds, items || backend.sessions, id, shift, selectionAnchorId)
@@ -73,7 +75,66 @@ Item {
         return calendarPage.showAllDevices || item.device_id === backend.selectedDeviceId
     }
     function sessionsForDay(key) {
-        return backend.sessions.filter(item => item.observing_date === key && calendarPage.matchesScope(item))
+        const planned = backend.sessions.filter(item => item.observing_date === key && calendarPage.matchesScope(item))
+        if (!calendarPage.showHistory)
+            return planned
+        return calendarPage.mergeCalendarEntries(planned, calendarPage.historyOnDay(key))
+    }
+    function historyEntries() {
+        if (!calendarPage.showHistory)
+            return []
+        const rows = backend.history || []
+        const out = []
+        for (let i = 0; i < rows.length; i++) {
+            const item = rows[i]
+            if (!item || !item.from_history || !item.observing_date || !Number(item.start_epoch_ms || 0))
+                continue
+            if (!calendarPage.matchesScope(item))
+                continue
+            if (calendarPage.sessionAlreadyShowsRun(item.session_id))
+                continue
+            out.push(item)
+        }
+        return out
+    }
+    function historyOnDay(key) {
+        return calendarPage.historyEntries().filter(item => item.observing_date === key)
+    }
+    function sessionAlreadyShowsRun(sessionId) {
+        if (!sessionId)
+            return false
+        const sessions = backend.sessions || []
+        for (let i = 0; i < sessions.length; i++) {
+            const item = sessions[i]
+            if (!item || item.id !== sessionId)
+                continue
+            const status = String(item.status || "")
+            return status === "done" || status === "error" || status === "skipped"
+        }
+        return false
+    }
+    function mergeCalendarEntries(planned, past) {
+        const items = (planned || []).slice()
+        const extra = past || []
+        for (let i = 0; i < extra.length; i++)
+            items.push(extra[i])
+        items.sort(function(a, b) {
+            const da = String(a.observing_date || "")
+            const db = String(b.observing_date || "")
+            if (da !== db)
+                return da < db ? -1 : 1
+            return Number(a.start_epoch_ms || 0) - Number(b.start_epoch_ms || 0)
+        })
+        return items
+    }
+    function schedulableItems(items) {
+        const out = []
+        const list = items || []
+        for (let i = 0; i < list.length; i++) {
+            if (list[i] && !list[i].from_history)
+                out.push(list[i])
+        }
+        return out
     }
     readonly property int selectedDayCount: Util.idSetCount(selectedDayKeys)
     function isDaySelected(key) {
@@ -141,14 +202,10 @@ Item {
         for (let i = 0; i < list.length; i++)
             set[list[i]] = true
         const items = backend.sessions.filter(item => set[item.observing_date] && calendarPage.matchesScope(item))
-        items.sort((a, b) => {
-            const da = String(a.observing_date || "")
-            const db = String(b.observing_date || "")
-            if (da !== db)
-                return da < db ? -1 : 1
-            return Number(a.start_epoch_ms || 0) - Number(b.start_epoch_ms || 0)
-        })
-        return items
+        if (!calendarPage.showHistory)
+            return calendarPage.mergeCalendarEntries(items, [])
+        const past = calendarPage.historyEntries().filter(item => set[item.observing_date])
+        return calendarPage.mergeCalendarEntries(items, past)
     }
     function selectedNightsTitle() {
         const keys = calendarPage.sortedDayKeys()
@@ -169,12 +226,16 @@ Item {
     }
     readonly property var nightSessions: {
         const _sessions = backend.sessions
+        const _history = backend.history
+        const _show = calendarPage.showHistory
         const _all = calendarPage.showAllDevices
         const _device = backend.selectedDeviceId
         return calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
     }
     readonly property var sidebarSessions: {
         const _sessions = backend.sessions
+        const _history = backend.history
+        const _show = calendarPage.showHistory
         const _all = calendarPage.showAllDevices
         const _device = backend.selectedDeviceId
         const _keys = calendarPage.selectedDayKeys
@@ -182,10 +243,15 @@ Item {
     }
     readonly property int shownMonthSessionCount: {
         const _sessions = backend.sessions
+        const _history = backend.history
+        const _show = calendarPage.showHistory
         const _all = calendarPage.showAllDevices
         const _device = backend.selectedDeviceId
         const prefix = calendarPage.shownMonth.getFullYear() + "-" + String(calendarPage.shownMonth.getMonth() + 1).padStart(2, "0")
-        return backend.sessions.filter(item => calendarPage.matchesScope(item) && String(item.observing_date || "").indexOf(prefix) === 0).length
+        const planned = backend.sessions.filter(item => calendarPage.matchesScope(item) && String(item.observing_date || "").indexOf(prefix) === 0).length
+        if (!calendarPage.showHistory)
+            return planned
+        return planned + calendarPage.historyEntries().filter(item => String(item.observing_date || "").indexOf(prefix) === 0).length
     }
     readonly property var nightLayout: calendarPage.layoutNight(calendarPage.nightSessions)
     function nightDeviceIds(items) {
@@ -207,6 +273,11 @@ Item {
         return ids
     }
     function sessionSpanSeconds(item) {
+        if (item && item.from_history) {
+            const actual = Number(item.actual_duration_seconds || 0)
+            const planned = Number(item.planned_duration_seconds || 0)
+            return Math.max(60, actual > 0 ? actual : planned)
+        }
         return Math.max(0, Number(item.planned_duration_seconds || 0))
     }
     function sessionEndMs(item) {
@@ -562,6 +633,15 @@ Item {
                 HudButton { text: "MONTH"; buttonColor: calendarPage.viewMode === 0 ? Theme.fillActive : Theme.surfaceHigh; foregroundColor: calendarPage.viewMode === 0 ? Theme.accent : Theme.textSecondary; onClicked: calendarPage.viewMode = 0 }
                 HudButton { text: "NIGHT"; buttonColor: calendarPage.viewMode === 1 ? Theme.fillActive : Theme.surfaceHigh; foregroundColor: calendarPage.viewMode === 1 ? Theme.accent : Theme.textSecondary; onClicked: calendarPage.openNight(calendarPage.selectedDate) }
                 HudButton {
+                    objectName: "calendar-history"
+                    text: calendarHeader.tight ? "HIST" : "HISTORY"
+                    Accessible.name: "History on calendar"
+                    tooltip: calendarPage.showHistory ? "Hide completed runs from history" : "Show completed runs from history"
+                    buttonColor: calendarPage.showHistory ? Theme.fillActive : Theme.surfaceHigh
+                    foregroundColor: calendarPage.showHistory ? Theme.accent : Theme.textSecondary
+                    onClicked: calendarPage.showHistory = !calendarPage.showHistory
+                }
+                HudButton {
                     visible: (backend.devices || []).length > 1
                     text: calendarHeader.tight ? "ALL" : "ALL DEVICES"
                     Accessible.name: "All devices"
@@ -620,17 +700,18 @@ Item {
             }
             SelectionBar {
                 active: calendarPage.viewMode === 1
-                selectedCount: calendarPage.nightSessions.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).length
-                totalCount: calendarPage.nightSessions.length
+                readonly property var choosable: calendarPage.schedulableItems(calendarPage.nightSessions)
+                selectedCount: choosable.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).length
+                totalCount: choosable.length
                 noun: "session"
                 allowMove: true
-                sessionIds: calendarPage.nightSessions.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).map(item => item.id)
-                onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(calendarPage.nightSessions, true)
+                sessionIds: choosable.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).map(item => item.id)
+                onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(choosable, true)
                 onClearRequested: calendarPage.selectedIds = ({})
-                onEditRequested: sessionDialog.openSelected(Util.itemsByIds(calendarPage.nightSessions, calendarPage.selectedIds))
+                onEditRequested: sessionDialog.openSelected(Util.itemsByIds(choosable, calendarPage.selectedIds))
                 onDeleteRequested: {
                     const chosen = {}
-                    const items = calendarPage.nightSessions
+                    const items = choosable
                     for (let i = 0; i < items.length; i++) {
                         const id = items[i] && items[i].id
                         if (id && Util.idSetHas(calendarPage.selectedIds, id))
@@ -650,10 +731,19 @@ Item {
                 wrapMode: Text.NoWrap
                 elide: Text.ElideRight
                 text: {
-                    if (monthEmpty)
+                    if (monthEmpty) {
+                        if (calendarPage.showHistory)
+                            return calendarPage.showAllDevices
+                                ? "Nothing scheduled or in history this month."
+                                : "Nothing scheduled or in history on this telescope this month."
                         return calendarPage.showAllDevices
                             ? "Nothing scheduled this month. Drop a session onto a night, or create a new one."
                             : "Nothing scheduled on this telescope this month."
+                    }
+                    if (calendarPage.showHistory)
+                        return calendarPage.showAllDevices
+                            ? "Nothing scheduled or in history for this night."
+                            : "Nothing scheduled or in history on this telescope for this night."
                     return calendarPage.showAllDevices
                         ? "Nothing scheduled for this night. Drop a session onto the timeline, or create a new one."
                         : "Nothing scheduled on this telescope for this night."
@@ -722,6 +812,8 @@ Item {
                             property string key: calendarPage.dateKey(cellDate)
                             property var daySessions: {
                                 const _sessions = backend.sessions
+                                const _history = backend.history
+                                const _show = calendarPage.showHistory
                                 const _all = calendarPage.showAllDevices
                                 const _device = backend.selectedDeviceId
                                 return calendarPage.sessionsForDay(dayCell.key)
@@ -844,7 +936,11 @@ Item {
                                             editOnDoubleTap: false
                                             pressedAction: function() { calendarPage.setSingleDay(dayCell.cellDate) }
                                         }
-                                        TapHandler { acceptedButtons: Qt.RightButton; onTapped: calendarPage.openSessionMenu(sessionChip.modelData, dayCell.daySessions) }
+                                        TapHandler { acceptedButtons: Qt.RightButton; onTapped: {
+                                            if (sessionChip.modelData.from_history)
+                                                return
+                                            calendarPage.openSessionMenu(sessionChip.modelData, dayCell.daySessions)
+                                        } }
                                     }
                                 }
                                 Text {
@@ -913,8 +1009,8 @@ Item {
                                 HudMenuItem {
                                     text: "Select all"
                                     glyph: "\uE8A5"
-                                    enabled: dayCell.daySessions.length > 0
-                                    onTriggered: calendarPage.selectedIds = Util.idSetAll(dayCell.daySessions, true)
+                                    enabled: calendarPage.schedulableItems(dayCell.daySessions).length > 0
+                                    onTriggered: calendarPage.selectedIds = Util.idSetAll(calendarPage.schedulableItems(dayCell.daySessions), true)
                                 }
                                 HudMenuItem {
                                     text: "Unselect all"
@@ -1413,7 +1509,8 @@ Item {
                                 TapHandler {
                                     acceptedButtons: Qt.LeftButton
                                     acceptedModifiers: Qt.ShiftModifier
-                                    onTapped: calendarPage.selectClick(timelineSession.modelData.id, true, calendarPage.nightSessions)
+                                    enabled: !timelineSession.modelData.from_history
+                                    onTapped: calendarPage.selectClick(timelineSession.modelData.id, true, calendarPage.schedulableItems(calendarPage.nightSessions))
                                 }
                                 RowLayout {
                                     anchors.fill: parent
@@ -1424,11 +1521,12 @@ Item {
                                         Layout.preferredWidth: Theme.px(18)
                                         Layout.maximumWidth: Theme.px(18)
                                         Layout.fillHeight: true
+                                        visible: !timelineSession.modelData.from_history
                                         spineInset: 2
                                         spineColor: Util.sessionTone(timelineSession.modelData)
                                         checked: Util.idSetHas(calendarPage.selectedIds, timelineSession.modelData.id)
                                         revealed: timelineHover.hovered || calendarPage.selectedCount > 0
-                                        onToggled: (shiftHeld) => calendarPage.selectClick(timelineSession.modelData.id, shiftHeld, calendarPage.nightSessions)
+                                        onToggled: (shiftHeld) => calendarPage.selectClick(timelineSession.modelData.id, shiftHeld, calendarPage.schedulableItems(calendarPage.nightSessions))
                                     }
                                     ColumnLayout {
                                         Layout.fillWidth: true
@@ -1453,11 +1551,11 @@ Item {
                                             Layout.fillWidth: true
                                         }
                                     }
-                                    HudButton { text: "EDIT"; implicitHeight: Theme.px(24); visible: !timelineSession.tight && timelineSession.width > 260; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: calendarPage.editItem(timelineSession.modelData) }
+                                    HudButton { text: "EDIT"; implicitHeight: Theme.px(24); visible: !modelData.from_history && !timelineSession.tight && timelineSession.width > 260; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: calendarPage.editItem(timelineSession.modelData) }
                                     HudButton {
                                         text: modelData.status === "running" ? "STOP" : "RUN"
                                         implicitHeight: Theme.px(24)
-                                        visible: !timelineSession.tight && timelineSession.width > 260
+                                        visible: !modelData.from_history && !timelineSession.tight && timelineSession.width > 260
                                         enabled: calendarPage.sessionRunEnabled(modelData)
                                         tooltip: modelData.status === "running" || calendarPage.deviceConnected(modelData.device_id) ? "" : "Connect the telescope to run"
                                         busy: root.sessionStopping(modelData)
@@ -1470,7 +1568,11 @@ Item {
                                             : backend.runNow(modelData.id)
                                     }
                                 }
-                                TapHandler { acceptedButtons: Qt.RightButton; onTapped: calendarPage.openSessionMenu(timelineSession.modelData, calendarPage.nightSessions) }
+                                TapHandler { acceptedButtons: Qt.RightButton; onTapped: {
+                                    if (timelineSession.modelData.from_history)
+                                        return
+                                    calendarPage.openSessionMenu(timelineSession.modelData, calendarPage.nightSessions)
+                                } }
                             }
                         }
                         Rectangle {
@@ -1782,15 +1884,16 @@ Item {
                 Item { Layout.fillWidth: true }
             }
             SelectionBar {
-                selectedCount: nightPanel.nightSessions.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).length
-                totalCount: nightPanel.nightSessions.length
+                readonly property var choosable: calendarPage.schedulableItems(nightPanel.nightSessions)
+                selectedCount: choosable.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).length
+                totalCount: choosable.length
                 noun: "session"
                 allowMove: true
-                sessionIds: nightPanel.nightSessions.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).map(item => item.id)
+                sessionIds: choosable.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).map(item => item.id)
                 onSelectAllRequested: {
                     const next = Object.assign({}, calendarPage.selectedIds)
-                    for (let i = 0; i < nightPanel.nightSessions.length; i++) {
-                        const id = nightPanel.nightSessions[i] && nightPanel.nightSessions[i].id
+                    for (let i = 0; i < choosable.length; i++) {
+                        const id = choosable[i] && choosable[i].id
                         if (id)
                             next[id] = true
                     }
@@ -1798,8 +1901,8 @@ Item {
                 }
                 onClearRequested: {
                     const drop = {}
-                    for (let i = 0; i < nightPanel.nightSessions.length; i++) {
-                        const id = nightPanel.nightSessions[i] && nightPanel.nightSessions[i].id
+                    for (let i = 0; i < choosable.length; i++) {
+                        const id = choosable[i] && choosable[i].id
                         if (id)
                             drop[id] = true
                     }
@@ -1809,11 +1912,11 @@ Item {
                         delete next[keys[i]]
                     calendarPage.selectedIds = next
                 }
-                onEditRequested: sessionDialog.openSelected(Util.itemsByIds(nightPanel.nightSessions, calendarPage.selectedIds))
+                onEditRequested: sessionDialog.openSelected(Util.itemsByIds(choosable, calendarPage.selectedIds))
                 onDeleteRequested: {
                     const chosen = {}
-                    for (let i = 0; i < nightPanel.nightSessions.length; i++) {
-                        const id = nightPanel.nightSessions[i] && nightPanel.nightSessions[i].id
+                    for (let i = 0; i < choosable.length; i++) {
+                        const id = choosable[i] && choosable[i].id
                         if (id && Util.idSetHas(calendarPage.selectedIds, id))
                             chosen[id] = true
                     }
@@ -1859,18 +1962,20 @@ Item {
                             TapHandler {
                                 acceptedButtons: Qt.LeftButton
                                 acceptedModifiers: Qt.ShiftModifier
-                                onTapped: calendarPage.selectClick(daySessionRow.modelData.id, true, nightPanel.nightSessions)
+                                enabled: !daySessionRow.modelData.from_history
+                                onTapped: calendarPage.selectClick(daySessionRow.modelData.id, true, calendarPage.schedulableItems(nightPanel.nightSessions))
                             }
-                            RowGutter {
-                                x: Theme.px(2)
-                                width: Theme.s5
-                                anchors.top: parent.top
-                                anchors.bottom: parent.bottom
-                                spineColor: Util.sessionTone(daySessionRow.modelData)
-                                checked: Util.idSetHas(calendarPage.selectedIds, daySessionRow.modelData.id)
-                                revealed: daySessionHover.hovered || calendarPage.selectedCount > 0
-                                onToggled: (shiftHeld) => calendarPage.selectClick(daySessionRow.modelData.id, shiftHeld, nightPanel.nightSessions)
-                            }
+                                RowGutter {
+                                    x: Theme.px(2)
+                                    width: Theme.s5
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    visible: !daySessionRow.modelData.from_history
+                                    spineColor: Util.sessionTone(daySessionRow.modelData)
+                                    checked: Util.idSetHas(calendarPage.selectedIds, daySessionRow.modelData.id)
+                                    revealed: daySessionHover.hovered || calendarPage.selectedCount > 0
+                                    onToggled: (shiftHeld) => calendarPage.selectClick(daySessionRow.modelData.id, shiftHeld, calendarPage.schedulableItems(nightPanel.nightSessions))
+                                }
                             ColumnLayout {
                                 anchors.fill: parent
                                 anchors.margins: Theme.s2
@@ -1885,11 +1990,18 @@ Item {
                                 }
                                 Text { text: calendarPage.sessionDetail(modelData, modelData.subtitle + " · " + modelData.duration_text); color: Theme.textSecondary; font.pixelSize: Theme.fontSm; elide: Text.ElideRight; Layout.fillWidth: true }
                                 RowLayout {
-                                    HudButton { text: "EDIT"; implicitHeight: Theme.px(24); enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: calendarPage.editItem(modelData) }
-                                    HudButton { text: "RESET"; implicitHeight: Theme.px(24); visible: Util.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
+                                    HudChip {
+                                        visible: !!modelData.from_history
+                                        label: "HISTORY"
+                                        tone: Theme.textSecondary
+                                        dim: true
+                                    }
+                                    HudButton { text: "EDIT"; implicitHeight: Theme.px(24); visible: !modelData.from_history; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: calendarPage.editItem(modelData) }
+                                    HudButton { text: "RESET"; implicitHeight: Theme.px(24); visible: !modelData.from_history && Util.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
                                     HudButton {
                                         text: modelData.status === "running" ? "STOP" : "RUN"
                                         implicitHeight: Theme.px(24)
+                                        visible: !modelData.from_history
                                         enabled: calendarPage.sessionRunEnabled(modelData)
                                         tooltip: modelData.status === "running" || calendarPage.deviceConnected(modelData.device_id) ? "" : "Connect the telescope to run"
                                         busy: root.sessionStopping(modelData)
@@ -1905,7 +2017,11 @@ Item {
                             }
                             TapHandler {
                                 acceptedButtons: Qt.RightButton
-                                onTapped: calendarPage.openSessionMenu(daySessionRow.modelData, nightPanel.nightSessions)
+                                onTapped: {
+                                    if (daySessionRow.modelData.from_history)
+                                        return
+                                    calendarPage.openSessionMenu(daySessionRow.modelData, nightPanel.nightSessions)
+                                }
                             }
                         }
                     }
@@ -1914,9 +2030,13 @@ Item {
                     anchors.centerIn: parent
                     glyph: "☾"
                     visible: nightPanel.nightSessions.length === 0
-                    text: calendarPage.showAllDevices
-                          ? (calendarPage.selectedDayCount > 1 ? "No sessions on these observing nights" : "No sessions this observing night")
-                          : (calendarPage.selectedDayCount > 1 ? "No sessions on this telescope for these nights" : "No sessions on this telescope for this night")
+                    text: calendarPage.showHistory
+                          ? (calendarPage.showAllDevices
+                             ? (calendarPage.selectedDayCount > 1 ? "No sessions or history on these observing nights" : "No sessions or history this observing night")
+                             : (calendarPage.selectedDayCount > 1 ? "No sessions or history on this telescope for these nights" : "No sessions or history on this telescope for this night"))
+                          : (calendarPage.showAllDevices
+                             ? (calendarPage.selectedDayCount > 1 ? "No sessions on these observing nights" : "No sessions this observing night")
+                             : (calendarPage.selectedDayCount > 1 ? "No sessions on this telescope for these nights" : "No sessions on this telescope for this night"))
                 }
             }
         }

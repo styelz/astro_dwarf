@@ -89,9 +89,62 @@ def test_old_pane_names_share_fallback_group() -> None:
     _assert(all(item["pane_count"] == 3 and item["is_grouped"] for item in out), out)
 
 
+def test_history_calendar_uses_observing_night() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    zone = ZoneInfo("Australia/Sydney")
+    done = AppBackend.history_calendar_placement(
+        scheduled_start="2026-09-22T01:30:00+10:00",
+        actual_started_at="2026-09-22T01:30:00+10:00",
+        actual_ended_at="2026-09-22T02:00:00+10:00",
+        actual_duration_seconds=1800,
+        planned_duration_seconds=3600,
+        outcome="Completed",
+        ok=True,
+        zone=zone,
+        cutoff_hour=12,
+    )
+    _assert(done["observing_date"] == "2026-09-21", done)
+    _assert(done["start_time"] == "01:30", done)
+    _assert(done["status"] == "done" and done["from_history"], done)
+    _assert(done["end_epoch_ms"] > done["start_epoch_ms"], done)
+    _assert(
+        datetime.fromtimestamp(done["start_epoch_ms"] / 1000, zone).hour == 1,
+        done,
+    )
+    stopped = AppBackend.history_calendar_placement(
+        scheduled_start="2026-09-21T22:00:00+10:00",
+        actual_started_at="2026-09-21T22:00:00+10:00",
+        actual_ended_at=None,
+        actual_duration_seconds=600,
+        planned_duration_seconds=3600,
+        outcome="Stopped by user",
+        ok=False,
+        zone=zone,
+        cutoff_hour=12,
+    )
+    _assert(stopped["observing_date"] == "2026-09-21", stopped)
+    _assert(stopped["status"] == "skipped", stopped)
+    _assert(stopped["end_epoch_ms"] == stopped["start_epoch_ms"] + 600_000, stopped)
+    failed = AppBackend.history_calendar_placement(
+        scheduled_start="2026-09-21T22:00:00+10:00",
+        actual_started_at="2026-09-21T22:00:00+10:00",
+        actual_ended_at="2026-09-21T22:05:00+10:00",
+        actual_duration_seconds=300,
+        planned_duration_seconds=3600,
+        outcome="plate solve failed",
+        ok=False,
+        zone=zone,
+        cutoff_hour=12,
+    )
+    _assert(failed["status"] == "error", failed)
+
+
 if __name__ == "__main__":
     test_history_record_stores_mosaic_group()
     test_history_from_dict_defaults_missing_group()
     test_decorate_history_groups_clusters_pane_rows()
     test_old_pane_names_share_fallback_group()
+    test_history_calendar_uses_observing_night()
     print("ok")

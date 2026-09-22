@@ -34,6 +34,7 @@ Item {
         property real viewRaHours: 0
         property real viewDecDegrees: 0
         property real viewFov: 0
+        property bool viewFovDegrees: false
         property real viewYaw: 0
         property real viewPitch: 0
         property real viewRoll: 0
@@ -51,7 +52,18 @@ Item {
             return 0.65
         return Math.max(0, Math.min(1, Math.round(n * 100) / 100))
     }
+    function shareMapFov() {
+        if (skyStore.viewFovDegrees)
+            return
+        // A saved field of 2π degrees or less is Stellarium's old radian zoom.
+        // That painted Aladin as a few degrees and Stellarium at its widest.
+        const fov = Number(skyStore.viewFov)
+        if (!(fov > 6.3))
+            skyStore.viewFov = backend.skyMapFovDeg
+        skyStore.viewFovDegrees = true
+    }
     function restoreSkySettings() {
+        skyPage.shareMapFov()
         columnsBox.value = skyPage.clampInt(skyStore.mosaicColumns, 1, 10, 1)
         rowsBox.value = skyPage.clampInt(skyStore.mosaicRows, 1, 10, 1)
         overlapBox.value = skyPage.clampInt(skyStore.mosaicOverlap, 0, 80, 20)

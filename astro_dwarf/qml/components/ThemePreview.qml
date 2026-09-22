@@ -295,6 +295,14 @@ Rectangle {
                 roleKey: "accentSoft"
                 ink: Theme.accentSoft
             }
+            PreviewChip {
+                objectName: "previewFov"
+                label: "FOV"
+                fill: Theme.surface
+                line: Theme.fov
+                roleKey: "fov"
+                ink: Theme.fov
+            }
             Text {
                 text: "HINT"
                 color: Theme.muted
@@ -350,6 +358,7 @@ Rectangle {
         property color ink: Theme.textSecondary
         property string roleKey: ""
         property string alsoRole: ""
+        signal clicked()
 
         Layout.preferredWidth: Theme.px(56)
         Layout.preferredHeight: Theme.px(22)
@@ -357,10 +366,11 @@ Rectangle {
         border.color: preview.lit(chip.roleKey) || (chip.alsoRole && preview.lit(chip.alsoRole)) ? Theme.accentSoft : chip.line
         border.width: 2
         radius: Theme.px(2)
+        onClicked: preview.pick(chip.roleKey)
         HoverHandler { cursorShape: Qt.PointingHandCursor }
         TapHandler {
             gesturePolicy: TapHandler.ReleaseWithinBounds
-            onTapped: preview.pick(chip.roleKey)
+            onTapped: chip.clicked()
         }
         Text {
             anchors.centerIn: parent

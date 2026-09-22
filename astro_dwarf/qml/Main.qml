@@ -84,6 +84,7 @@ ApplicationWindow {
     readonly property bool appModalOpen: locationDialog.visible
         || settingsLeaveDialog.visible
         || confirmDialog.visible
+        || darkFrameDialog.visible
         || scheduleTemplateDialog.visible
         || duplicateSessionDialog.visible
         || sessionDialog.visible
@@ -133,7 +134,7 @@ ApplicationWindow {
         || scopeActivity === "imaging"
         || scopePending === "stack"
     readonly property bool scopeOccupied: scopeImaging || scopePending !== "" || scopeActivity !== "" || previewStarting || scopeStacking
-    readonly property bool scopeStopping: scopePending === "stop_all" || scopePending === "stop_session"
+    readonly property bool scopeStopping: scopePending === "stop_session"
     readonly property bool cameraLiveEnabled: commandEnabled("set_exposure")
     readonly property bool motionEnabled: commandEnabled("joystick")
 
@@ -191,7 +192,7 @@ ApplicationWindow {
         if (!session || session.status !== "running")
             return false
         const pending = root.devicePending(session.device_id)
-        return pending === "stop_all" || pending === "stop_session"
+        return pending === "stop_session"
     }
     function scopeActivityText() {
         backend.clockText
@@ -230,6 +231,10 @@ ApplicationWindow {
             return false
         if (pending === op)
             return false
+        // A stop, cancel, or start that is still changing state cannot be
+        // pressed again. A settled running capture can still be stopped.
+        if (op !== "stop_session" && Util.commandTransitionLocked(op, pending, root.scopeTelemetry))
+            return false
         const stopFor = {
             burst: "burst_stop",
             burst_start: "burst_stop",
@@ -241,14 +246,13 @@ ApplicationWindow {
             autofocus: "stop_autofocus",
             infinity: "stop_autofocus",
             polar: "stop_polar",
+            polar_position: "stop_polar_position",
             goto: "stop_goto",
             imaging: "stop_astro",
             stack: "stop_astro"
         }
-        if (op === "stop_all")
-            return pending !== "stop_session"
         if (op === "cancel_prime")
-            return pending !== op
+            return true
         if (op === "stop_session")
             return backend.currentSession.status === "running" && !root.scopeStopping
         const isStop = op === "stop_goto" || op.indexOf("stop_") === 0 || op.slice(-5) === "_stop"
@@ -261,6 +265,8 @@ ApplicationWindow {
                 return !!root.scopeTelemetry.capture_active || root.scopeMosaicRunning
             return op === "stop_goto" && !!root.scopeTelemetry.tracking_active
         }
+        if (op === "calibrate" && !!root.scopeTelemetry.tracking_active)
+            return false
         return !root.scopeOccupied
     }
 
@@ -857,18 +863,6 @@ ApplicationWindow {
                     buttonColor: Theme.fillDanger
                     foregroundColor: Theme.danger
                     onClicked: backend.stopSession(backend.currentSession.id)
-                }
-                HudButton {
-                    text: "STOP ALL"
-                    busy: backend.selectedDevice.pending_action === "stop_all"
-                    busyText: "STOPPING…"
-                    busyMs: 0
-                    // A running session must always be stoppable, even while the link is still coming up.
-                    // A running session must always be stoppable, even while the link is still coming up.
-                    enabled: root.commandEnabled("stop_all") || (root.scopeImaging && !root.scopeStopping)
-                    buttonColor: Theme.fillDanger
-                    foregroundColor: Theme.danger
-                    onClicked: backend.stopDevice(backend.selectedDeviceId)
                 }
                 Item {
                     Layout.fillWidth: true
@@ -1596,6 +1590,7 @@ ApplicationWindow {
                 settingsPage.applyLocation(item)
         }
         function onSelectedDeviceChanged() { root.maybeAskLocation() }
+        function onDarkPrompt(payload) { darkFrameDialog.applyPrompt(payload) }
     }
 
     LocationDialog { id: locationDialog }
@@ -1604,6 +1599,7 @@ ApplicationWindow {
         id: confirmDialog
         onViewerCloseRequested: mediaPage.closeViewer()
     }
+    DarkFrameDialog { id: darkFrameDialog }
     ScheduleTemplateDialog { id: scheduleTemplateDialog }
     DuplicateSessionDialog { id: duplicateSessionDialog }
 

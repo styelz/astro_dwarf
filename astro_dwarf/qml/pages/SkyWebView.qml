@@ -237,7 +237,7 @@ Item {
             overlayFov,
             backend.mosaicPaChip,
             backend.mosaicPaSource,
-            String(Theme.accent),
+            String(Theme.fov),
             map.liveOverlay ? "live" : "off",
             Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0),
             Object.keys(backend.skyMosaicPaneUrls || {}).join(",")
@@ -257,7 +257,7 @@ Item {
                 map.mosaicColumns,
                 map.mosaicRows,
                 map.mosaicOverlap,
-                String(Theme.accent),
+                String(Theme.fov),
                 map.mosaicPa
             )
             map.runJavaScript(script, result => {
@@ -284,10 +284,11 @@ Item {
             return
         }
         const pane = Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0)
+        // Opacity is applied in the page. Keeping it out of this key avoids
+        // re-encoding the live frame and rebuilding every pane on each wheel notch.
         const key = [
             backend.skyLiveFrameRevision(map.liveCamera),
-            pane,
-            Number(map.liveOpacity).toFixed(3)
+            pane
         ].join("|")
         if (key === map.liveInjectedKey)
             return
@@ -368,11 +369,20 @@ Item {
     function viewMatchesSaved(data) {
         return map.viewsClose(data, map.savedView)
     }
+    function fovClose(a, b) {
+        const fov = Number(a && a.fov)
+        const other = Number(b && b.fov)
+        if (!(fov > 0) || !(other > 0))
+            return true
+        const scale = Math.max(fov, other)
+        return Math.abs(fov - other) <= Math.max(0.6, scale * 0.04)
+    }
     function viewsClose(a, b) {
         const ra = Number(a && a.ra_hours)
         const dec = Number(a && a.dec_degrees)
         const otherRa = Number(b && b.ra_hours)
         const otherDec = Number(b && b.dec_degrees)
+        let place = false
         if (isFinite(ra) && isFinite(dec) && isFinite(otherRa) && isFinite(otherDec)) {
             const d1 = dec * Math.PI / 180
             const d2 = otherDec * Math.PI / 180
@@ -381,28 +391,27 @@ Item {
             const sep = Math.acos(Math.max(-1, Math.min(1,
                 Math.sin(d1) * Math.sin(d2) + Math.cos(d1) * Math.cos(d2) * Math.cos(r1 - r2)
             ))) * 180 / Math.PI
-            return sep < 2.5
+            place = sep < 2.5
+        } else {
+            const yaw = Number(a && a.yaw)
+            const pitch = Number(a && a.pitch)
+            const otherYaw = Number(b && b.yaw)
+            const otherPitch = Number(b && b.pitch)
+            if (!isFinite(yaw) || !isFinite(pitch) || !isFinite(otherYaw) || !isFinite(otherPitch))
+                return false
+            const dYaw = Math.min(
+                Math.abs(yaw - otherYaw),
+                Math.abs(Math.abs(yaw - otherYaw) - 2 * Math.PI)
+            )
+            place = dYaw < 0.05 && Math.abs(pitch - otherPitch) < 0.05
         }
-        const yaw = Number(a && a.yaw)
-        const pitch = Number(a && a.pitch)
-        const otherYaw = Number(b && b.yaw)
-        const otherPitch = Number(b && b.pitch)
-        if (!isFinite(yaw) || !isFinite(pitch) || !isFinite(otherYaw) || !isFinite(otherPitch))
-            return false
-        const dYaw = Math.min(
-            Math.abs(yaw - otherYaw),
-            Math.abs(Math.abs(yaw - otherYaw) - 2 * Math.PI)
-        )
-        return dYaw < 0.05 && Math.abs(pitch - otherPitch) < 0.05
+        return place && map.fovClose(a, b)
     }
     function restoreSavedView() {
         if (!map.pageReady || map.viewRestored || !map.savedViewReady)
             return
-        if (!map.hasSavedView()) {
-            map.viewRestored = true
-            map.persistView = true
+        if (!map.hasSavedView())
             return
-        }
         if (map.appliedSiteKey !== backend.skyWebSiteScript)
             return
         if (!map.restoreStartedAt)
@@ -430,6 +439,12 @@ Item {
                 if (map.appliedSiteKey !== backend.skyWebSiteScript)
                     return
                 if (!map.hasSavedView()) {
+                    const fov = Number(data.fov)
+                    const home = Number(backend.skyMapFovDeg)
+                    if (!(fov > 0) || Math.abs(fov - home) > Math.max(0.6, home * 0.04)) {
+                        map.runJavaScript(backend.skyWebViewScript({fov: home}))
+                        return
+                    }
                     map.viewRestored = true
                     map.persistView = true
                     map.viewChanged(data)

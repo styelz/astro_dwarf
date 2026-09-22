@@ -84,6 +84,38 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
+# DWARF writes the timelapse MP4 at 30 fps. One second of video is 30 frames.
+# Manual example: 10 min at a 5 s interval is 120 frames and a 4 s video.
+TIMELAPSE_VIDEO_FPS = 30
+
+
+def timelapse_shoot_seconds(video_seconds: int, interval_seconds: int) -> int:
+    """Wall-clock capture time that yields ``video_seconds`` of finished video.
+
+    A 30 s video at 1 frame per second is a 15 min shoot (30 × 30 × 1), not a
+    30 s shoot. That short shoot is only 30 frames, which the 30 fps file
+    plays in 1 second.
+    """
+    video = max(0, int(video_seconds))
+    interval = int(interval_seconds)
+    if video <= 0:
+        return 0
+    if interval <= 0:
+        interval = 1
+    return video * TIMELAPSE_VIDEO_FPS * interval
+
+
+def timelapse_video_seconds(shoot_seconds: int, interval_seconds: int) -> int:
+    """Finished-video length for a firmware shoot duration at 30 fps."""
+    shoot = max(0, int(shoot_seconds))
+    interval = int(interval_seconds)
+    if shoot <= 0:
+        return 0
+    if interval <= 0:
+        interval = 1
+    return int(round(shoot / (TIMELAPSE_VIDEO_FPS * interval)))
+
+
 def photo_capture_seconds(value: Any) -> int | None:
     """Parse HUD burst/timelapse interval and duration as raw firmware seconds.
 
@@ -148,10 +180,14 @@ def _running_elapsed_s(raw: dict[str, Any], seconds_key: str, started_key: str, 
 
 
 def _timelapse_total_s(raw: dict[str, Any]) -> int:
-    """Use the HUD duration; firmware total can be leftover minutes or output length."""
-    configured = photo_capture_seconds(raw.get("timelapse_duration")) or 0
-    if configured > 0:
-        return configured
+    """Capture length for the clock. ``timelapse_duration`` is finished-video seconds."""
+    video = photo_capture_seconds(raw.get("timelapse_duration")) or 0
+    if video > 0:
+        interval = photo_capture_seconds(raw.get("timelapse_interval")) or 1
+        return timelapse_shoot_seconds(video, interval)
+    shoot = int(raw.get("timelapse_shoot_s") or 0)
+    if shoot > 0:
+        return shoot
     return int(raw.get("timelapse_total_s") or 0)
 
 
@@ -259,7 +295,7 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
             number = _as_int(values.get(name))
             if number is not None:
                 changes[f"{prefix}{name}"] = number
-        stack_count = _as_int(values.get("count", values.get("stackCount", values.get("stack_count"))))
+        stack_count = _as_int(values.get("stackCount", values.get("stack_count")))
         if stack_count is not None:
             changes[f"{prefix}stack_count"] = stack_count
         ir = values.get("filterType", values.get("filter_type", values.get("filter")))
@@ -287,9 +323,13 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
         lapse_interval = _feature_seconds_text(lapse.get("interval", values.get("timelapse_interval")))
         if lapse_interval is not None:
             changes[f"{prefix}timelapse_interval"] = lapse_interval
-        lapse_duration = _feature_seconds_text(lapse.get("duration", values.get("timelapse_duration")))
-        if lapse_duration is not None:
-            changes[f"{prefix}timelapse_duration"] = lapse_duration
+        # Firmware duration is shoot seconds (120 = 2 min). The HUD duration
+        # is the finished video, so 900 s at a 1 s interval comes back as 30.
+        lapse_shoot = photo_capture_seconds(lapse.get("duration", values.get("timelapse_duration")))
+        if lapse_shoot is not None:
+            interval = photo_capture_seconds(lapse_interval) or 1
+            changes[f"{prefix}timelapse_shoot_s"] = int(lapse_shoot)
+            changes[f"{prefix}timelapse_duration"] = str(timelapse_video_seconds(lapse_shoot, interval))
 
     collect(_camera_params_entry(cameras, 0))
     collect(_camera_params_entry(cameras, 1), "wide_")
@@ -305,13 +345,18 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
         if stack_format is not None:
             changes["stack_format"] = stack_format
     techs = result.get("tech_settings") or {}
-    tech0 = techs.get(0) if isinstance(techs, dict) else None
-    if tech0 is None and isinstance(techs, dict):
-        tech0 = techs.get("0")
-    if isinstance(tech0, dict):
-        count = _as_int(tech0.get("stackCount", tech0.get("stack_count")))
-        if count is not None:
-            changes.setdefault("stack_count", count)
+    if isinstance(techs, dict):
+        # shootingTechSettings is per camera: 0 tele, 1 wide. stackCount there
+        # is the DSO subframe total. A camera "count" field is not that value.
+        for camera_id, prefix in ((0, ""), (1, "wide_")):
+            entry = techs.get(camera_id)
+            if not isinstance(entry, dict):
+                entry = techs.get(str(camera_id))
+            if not isinstance(entry, dict):
+                continue
+            count = _as_int(entry.get("stackCount", entry.get("stack_count")))
+            if count is not None:
+                changes[f"{prefix}stack_count"] = count
     return changes
 
 
@@ -432,13 +477,16 @@ def derive_activity(raw: dict[str, Any], now: float | None = None) -> tuple[str,
     if raw.get("timelapse_state") == "running":
         elapsed = _running_elapsed_s(raw, "timelapse_elapsed_s", "timelapse_started_at", now)
         total = _timelapse_total_s(raw)
-        out_s = int(raw.get("timelapse_out_s") or raw.get("timelapse_elapsed_s") or 0)
+        video = photo_capture_seconds(raw.get("timelapse_duration")) or 0
+        out_s = int(raw.get("timelapse_out_s") or 0)
         if total:
             detail = f"{_clock_text(elapsed)} / {_clock_text(total)}"
         else:
             detail = _clock_text(elapsed)
-        # Firmware out_time is the assembled video length, not capture elapsed.
-        if out_s > 0 and out_s + 2 < elapsed:
+        # out_time is how much of the 30 fps file has been assembled.
+        if video > 0:
+            detail = f"{detail} · OUT {_clock_text(out_s)} / {_clock_text(video)}"
+        elif out_s > 0 and out_s + 2 < elapsed:
             detail = f"{detail} · OUT {_clock_text(out_s)}"
         return "timelapse", detail
     if raw.get("record_state") == "running":
@@ -582,6 +630,7 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     else:
         view["eq_azi_text"] = ""
         view["eq_alt_text"] = ""
+    view["timelapse_shoot_s"] = _timelapse_total_s(raw)
     activity, detail = derive_activity(raw, now)
     view["activity"] = activity
     view["activity_detail"] = detail
@@ -653,16 +702,32 @@ class AlertEngine:
             add("warning", TRACKING_NEEDS_CALIBRATION_TOAST, TRACKING_NEEDS_CALIBRATION_DETAIL)
         elif changed("goto_error") and current.get("goto_error"):
             add("error", "GOTO failed", "The telescope rejected the slew")
-        # Calibration
-        if changed("calibration_state"):
-            state = current["calibration_state"]
+        # Calibration. Firmware notifies idle both when the solve finishes and
+        # when it fails (CODE_ASTRO_CALIBRATION_FAILED). The reply is stored as
+        # calibration_error; idle alone is not success.
+        if changed("calibration_state") or (
+            changed("calibration_error") and current.get("calibration_error")
+        ):
+            state = current.get("calibration_state")
             old = previous.get("calibration_state")
-            if state in ("running", "solving") and old not in ("running", "solving"):
+            failed = bool(current.get("calibration_error"))
+            if changed("calibration_state") and state in ("running", "solving") and old not in ("running", "solving"):
                 add("info", "Calibration started", "", toast=False)
-            elif state in ("stopped", "idle") and old in ("running", "solving"):
+            ended = (
+                changed("calibration_state")
+                and state in ("stopped", "idle")
+                and old in ("running", "solving")
+            )
+            if ended and not failed:
                 phase = current.get("calibration_phase") or previous.get("calibration_phase") or 0
-                detail = f"{int(phase)} plate solve{'s' if int(phase) != 1 else ''}" if phase else ""
+                try:
+                    phase_n = int(phase)
+                except (TypeError, ValueError):
+                    phase_n = 0
+                detail = f"{phase_n} plate solve{'s' if phase_n != 1 else ''}" if phase_n else ""
                 add("success", "Calibration complete", detail)
+            elif failed and not previous.get("calibration_error"):
+                add("error", "Calibration failed", "The telescope could not plate-solve")
         # EQ / polar
         if changed("eq_state") and current["eq_state"] in ("stopped", "idle") and previous.get("eq_state") == "running":
             azi = current.get("eq_azi_err", previous.get("eq_azi_err"))

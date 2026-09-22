@@ -170,6 +170,7 @@ QtObject {
         case "calibrate": return "CALIBRATING"
         case "goto": return "GOTO"
         case "polar": return "POLAR / EQ"
+        case "polar_position": return "POLAR POS"
         case "autofocus": return "AUTOFOCUS"
         case "infinity": return "INFINITY"
         case "dark": return "DARK FRAMES"
@@ -181,6 +182,69 @@ QtObject {
         case "": return ""
         default: return String(activity).toUpperCase()
         }
+    }
+    function commandTransitionLocked(op, pending, telemetry) {
+        // Stop, stop-and-cancel, and a firmware state change are one-shot.
+        // The pad stays dark while that command is in flight, and while the
+        // telescope is still in the stopping state between the two modes.
+        const operation = String(op || "")
+        const inflight = String(pending || "")
+        const t = telemetry || ({})
+        const startForStop = {
+            burst_stop: "burst_start",
+            record_stop: "record_start",
+            timelapse_stop: "timelapse_start",
+            stop_calibrate: "calibrate",
+            stop_polar: "polar",
+            stop_astro: "stack",
+            lights_off: "lights_on",
+            indicator_off: "indicator_on"
+        }
+        if (inflight && startForStop[operation] === inflight)
+            return true
+        if (operation === "stop_autofocus" && (inflight === "autofocus" || inflight === "infinity"))
+            return true
+        if (operation === "stop_goto" && (inflight === "track" || inflight === "sky_track"))
+            return true
+        if (operation === "cancel_prime" && inflight !== "")
+            return true
+        if (inflight === "cancel_prime" && (
+            operation === "photo"
+            || operation === "burst_start" || operation === "burst_stop"
+            || operation === "record_start" || operation === "record_stop"
+            || operation === "timelapse_start" || operation === "timelapse_stop"
+        ))
+            return true
+        const stateKey = {
+            calibrate: "calibration_state",
+            stop_calibrate: "calibration_state",
+            autofocus: "autofocus_state",
+            infinity: "autofocus_state",
+            stop_autofocus: "autofocus_state",
+            polar: "eq_state",
+            stop_polar: "eq_state",
+            track: "goto_state",
+            sky_track: "goto_state",
+            stop_goto: "goto_state",
+            stack: "capture_state",
+            stop_astro: "capture_state",
+            photo: "photo_state",
+            burst_start: "burst_state",
+            burst_stop: "burst_state",
+            record_start: "record_state",
+            record_stop: "record_state",
+            timelapse_start: "timelapse_state",
+            timelapse_stop: "timelapse_state"
+        }[operation] || ""
+        if (stateKey && String(t[stateKey] || "") === "stopping")
+            return true
+        if (operation === "cancel_prime") {
+            return String(t.photo_state || "") === "stopping"
+                || String(t.burst_state || "") === "stopping"
+                || String(t.record_state || "") === "stopping"
+                || String(t.timelapse_state || "") === "stopping"
+        }
+        return false
     }
     function statusFill(status) {
         switch (String(status || "").toLowerCase()) {

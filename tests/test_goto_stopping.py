@@ -160,7 +160,7 @@ class _BusyThenAcceptedTap:
 
 
 def test_live_track_retries_after_latched_stop() -> None:
-    """STOP ALL leaves _stop set. The FUNCTION_BUSY retry must still send GOTO."""
+    """A session stop leaves _stop set. The FUNCTION_BUSY retry must still send GOTO."""
     tap = _BusyThenAcceptedTap()
     calls: list[str] = []
 

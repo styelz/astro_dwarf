@@ -175,6 +175,7 @@ from .services import (
     zoneinfo_from_name,
 )
 from .sky_atlas import (
+    SKY_MAP_FOV_DEG,
     atlas_page_url,
     stop_atlas_server,
     sky_atlas_context_poll_script,
@@ -285,6 +286,7 @@ class TelescopeProcess(QObject):
     logReceived = Signal(str, str)
     progressReceived = Signal(str, str, float)
     mosaicProgressReceived = Signal(int, int, str)
+    darkPromptReceived = Signal(dict)
     statusReceived = Signal(str, str)
     telemetryReceived = Signal(dict)
     availabilityChanged = Signal()
@@ -399,7 +401,12 @@ class TelescopeProcess(QObject):
 
         self.send("disconnect", callback=done)
 
-    def run_session(self, session: Session, callback: Callable[[bool, Any], None]) -> None:
+    def run_session(
+        self,
+        session: Session,
+        callback: Callable[[bool, Any], None],
+        prompt_darks: bool = False,
+    ) -> None:
         self.busy = True
         self.availabilityChanged.emit()
 
@@ -408,12 +415,7 @@ class TelescopeProcess(QObject):
             self.availabilityChanged.emit()
             callback(ok, result)
 
-        self.send("run_session", {"session": to_dict(session)}, done)
-
-    def stop_all(self) -> None:
-        self.send("stop_all", callback=lambda ok, result: self.logReceived.emit(
-            "warning" if ok else "error", "Stop commands sent" if ok else str(result)
-        ))
+        self.send("run_session", {"session": to_dict(session), "prompt_darks": bool(prompt_darks)}, done)
 
     def shutdown(self, wait: bool = True) -> None:
         self._stopping = True
@@ -474,6 +476,8 @@ class TelescopeProcess(QObject):
                     self.progressReceived.emit(session_id, step, wait_seconds)
             elif event == "status":
                 self.statusReceived.emit(str(message.get("kind") or ""), str(message.get("step") or ""))
+            elif event == "dark_prompt":
+                self.darkPromptReceived.emit(message)
             elif event == "connected":
                 if not self._reject_link and not self.connected:
                     self.connected = True
@@ -523,6 +527,7 @@ _ACTIVITY_START = {
     "track": "goto",
     "sky_track": "goto",
     "stack": "imaging",
+    "polar_position": "polar_position",
 }
 # Session steps that should light a command pad. Astro autofocus has no
 # firmware state notify (calibrate / GOTO / EQ do), so the pad stays dark
@@ -545,18 +550,19 @@ _ACTIVITY_STOP = {
     "record_stop": "record",
     "timelapse_stop": "timelapse",
     "stop_polar": "polar",
+    "stop_polar_position": "polar_position",
     "stop_calibrate": "calibrate",
     "stop_autofocus": "autofocus",
     "stop_goto": "goto",
     "stop_astro": "imaging",
 }
-_ACTIVITY_CLEAR = {"stop_all", "stop_session", "reboot", "power_down", "go_live"}
+_ACTIVITY_CLEAR = {"stop_session", "reboot", "power_down", "go_live"}
 _PHOTO_ACTIVITY_STATES = {
     "burst_state": "burst",
     "timelapse_state": "timelapse",
     "record_state": "record",
 }
-_STOP_ACTIONS = {"stop_all", "stop_session"}
+_STOP_ACTIONS = {"stop_session"}
 _CAPTURE_PREVIEW_STEPS = {
     "Start capture",
     "Start wide capture",
@@ -627,7 +633,8 @@ def stacking_preview_result_copy(
 
 # Calibrate ACK is not completion — firmware calibration_state lights the pad.
 # Live autofocus/infinity stay on the pad until telemetry goes idle or Stop.
-_ACTIVITY_TRANSIENT = {"calibrate"}
+# Polar positioning blocks until the slew ends, so its callback is completion.
+_ACTIVITY_TRANSIENT = {"calibrate", "polar_position"}
 _ACTION_LABELS = {
     "calibrate": "Calibration started",
     "stop_calibrate": "Calibration stopped",
@@ -637,6 +644,7 @@ _ACTION_LABELS = {
     "polar": "Polar alignment started",
     "stop_polar": "Polar alignment stopped",
     "polar_position": "Polar positioning started",
+    "stop_polar_position": "Polar positioning stopped",
     "go_live": "Closed previous capture",
     "photo_mode": "Photo mode",
     "astro_mode": "Astro mode",
@@ -672,7 +680,6 @@ _ACTION_LABELS = {
     "stop_goto": "Tracking stopped",
     "stack": "Stack started",
     "stop_astro": "Stack stopped",
-    "stop_all": "Stop sent",
     "stop_session": "Session stop sent",
     "reboot": "Reboot requested",
     "power_down": "Power down requested",
@@ -750,6 +757,17 @@ def stacking_blocks_action(
     if not (capturing or mosaic_running):
         return ""
     return _STACKING_BLOCKED_ACTIONS.get(str(operation or ""), "")
+
+
+def tracking_blocks_action(operation: str, *, tracking: bool) -> str:
+    """Toast when sidereal tracking still owns the astro engine.
+
+    A settled track clears goto activity, so the command pad would otherwise
+    send CALIBRATE and the firmware rejects it.
+    """
+    if tracking and str(operation or "") == "calibrate":
+        return "Stop tracking before calibrating"
+    return ""
 
 
 def command_required_shooting_mode(operation: str) -> int | None:
@@ -1722,6 +1740,7 @@ class AppBackend(QObject):
     previewSkyCoordsChanged = Signal()
     skyLockRequested = Signal("QVariantMap")
     stellariumRcChanged = Signal()
+    darkPrompt = Signal("QVariantMap")
     _openTeleStream = Signal(str)
     _openWideStream = Signal(str)
     _closeWideStream = Signal()
@@ -1746,6 +1765,7 @@ class AppBackend(QObject):
         self._screen_color = ScreenColorPicker(self)
         self._workers: dict[str, TelescopeProcess] = {}
         self._active_sessions: dict[str, str] = {}
+        self._dark_prompt_device = ""
         self._stop_requested: set[str] = set()
         self._scheduler_enabled = False
         self._clock_text = datetime.now(self._zone_for()).strftime("%H:%M:%S")
@@ -1981,6 +2001,7 @@ class AppBackend(QObject):
             lambda pane, total, step, did=device.id: self._on_live_mosaic_progress(did, pane, total, step)
         )
         worker.statusReceived.connect(lambda kind, step, did=device.id: self._on_worker_status(did, kind, step))
+        worker.darkPromptReceived.connect(lambda payload, did=device.id: self._on_dark_prompt(did, payload))
         worker.availabilityChanged.connect(self._worker_status_changed)
         self._workers[device.id] = worker
         worker.start()
@@ -2470,6 +2491,25 @@ class AppBackend(QObject):
             return
         self._set_pending_detail(device_id, step)
 
+    def _on_dark_prompt(self, device_id: str, message: dict[str, Any]) -> None:
+        phase = str(message.get("phase") or "")
+        if phase == "closed":
+            if self._dark_prompt_device == device_id:
+                self._dark_prompt_device = ""
+        else:
+            self._dark_prompt_device = device_id
+        payload = dict(message)
+        payload["device_id"] = device_id
+        self.darkPrompt.emit(payload)
+
+    @Slot(int, str)
+    def answerDarkPrompt(self, token: int, choice: str) -> None:
+        device_id = self._dark_prompt_device
+        worker = self._workers.get(device_id) if device_id else None
+        if worker is None:
+            return
+        worker.send("dark_prompt_reply", {"token": int(token), "choice": str(choice or "")})
+
     def _initial_stop_detail(self, device_id: str) -> str:
         session_id = self._active_sessions.get(device_id)
         session = self.store.sessions.get(session_id) if session_id else None
@@ -2494,7 +2534,8 @@ class AppBackend(QObject):
         self._set_pending_action(device_id, action)
 
         def done(ok: bool, result: Any) -> None:
-            self._set_pending_action(device_id, "")
+            if self._pending_actions.get(device_id) == action:
+                self._set_pending_action(device_id, "")
             if callback:
                 callback(ok, result)
 
@@ -2835,15 +2876,20 @@ class AppBackend(QObject):
                 if not grid and mosaic.rows * mosaic.columns > 1:
                     grid = f"{mosaic.rows}×{mosaic.columns}"
             data["grid_text"] = grid
-            start_epoch = 0
-            try:
-                start_epoch = int(
-                    parse_in_zone(record.actual_started_at or record.scheduled_start, self._zone_for(device)).timestamp()
-                    * 1000
-                )
-            except (TypeError, ValueError, OSError):
-                start_epoch = 0
-            data["start_epoch_ms"] = start_epoch
+            zone = self._zone_for(device) if device is not None else zoneinfo_from_name("UTC")
+            data.update(self.history_calendar_placement(
+                scheduled_start=record.scheduled_start,
+                actual_started_at=record.actual_started_at,
+                actual_ended_at=record.actual_ended_at,
+                actual_duration_seconds=float(record.actual_duration_seconds or 0),
+                planned_duration_seconds=float(record.planned_duration_seconds or 0),
+                outcome=str(record.outcome or ""),
+                ok=bool(data["ok"]),
+                zone=zone,
+                cutoff_hour=self._cutoff_hour(),
+            ))
+            data["duration_text"] = data.get("actual_text") or data.get("planned_text") or ""
+            data["subtitle"] = data.get("summary") or str(record.outcome or "")
             if group_id and (pane_like or (session is not None and session.mosaic.group_id)):
                 data["group_key"] = f"{group_id}|{record.device_id}|{data['date']}"
                 data["is_grouped"] = True
@@ -3007,6 +3053,10 @@ class AppBackend(QObject):
     @Property(bool, notify=appSettingsChanged)
     def skyMapUsesStellariumWeb(self) -> bool:
         return self.skyMapProvider == SKY_MAP_PROVIDER_STELLARIUM_WEB
+
+    @Property(float, constant=True)
+    def skyMapFovDeg(self) -> float:
+        return float(SKY_MAP_FOV_DEG)
 
     @Property(str, notify=appSettingsChanged)
     def skyAtlasUrl(self) -> str:
@@ -3640,6 +3690,7 @@ class AppBackend(QObject):
                 "camera": mosaic_stack_camera(live.get("camera")).value,
                 "start_index": start_index,
                 "join_current": join_current,
+                "prompt_darks": False,
             },
             callback=done,
         )
@@ -5009,7 +5060,7 @@ class AppBackend(QObject):
         pa = pa_state.degrees
         fov_h, fov_v, camera = self._sky_map_fov(mosaic_grid=mosaic_grid)
         payload: dict[str, Any] = {
-            "color": str(color or "").strip() or "#7ee0d0",
+            "color": str(color or "").strip() or "#02900A",
             "label": f"{camera.upper()} {fov_h:.2f}° × {fov_v:.2f}°  PA {pa:.0f}°",
             "fov_h": fov_h,
             "fov_v": fov_v,
@@ -7729,7 +7780,7 @@ class AppBackend(QObject):
 
         worker.send(
             "stack_mosaic",
-            {"panes": payload, "camera": mosaic_stack_camera(camera).value},
+            {"panes": payload, "camera": mosaic_stack_camera(camera).value, "prompt_darks": True},
             callback=done,
         )
         self._notify_devices()
@@ -7952,6 +8003,45 @@ class AppBackend(QObject):
 
         worker.send("astro_mode", callback=self._with_pending(device_id, "astro_mode", after_mode))
 
+    def _fail_cancel_prime(self, device_id: str, result: Any) -> None:
+        label = _ACTION_LABELS["cancel_prime"]
+        self.commandFeedback.emit(device_id, "cancel_prime", False)
+        self.add_log("error", f"{label} failed: {result}", device_id)
+        self._toast(f"{label} failed", "error", str(result))
+
+    def _disarm_capture_prime(self, device_id: str, worker: Any) -> None:
+        """Clear a latched PHOTO / BURST / RECORD / TIMELAPSE prime."""
+        from .device_worker import capture_prime_needs_mode_reset
+
+        telemetry = self._device_telemetry.get(device_id) or {}
+        label = _ACTION_LABELS["cancel_prime"]
+        if capture_prime_needs_mode_reset(telemetry):
+
+            def cancel_done(ok: bool, result: Any) -> None:
+                self.commandFeedback.emit(device_id, "cancel_prime", bool(ok))
+                if ok:
+                    self._on_telemetry(
+                        device_id,
+                        {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": False},
+                    )
+                    self.add_log("success", f"{label} acknowledged", device_id)
+                    self._toast(label, "success")
+                else:
+                    self.add_log("error", f"{label} failed: {result}", device_id)
+                    self._toast(f"{label} failed", "error", str(result))
+
+            worker.send(
+                "shooting_mode",
+                {"args": [1, 1]},
+                callback=self._with_pending(device_id, "cancel_prime", cancel_done),
+            )
+            return
+        self._set_pending_action(device_id, "")
+        self.commandFeedback.emit(device_id, "cancel_prime", True)
+        self._on_telemetry(device_id, {"photo_primed": False})
+        self.add_log("success", "Capture disarmed", device_id)
+        self._toast("Capture disarmed", "success")
+
     @Slot(str, str)
     def deviceAction(self, device_id: str, operation: str) -> None:
         worker = self._workers.get(device_id)
@@ -7988,36 +8078,35 @@ class AppBackend(QObject):
             self.add_log("warning", blocked, device_id)
             self._toast(blocked, "warning")
             return
+        tracking_block = tracking_blocks_action(
+            operation,
+            tracking=self._device_telemetry.get(device_id, {}).get("tracking_state") == "running",
+        )
+        if tracking_block:
+            self.add_log("warning", tracking_block, device_id)
+            self._toast(tracking_block, "warning")
+            return
         if operation == "cancel_prime":
-            telemetry = self._device_telemetry.get(device_id) or {}
-            from .device_worker import capture_prime_needs_mode_reset
+            from .device_worker import running_photo_capture_stop
 
-            if capture_prime_needs_mode_reset(telemetry):
-                label = _ACTION_LABELS["cancel_prime"]
+            stop_op = running_photo_capture_stop(
+                self._device_telemetry.get(device_id),
+                self._device_activity.get(device_id, ""),
+            )
+            if stop_op:
+                self._set_pending_action(device_id, operation)
 
-                def cancel_done(ok: bool, result: Any) -> None:
-                    self.commandFeedback.emit(device_id, operation, bool(ok))
-                    if ok:
-                        self._on_telemetry(
-                            device_id,
-                            {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": False},
-                        )
-                        self.add_log("success", f"{label} acknowledged", device_id)
-                        self._toast(label, "success")
-                    else:
-                        self.add_log("error", f"{label} failed: {result}", device_id)
-                        self._toast(f"{label} failed", "error", str(result))
+                def after_stop(ok: bool, result: Any) -> None:
+                    if not ok:
+                        self._set_pending_action(device_id, "")
+                        self._fail_cancel_prime(device_id, result)
+                        return
+                    self._complete_activity(device_id, stop_op, True)
+                    self._disarm_capture_prime(device_id, worker)
 
-                worker.send(
-                    "shooting_mode",
-                    {"args": [1, 1]},
-                    callback=self._with_pending(device_id, operation, cancel_done),
-                )
+                worker.send(stop_op, callback=after_stop)
                 return
-            self.commandFeedback.emit(device_id, operation, True)
-            self._on_telemetry(device_id, {"photo_primed": False})
-            self.add_log("success", "Capture disarmed", device_id)
-            self._toast("Capture disarmed", "success")
+            self._disarm_capture_prime(device_id, worker)
             return
         if operation == "sky_track":
             sky = self._sky_target
@@ -8037,6 +8126,15 @@ class AppBackend(QObject):
             self._abort_active_session(device_id, label)
 
         def done(ok: bool, result: Any) -> None:
+            # The stop command owns the pad until the motors halt. Clearing
+            # here would flash a failure and drop the running state first.
+            if (
+                operation == "polar_position"
+                and not ok
+                and str(result or "").strip().lower() == "polar positioning stopped"
+            ):
+                self.add_log("notice", "Polar positioning stopped", device_id)
+                return
             self._complete_activity(device_id, operation, ok)
             if ok and operation == "photo_mode":
                 self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1})
@@ -8125,7 +8223,15 @@ class AppBackend(QObject):
                 self._clear_mosaic_preview()
             self._skip_manual_history.discard(device_id)
             self._start_command_stack_session(device_id, camera)
-            payload = {"args": [camera]}
+            count = ""
+            if device is not None:
+                count = str(device.control_settings.stack_count or "").strip()
+            if not count:
+                reported = self._device_telemetry.get(device_id, {}).get(
+                    "wide_stack_count" if str(camera).lower() == "wide" else "stack_count"
+                )
+                count = "" if reported in (None, "", "—") else str(reported)
+            payload = {"args": [camera, count]}
         elif operation == "burst_start":
             telemetry = self._device_telemetry.get(device_id) or {}
             count = telemetry.get("burst_count")
@@ -8416,10 +8522,6 @@ class AppBackend(QObject):
         worker.send("manual_focus", {"args": [direction]}, self._with_pending(device_id, action))
 
     @Slot(str)
-    def stopDevice(self, device_id: str) -> None:
-        self._request_device_stop(device_id, "STOP ALL", "stop_all")
-
-    @Slot(str)
     def stopSession(self, session_id: str) -> None:
         session = self.store.sessions.get(session_id)
         if not session:
@@ -8468,7 +8570,7 @@ class AppBackend(QObject):
             )
             if ok and self._telemetry_capturing(device_id):
                 self.add_log("warning", "Telescope is still stacking after the stop command", device_id)
-                self._toast("Capture may still be running", "warning", "Use STOP ALL if stacking continues")
+                self._toast("Capture may still be running", "warning", "Stacking continued after the stop")
 
         worker.send("stop_all", callback=self._with_pending(device_id, action, done))
 
@@ -11066,7 +11168,7 @@ class AppBackend(QObject):
         if started is None:
             self._toast("This session is no longer on the calendar", "warning")
             return
-        self._start_session(worker, started)
+        self._start_session(worker, started, prompt_darks=True)
 
     @Slot(str, str)
     def moveSessionDate(self, session_id: str, day: str) -> None:
@@ -12050,7 +12152,7 @@ class AppBackend(QObject):
         for session_id in stale:
             self._recovered_sessions.pop(session_id, None)
 
-    def _start_session(self, worker: TelescopeProcess, session: Session) -> None:
+    def _start_session(self, worker: TelescopeProcess, session: Session, prompt_darks: bool = False) -> None:
         leftover = self._live_mosaic.get(session.device_id)
         if leftover and leftover.get("phase") and not leftover.get("worker_running"):
             self._discard_live_mosaic(session.device_id, notify=False)
@@ -12117,7 +12219,11 @@ class AppBackend(QObject):
         else:
             self.add_log("notice", f"Session started · {session.target.name}", session.device_id)
             self._toast(f"Session started · {session.target.name}", "info", f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s")
-        worker.run_session(session, lambda ok, result: self._session_finished(session.id, ok, result))
+        worker.run_session(
+            session,
+            lambda ok, result: self._session_finished(session.id, ok, result),
+            prompt_darks=prompt_darks,
+        )
 
     @Slot(str, str, float)
     def _session_progress(self, session_id: str, step: str, wait_seconds: float = 0.0) -> None:
@@ -12443,7 +12549,7 @@ class AppBackend(QObject):
         ) != "manual":
             return
         pending = str(self._pending_actions.get(device_id) or "")
-        outcome = "Stopped by user" if pending in {"stop_astro", "stop_all", "stop_session"} or pending in _STOP_ACTIONS else "Completed"
+        outcome = "Stopped by user" if pending in {"stop_astro", "stop_session"} or pending in _STOP_ACTIONS else "Completed"
         name = str(
             telemetry.get("capture_target")
             or telemetry.get("tracking_target")
@@ -12669,6 +12775,62 @@ class AppBackend(QObject):
         hours, remainder = divmod(max(0, int(seconds)), 3600)
         minutes, secs = divmod(remainder, 60)
         return f"{hours}:{minutes:02d}:{secs:02d}"
+
+    @staticmethod
+    def history_calendar_placement(
+        *,
+        scheduled_start: str,
+        actual_started_at: str | None,
+        actual_ended_at: str | None,
+        actual_duration_seconds: float,
+        planned_duration_seconds: float,
+        outcome: str,
+        ok: bool,
+        zone: Any,
+        cutoff_hour: int,
+    ) -> dict[str, Any]:
+        """Place one history run on the observing-night calendar."""
+        stamp = actual_started_at or scheduled_start or ""
+        start_epoch = 0
+        start_time = ""
+        observing = ""
+        local = None
+        if stamp:
+            try:
+                local = parse_in_zone(stamp, zone)
+            except (TypeError, ValueError, OSError):
+                local = None
+        if local is not None:
+            start_epoch = int(local.timestamp() * 1000)
+            start_time = local.strftime("%H:%M")
+            try:
+                observing = observing_date(stamp, cutoff_hour, zone)
+            except (TypeError, ValueError, OSError):
+                observing = local.date().isoformat()
+        end_epoch = 0
+        if actual_ended_at:
+            try:
+                end_epoch = int(parse_in_zone(actual_ended_at, zone).timestamp() * 1000)
+            except (TypeError, ValueError, OSError):
+                end_epoch = 0
+        if end_epoch <= start_epoch and start_epoch:
+            span = actual_duration_seconds if actual_duration_seconds > 0 else planned_duration_seconds
+            end_epoch = start_epoch + int(max(0.0, float(span or 0)) * 1000)
+        text = str(outcome or "").strip().lower()
+        if ok or text == "completed":
+            status = "done"
+        elif "stop" in text:
+            status = "skipped"
+        else:
+            status = "error"
+        return {
+            "start_epoch_ms": start_epoch,
+            "end_epoch_ms": end_epoch,
+            "start_time": start_time,
+            "observing_date": observing,
+            "status": status,
+            "from_history": True,
+        }
 
     def _history_date(self, value: str | None, device: Device | None) -> str:
         if not value:

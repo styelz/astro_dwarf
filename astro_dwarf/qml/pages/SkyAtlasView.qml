@@ -6,6 +6,7 @@ Item {
     anchors.fill: parent
     property string appliedSiteKey: ""
     property bool homeDone: false
+    property bool homePending: false
     property bool pageReady: false
     property bool documentReady: false
     property bool initialLoadDone: false
@@ -219,7 +220,7 @@ Item {
             overlayFov,
             backend.mosaicPaChip,
             backend.mosaicPaSource,
-            String(Theme.accent),
+            String(Theme.fov),
             map.liveOverlay ? "live" : "off",
             Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0),
             Object.keys(backend.skyMosaicPaneUrls || {}).join(",")
@@ -239,7 +240,7 @@ Item {
                 map.mosaicColumns,
                 map.mosaicRows,
                 map.mosaicOverlap,
-                String(Theme.accent),
+                String(Theme.fov),
                 map.mosaicPa
             )
             map.runJavaScript(script, result => {
@@ -266,10 +267,11 @@ Item {
             return
         }
         const pane = Number((backend.mosaicPreview && backend.mosaicPreview.live_pane) || 0)
+        // Opacity is applied in the page. Keeping it out of this key avoids
+        // re-encoding the live frame and rebuilding every pane on each wheel notch.
         const key = [
             backend.skyLiveFrameRevision(map.liveCamera),
-            pane,
-            Number(map.liveOpacity).toFixed(3)
+            pane
         ].join("|")
         if (key === map.liveInjectedKey)
             return
@@ -326,6 +328,14 @@ Item {
     function viewMatchesSaved(data) {
         return map.viewsClose(data, map.savedView)
     }
+    function fovClose(a, b) {
+        const fov = Number(a && a.fov)
+        const other = Number(b && b.fov)
+        if (!(fov > 0) || !(other > 0))
+            return true
+        const scale = Math.max(fov, other)
+        return Math.abs(fov - other) <= Math.max(0.6, scale * 0.04)
+    }
     function viewsClose(a, b) {
         const ra = Number(a && a.ra_hours)
         const dec = Number(a && a.dec_degrees)
@@ -340,7 +350,7 @@ Item {
         const sep = Math.acos(Math.max(-1, Math.min(1,
             Math.sin(d1) * Math.sin(d2) + Math.cos(d1) * Math.cos(d2) * Math.cos(r1 - r2)
         ))) * 180 / Math.PI
-        return sep < 2.5
+        return sep < 2.5 && map.fovClose(a, b)
     }
     function applyObservingSite() {
         if (!map.pageReady)
@@ -357,10 +367,13 @@ Item {
         })
     }
     function maybeHome() {
-        if (map.homeDone || map.hasSavedView() || map.holdView)
+        if (map.homeDone || map.homePending || map.hasSavedView() || map.holdView)
             return
+        map.homePending = true
         map.runJavaScript(backend.skyAtlasHomeScript, result => {
-            if (String(result) === "ok")
+            map.homePending = false
+            const status = String(result || "")
+            if (status === "no-site" || status === "error")
                 map.homeDone = true
         })
     }
@@ -369,8 +382,6 @@ Item {
             return
         if (!map.hasSavedView()) {
             map.maybeHome()
-            map.viewRestored = true
-            map.persistView = true
             return
         }
         if (!map.restoreStartedAt)
@@ -394,6 +405,15 @@ Item {
                 if (!map.savedViewReady)
                     return
                 if (!map.hasSavedView()) {
+                    const fov = Number(data.fov)
+                    const home = Number(backend.skyMapFovDeg)
+                    const ready = fov > 0 && Math.abs(fov - home) <= Math.max(0.6, home * 0.04)
+                    if (!ready && !map.homeDone) {
+                        if (!map.holdView)
+                            map.maybeHome()
+                        return
+                    }
+                    map.homeDone = true
                     map.viewRestored = true
                     map.persistView = true
                     map.viewChanged(data)
@@ -479,6 +499,7 @@ Item {
             map.restoreHoldView = ({})
             map.appliedSiteKey = ""
             map.homeDone = false
+            map.homePending = false
             revealDelay.stop()
             return
         }

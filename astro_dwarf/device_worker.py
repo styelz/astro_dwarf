@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_sdk_logging, link_telemetry
-from .telemetry_view import photo_capture_seconds
+from .telemetry_view import exposure_seconds_from_text, photo_capture_seconds, timelapse_shoot_seconds
 from .domain import (
     ALBUM_IMAGE_SUFFIXES,
     ASTRO_LIST_MEDIA_TYPE,
@@ -99,9 +99,13 @@ _STATE_REFRESH_SECONDS = 30.0
 _STATUS_POLL_SECONDS = 2.0
 _PHOTO_AF_SETTLE_S = 2.5
 _PHOTO_AF_TIMEOUT_S = 60.0
+_LINKAGE_AF_WATCH_S = 20.0
+_LINKAGE_AF_MOVE_STEPS = 3
 _autofocus_started = 0.0
 _autofocus_last_move = 0.0
 _autofocus_last_pos: int | None = None
+_linkage_af_until = 0.0
+_linkage_af_baseline: int | None = None
 _MODEL_IDS = {"Dwarf II": "2", "Dwarf 3": "3", "Dwarf Mini": "5"}
 # Set once the steppers answer CODE_STEP_MOTOR_NEED_RESET: absolute position
 # reads keep failing until the mount is homed, so stop probing this session.
@@ -271,6 +275,7 @@ def _telemetry_loop() -> None:
         if tap is None:
             continue
         if not _connected.is_set():
+            _reset_linkage_autofocus_watch()
             last_refresh = time.monotonic()
             continue
         try:
@@ -287,6 +292,7 @@ def _telemetry_loop() -> None:
             if status is not None:
                 tap.poll_client_status(status)
         snapshot = tap.snapshot()
+        _maybe_latch_linkage_autofocus(snapshot, now)
         _maybe_finish_photo_autofocus(snapshot, now)
         # Command-triggered refreshes stamp state_snapshot_at too, so they push the periodic one out.
         snapshot_at = snapshot.get("state_snapshot_at")
@@ -699,6 +705,7 @@ def _center_wide_view(nx: float, ny: float) -> dict[str, Any]:
     )
     if _send_dual_camera_linkage(x, y):
         detail["ok"] = True
+        _arm_linkage_autofocus_watch()
         return detail
     log("Dual Lenses Locating failed", "error")
     return detail
@@ -747,6 +754,58 @@ def _clear_photo_autofocus(reason: str, *, warning: bool = False) -> None:
     if _tap is not None:
         _tap.update({"autofocus_state": "idle"}, force=True)
     log(reason, "warning" if warning else "debug")
+
+
+def _reset_linkage_autofocus_watch() -> None:
+    global _linkage_af_until, _linkage_af_baseline
+    _linkage_af_until = 0.0
+    _linkage_af_baseline = None
+
+
+def _arm_linkage_autofocus_watch() -> None:
+    """After a photo-mode wide tap, light AUTO FOCUS only if the tele motor moves.
+
+    Dual Lenses Locating often starts photo autofocus without a focus-state
+    notify. A still focus position leaves the pad dark.
+    """
+    global _linkage_af_until, _linkage_af_baseline
+    snap = _tap.snapshot() if _tap is not None else {}
+    try:
+        mode = int(snap.get("shooting_mode"))
+    except (TypeError, ValueError):
+        mode = 0
+    if mode != _PHOTO_SHOOTING_MODE or snap.get("autofocus_state") in ("running", "stopping"):
+        _reset_linkage_autofocus_watch()
+        return
+    _linkage_af_until = time.monotonic() + _LINKAGE_AF_WATCH_S
+    _linkage_af_baseline = _focus_position()
+
+
+def _maybe_latch_linkage_autofocus(snapshot: dict[str, Any], now: float) -> None:
+    """Latch the AUTO FOCUS pad once a wide-tap hunt actually moves focus."""
+    global _linkage_af_baseline
+    if _linkage_af_until <= 0:
+        return
+    if _autofocus_started or now >= _linkage_af_until:
+        _reset_linkage_autofocus_watch()
+        return
+    if snapshot.get("autofocus_state") in ("running", "stopping"):
+        _reset_linkage_autofocus_watch()
+        return
+    position = snapshot.get("focus_position")
+    try:
+        pos = int(position) if position is not None else None
+    except (TypeError, ValueError):
+        pos = None
+    if pos is None:
+        return
+    if _linkage_af_baseline is None:
+        _linkage_af_baseline = pos
+        return
+    if abs(pos - _linkage_af_baseline) < _LINKAGE_AF_MOVE_STEPS:
+        return
+    _reset_linkage_autofocus_watch()
+    _mark_photo_autofocus_running()
 
 
 def _maybe_finish_photo_autofocus(snapshot: dict[str, Any], now: float) -> None:
@@ -927,7 +986,6 @@ def sdk_call(operation: str, *args: Any) -> Any:
         args = (seconds,) + tuple(args[1:])
     if operation in {
         "set_ir",
-        "set_count",
         "set_exposure",
         "set_gain",
         "set_photo_exposure",
@@ -947,8 +1005,10 @@ def sdk_call(operation: str, *args: Any) -> Any:
         return True
     if operation == "set_ir" and args:
         _device["ir_filter"] = args[0]
-    if operation == "set_count" and args:
-        _device["frame_count"] = args[0]
+    if operation == "set_count":
+        # img_to_take plus both cameras' stackCount. A matching local cache
+        # must not skip this; wide stays at 999 until it is written.
+        return _set_stack_count(args)
     if operation in ("stop_goto", "stop_astro", "stop_wide"):
         from dwarf_python_api.proto import astro_pb2
 
@@ -1008,9 +1068,13 @@ def sdk_call(operation: str, *args: Any) -> Any:
                         running["record_seconds"] = 0
                     elif state_key == "timelapse_state":
                         running["timelapse_elapsed_s"] = 0
-                        seconds = photo_capture_seconds(_tap.snapshot().get("timelapse_duration"))
-                        if seconds:
-                            running["timelapse_total_s"] = int(seconds)
+                        snap = _tap.snapshot()
+                        video = photo_capture_seconds(snap.get("timelapse_duration")) or 0
+                        interval = photo_capture_seconds(snap.get("timelapse_interval")) or 1
+                        if video:
+                            shoot = timelapse_shoot_seconds(video, interval)
+                            running["timelapse_shoot_s"] = shoot
+                            running["timelapse_total_s"] = shoot
                     elif state_key == "burst_state":
                         running["burst_completed"] = 0
                     _tap.update(running, force=True)
@@ -1071,6 +1135,8 @@ def sdk_call(operation: str, *args: Any) -> Any:
                 return send_without_response(message, 15004, 8)
             _clear_photo_autofocus("Photo autofocus stopped")
             return send_without_response(focus_pb2.ReqStopAstroAutoFocus(), 15005, 8)
+    if operation in {"set_timelapse_duration", "set_timelapse_interval"}:
+        return _apply_timelapse_param(operation, args)
     function_name = FUNCTIONS.get(operation)
     function = getattr(_api, function_name, None) if function_name else None
     if function is None:
@@ -2107,6 +2173,17 @@ CODE_ASTRO_NEED_GOTO = -11513
 CODE_ASTRO_NEED_GOTO_DSO = -11518
 CODE_ASTRO_NEED_EQ = -11528
 CODE_ASTRO_DARK_TEMP_MISMATCH = -11530
+CODE_ASTRO_DARK_GAIN_OUT_OF_RANGE = -11502
+CMD_ASTRO_START_CAPTURE_RAW_DARK_WITH_PARAM = 11021
+CMD_ASTRO_STOP_CAPTURE_RAW_DARK_WITH_PARAM = 11022
+CMD_ASTRO_START_CAPTURE_WIDE_RAW_DARK_WITH_PARAM = 11025
+CMD_ASTRO_STOP_CAPTURE_WIDE_RAW_DARK_WITH_PARAM = 11026
+# DWARF 3 dark filename example is stack_10. Mini libraries accept more.
+DARK_FRAME_COUNT = 10
+# Tele darks: both manuals set 40 as the minimum. Firmware rejects
+# gain outside 30–150 with CODE_ASTRO_DARK_GAIN_OUT_OF_RANGE.
+_DARK_GAIN_MIN = 40
+_DARK_GAIN_MAX = 150
 CODE_FOCUS_ASTRO_AUTO_FOCUS_SLOW_ERROR = -15100
 CODE_FOCUS_ASTRO_AUTO_FOCUS_FAST_ERROR = -15101
 CODE_FOCUS_EXP_TOO_LONG = -15106
@@ -2141,6 +2218,17 @@ _MOSAIC_LAST_PANE_IDLE_S = 8.0
 # After GOTO, tracking needs a few seconds before the last live frame is on-target.
 _MOSAIC_TRACK_SETTLE_S = 5.0
 _RECOVERED_CAPTURE_WAIT_S = 6.0
+# A person-started stack waits here. The stdin thread delivers the answer
+# because the command thread is blocked inside the capture start.
+_dark_prompt = threading.Event()
+_dark_lock = threading.Lock()
+_dark_token = 0
+_dark_choice: str | None = None
+_dark_run_choice: str | None = None
+_prompt_darks = False
+_stack_exposure_name = ""
+_stack_gain: int | None = None
+_stack_bin_index = 0
 
 
 def _ir_index(name: Any) -> int:
@@ -2183,6 +2271,72 @@ def _capture_request(operation: str, args: list[Any], force_start: bool) -> Any:
 
 def _capture_running(snapshot: dict[str, Any]) -> bool:
     return bool(snapshot.get("capture_active")) or snapshot.get("capture_state") == "running"
+
+
+def _snapshot_exposure_s(snapshot: dict[str, Any]) -> float:
+    camera = str(snapshot.get("capture_camera") or "")
+    texts = (
+        (snapshot.get("wide_exposure_text"), snapshot.get("exposure_text"))
+        if camera == "wide"
+        else (snapshot.get("exposure_text"), snapshot.get("wide_exposure_text"))
+    )
+    for text in texts:
+        seconds = exposure_seconds_from_text(text)
+        if seconds:
+            return float(seconds)
+    return 0.0
+
+
+def capture_should_skip_dark_hold(
+    *,
+    needs_continue: bool,
+    continued: bool,
+    frames: int,
+    elapsed_s: float,
+    exposure_s: float,
+) -> bool:
+    """True when a stack is held on the missing-darks warning.
+
+    Firmware can accept START_CAPTURE and report running at 0 frames while
+    it waits for continue-shooting. A real first exposure is allowed to
+    finish before a 0-frame hold counts.
+    """
+    if continued:
+        return False
+    if needs_continue:
+        return True
+    if frames > 0:
+        return False
+    if exposure_s and exposure_s > 0:
+        limit = float(exposure_s) + 45.0
+    else:
+        limit = 90.0
+    return elapsed_s >= limit
+
+
+def _sdk_client() -> Any:
+    try:
+        from dwarf_python_api.lib import websockets_utils
+
+        return getattr(websockets_utils, "client_instance", None)
+    except Exception:
+        return None
+
+
+def _sdk_needs_continue() -> bool:
+    """True when the SDK turned a missing-darks reply into a fake success."""
+    client = _sdk_client()
+    return bool(client is not None and getattr(client, "needsContinueShooting", False))
+
+
+def _clear_sdk_continue() -> None:
+    client = _sdk_client()
+    if client is None:
+        return
+    client.needsContinueShooting = False
+    for attr in ("needsContinueShootingPhoto", "needsContinueShootingWide"):
+        if hasattr(client, attr):
+            setattr(client, attr, False)
 
 
 def _mark_capture_started() -> None:
@@ -2335,8 +2489,9 @@ def _wait_for_capture_end(
     """Watch telemetry until stacking stops.
 
     The SDK ``wait_astro`` call parks on an empty socket wait with no HUD
-    updates, and it never sends CONTINUE SHOOTING when firmware accepts
-    START_CAPTURE (code 0) then raises a missing-darks warning.
+    updates. A missing-darks warning is turned into a fake success and sets
+    ``needsContinueShooting``; the telescope stays at 0 frames until
+    CONTINUE SHOOTING is sent.
 
     Firmware mosaics go idle between panes. Keep watching through those gaps
     until the last pane finishes or no next pane starts.
@@ -2353,6 +2508,19 @@ def _wait_for_capture_end(
             raise InterruptedError("Session stopped")
         snapshot = _tap.snapshot() if _tap is not None else {}
         elapsed = time.monotonic() - started
+        frames_now, _total_now = _capture_counts(snapshot)
+        if capture_should_skip_dark_hold(
+            needs_continue=_sdk_needs_continue(),
+            continued=continued,
+            frames=frames_now,
+            elapsed_s=elapsed,
+            exposure_s=_snapshot_exposure_s(snapshot),
+        ):
+            continued = True
+            _clear_sdk_continue()
+            log(f"{name}: skipping the missing-darks hold", "debug")
+            if _continue_shooting(name):
+                continue
         capturing = _capture_running(snapshot)
         slewing = mosaic and _goto_busy(snapshot)
         if capturing or slewing:
@@ -2457,7 +2625,8 @@ def _continue_shooting(name: str) -> bool:
     since = time.monotonic()
     # A leftover "running" flag from an earlier capture must not count as success.
     stale_running = _capture_running(_tap.snapshot())
-    log(f"{name}: continuing without matching dark frames (CONTINUE SHOOTING)", "warning")
+    baseline_frames, _baseline_total = _capture_counts(_tap.snapshot())
+    log(f"{name}: continuing without matching dark frames (CONTINUE SHOOTING)", "debug")
     try:
         if not send_without_response(factory(), CMD_ASTRO_CONTINUE_SHOOTING, _MODULE_ASTRO):
             return False
@@ -2471,6 +2640,10 @@ def _continue_shooting(name: str) -> bool:
         if code is not None and code != 0:
             log(f"Continue shooting rejected: {_error_name(code)}", "warning")
             return False
+        frames_now, _total_now = _capture_counts(_tap.snapshot())
+        if frames_now > baseline_frames:
+            log(f"{name}: capture running without dark-frame calibration", "notice")
+            return True
         if _capture_running(_tap.snapshot()) and (code == 0 or not stale_running):
             log(f"{name}: capture running without dark-frame calibration", "notice")
             return True
@@ -2479,13 +2652,430 @@ def _continue_shooting(name: str) -> bool:
     return False
 
 
+def _optional_int(value: Any) -> int | None:
+    if value in (None, "", "—"):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def dark_gain_allowed(gain: Any, *, wide: bool) -> bool:
+    """Tele darks are gain 40–150. Wide darks use whatever gain the stack has."""
+    value = _optional_int(gain)
+    if value is None:
+        return False
+    if wide:
+        return True
+    return _DARK_GAIN_MIN <= value <= _DARK_GAIN_MAX
+
+
+def dark_exposure_index(name: str, model_id: str, wide: bool) -> int | None:
+    """Exposure-table index for the live name. Unknown names stay unknown."""
+    text = str(name or "").strip()
+    if not text:
+        return None
+    text = firmware_exposure_name(text)
+    try:
+        if wide:
+            from dwarf_python_api.lib import data_wide_utils as tables
+
+            if model_id == "5":
+                table = tables.allowed_wide_exposuresMini
+            elif model_id == "3":
+                table = tables.allowed_wide_exposuresD3
+            else:
+                table = tables.allowed_wide_exposures
+        else:
+            from dwarf_python_api.lib import data_utils as tables
+
+            if model_id == "5":
+                table = tables.allowed_exposuresMini
+            elif model_id == "3":
+                table = tables.allowed_exposuresD3
+            else:
+                table = tables.allowed_exposures
+    except Exception:
+        return None
+    for option in getattr(table, "values", []) or []:
+        if str(option.get("name")) == text:
+            try:
+                return int(option["index"])
+            except (KeyError, TypeError, ValueError):
+                return None
+    return None
+
+
+def dark_frame_steps(model: str) -> str:
+    """Cover steps from that model's help-center manual."""
+    if model == "Dwarf Mini":
+        return (
+            "Leave filters off and leave the scope where it is. "
+            "The Mini retracts the barrel and uses its built-in dark shutter. "
+            "These 10 frames use this stack's exposure, gain, and resolution."
+        )
+    if model == "Dwarf 3":
+        return (
+            "Fit the ND filter and fully retract the lens cylinder. "
+            "These 10 frames use this stack's exposure, gain, and resolution. "
+            "Keep the sensor within 8°C of the temperature you will shoot at."
+        )
+    return (
+        "Close the lens cover. These 10 frames use this stack's exposure, gain, and resolution, "
+        "near this session's temperature. Moving the lens to take darks clears the previous "
+        "calibration, so calibrate again before the next GOTO."
+    )
+
+
+def dark_warning_summary(code: int) -> str:
+    if int(code) == CODE_ASTRO_DARK_TEMP_MISMATCH:
+        return "Stored darks were taken at a different sensor temperature."
+    return "No matching darks for this exposure, gain, and resolution."
+
+
+def dark_block_reason(*, wide: bool, gain: Any, exposure_ok: bool) -> str:
+    if not dark_gain_allowed(gain, wide=wide):
+        if not wide and _optional_int(gain) is not None:
+            return "Tele darks need gain from 40 to 150. This stack is outside that range."
+        return "Gain is not known yet, so darks cannot be sent."
+    if not exposure_ok:
+        return "The exposure is not known yet, so darks cannot be sent."
+    return ""
+
+
+def dark_resolution_label(bin_index: int) -> str:
+    return "2K" if int(bin_index) == 1 else "4K"
+
+
+def dark_capture_command(wide: bool) -> int:
+    if wide:
+        return CMD_ASTRO_START_CAPTURE_WIDE_RAW_DARK_WITH_PARAM
+    return CMD_ASTRO_START_CAPTURE_RAW_DARK_WITH_PARAM
+
+
+def build_dark_capture_message(exp_index: int, gain: int, bin_index: int, cap_size: int = DARK_FRAME_COUNT) -> Any:
+    from dwarf_python_api.proto import astro_pb2
+
+    message = astro_pb2.ReqCaptureDarkFrameWithParam()
+    message.exp_index = int(exp_index)
+    message.gain_index = int(gain)
+    message.bin_index = int(bin_index)
+    message.cap_size = int(cap_size)
+    return message
+
+
+def _begin_dark_prompt_run(prompt: bool) -> None:
+    """Arm or skip the dark modal for this stack, and forget the last answer."""
+    global _prompt_darks, _dark_run_choice
+    _prompt_darks = bool(prompt)
+    _dark_run_choice = None
+
+
+def _clear_stack_exposure() -> None:
+    """HUD and live-mosaic stacks read exposure and gain from telemetry."""
+    global _stack_exposure_name, _stack_gain
+    _stack_exposure_name = ""
+    _stack_gain = None
+
+
+def _remember_bin_index(value: Any) -> None:
+    global _stack_bin_index
+    number = _optional_int(value)
+    if number is None:
+        return
+    _stack_bin_index = number
+
+
+def _remember_stack_settings(camera: dict[str, Any]) -> None:
+    """Keep the settings just sent, in case the notify has not arrived yet."""
+    global _stack_exposure_name, _stack_gain, _stack_bin_index
+    _stack_exposure_name = firmware_exposure_name(camera.get("exposure_seconds"))
+    _stack_gain = _optional_int(camera.get("gain"))
+    _stack_bin_index = firmware_binning(camera.get("binning"))
+
+
+def accept_dark_prompt_reply(token: int, choice: str) -> bool:
+    """Record a HUD answer. Called on the stdin thread, not the command thread."""
+    global _dark_choice
+    text = str(choice or "").strip().lower()
+    if text not in {"capture", "continue", "cancel"}:
+        return False
+    with _dark_lock:
+        if int(token) != _dark_token or _dark_token == 0:
+            return False
+        _dark_choice = text
+        _dark_prompt.set()
+    return True
+
+
+def _format_sensor_temp(value: Any) -> str:
+    number = _optional_int(value)
+    if number is None:
+        return "—"
+    return f"{number}°C"
+
+
+def _dark_capture_settings(wide: bool) -> dict[str, Any]:
+    snap = _tap.snapshot() if _tap is not None else {}
+    if _stack_exposure_name:
+        exposure = _stack_exposure_name
+    elif wide:
+        exposure = str(snap.get("astro_wide_exposure_text") or snap.get("wide_exposure_text") or "")
+    else:
+        exposure = str(snap.get("astro_exposure_text") or snap.get("exposure_text") or "")
+    if _stack_gain is not None:
+        gain = _stack_gain
+    elif wide:
+        gain = snap.get("astro_wide_gain")
+        if gain in (None, "", "—"):
+            gain = snap.get("wide_gain")
+    else:
+        gain = snap.get("astro_gain")
+        if gain in (None, "", "—"):
+            gain = snap.get("gain")
+    temp = snap.get("cmos_wide_c") if wide else snap.get("cmos_tele_c")
+    if temp in (None, "", "—"):
+        temp = snap.get("temperature_c")
+    model = str(_device.get("model") or "")
+    model_id = _MODEL_IDS.get(model, "2")
+    gain_value = _optional_int(gain)
+    exp_index = dark_exposure_index(str(exposure or ""), model_id, wide)
+    exposure_ok = exp_index is not None
+    gain_ok = dark_gain_allowed(gain_value, wide=wide)
+    return {
+        "wide": wide,
+        "model": model or "Dwarf II",
+        "exposure": str(exposure or ""),
+        "gain": gain_value,
+        "exp_index": exp_index,
+        "bin_index": int(_stack_bin_index),
+        "temperature": _format_sensor_temp(temp),
+        "exposure_ok": exposure_ok,
+        "gain_ok": gain_ok,
+        "block_reason": dark_block_reason(wide=wide, gain=gain_value, exposure_ok=exposure_ok),
+    }
+
+
+def _emit_dark_prompt(phase: str, token: int, code: int, settings: dict[str, Any], error: str = "") -> None:
+    gain = settings.get("gain")
+    emit({
+        "event": "dark_prompt",
+        "phase": phase,
+        "token": int(token),
+        "kind": "mismatch" if int(code) == CODE_ASTRO_DARK_TEMP_MISMATCH else "missing",
+        "heading": "DARK TEMPERATURE" if int(code) == CODE_ASTRO_DARK_TEMP_MISMATCH else "DARK FRAMES",
+        "summary": dark_warning_summary(code),
+        "steps": dark_frame_steps(str(settings.get("model") or "")),
+        "camera": "WIDE" if settings.get("wide") else "TELE",
+        "exposure": str(settings.get("exposure") or "—"),
+        "gain": "—" if gain is None else str(gain),
+        "resolution": dark_resolution_label(int(settings.get("bin_index") or 0)),
+        "temperature": str(settings.get("temperature") or "—"),
+        "frames": DARK_FRAME_COUNT,
+        "gain_ok": bool(settings.get("gain_ok")),
+        "exposure_ok": bool(settings.get("exposure_ok")),
+        "block_reason": str(settings.get("block_reason") or ""),
+        "error": str(error or ""),
+    })
+
+
+def _close_dark_prompt(token: int) -> None:
+    _emit_dark_prompt("closed", token, CODE_ASTRO_DARK_NOT_FOUND, {"wide": False, "model": "", "gain_ok": False, "exposure_ok": False})
+
+
+def _next_dark_token() -> int:
+    global _dark_token, _dark_choice
+    with _dark_lock:
+        _dark_token += 1
+        token = _dark_token
+        _dark_choice = None
+        _dark_prompt.clear()
+    return token
+
+
+def _wait_dark_choice(token: int) -> str:
+    global _dark_choice
+    while True:
+        if _dark_prompt.wait(0.25):
+            with _dark_lock:
+                if _dark_token != token:
+                    return "cancel"
+                choice = _dark_choice or "cancel"
+                _dark_choice = None
+                _dark_prompt.clear()
+            return choice
+        if _stop.is_set():
+            return "stopped"
+
+
+def _dark_cancel_requested(token: int) -> bool:
+    global _dark_choice
+    if _stop.is_set():
+        return False
+    with _dark_lock:
+        if _dark_token != token or _dark_choice != "cancel":
+            return False
+        _dark_choice = None
+        _dark_prompt.clear()
+        return True
+
+
+def _stop_dark_capture(wide: bool) -> None:
+    try:
+        from dwarf_python_api.proto import astro_pb2
+
+        factory = getattr(astro_pb2, "ReqStopCaptureDarkFrameWithParam", None)
+    except Exception:
+        factory = None
+    if factory is None:
+        return
+    command = (
+        CMD_ASTRO_STOP_CAPTURE_WIDE_RAW_DARK_WITH_PARAM
+        if wide
+        else CMD_ASTRO_STOP_CAPTURE_RAW_DARK_WITH_PARAM
+    )
+    try:
+        send_without_response(factory(), command, _MODULE_ASTRO)
+    except Exception as exc:
+        log(f"Stop dark frames skipped: {exc}", "debug")
+
+
+def _tapped_dark_code(command: int, since: float) -> int | None:
+    if _tap is None:
+        return None
+    code = _tap.response_after(command, since)
+    if code in _CAPTURE_DARK_WARNINGS:
+        return code
+    return None
+
+
+def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: int) -> str:
+    """Return '' when darks finish, 'cancel', 'stopped', or an error to show."""
+    if not settings.get("gain_ok") or not settings.get("exposure_ok"):
+        return str(settings.get("block_reason") or "Darks cannot be taken for these settings")
+    try:
+        message = build_dark_capture_message(
+            int(settings["exp_index"]),
+            int(settings["gain"]),
+            int(settings["bin_index"]),
+        )
+    except Exception as exc:
+        return f"Could not build the dark-frame request: {exc}"
+    command = dark_capture_command(wide)
+    since = time.monotonic()
+    log(f"{name}: taking {DARK_FRAME_COUNT} dark frames", "notice")
+    try:
+        result = _send_request("dark", message, command, _MODULE_ASTRO, f"{name} darks")
+    except InterruptedError:
+        _stop_dark_capture(wide)
+        return "stopped"
+    if _stop.is_set():
+        _stop_dark_capture(wide)
+        return "stopped"
+    if _dark_cancel_requested(token):
+        _stop_dark_capture(wide)
+        return "cancel"
+    code = result if isinstance(result, int) and not isinstance(result, bool) else None
+    if result is not True and code != 0:
+        if code is None and _tap is not None:
+            code = _tap.response_after(command, since)
+        if code not in (None, 0):
+            return f"Dark frames were refused: {_error_name(code)}"
+        return "Dark frames were refused: no reply from the telescope"
+    seconds = exposure_seconds_from_text(settings.get("exposure")) or 30.0
+    limit = max(90.0, float(seconds) * DARK_FRAME_COUNT + 120.0)
+    started = time.monotonic()
+    seen = False
+    while True:
+        if _stop.is_set():
+            _stop_dark_capture(wide)
+            return "stopped"
+        if _dark_cancel_requested(token):
+            _stop_dark_capture(wide)
+            return "cancel"
+        snap = _tap.snapshot() if _tap is not None else {}
+        state = str(snap.get("dark_state") or "")
+        if state == "running":
+            seen = True
+        elif seen and state in ("stopped", "idle"):
+            return ""
+        elapsed = time.monotonic() - started
+        if not seen and elapsed >= 45.0:
+            _stop_dark_capture(wide)
+            return "Dark frames did not start"
+        if elapsed >= limit:
+            _stop_dark_capture(wide)
+            return "Dark frames did not finish"
+        time.sleep(0.25)
+
+
+def _handle_missing_darks(name: str, code: int, *, wide: bool) -> str:
+    """Return 'continue' or 'retry'. Cancel and stop raise."""
+    global _dark_run_choice
+    detail = _CAPTURE_DARK_WARNINGS.get(code, _CAPTURE_DARK_WARNINGS[CODE_ASTRO_DARK_NOT_FOUND])
+    log(f"{name}: {detail} ({_error_name(code)})", "warning")
+    if _dark_run_choice == "continue" or not _prompt_darks:
+        return "continue"
+    if _dark_run_choice == "cancel":
+        raise RuntimeError(f"{name} cancelled: matching dark frames were not taken")
+    error = ""
+    while True:
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        settings = _dark_capture_settings(wide)
+        token = _next_dark_token()
+        _emit_dark_prompt("ask", token, code, settings, error)
+        choice = _wait_dark_choice(token)
+        if choice == "stopped" or _stop.is_set():
+            _close_dark_prompt(token)
+            raise InterruptedError("Session stopped")
+        if choice == "continue":
+            _dark_run_choice = "continue"
+            _close_dark_prompt(token)
+            return "continue"
+        if choice != "capture":
+            _dark_run_choice = "cancel"
+            _close_dark_prompt(token)
+            raise RuntimeError(f"{name} cancelled: matching dark frames were not taken")
+        _emit_dark_prompt("capturing", token, code, settings)
+        result = _take_dark_frames(name, wide, settings, token)
+        if result == "stopped":
+            _close_dark_prompt(token)
+            raise InterruptedError("Session stopped")
+        if result == "cancel":
+            _dark_run_choice = "cancel"
+            _close_dark_prompt(token)
+            raise RuntimeError(f"{name} cancelled: matching dark frames were not taken")
+        if result:
+            log(f"{name}: {result}", "warning")
+            error = result
+            continue
+        _close_dark_prompt(token)
+        return "retry"
+
+
+def _after_dark_warning(name: str, code: int, *, wide: bool) -> str:
+    """'started' after continue-shooting, 'retry' after darks, or 'force'."""
+    action = _handle_missing_darks(name, code, wide=wide)
+    if action == "retry":
+        _clear_sdk_continue()
+        return "retry"
+    if _continue_shooting(name):
+        _clear_sdk_continue()
+        _mark_capture_started()
+        return "started"
+    _clear_sdk_continue()
+    return "force"
+
+
 def _start_capture(name: str, operation: str, args: list[Any]) -> None:
     """Start tele/wide/mosaic stacking, surfacing the real firmware reply.
 
     - Engine busy (GOTO/calibration still winding down): wait and retry.
     - Tele camera closed after GO LIVE or a finished stack: open it and retry.
-    - Missing or mismatched darks: warn, then CONTINUE SHOOTING like the
-      official app; fall back to a forced start if that is refused.
+    - Missing or mismatched darks: ask when a person started the stack, then
+      take darks or continue shooting. Scheduled runs continue without asking.
     - Anything else: fail with the decoded error name and code.
     """
     command = _CAPTURE_STARTS[operation]
@@ -2513,7 +3103,19 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
         # connect_socket returns the reply code (0 = accepted) or False; never
         # compare with == 0 directly because False == 0 in Python.
         code = result if isinstance(result, int) and not isinstance(result, bool) else None
+        wide = operation == "wide_astro"
         if result is True or code == 0:
+            if _sdk_needs_continue() and not force_start:
+                warning = _tapped_dark_code(command, since) or CODE_ASTRO_DARK_NOT_FOUND
+                outcome = _after_dark_warning(name, warning, wide=wide)
+                if outcome == "started":
+                    return
+                if outcome == "retry":
+                    continue
+                log(f"{name}: retrying with a forced start", "warning")
+                force_start = True
+                label = f"{name} (forced)"
+                continue
             _mark_capture_started()
             return
         if code is None and _tap is not None:
@@ -2521,6 +3123,17 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
             if code == 0:
                 # Accepted, but the SDK gave up before the running notification.
                 if _capture_running(_tap.snapshot()):
+                    if _sdk_needs_continue() and not force_start:
+                        warning = _tapped_dark_code(command, since) or CODE_ASTRO_DARK_NOT_FOUND
+                        outcome = _after_dark_warning(name, warning, wide=wide)
+                        if outcome == "started":
+                            return
+                        if outcome == "retry":
+                            continue
+                        log(f"{name}: retrying with a forced start", "warning")
+                        force_start = True
+                        label = f"{name} (forced)"
+                        continue
                     _mark_capture_started()
                     return
                 raise RuntimeError(f"{name} failed: the telescope accepted the request but never started capturing")
@@ -2540,10 +3153,11 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
                 raise InterruptedError("Session stopped")
             continue
         if code in _CAPTURE_DARK_WARNINGS and not force_start:
-            log(f"{name}: {_CAPTURE_DARK_WARNINGS[code]} ({_error_name(code)})", "warning")
-            if _continue_shooting(name):
-                _mark_capture_started()
+            outcome = _after_dark_warning(name, code, wide=wide)
+            if outcome == "started":
                 return
+            if outcome == "retry":
+                continue
             log(f"{name}: retrying with a forced start", "warning")
             force_start = True
             label = f"{name} (forced)"
@@ -2553,8 +3167,9 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
         raise RuntimeError(f"{name} failed: {_error_name(code)}")
 
 
-def run_session(session: dict[str, Any]) -> bool:
+def run_session(session: dict[str, Any], prompt_darks: bool = False) -> bool:
     global _session_phase, _stop_phase
+    _begin_dark_prompt_run(prompt_darks)
     _stop.clear()
     _session_active.set()
     _session_phase = None
@@ -2964,6 +3579,7 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         step("Set filter", "set_ir", camera["ir_filter"])
     step("Set count", "set_count", camera["frame_count"], camera["camera"])
     step("Set binning", "set_binning", firmware_binning(camera["binning"]))
+    _remember_stack_settings(camera)
     _wait_seconds(5, "Waiting for capture camera settings to apply", step)
     _wait_seconds(workflow.get("wait_after_seconds", 10), "Waiting after setup", step)
     _wait_seconds(2, "Waiting before capture", step)
@@ -2983,7 +3599,7 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     return True
 
 
-# Used for a manual STOP ALL when telemetry shows nothing running. stop_wide is
+# Used when a session or disconnect stop finds no live activity. stop_wide is
 # deliberately absent: the Dwarf 3 never answers it unless a wide capture is
 # active, which stalls the SDK for its full 150 s timeout.
 _FALLBACK_STOPS = ("stop_astro", "stop_goto", "stop_calibrate", "stop_autofocus", "stop_polar")
@@ -3281,6 +3897,23 @@ def capture_prime_needs_mode_reset(snapshot: dict[str, Any] | None) -> bool:
     return mode == _PHOTO_SHOOTING_MODE and tech in {3, 4, 5}
 
 
+def running_photo_capture_stop(snapshot: dict[str, Any] | None, activity: str = "") -> str:
+    """Stop command for a burst, record, or timelapse that is still running."""
+    snap = snapshot or {}
+    for key, operation in (
+        ("burst_state", "burst_stop"),
+        ("record_state", "record_stop"),
+        ("timelapse_state", "timelapse_stop"),
+    ):
+        if snap.get(key) == "running":
+            return operation
+    return {
+        "burst": "burst_stop",
+        "record": "record_stop",
+        "timelapse": "timelapse_stop",
+    }.get(str(activity or ""), "")
+
+
 def capture_handshake_needed(snapshot: dict[str, Any], tech: int) -> bool:
     """True unless PHOTO mode is already on the requested capture technique."""
     mode = _shooting_int(snapshot.get("shooting_mode"))
@@ -3309,6 +3942,54 @@ def _ir_name(value: Any) -> str:
     return str(value or "").strip().lower().replace(" filter", "")
 
 
+def _timelapse_interval_seconds(snapshot: dict[str, Any]) -> int:
+    interval = photo_capture_seconds(snapshot.get("timelapse_interval")) or 1
+    return interval if interval > 0 else 1
+
+
+def _apply_timelapse_param(operation: str, args: tuple[Any, ...] | list[Any]) -> Any:
+    """Send shoot seconds for a finished-video length, and keep them in step.
+
+    The HUD duration is the MP4 length. Firmware duration is how long to shoot.
+    Changing the interval without rewriting that shoot time would change the
+    finished video.
+    """
+    snap = _tap.snapshot() if _tap is not None else {}
+    values = tuple(args or ())
+    if operation == "set_timelapse_duration":
+        video = int(values[0]) if values else 0
+        interval = _timelapse_interval_seconds(snap)
+        shoot = timelapse_shoot_seconds(video, interval)
+        values = (shoot,) + values[1:]
+    else:
+        interval = int(values[0]) if values and int(values[0]) > 0 else 1
+        video = photo_capture_seconds(snap.get("timelapse_duration")) or 0
+        shoot = timelapse_shoot_seconds(video, interval) if video else 0
+    function_name = FUNCTIONS.get(operation)
+    function = getattr(_api, function_name, None) if function_name else None
+    if function is None:
+        raise NotImplementedError(f"Installed SDK does not provide '{operation}'")
+    ok = _invoke_sdk(operation, function, *values)
+    if ok and operation == "set_timelapse_interval" and shoot:
+        dur_name = FUNCTIONS.get("set_timelapse_duration")
+        dur_fn = getattr(_api, dur_name, None) if dur_name else None
+        if dur_fn is None:
+            raise NotImplementedError("Installed SDK does not provide 'set_timelapse_duration'")
+        ok = _invoke_sdk("set_timelapse_duration", dur_fn, shoot)
+    if ok and _tap is not None:
+        update: dict[str, Any] = {}
+        if operation == "set_timelapse_duration":
+            update["timelapse_duration"] = str(video)
+            update["timelapse_shoot_s"] = int(values[0])
+        else:
+            update["timelapse_interval"] = str(interval)
+            if video:
+                update["timelapse_duration"] = str(video)
+                update["timelapse_shoot_s"] = shoot
+        _tap.update(update, force=True)
+    return ok
+
+
 def camera_param_unchanged(
     operation: str,
     args: list[Any] | tuple[Any, ...],
@@ -3321,8 +4002,10 @@ def camera_param_unchanged(
     device = device or {}
     if operation == "set_count":
         wanted = _param_int(values[0] if values else None)
-        have = _param_int(device.get("frame_count"))
-        return wanted is not None and wanted == have
+        camera = _param_camera(values)
+        key = "wide_stack_count" if camera == "wide" else "stack_count"
+        have = _param_int(snapshot.get(key))
+        return wanted is not None and have is not None and wanted == have
     if operation == "set_ir":
         wanted = _ir_name(values[0] if values else "")
         have = _ir_name(device.get("ir_filter") or snapshot.get("ir_filter"))
@@ -4293,35 +4976,91 @@ def _start_tracking(target_name: str = "") -> dict[str, Any]:
     }
 
 
-def _prepare_manual_stack(camera: str = "") -> tuple[str, list[Any]]:
-    """Enter astro mode and resolve the camera/count used for a live stack."""
+def _set_feature_frame_count(count: int) -> bool:
+    """Set Astro img_to_take. This is the frame total a DSO capture runs.
+
+    The general stackCount parameter can change without this. The capture
+    then stays on the firmware default, 999.
+    """
+    from dwarf_python_api.proto import camera_pb2
+
+    message = camera_pb2.ReqSetFeatureParams()
+    message.param.hasAuto = False
+    message.param.auto_mode = 1
+    message.param.id = 1
+    message.param.mode_index = 1
+    message.param.index = 0
+    message.param.continue_value = int(count)
+    return send_without_response(message, 10037, 1) is not False
+
+
+def _set_general_stack_count(count: int, *, wide: bool) -> bool:
+    """Write the settings-catalog stackCount for one camera."""
+    from dwarf_python_api.lib.dwarf_utils import (
+        PARAM_ID_ASTRO_STACK_COUNT_TELE,
+        PARAM_ID_ASTRO_STACK_COUNT_WIDE,
+    )
+    from dwarf_python_api.proto import param_pb2
+
+    message = param_pb2.ReqSetGeneralIntParam()
+    message.param_id = PARAM_ID_ASTRO_STACK_COUNT_WIDE if wide else PARAM_ID_ASTRO_STACK_COUNT_TELE
+    message.value = int(count)
+    return send_without_response(message, 16703, 15) is not False
+
+
+def _set_stack_count(args: tuple[Any, ...] | list[Any]) -> bool:
+    """Apply one DSO frame total to the capture and to both cameras.
+
+    Tele and wide each keep a stackCount. Wide is left at 999 until it is
+    written on its own. The capture itself uses Astro img_to_take.
+    """
+    count = _param_int(args[0] if args else None)
+    if count is None or count < 1 or count > 999:
+        raise RuntimeError("Stack count must be from 1 to 999")
+    frames = int(count)
+    log(f"Stack count {frames}…", "sdk")
+    wrote = _set_feature_frame_count(frames)
+    wrote = _set_general_stack_count(frames, wide=False) or wrote
+    wrote = _set_general_stack_count(frames, wide=True) or wrote
+    if not wrote:
+        return False
+    _device["frame_count"] = frames
+    if _tap is not None:
+        _tap.update({"stack_count": frames, "wide_stack_count": frames}, force=True)
+    return True
+
+
+def _prepare_manual_stack(camera: str = "", count: Any = None) -> tuple[str, list[Any]]:
+    """Enter astro mode and write the DSO stackCount used for a live stack."""
     if _ensure_astro_mode(enter_camera=False) is False:
         raise RuntimeError("Could not enter astro mode")
     choice = str(camera or _device.get("camera") or "tele").strip().lower()
     _device["camera"] = choice
     defaults = capture_defaults_from_dict(_device.get("capture_defaults") or {})
-    previous = _device.get("frame_count")
-    try:
-        have = int(float(previous))
-    except (TypeError, ValueError):
-        have = 0
-    if have < 1:
-        count = resolved_frame_count(previous, defaults)
-        _device["frame_count"] = count
-        if sdk_call("set_count", count, choice) is False:
-            raise RuntimeError("Could not set stack count")
+    chosen = _param_int(count)
+    if chosen is None or chosen < 1:
+        chosen = resolved_frame_count(_device.get("frame_count"), defaults)
+    if sdk_call("set_count", chosen, choice) is False:
+        raise RuntimeError("Could not set stack count")
+    _device["frame_count"] = chosen
     operation = "wide_astro" if choice == "wide" else "astro"
     ir_index = _ir_index(_device.get("ir_filter"))
     args = [ir_index] if operation == "astro" else []
     return operation, args
 
 
-def _start_manual_stack(camera: str = "") -> bool:
+def _start_manual_stack(camera: str = "", count: Any = None) -> bool:
     """Start live stacking without waiting for the run to finish."""
+    if not _session_active.is_set():
+        # stop_all leaves _stop set after the session is gone. A live stack
+        # is not a session; that latch must not cancel the dark-frame prompt.
+        _stop.clear()
+    _begin_dark_prompt_run(True)
+    _clear_stack_exposure()
     snapshot = _tap.snapshot() if _tap is not None else {}
     if _capture_running(snapshot):
         raise RuntimeError("Stack is already running")
-    operation, args = _prepare_manual_stack(camera)
+    operation, args = _prepare_manual_stack(camera, count)
     _start_capture("Stack", operation, args)
     return True
 
@@ -4412,9 +5151,12 @@ def _stack_mosaic(
     camera: str = "",
     start_index: int = 1,
     join_current: bool = False,
+    prompt_darks: bool = False,
 ) -> bool:
     """GOTO each planned pane and stack it. Stoppable like a session."""
     global _session_phase, _stop_phase
+    _begin_dark_prompt_run(prompt_darks)
+    _clear_stack_exposure()
     if not isinstance(panes, list) or not panes:
         raise RuntimeError("Mosaic has no panes")
     if str(camera or "").strip().lower() == "wide":
@@ -4542,8 +5284,14 @@ def _stack_mosaic(
                 log(f"Could not stop leftover activity: {exc}", "warning")
 
 
+def _polar_position_stopped() -> None:
+    if _stop.is_set():
+        raise InterruptedError("Session stopped" if _session_active.is_set() else "Polar positioning stopped")
+
+
 def polar_position() -> bool:
     """Home both axes and slew to the polar-alignment pose (POLAR POS)."""
+    global _motors_unhomed
     function = getattr(_api, "motor_action", None) if _api is not None else None
     if function is None:
         raise RuntimeError("motor_action is not available in this SDK")
@@ -4554,11 +5302,37 @@ def polar_position() -> bool:
         else ((5, "Resetting rotation motor"), (6, "Resetting pitch motor"), (2, "Slewing rotation to polar pose"), (3, "Slewing pitch to polar pose"))
     )
     for action, label in steps:
-        if _session_active.is_set() and _stop.is_set():
-            raise InterruptedError("Session stopped")
-        if _invoke_sdk("polar_position", function, action, label=label) is False:
+        _polar_position_stopped()
+        result = _invoke_sdk("polar_position", function, action, label=label)
+        _polar_position_stopped()
+        if result is False:
             return False
+    _motors_unhomed = False
     return True
+
+
+def stop_polar_position() -> bool:
+    """Halt both axes after POLAR POS is interrupted.
+
+    CMD_STEP_MOTOR_STOP (14002) stops the stepper that polar positioning
+    started. Joystick stop (14008) is a different command and unhomes the
+    mount, so it is not used here.
+    """
+    global _motors_unhomed
+    from dwarf_python_api.proto import motor_control_pb2
+
+    aborted = _stop.is_set()
+    ok = True
+    for motor_id in (1, 2):
+        message = motor_control_pb2.ReqMotorStop()
+        message.id = motor_id
+        if send_without_response(message, 14002, 6) is False:
+            ok = False
+    if aborted:
+        _motors_unhomed = True
+    if not _session_active.is_set():
+        _stop.clear()
+    return ok
 
 
 def dispatch(message: dict[str, Any]) -> Any:
@@ -4571,7 +5345,7 @@ def dispatch(message: dict[str, Any]) -> Any:
             _device["_claimed_ips"] = list(claimed)
         return connect()
     if command == "run_session":
-        return run_session(message["session"])
+        return run_session(message["session"], prompt_darks=bool(message.get("prompt_darks")))
     if command == "stop_all":
         return stop_all()
     if command == "telemetry":
@@ -4629,6 +5403,8 @@ def dispatch(message: dict[str, Any]) -> Any:
         )
     if command == "polar_position":
         return polar_position()
+    if command == "stop_polar_position":
+        return stop_polar_position()
     if command == "sky_pointing":
         return _current_sky_pointing()
     if command == "track":
@@ -4643,7 +5419,10 @@ def dispatch(message: dict[str, Any]) -> Any:
         )
     if command == "stack":
         args = list(message.get("args") or [])
-        return _start_manual_stack(str(args[0]) if args else "")
+        return _start_manual_stack(
+            str(args[0]) if args else "",
+            args[1] if len(args) > 1 else None,
+        )
     if command == "stack_mosaic":
         args = list(message.get("args") or [])
         panes = message.get("panes")
@@ -4659,6 +5438,7 @@ def dispatch(message: dict[str, Any]) -> Any:
             camera,
             start_index=start_index,
             join_current=bool(message.get("join_current")),
+            prompt_darks=bool(message.get("prompt_darks")),
         )
     if command == "read_camera":
         args = list(message.get("args") or [])
@@ -4735,6 +5515,10 @@ def dispatch(message: dict[str, Any]) -> Any:
                         _remember_shooting(mode, tech)
             elif command in {"photo", "wide_photo"}:
                 _remember_shooting(_PHOTO_SHOOTING_MODE, _PHOTO_STILL_TECH, photo_primed=True)
+            elif command == "set_binning":
+                args = list(message.get("args") or [])
+                if args:
+                    _remember_bin_index(args[0])
     if command in _REFRESH_AFTER and result is not False:
         request_state_refresh()
     return result
@@ -4782,7 +5566,7 @@ def enqueue_command(message: dict[str, Any], priority: int = _PRIORITY_NORMAL) -
     _put_command(message, priority)
 
 
-_URGENT_COMMANDS = {"stop_all", "disconnect", "reboot", "power_down"}
+_URGENT_COMMANDS = {"stop_all", "disconnect", "reboot", "power_down", "stop_polar_position"}
 _SESSION_STOP_COMMANDS = {"stop_astro", "stop_wide"}
 
 
@@ -4801,6 +5585,13 @@ def main() -> None:
                 log(f"Invalid worker message: {raw!r}", "error")
                 continue
             command = message.get("command")
+            if command == "dark_prompt_reply":
+                try:
+                    token = int(message.get("token") or 0)
+                except (TypeError, ValueError):
+                    token = 0
+                accept_dark_prompt_reply(token, str(message.get("choice") or ""))
+                continue
             if command == "connect":
                 _connecting.set()
                 _connect_cancel.clear()
@@ -4816,14 +5607,16 @@ def main() -> None:
                     if _connecting.is_set():
                         _connect_cancel.set()
                 if (
-                    command == "stop_all"
+                    command in {"stop_all", "stop_polar_position"}
                     or command in _SESSION_STOP_COMMANDS
                     or _session_active.is_set()
                     or _in_flight is not None
                     or _connecting.is_set()
                 ):
                     request_stop(
-                        "Session stopped"
+                        "Polar positioning stopped"
+                        if command == "stop_polar_position"
+                        else "Session stopped"
                         if command in {"stop_all", *_SESSION_STOP_COMMANDS}
                         else "Telescope disconnected"
                     )

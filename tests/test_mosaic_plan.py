@@ -250,9 +250,10 @@ def test_atlas_overlay_labels_icrs_pane_centres() -> None:
     _assert("observer.roll = 0" in SKY_WEB_FOV_JS or "obj.roll = 0" in SKY_WEB_FOV_JS, "zenith-up roll is cleared while dragging")
     _assert("function hudTilt" in SKY_WEB_FOV_JS, "stellarium screen HUD adds view roll to camera PA")
     _assert("function mosaicGridTilt" in SKY_WEB_FOV_JS, "stellarium mosaic fallback adds view roll to chart tilt")
-    _assert("function haloInk" in SKY_WEB_FOV_JS, "stellarium FOV strokes need a dark halo on daytime sky")
-    _assert("function framedOpen" in SKY_WEB_FOV_JS, "stellarium mosaic panes share the halo plus accent stroke")
-    _assert("function haloLine" in SKY_WEB_FOV_JS, "stellarium up-tick uses a halo under the accent")
+    _assert("function haloInk" not in SKY_WEB_FOV_JS, "FOV strokes must not draw a dark halo")
+    _assert("rgba(0,0,0" not in SKY_WEB_FOV_JS and 'stroke="#041208"' not in SKY_WEB_FOV_JS, "FOV must not use a dark outline")
+    _assert("function framedOpen" in SKY_WEB_FOV_JS, "stellarium mosaic panes share one stroke")
+    _assert("function haloLine" in SKY_WEB_FOV_JS, "stellarium up-tick uses the FOV colour")
     _assert(
         "mosaic && !zenithCamera ? chartTilt" in ATLAS_ASTRO_JS,
         "atlas mosaic chart tilt is EQ and the celestial default; 1×1 uses camera PA",
@@ -262,7 +263,9 @@ def test_atlas_overlay_labels_icrs_pane_centres() -> None:
     _assert("liveQ" in ATLAS_ASTRO_JS, "atlas 1×1 alt-az uses live parallactic")
     _assert("if (mosaic && hasQuads)" in ATLAS_ASTRO_JS, "atlas mosaics still project ICRS quads")
     _assert("isFinite(q) ? -q : 0" in SKY_WEB_FOV_JS, "stellarium view roll matches Aladin zenithRotation")
-    _assert("p.color" in SKY_WEB_FOV_JS and "payload.color" in ATLAS_ASTRO_JS, "FOV ink follows the theme accent")
+    _assert("p.color" in SKY_WEB_FOV_JS and "payload.color" in ATLAS_ASTRO_JS, "FOV ink comes from the theme")
+    _assert("#02900A" in SKY_WEB_FOV_JS and "#02900A" in ATLAS_ASTRO_JS, "FOV fallback is the default green")
+    _assert("rgba(0,0,0" not in ATLAS_ASTRO_JS, "atlas FOV must not use a dark outline")
     _assert('stroke-dasharray="1 6.5"' in SKY_WEB_FOV_JS, "stellarium seams are round dots")
     _assert("setLineDash([1, 6.5])" in ATLAS_ASTRO_JS, "aladin seams are round dots")
     _assert("function targetCornersSvg" in SKY_WEB_FOV_JS, "stellarium frame uses target corners")

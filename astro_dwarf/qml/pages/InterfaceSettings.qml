@@ -102,6 +102,17 @@ ColumnLayout {
     readonly property bool seedRole: iface.tintRole === "windowBase"
     readonly property bool tintFixed: Theme.roleFixed(iface.tintRole)
     readonly property bool savedSlot: !Theme.isBuiltinId(Theme.activeThemeId)
+    readonly property bool exampleSlot: Theme.isShippedCustomId(Theme.activeThemeId) && !Theme.hasSavedCopy(Theme.activeThemeId)
+    readonly property bool builtinDefault: {
+        void Theme.savedThemesJson
+        void Theme.activeThemeId
+        void Theme.paletteJson
+        void Theme.hue
+        void Theme.brightness
+        if (!Theme.isBuiltinId(Theme.activeThemeId))
+            return false
+        return Theme.hasSavedCopy(Theme.activeThemeId) || Theme.themeEdited
+    }
     readonly property bool renameable: Theme.canRenameTheme(Theme.activeThemeId)
     readonly property bool colourSplit: iface.width >= Theme.px(620)
     readonly property string probeThemeId: Theme.activeThemeId
@@ -318,9 +329,9 @@ ColumnLayout {
                 anchors.verticalCenter: parent.verticalCenter
             },
             HudChip {
-                label: iface.savedSlot ? "SAVED" : "BUILT-IN"
-                tone: iface.savedSlot ? Theme.success : Theme.textSecondary
-                dim: !iface.savedSlot
+                label: iface.exampleSlot ? "EXAMPLE" : (iface.savedSlot ? "SAVED" : "BUILT-IN")
+                tone: iface.exampleSlot || iface.savedSlot ? Theme.success : Theme.textSecondary
+                dim: !iface.exampleSlot && !iface.savedSlot
                 anchors.verticalCenter: parent.verticalCenter
             }
         ]
@@ -345,13 +356,6 @@ ColumnLayout {
                 enabled: iface.naming || Theme.savedThemeCount < Theme.maxSavedThemes
                 accessibleDescription: iface.naming ? "Cancel saving a new theme" : "Save the current palette as a new theme"
                 onClicked: iface.naming ? iface.naming = false : iface.startSaveAs()
-            }
-            HudButton {
-                text: "STOCK"
-                implicitHeight: Theme.px(40)
-                visible: (iface.tintCustom || Theme.activeThemeId !== "stock") && !iface.naming
-                accessibleDescription: "Return every palette colour to stock cyan"
-                onClicked: Theme.resetPalette()
             }
         }
         FieldLabel {
@@ -386,11 +390,11 @@ ColumnLayout {
                 : "Rename this theme."
         }
         FieldLabel {
-            visible: iface.naming || (Theme.themeEdited && !!Theme.activeTheme) || iface.savedSlot
+            visible: iface.naming || (Theme.themeEdited && !!Theme.activeTheme) || iface.savedSlot || iface.builtinDefault
             text: "ACTIONS"
         }
         RowLayout {
-            visible: iface.naming || (Theme.themeEdited && !!Theme.activeTheme) || iface.savedSlot
+            visible: iface.naming || (Theme.themeEdited && !!Theme.activeTheme) || iface.savedSlot || iface.builtinDefault
             Layout.fillWidth: true
             Layout.minimumWidth: Theme.px(240)
             spacing: Theme.px(6)
@@ -406,6 +410,7 @@ ColumnLayout {
                 text: "REVERT"
                 implicitHeight: Theme.px(28)
                 visible: Theme.themeEdited && !!Theme.activeTheme && !iface.naming
+                        && (!Theme.isBuiltinId(Theme.activeThemeId) || Theme.hasSavedCopy(Theme.activeThemeId))
                 accessibleDescription: "Reload the selected theme and discard edits"
                 onClicked: {
                     Theme.applyTheme(Theme.activeThemeId)
@@ -413,28 +418,48 @@ ColumnLayout {
                 }
             }
             HudButton {
+                objectName: "themeDefaultButton"
+                text: "DEFAULT"
+                implicitHeight: Theme.px(28)
+                visible: iface.builtinDefault && !iface.naming
+                accessibleDescription: "Restore this theme to its shipped colours"
+                onClicked: {
+                    Theme.revertBuiltinTheme(Theme.activeThemeId)
+                    iface.naming = false
+                }
+            }
+            HudButton {
+                objectName: "themeUpdateButton"
                 text: "UPDATE"
                 implicitHeight: Theme.px(28)
-                visible: iface.savedSlot && Theme.themeEdited && !iface.naming
-                accessibleDescription: "Overwrite the selected saved theme with the current palette"
+                visible: Theme.themeEdited && !!Theme.activeTheme && !iface.naming
+                accessibleDescription: "Store the current palette on the selected theme"
                 onClicked: Theme.updateTheme(Theme.activeThemeId)
             }
             HudButton {
                 text: "DELETE"
                 implicitHeight: Theme.px(28)
                 visible: iface.savedSlot && !iface.naming
-                accessibleDescription: "Delete the selected saved theme"
+                accessibleDescription: "Delete the selected theme"
                 onClicked: Theme.deleteTheme(Theme.activeThemeId)
             }
             Item { Layout.fillWidth: true }
         }
         FieldHint {
-            visible: iface.naming || Theme.themeEdited || iface.savedSlot
+            visible: iface.naming || Theme.themeEdited || iface.savedSlot || iface.builtinDefault
             text: iface.naming
                 ? "Confirm writes a new saved look. Cancel drops the name field."
-                : Theme.themeEdited
-                    ? "Edits are live. Revert reloads this look; Update writes over a saved one."
-                    : "Delete removes this saved look."
+                : Theme.themeEdited && iface.builtinDefault && Theme.hasSavedCopy(Theme.activeThemeId)
+                    ? "Edits are live. Revert reloads your saved colours. Update stores this look. Default restores the shipped theme."
+                    : Theme.themeEdited && Theme.isBuiltinId(Theme.activeThemeId)
+                        ? "Edits are live. Default restores the shipped colours. Update stores this look on the theme."
+                        : Theme.themeEdited
+                            ? "Edits are live. Revert reloads this look. Update stores it on the selected theme."
+                            : iface.builtinDefault
+                                ? "Default restores this theme's shipped colours."
+                                : iface.exampleSlot
+                                    ? "Delete removes this example theme."
+                                    : "Delete removes this saved look."
         }
         ThemePreview {
             Layout.columnSpan: 3
@@ -587,7 +612,7 @@ ColumnLayout {
                     valueText: Math.round(iface.tintHue * 360) + "°"
                     accessibleName: iface.tintRoleName + " hue"
                     tooltip: iface.seedRole
-                        ? "Seed hue. Unedited swatches, washes and the title bar follow this. The tick is stock cyan."
+                        ? "Seed hue. Unedited swatches, washes and the title bar follow this. The tick is cyan."
                         : "Hue of the selected swatch. The tick is its stock position. Locked swatches stay put when WINDOW moves."
                     trackGradient: Gradient {
                         orientation: Gradient.Horizontal

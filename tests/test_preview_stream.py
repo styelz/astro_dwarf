@@ -841,6 +841,37 @@ def test_camera_params_map_ir_and_auto_calibration() -> None:
     )
 
 
+def test_stack_count_is_firmware_stack_count_not_a_local_cache() -> None:
+    changes = camera_params_to_telemetry(
+        {
+            "cameras": {0: {"count": 15}},
+            "tech_settings": {0: {"stackCount": 40}, "1": {"stackCount": 12}},
+        }
+    )
+    _assert(changes.get("stack_count") == 40, changes)
+    _assert(changes.get("wide_stack_count") == 12, changes)
+    _assert(
+        not camera_param_unchanged("set_count", [15, "tele"], {"stack_count": 40}, {"frame_count": 15}),
+        "a remembered 15 must not skip the camera write",
+    )
+    _assert(
+        camera_param_unchanged("set_count", [15, "tele"], {"stack_count": 15}, {"frame_count": 40}),
+        "firmware stackCount 15 is already on the camera",
+    )
+    _assert(
+        not camera_param_unchanged("set_count", [15, "tele"], {}, {"frame_count": 15}),
+        "missing camera stackCount must still be written",
+    )
+    _assert(
+        not camera_param_unchanged("set_count", [15, "wide"], {"stack_count": 15}, {}),
+        "tele stackCount does not cover the wide camera",
+    )
+    _assert(
+        camera_param_unchanged("set_count", [15, "wide"], {"wide_stack_count": 15}, {}),
+        "wide stackCount match skips the write",
+    )
+
+
 if __name__ == "__main__":
     test_mosaic_live_item_font_pixel_size()
     test_preview_preserves_dso_after_tracking()
@@ -862,4 +893,5 @@ if __name__ == "__main__":
     test_mosaic_frames_clear_resets_grid()
     test_restore_skips_unknown_auto_calibration()
     test_camera_params_map_ir_and_auto_calibration()
+    test_stack_count_is_firmware_stack_count_not_a_local_cache()
     print("ok")

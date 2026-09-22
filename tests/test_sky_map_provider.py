@@ -18,6 +18,7 @@ from astro_dwarf.domain import (
 )
 from astro_dwarf.services import SKY_WEB_DISMISS_POLL_JS, sky_web_fov_script
 from astro_dwarf.sky_atlas import (
+    SKY_MAP_FOV_DEG,
     atlas_set_fov_from_view,
     atlas_view_payload,
     parse_atlas_harvest,
@@ -101,6 +102,8 @@ def test_atlas_view_and_lock_helpers() -> None:
     _assert("gotoCenter" in boot and "box.dragging" in boot and "requestSync" in boot, "stable pan")
     _assert("zenithRotation(eq[0], eq[1]" in boot, "pan keeps zenith up while dragging")
     _assert("function nearestAngle" in boot, "parallactic branch cut must not spin the view")
+    _assert(SKY_MAP_FOV_DEG == 70.0, SKY_MAP_FOV_DEG)
+    _assert("applyFov(aladin, 70)" in boot, "shared home field")
     _assert("markMoved" in boot and "applyFov" in boot and "inscribedFov" in boot, "fov persist")
     _assert("objectClicked" in boot and "selectSky" in boot, "simbad harvest")
     _assert("paintFov" in boot and "drawHeadingLabels" in boot, "screen fov")

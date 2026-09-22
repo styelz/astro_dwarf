@@ -11,8 +11,10 @@ from astro_dwarf.services import (
     SKY_WEB_SITE_JS,
     SKY_WEB_TIME_NOW_JS,
     SKY_WEB_VIEW_APPLY_JS,
+    SKY_WEB_VIEW_POLL_JS,
     sky_web_view_script,
 )
+from astro_dwarf.sky_atlas import SKY_MAP_FOV_DEG, sky_atlas_boot_script, sky_atlas_view_script
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -55,6 +57,21 @@ def test_site_script_resets_clock_to_now() -> None:
     _assert("setTimeAfterSunSet" in SKY_WEB_SITE_JS, "must no-op the sunset startup clock")
 
 
+def test_shared_fov_is_degrees_on_both_maps() -> None:
+    _assert(SKY_MAP_FOV_DEG == 70.0, SKY_MAP_FOV_DEG)
+    _assert("applyFov(aladin, 70)" in sky_atlas_boot_script(), "Aladin home field")
+    atlas = sky_atlas_view_script({"ra_hours": 5.0, "dec_degrees": -69.0, "fov": 0})
+    _assert("fov = 70" in atlas, atlas)
+    _assert("skyFovDegrees(stel.core.fov)" in SKY_WEB_VIEW_POLL_JS, "poll degrees")
+    _assert("fov: Number(stel.core.fov)" not in SKY_WEB_VIEW_POLL_JS, "poll must not store radians")
+    _assert("skyFovRadians" in SKY_WEB_VIEW_APPLY_JS, "apply converts degrees")
+    _assert("stel.core.fov = fov" in SKY_WEB_VIEW_APPLY_JS, "engine field is radians")
+    home = sky_web_view_script({"ra_hours": 5.0, "dec_degrees": -69.0})
+    _assert("70.0" in home or '"fov": 70' in home, home)
+    wide = sky_web_view_script({"ra_hours": 5.0, "dec_degrees": -69.0, "fov": 12.5})
+    _assert("12.5" in wide, wide)
+
+
 def test_time_now_helper_blocks_stellarium_night_jump() -> None:
     _assert("startTimeIsSet" in SKY_WEB_TIME_NOW_JS, "helper must mark startup time as set")
     _assert("setTimeAfterSunSet" in SKY_WEB_TIME_NOW_JS, "helper must disable sunset jump")
@@ -68,5 +85,6 @@ if __name__ == "__main__":
     test_restore_script_drops_time_dependent_pose()
     test_restore_script_looks_at_icrs_at_current_time()
     test_site_script_resets_clock_to_now()
+    test_shared_fov_is_degrees_on_both_maps()
     test_time_now_helper_blocks_stellarium_night_jump()
     print("ok")
