@@ -657,30 +657,44 @@ Item {
                 // The Sky page is 0×0 while another tab is current, so this view lives
                 // on the window and keeps a real size while parked. Creating WebView2
                 // at 0×0 is what previously left a black atlas after opening SKY.
-                parent: root.contentItem
+                // Linux Qt WebEngine composites in the scene graph. Parking that item
+                // at -4096 culls the delegated frame and leaves the SKY slot empty.
                 readonly property bool nativeMapOverlay: Qt.platform.os === "windows"
                                                            || Qt.platform.os === "osx"
+                parent: mapLoader.nativeMapOverlay ? root.contentItem : mapSlot
                 readonly property bool nativeMapVisible: skyPage.mapLive
                     && !root.appModalOpen
                     && mapSlot.width > 1
                     && (!mapLoader.nativeMapOverlay || skyPage.mapInitialReady)
                 readonly property real layoutTick: root.width + root.height + root.currentPage
                     + mapSlot.width + mapSlot.height
-                width: mapSlot.width > 1 ? mapSlot.width : Math.max(Theme.px(320), root.width - Theme.px(24))
-                height: mapSlot.height > 1 ? mapSlot.height : Math.max(Theme.px(220), root.height - Theme.px(180))
+                width: mapLoader.nativeMapOverlay
+                       ? (mapSlot.width > 1 ? mapSlot.width : Math.max(Theme.px(320), root.width - Theme.px(24)))
+                       : mapSlot.width
+                height: mapLoader.nativeMapOverlay
+                        ? (mapSlot.height > 1 ? mapSlot.height : Math.max(Theme.px(220), root.height - Theme.px(180)))
+                        : mapSlot.height
                 x: {
                     void mapLoader.layoutTick
+                    if (!mapLoader.nativeMapOverlay)
+                        return 0
                     if (!mapLoader.nativeMapVisible)
                         return -4096
                     return mapSlot.mapToItem(root.contentItem, 0, 0).x
                 }
                 y: {
                     void mapLoader.layoutTick
+                    if (!mapLoader.nativeMapOverlay)
+                        return 0
                     if (!mapLoader.nativeMapVisible)
                         return 1
                     return mapSlot.mapToItem(root.contentItem, 0, 0).y
                 }
-                active: skyPage.webReady && root.skyToolsEnabled && (skyPage.mapLive || skyPage.mapKeepAlive)
+                active: skyPage.webReady && root.skyToolsEnabled && (
+                    mapLoader.nativeMapOverlay
+                    ? (skyPage.mapLive || skyPage.mapKeepAlive)
+                    : (skyPage.mapLive && mapSlot.width > 1)
+                )
                 source: Qt.resolvedUrl(backend.skyMapUsesStellariumWeb ? "SkyWebView.qml" : "SkyAtlasView.qml")
                 onLoaded: {
                     skyPage.mapKeepAlive = true

@@ -51,7 +51,7 @@ from astro_dwarf.stream_preview import (
     live_frame_data_url,
     mosaic_live_overlay_ready,
 )
-from astro_dwarf.telemetry_view import camera_params_to_telemetry
+from astro_dwarf.telemetry_view import auto_parameter_cameras, camera_params_to_telemetry
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -872,6 +872,32 @@ def test_stack_count_is_firmware_stack_count_not_a_local_cache() -> None:
     )
 
 
+def test_auto_parameters_follow_the_camera_switch() -> None:
+    manual = {
+        "cameras": {
+            0: {"exposure": {"mode": 1, "name": "15"}, "gain": {"mode": 1, "value": 60}},
+            1: {"exposure": {"mode": 1, "name": "1"}, "gain": {"mode": 1, "value": 40}},
+        }
+    }
+    _assert(auto_parameter_cameras(manual) == [], manual)
+    tele_auto = {
+        "cameras": {
+            0: {"exposure": {"mode": 0, "name": "15"}, "gain": {"mode": 0, "value": 60}},
+            "1": {"exposure": {"mode": 1, "name": "1"}, "gain": {"mode": 0, "value": 40}},
+        }
+    }
+    _assert(auto_parameter_cameras(tele_auto) == ["tele"], tele_auto)
+    raw = {
+        "data": {
+            "cameraParams": [
+                {"cameraId": 0, "isAuto": True, "specialParams": {"exp": {"currentMode": 1}, "gain": {"currentMode": 1}}},
+                {"cameraId": 1, "isAuto": False, "specialParams": {"exp": {"currentMode": 0}, "gain": {"currentMode": 0}}},
+            ]
+        }
+    }
+    _assert(auto_parameter_cameras(raw) == ["tele"], raw)
+
+
 if __name__ == "__main__":
     test_mosaic_live_item_font_pixel_size()
     test_preview_preserves_dso_after_tracking()
@@ -894,4 +920,5 @@ if __name__ == "__main__":
     test_restore_skips_unknown_auto_calibration()
     test_camera_params_map_ir_and_auto_calibration()
     test_stack_count_is_firmware_stack_count_not_a_local_cache()
+    test_auto_parameters_follow_the_camera_switch()
     print("ok")

@@ -27,7 +27,12 @@ from pathlib import Path
 from typing import Any
 
 from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_sdk_logging, link_telemetry
-from .telemetry_view import exposure_seconds_from_text, photo_capture_seconds, timelapse_shoot_seconds
+from .telemetry_view import (
+    auto_parameter_cameras,
+    exposure_seconds_from_text,
+    photo_capture_seconds,
+    timelapse_shoot_seconds,
+)
 from .domain import (
     ALBUM_IMAGE_SUFFIXES,
     ASTRO_LIST_MEDIA_TYPE,
@@ -5008,6 +5013,47 @@ def _set_general_stack_count(count: int, *, wide: bool) -> bool:
     return send_without_response(message, 16703, 15) is not False
 
 
+# Photo stills are technique 1. DSO stacking is technique 2.
+_AUTO_PARAM_TECH = {1: 1, 2: 2}
+_AUTO_PARAM_CAMERA = {"tele": 0, "wide": 1}
+
+
+def _set_auto_params(camera: str, tech: int, enabled: bool) -> bool:
+    """Turn the mobile app's Auto Parameters switch on or off for one camera.
+
+    CMD 16706 on the camera-params module. ``camera_type`` 0 is tele and 1 is
+    wide, matching the temperature notify. ``is_auto`` false restores manual
+    exposure, gain, and stack count.
+    """
+    from dwarf_python_api.proto import param_pb2
+
+    message = param_pb2.ReqSetAutoParam()
+    message.camera_type = _AUTO_PARAM_CAMERA[camera]
+    message.shooting_tech = int(tech)
+    message.is_auto = bool(enabled)
+    state = "on" if enabled else "off"
+    log(f"Auto parameters {state} ({camera})…", "sdk")
+    return send_without_response(message, 16706, 15) is not False
+
+
+def _clear_auto_params(result: Any, mode_id: int) -> list[str]:
+    """Disable Auto Parameters on each camera that currently has it on."""
+    tech = _AUTO_PARAM_TECH.get(int(mode_id))
+    if tech is None:
+        return []
+    mini = str(_device.get("model") or "") == "Dwarf Mini"
+    cleared: list[str] = []
+    for camera in auto_parameter_cameras(result):
+        if camera == "wide" and mini:
+            continue
+        if camera not in _AUTO_PARAM_CAMERA:
+            continue
+        if _set_auto_params(camera, tech, False):
+            cleared.append(camera)
+            log(f"Auto parameters turned off for {camera}", "notice")
+    return cleared
+
+
 def _set_stack_count(args: tuple[Any, ...] | list[Any]) -> bool:
     """Apply one DSO frame total to the capture and to both cameras.
 
@@ -5443,7 +5489,13 @@ def dispatch(message: dict[str, Any]) -> Any:
     if command == "read_camera":
         args = list(message.get("args") or [])
         mode_id = int(args[0]) if args else 1
-        return serializable_state(sdk_call("read_camera", mode_id))
+        result = serializable_state(sdk_call("read_camera", mode_id))
+        cleared = _clear_auto_params(result, mode_id)
+        if cleared:
+            result = serializable_state(sdk_call("read_camera", mode_id))
+            if isinstance(result, dict):
+                result["auto_params_cleared"] = cleared
+        return result
     if command == "set_camera":
         args = list(message.get("args") or [])
         choice = str(args[0] if args else "").strip().lower()

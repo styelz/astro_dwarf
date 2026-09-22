@@ -9718,6 +9718,19 @@ class AppBackend(QObject):
         def done(ok: bool, result: Any) -> None:
             if not ok:
                 return
+            cleared = result.get("auto_params_cleared") if isinstance(result, dict) else None
+            if cleared:
+                names = " and ".join(str(camera).title() for camera in cleared)
+                self.add_log("notice", f"Auto parameters turned off · {names}", device_id)
+                self._toast(
+                    "Auto parameters turned off",
+                    "notice",
+                    f"{names} can use manual exposure, gain, and stack count",
+                )
+                device = self._device_by_id(device_id)
+                count = str(getattr(getattr(device, "control_settings", None), "stack_count", "") or "").strip()
+                if count and mode_id == 2:
+                    self._send_camera_param(device_id, "count", count, notify=False)
             changes = camera_params_to_telemetry(result, model_id)
             if changes:
                 self._on_telemetry(device_id, changes)

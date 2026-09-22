@@ -72,6 +72,20 @@ def test_shared_fov_is_degrees_on_both_maps() -> None:
     _assert("12.5" in wide, wide)
 
 
+def test_linux_webengine_stays_in_sky_slot() -> None:
+    qml = (ROOT / "astro_dwarf" / "qml" / "pages" / "SkyPage.qml").read_text(encoding="utf-8")
+    _assert("nativeMapOverlay" in qml, "native HWND/WKWebView park must stay gated")
+    _assert(
+        "parent: mapLoader.nativeMapOverlay ? root.contentItem : mapSlot" in qml,
+        "Linux WebEngine must stay in the sky slot",
+    )
+    _assert("if (!mapLoader.nativeMapOverlay)" in qml, "Linux must skip the -4096 park")
+    _assert(
+        "mapLoader.nativeMapOverlay\n                    ? (skyPage.mapLive || skyPage.mapKeepAlive)" in qml,
+        "Linux must not keep a culled off-screen WebEngine alive",
+    )
+
+
 def test_time_now_helper_blocks_stellarium_night_jump() -> None:
     _assert("startTimeIsSet" in SKY_WEB_TIME_NOW_JS, "helper must mark startup time as set")
     _assert("setTimeAfterSunSet" in SKY_WEB_TIME_NOW_JS, "helper must disable sunset jump")
@@ -86,5 +100,6 @@ if __name__ == "__main__":
     test_restore_script_looks_at_icrs_at_current_time()
     test_site_script_resets_clock_to_now()
     test_shared_fov_is_degrees_on_both_maps()
+    test_linux_webengine_stays_in_sky_slot()
     test_time_now_helper_blocks_stellarium_night_jump()
     print("ok")

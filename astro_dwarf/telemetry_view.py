@@ -251,6 +251,95 @@ def apply_mode_exposure_fields(state: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+_AUTO_PARAM_BOOL_KEYS = ("isAuto", "is_auto", "autoParams", "autoParameter", "autoParameters")
+# Same convention as exposure currentMode: 0 is auto, 1 is manual.
+_AUTO_PARAM_MODE_KEYS = ("autoMode", "curAutoMode", "paramsMode", "curParamsMode", "parameterMode")
+
+
+def _explicit_auto_param(entry: dict[str, Any]) -> bool | None:
+    for key in _AUTO_PARAM_BOOL_KEYS:
+        if key in entry and entry[key] is not None:
+            return _as_bool(entry[key])
+    for key in _AUTO_PARAM_MODE_KEYS:
+        if key not in entry or entry[key] is None:
+            continue
+        mode = _as_int(entry[key])
+        if mode is not None:
+            return mode == 0
+    return None
+
+
+def _exposure_gain_auto(entry: dict[str, Any]) -> bool | None:
+    """True when both shutter and gain are in firmware auto mode."""
+    exposure = entry.get("exposure") if isinstance(entry.get("exposure"), dict) else {}
+    gain = entry.get("gain") if isinstance(entry.get("gain"), dict) else {}
+    special = entry.get("specialParams") if isinstance(entry.get("specialParams"), dict) else {}
+    exp = special.get("exp") if isinstance(special.get("exp"), dict) else {}
+    gn = special.get("gain") if isinstance(special.get("gain"), dict) else {}
+    exp_mode = _as_int(exposure.get("mode", exposure.get("currentMode")))
+    if exp_mode is None:
+        exp_mode = _as_int(exp.get("currentMode", exp.get("mode")))
+    gain_mode = _as_int(gain.get("mode", gain.get("currentMode")))
+    if gain_mode is None:
+        gain_mode = _as_int(gn.get("currentMode", gn.get("mode")))
+    if exp_mode is None or gain_mode is None:
+        return None
+    return exp_mode == 0 and gain_mode == 0
+
+
+def _camera_label(entry: dict[str, Any], fallback: Any = None) -> str | None:
+    raw = entry.get("cameraId", entry.get("camera_id", fallback))
+    if raw is None:
+        return None
+    if str(raw) == "1":
+        return "wide"
+    if str(raw) == "0":
+        return "tele"
+    return None
+
+
+def auto_parameter_cameras(result: Any) -> list[str]:
+    """Tele and wide cameras with the mobile app's Auto Parameters switch on.
+
+    That switch is ``ReqSetAutoParam``. While it is on, a manual stack count
+    does not reach the camera. The HTTP catalog reports it as ``isAuto``, or
+    as exposure and gain ``currentMode`` 0.
+    """
+    if not isinstance(result, dict):
+        return []
+    data = result.get("data") if isinstance(result.get("data"), dict) else result
+    if not isinstance(data, dict):
+        return []
+    found: list[str] = []
+
+    def consider(entry: Any, fallback: Any = None) -> None:
+        if not isinstance(entry, dict):
+            return
+        name = _camera_label(entry, fallback)
+        if name is None or name in found:
+            return
+        flag = _explicit_auto_param(entry)
+        if flag is None:
+            flag = _exposure_gain_auto(entry)
+        if flag:
+            found.append(name)
+
+    raw_cameras = data.get("cameraParams")
+    if isinstance(raw_cameras, list):
+        for entry in raw_cameras:
+            consider(entry)
+    cleaned = data.get("cameras")
+    if isinstance(cleaned, dict):
+        for key, entry in cleaned.items():
+            consider(entry, key)
+    elif isinstance(cleaned, list):
+        for index, entry in enumerate(cleaned):
+            consider(entry, index)
+    for entry in data.get("shootingTechSettings") or []:
+        consider(entry)
+    return found
+
+
 def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, Any]:
     """Map HTTP camera-param JSON onto the telemetry keys QML already reads."""
     if not isinstance(result, dict):
