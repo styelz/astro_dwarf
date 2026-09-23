@@ -5,7 +5,10 @@ import ".."
 HudMenu {
     id: skyMenu
     objectName: "skyContextMenu"
-    popupType: Popup.Window
+    // Windows/macOS maps are native overlays, so the menu needs its own
+    // window. On Linux the WebEngine map is in the scene graph; a separate
+    // popup window can fail to show there (Wayland, compositor focus).
+    popupType: Qt.platform.os === "linux" ? Popup.Item : Popup.Window
     implicitWidth: Theme.px(360)
     property bool overlayEnabled: false
     property real overlayOpacity: 0.65

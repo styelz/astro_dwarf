@@ -343,7 +343,7 @@ Dialog {
                 tooltip: "Paste #RRGGBB. Hue, saturation and brightness follow."
                 validator: RegularExpressionValidator { regularExpression: /^#?[0-9A-Fa-f]{0,6}$/ }
                 releaseFocusOnEnter: false
-                onEditingFinished: {
+                function applyTyped() {
                     const col = Theme.parseHex(text)
                     if (!col) {
                         text = pick.currentHex
@@ -351,8 +351,9 @@ Dialog {
                     }
                     pick.syncFrom(col)
                 }
-                Keys.onReturnPressed: pick.commit()
-                Keys.onEnterPressed: pick.commit()
+                onEditingFinished: hexField.applyTyped()
+                Keys.onReturnPressed: { hexField.applyTyped(); pick.commit() }
+                Keys.onEnterPressed: { hexField.applyTyped(); pick.commit() }
                 Binding {
                     target: hexField
                     property: "text"

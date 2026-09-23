@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 
 from .version import __version__
-from .sky_atlas import SKY_MAP_FOV_DEG
+from .sky_atlas import SKY_MAP_FOV_DEG, clean_sky_target_name
 from .domain import (
     Camera,
     CameraSettings,
@@ -2788,7 +2788,7 @@ def parse_sky_web_target(raw: Any) -> Target:
         raise ValueError("Select a target in the sky map") from exc
     if ra_hours != ra_hours or dec_degrees != dec_degrees:
         raise ValueError("Select a target in the sky map")
-    name = str(data.get("name") or "").strip() or "Stellarium target"
+    name = clean_sky_target_name(data.get("name"), "Stellarium target")
     return Target(
         name=name,
         kind=TargetKind.EQUATORIAL,

@@ -1231,6 +1231,73 @@ Item {
                             return
                         mainWide = !mainWide
                     }
+                    property bool feedFullscreen: false
+                    property string feedFullscreenCamera: "tele"
+                    function streamPlaying(camera) {
+                        return camera === "wide" ? !!backend.previewWidePlaying : !!backend.previewTelePlaying
+                    }
+                    function fullscreenCamera() {
+                        if (backend.previewTelePlaying)
+                            return "tele"
+                        if (backend.previewWidePlaying)
+                            return "wide"
+                        return ""
+                    }
+                    readonly property bool feedFullscreenAvailable: fullscreenCamera() !== ""
+                    readonly property string feedFullscreenMenuText: feedFullscreen ? "Exit full screen" : "Full screen"
+                    function feedKeysFree() {
+                        if (root.appModalOpen || root.currentPage !== root.controlPageIndex)
+                            return false
+                        let item = root.activeFocusItem
+                        while (item) {
+                            if (item instanceof TextInput || item instanceof TextEdit || item instanceof Popup)
+                                return false
+                            item = item.parent
+                        }
+                        return true
+                    }
+                    function enterFeedFullscreen(camera) {
+                        const choice = camera === "wide" || camera === "tele" ? camera : previewHost.fullscreenCamera()
+                        if (!previewHost.streamPlaying(choice))
+                            return
+                        feedFullscreenCamera = choice
+                        if (feedFullscreen)
+                            return
+                        feedFullscreen = true
+                        previewHost.revealControls()
+                    }
+                    function exitFeedFullscreen() {
+                        feedFullscreen = false
+                    }
+                    function toggleFeedFullscreen(camera) {
+                        if (feedFullscreen)
+                            previewHost.exitFeedFullscreen()
+                        else
+                            previewHost.enterFeedFullscreen(camera)
+                    }
+                    function leaveFullscreenIfStreamGone() {
+                        if (feedFullscreen && !previewHost.streamPlaying(feedFullscreenCamera))
+                            previewHost.exitFeedFullscreen()
+                    }
+                    Shortcut {
+                        sequences: ["F"]
+                        context: Qt.WindowShortcut
+                        enabled: previewHost.feedFullscreen || (previewHost.feedFullscreenAvailable && previewHost.feedKeysFree())
+                        onActivated: previewHost.toggleFeedFullscreen()
+                    }
+                    Shortcut {
+                        sequences: ["Escape"]
+                        context: Qt.WindowShortcut
+                        enabled: previewHost.feedFullscreen && !previewMenu.opened && !root.appModalOpen
+                        onActivated: previewHost.exitFeedFullscreen()
+                    }
+                    Connections {
+                        target: root
+                        function onCurrentPageChanged() {
+                            if (root.currentPage !== root.controlPageIndex)
+                                previewHost.exitFeedFullscreen()
+                        }
+                    }
                     readonly property bool previewFailed: root.previewFailed
                     readonly property bool previewStartEnabled: backend.selectedDevice.connected && !root.scopeLinking && !root.scopeStopping && (!backend.previewActive || backend.previewPlaying || previewFailed)
                     readonly property bool startBriefVisible: root.previewStarting && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicActive
@@ -1352,20 +1419,35 @@ Item {
                     }
 
                     // Chrome model: status (LIVE/REC badges, readout strip) is always on
-                    // while streaming; controls (stop button) appear on pointer motion
-                    // or a touch tap and fade after a short idle, unless the pointer is
-                    // resting on a control. First stream ever shows a hint.
+                    // while streaming; controls appear on pointer motion or a touch tap
+                    // and hide after 3s without movement. First stream ever shows a hint.
                     // Idle art (telescope image + scanline grid) stays off while live
                     // view or stacking is up, including on hover.
                     property bool controlsVisible: false
                     property bool controlHovered: false
+                    property real chromePointerX: -1
+                    property real chromePointerY: -1
+                    readonly property real chromeIdleSlop: Theme.px(4)
                     readonly property bool chromeShown: !backend.previewPlaying || controlsVisible || backend.previewResult
+
+                    function rememberChromePointer(x, y) {
+                        chromePointerX = x
+                        chromePointerY = y
+                    }
+
+                    function noteChromePointer(x, y) {
+                        const dx = x - chromePointerX
+                        const dy = y - chromePointerY
+                        if (chromePointerX >= 0 && (dx * dx + dy * dy) < chromeIdleSlop * chromeIdleSlop)
+                            return
+                        rememberChromePointer(x, y)
+                        revealControls()
+                    }
 
                     function revealControls() {
                         controlsVisible = true
                         firstRunHint.dismiss()
-                        if (!controlHovered)
-                            chromeIdleTimer.restart()
+                        chromeIdleTimer.restart()
                     }
 
                     function hideControls() {
@@ -1384,39 +1466,34 @@ Item {
 
                     function holdControls(hold) {
                         controlHovered = hold
-                        if (hold) {
+                        if (hold)
                             controlsVisible = true
-                            chromeIdleTimer.stop()
-                        } else {
+                        if (controlsVisible)
                             chromeIdleTimer.restart()
-                        }
                     }
 
                     Timer {
                         id: chromeIdleTimer
-                        interval: 2500
+                        interval: 3000
                         repeat: false
-                        onTriggered: {
-                            if (!previewHost.controlHovered)
-                                previewHost.controlsVisible = false
-                        }
+                        onTriggered: previewHost.controlsVisible = false
                     }
 
                     HoverHandler {
                         id: previewHover
                         enabled: backend.previewPlaying
                         acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                        onPointChanged: {
-                            if (hovered)
-                                previewHost.revealControls()
-                        }
+                        onPointChanged: previewHost.noteChromePointer(previewHover.point.position.x, previewHover.point.position.y)
                         onHoveredChanged: {
                             if (hovered) {
+                                previewHost.rememberChromePointer(previewHover.point.position.x, previewHover.point.position.y)
                                 previewHost.revealControls()
                                 return
                             }
                             // Leaving the live view must drop a stale control hold
                             // (PiP MouseArea / buttons can latch containsMouse).
+                            previewHost.chromePointerX = -1
+                            previewHost.chromePointerY = -1
                             previewHost.controlHovered = false
                             previewHost.hideControls()
                         }
@@ -1451,7 +1528,10 @@ Item {
                                 firstRunHint.show()
                             else
                                 firstRunHint.hide()
+                            previewHost.leaveFullscreenIfStreamGone()
                         }
+                        function onPreviewTelePlayingChanged() { previewHost.leaveFullscreenIfStreamGone() }
+                        function onPreviewWidePlayingChanged() { previewHost.leaveFullscreenIfStreamGone() }
                     }
 
                     LiveViewPane {
@@ -1459,10 +1539,12 @@ Item {
                         objectName: "livePane"
                         anchors.fill: parent
                         visible: !previewHost.mosaicSheet
-                        playing: previewHost.paneView || (previewHost.mainPlaying && !previewHost.mosaicSheet)
+                        playing: !previewHost.feedFullscreen && (previewHost.paneView || (previewHost.mainPlaying && !previewHost.mosaicSheet))
                         wideView: previewHost.paneView ? false : previewHost.displayWide
                         camera: previewHost.paneView ? "tele" : previewHost.liveCamera(previewHost.displayWide)
                         centerEnabled: playing && root.motionEnabled && !backend.previewResult && !backend.centerTapBusy
+                        feedDoubleClick: !wideView && playing && backend.previewTelePlaying
+                        onFeedDoubleClicked: previewHost.toggleFeedFullscreen("tele")
                         showFootprint: wideView
                         chromeShown: previewHost.chromeShown
                         fovH: previewHost.teleFovH
@@ -1477,7 +1559,7 @@ Item {
                         id: mosaicFrame
                         anchors.fill: parent
                         visible: previewHost.mosaicSheet
-                        playing: previewHost.mosaicSheet
+                        playing: !previewHost.feedFullscreen && previewHost.mosaicSheet
                         camera: "tele"
                         accent: Theme.fov
                     }
@@ -1530,7 +1612,7 @@ Item {
                             id: pipPane
                             anchors.fill: parent
                             anchors.margins: Theme.px(1)
-                            playing: previewHost.pipPlaying
+                            playing: !previewHost.feedFullscreen && previewHost.pipPlaying
                             wideView: !previewHost.displayWide
                             camera: previewHost.liveCamera(!previewHost.displayWide)
                             centerEnabled: playing && root.motionEnabled && !backend.centerTapBusy
@@ -1559,7 +1641,12 @@ Item {
                             drag.minimumY: 8
                             drag.maximumY: Math.max(Theme.s2, previewHost.height - pipBox.height - Theme.s2)
                             onPressed: pipBox.beginFloat()
-                            onDoubleClicked: (mouse) => pipPane.centerOn(mouse.x, mouse.y)
+                            onDoubleClicked: (mouse) => {
+                                if (!pipPane.wideView && backend.previewTelePlaying)
+                                    previewHost.toggleFeedFullscreen("tele")
+                                else
+                                    pipPane.centerOn(mouse.x, mouse.y)
+                            }
                         }
                         Rectangle {
                             anchors.left: parent.left
@@ -2261,7 +2348,7 @@ Item {
                             spacing: Theme.px(10)
                             Text { text: "\uE962"; font.family: Theme.fontIcon; font.pixelSize: Theme.fontMd; font.preferShaping: true; color: Theme.accent; Layout.alignment: Qt.AlignVCenter }
                             Text {
-                                text: "MOVE THE POINTER OVER THE STREAM FOR CONTROLS  ·  DOUBLE-CLICK THE WIDE VIEW TO CENTRE"
+                                text: "POINTER SHOWS CONTROLS  ·  DOUBLE-CLICK WIDE TO CENTRE  ·  F OR DOUBLE-CLICK TELE FOR FULL SCREEN"
                                 color: Theme.textPrimary
                                 font.pixelSize: Theme.fontSm
                                 font.letterSpacing: Theme.tracking1
@@ -2312,22 +2399,23 @@ Item {
                             onTriggered: previewHost.swapViews()
                         }
                         HudMenuItem {
+                            objectName: "liveFeedFullscreenMenuItem"
+                            text: previewHost.feedFullscreenMenuText
+                            glyph: "\uE9A6"
+                            trailingText: "F"
+                            enabled: previewHost.feedFullscreen || previewHost.feedFullscreenAvailable
+                            accessibleDescription: previewHost.feedFullscreen
+                                ? "Leave full screen"
+                                : previewHost.feedFullscreenAvailable
+                                    ? "Fill the screen with the tele stream. F and double-click do the same."
+                                    : "Start the live stream first"
+                            onTriggered: previewHost.toggleFeedFullscreen()
+                        }
+                        HudMenuItem {
                             text: "Copy stream URL"
                             glyph: "\uE8C8"
                             enabled: backend.selectedDevice.connected && backend.videoUrl !== ""
                             onTriggered: backend.copyText(backend.videoUrl)
-                        }
-                        HudMenuItem {
-                            objectName: "showPointingOnSkyMenuItem"
-                            text: "Show pointing on sky"
-                            glyph: "\uE1D2"
-                            enabled: root.skyToolsEnabled && !!(backend.selectedDevice && backend.selectedDevice.connected)
-                            accessibleDescription: !root.skyToolsEnabled
-                                                   ? "Turn on sky tools in interface settings first"
-                                                   : !(backend.selectedDevice && backend.selectedDevice.connected)
-                                                     ? "Connect a telescope first"
-                                                     : "Open Sky and target where the telescope is pointing"
-                            onTriggered: skyPage.showDevicePointingOnSky()
                         }
                         HudMenuItem {
                             readonly property var tracked: backend.trackedSkyTarget
@@ -2347,6 +2435,130 @@ Item {
                         }
                         HudMenuSeparator {}
                         LayoutResetMenuItem {}
+                    }
+
+                    Item {
+                        id: feedFullscreenLayer
+                        objectName: "liveFeedFullscreen"
+                        parent: root.contentItem
+                        anchors.fill: parent
+                        z: 40
+                        visible: previewHost.feedFullscreen
+                        enabled: visible
+                        Accessible.name: "Live feed full screen"
+                        Accessible.role: Accessible.Pane
+                        Accessible.ignored: !visible
+
+                        Rectangle {
+                            anchors.fill: parent
+                            color: Theme.windowBase
+                        }
+                        LiveViewPane {
+                            anchors.fill: parent
+                            playing: previewHost.feedFullscreen
+                            wideView: previewHost.feedFullscreenCamera === "wide"
+                            camera: wideView ? "wide" : "tele"
+                            inputEnabled: false
+                            showFootprint: wideView
+                            chromeShown: previewHost.chromeShown
+                            fovH: previewHost.teleFovH
+                            fovV: previewHost.teleFovV
+                            footprintNx: previewHost.teleMatchNx
+                            footprintNy: previewHost.teleMatchNy
+                            footprintNw: previewHost.teleMatchNw
+                            footprintNh: previewHost.teleMatchNh
+                        }
+                        HoverHandler {
+                            id: feedFullscreenHover
+                            enabled: feedFullscreenLayer.visible
+                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                            onPointChanged: previewHost.noteChromePointer(feedFullscreenHover.point.position.x, feedFullscreenHover.point.position.y)
+                            onHoveredChanged: {
+                                if (hovered) {
+                                    previewHost.rememberChromePointer(feedFullscreenHover.point.position.x, feedFullscreenHover.point.position.y)
+                                    previewHost.revealControls()
+                                    return
+                                }
+                                previewHost.chromePointerX = -1
+                                previewHost.chromePointerY = -1
+                                previewHost.controlHovered = false
+                                previewHost.hideControls()
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            onPressed: (mouse) => {
+                                if (mouse.button !== Qt.RightButton)
+                                    return
+                                previewMenu.popup()
+                                mouse.accepted = true
+                            }
+                            onDoubleClicked: previewHost.exitFeedFullscreen()
+                        }
+                        Row {
+                            z: 2
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.margins: Theme.px(14)
+                            spacing: Theme.s2
+                            opacity: previewHost.chromeShown ? 1 : 0.62
+                            Behavior on opacity { NumberAnimation { duration: Theme.slow } }
+                            Rectangle {
+                                width: feedFullscreenCamLabel.implicitWidth + Theme.s4
+                                height: Theme.px(28)
+                                color: Theme.panelFill
+                                border.color: Theme.outline
+                                Text {
+                                    id: feedFullscreenCamLabel
+                                    anchors.centerIn: parent
+                                    text: previewHost.feedFullscreenCamera === "wide" ? "WIDE" : "TELE"
+                                    color: Theme.accent
+                                    font.pixelSize: Theme.fontPx(11)
+                                    font.bold: true
+                                    font.letterSpacing: 1
+                                }
+                            }
+                            Rectangle {
+                                width: feedFullscreenLiveLabel.implicitWidth + Theme.s4
+                                height: Theme.px(28)
+                                color: Theme.panelFill
+                                border.color: Theme.success
+                                Text {
+                                    id: feedFullscreenLiveLabel
+                                    anchors.centerIn: parent
+                                    text: "LIVE"
+                                    color: Theme.textPrimary
+                                    font.pixelSize: Theme.fontPx(11)
+                                    font.bold: true
+                                    font.letterSpacing: 1
+                                }
+                            }
+                        }
+                        HudButton {
+                            z: 2
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: Theme.px(14)
+                            text: "EXIT FULL SCREEN"
+                            opacity: previewHost.chromeShown ? 1 : 0
+                            visible: opacity > 0
+                            tooltip: "Leave full screen\nF, Escape, or double-click the stream"
+                            onHoveredChanged: previewHost.holdControls(hovered)
+                            onClicked: previewHost.exitFeedFullscreen()
+                        }
+                        Text {
+                            z: 2
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: Theme.px(18)
+                            text: "F  ·  ESC  ·  DOUBLE-CLICK TO EXIT"
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.fontSm
+                            font.letterSpacing: Theme.tracking1
+                            opacity: previewHost.chromeShown ? 0.9 : 0
+                            Behavior on opacity { NumberAnimation { duration: Theme.normal } }
+                        }
                     }
                 }
             }

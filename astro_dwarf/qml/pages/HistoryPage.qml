@@ -12,6 +12,7 @@ Item {
     id: historyPage
     objectName: "historyRoot"
     property string query: ""
+    property string pendingQuery: ""
     property int outcomeFilter: 0
     property var expandedIds: ({})
     property var expandedGroups: ({})
@@ -208,6 +209,13 @@ Item {
         }
     }
 
+    Timer {
+        id: searchDebounce
+        interval: 300
+        repeat: false
+        onTriggered: historyPage.query = historyPage.pendingQuery
+    }
+
     Flickable {
         id: historyFlick
         anchors.fill: parent
@@ -321,7 +329,10 @@ Item {
                 Layout.fillWidth: true
                 placeholderText: "Search target, device, or outcome"
                 accessibleName: "Search history"
-                onTextChanged: historyPage.query = text
+                onTextChanged: {
+                    historyPage.pendingQuery = text
+                    searchDebounce.restart()
+                }
             }
             HudCombo {
                 Layout.preferredWidth: Theme.px(160)

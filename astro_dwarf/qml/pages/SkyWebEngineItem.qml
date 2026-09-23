@@ -39,6 +39,11 @@ Item {
         onNewWindowRequested: function(request) {
             request.openIn(popupSink)
         }
+        // The page's contextmenu listener hands the click to the HUD menu.
+        // Accepting here stops Chromium's own menu from taking the gesture.
+        onContextMenuRequested: function(request) {
+            request.accepted = true
+        }
         onJavaScriptDialogRequested: function(request) {
             request.accepted = true
             request.dialogAccept()

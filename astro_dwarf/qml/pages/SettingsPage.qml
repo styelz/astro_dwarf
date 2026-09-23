@@ -722,10 +722,30 @@ Item {
                             }
                             FieldHint { text: "Search a city to fill timezone and coordinates together. Sets local session times and the night cutoff for this telescope." }
                             FieldLabel { text: "LATITUDE" }
-                            HudField { id: latField; Layout.preferredWidth: settingsPage.controlWidth; accessibleName: "Site latitude"; placeholderText: "-37.81" }
+                            HudField {
+                                id: latField
+                                property string committed: ""
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                accessibleName: "Site latitude"
+                                placeholderText: "-37.81"
+                                // A numbers-only input hint becomes a phone pad on macOS and
+                                // drops the hardware keyboard, including the minus sign.
+                                validator: RegularExpressionValidator { regularExpression: /^[+-]?\d{0,2}(\.\d*)?$/ }
+                                onActiveFocusChanged: if (activeFocus) committed = text
+                                onEditingFinished: text = Util.siteCoordinateText(text, 90, committed)
+                            }
                             FieldHint { text: "Decimal degrees; south is negative." }
                             FieldLabel { text: "LONGITUDE" }
-                            HudField { id: lonField; Layout.preferredWidth: settingsPage.controlWidth; accessibleName: "Site longitude"; placeholderText: "144.96" }
+                            HudField {
+                                id: lonField
+                                property string committed: ""
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                accessibleName: "Site longitude"
+                                placeholderText: "144.96"
+                                validator: RegularExpressionValidator { regularExpression: /^[+-]?\d{0,3}(\.\d*)?$/ }
+                                onActiveFocusChanged: if (activeFocus) committed = text
+                                onEditingFinished: text = Util.siteCoordinateText(text, 180, committed)
+                            }
                             FieldHint { text: "Decimal degrees; west is negative." }
                         }
                     }

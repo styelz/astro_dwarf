@@ -311,6 +311,17 @@ QtObject {
             return ""
         return "RA " + ra.toFixed(3) + "h  DEC " + (dec >= 0 ? "+" : "") + dec.toFixed(3) + "°"
     }
+    // Site latitude/longitude entry: blank stays blank, a number within
+    // +/-limit is tidied to 5 decimals, anything else falls back.
+    function siteCoordinateText(text, limit, fallback) {
+        const raw = String(text === undefined || text === null ? "" : text).trim()
+        if (raw === "")
+            return ""
+        const n = Number(raw)
+        if (!isFinite(n) || Math.abs(n) > limit)
+            return String(fallback === undefined || fallback === null ? "" : fallback)
+        return n.toFixed(5)
+    }
     function targetCoordinates(item) {
         const target = item && item.target ? item.target : null
         if (!target || target.ra_hours === undefined || target.ra_hours === null

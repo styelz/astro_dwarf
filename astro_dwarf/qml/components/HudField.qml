@@ -21,6 +21,9 @@ TextField {
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
     font.pixelSize: Theme.fontBase
+    // The window font skips shaping on Linux. Text entry has to shape or
+    // macOS shows a caret and never commits the character.
+    font.preferShaping: true
     Accessible.name: accessibleName || placeholderText || text
     Accessible.description: accessibleDescription || tooltip
     HudToolTip {
@@ -33,7 +36,12 @@ TextField {
             return
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             event.accepted = true
+            const acceptable = field.acceptableInput
+            // Dropping focus emits editingFinished so the value applies first,
+            // then accepted() lets forms submit, matching TextField's own Enter.
             field.focus = false
+            if (acceptable)
+                field.accepted()
         }
     }
     leftPadding: Theme.px(10)

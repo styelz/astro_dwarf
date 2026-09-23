@@ -14,6 +14,7 @@ SpinBox {
     Layout.minimumWidth: 0
     Layout.preferredWidth: implicitWidth
     font.pixelSize: Theme.fontBase
+    font.preferShaping: true
     hoverEnabled: true
     wheelEnabled: true
     focusPolicy: Qt.StrongFocus

@@ -77,6 +77,29 @@ class ResolveHudFontsTests(unittest.TestCase):
         self.assertNotIn("Segoe MDL2 Assets", names)
         self.assertNotIn("Segoe Fluent Icons", names)
 
+    def test_no_shaping_is_linux_only(self):
+        application = MagicMock()
+        fonts = HudFonts(ui="Helvetica", mono="Menlo", icon="Helvetica", has_icon_font=False)
+
+        def strategy_for(platform: str) -> int:
+            with (
+                patch("astro_dwarf.qt_fonts.sys.platform", platform),
+                patch("astro_dwarf.qt_fonts.load_bundled_fonts", return_value=[]),
+                patch("PySide6.QtGui.QFont") as qfont_cls,
+            ):
+                font = MagicMock()
+                qfont_cls.return_value = font
+                qfont_cls.StyleHint = MagicMock()
+                qfont_cls.HintingPreference = MagicMock()
+                qfont_cls.StyleStrategy = MagicMock()
+                qfont_cls.StyleStrategy.PreferAntialias = 1
+                qfont_cls.StyleStrategy.PreferNoShaping = 2
+                apply_hud_fonts(application, fonts=fonts)
+                return int(font.setStyleStrategy.call_args.args[0])
+
+        self.assertEqual(strategy_for("linux"), 3)
+        self.assertEqual(strategy_for("darwin"), 1)
+
 
 class BundledIconFontTests(unittest.TestCase):
     @classmethod

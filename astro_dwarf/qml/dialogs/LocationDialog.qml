@@ -323,8 +323,33 @@ Dialog {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: Theme.s2
-                    HudField { id: locationLat; Layout.fillWidth: true; readOnly: true; accessibleName: "Site latitude" }
-                    HudField { id: locationLon; Layout.fillWidth: true; readOnly: true; accessibleName: "Site longitude" }
+                    HudField {
+                        id: locationLat
+                        property string committed: ""
+                        Layout.fillWidth: true
+                        placeholderText: "-37.81"
+                        accessibleName: "Site latitude"
+                        tooltip: "Decimal degrees; south is negative."
+                        validator: RegularExpressionValidator { regularExpression: /^[+-]?\d{0,2}(\.\d*)?$/ }
+                        onActiveFocusChanged: if (activeFocus) committed = text
+                        onEditingFinished: text = Util.siteCoordinateText(text, 90, committed)
+                    }
+                    HudField {
+                        id: locationLon
+                        property string committed: ""
+                        Layout.fillWidth: true
+                        placeholderText: "144.96"
+                        accessibleName: "Site longitude"
+                        tooltip: "Decimal degrees; west is negative."
+                        validator: RegularExpressionValidator { regularExpression: /^[+-]?\d{0,3}(\.\d*)?$/ }
+                        onActiveFocusChanged: if (activeFocus) committed = text
+                        onEditingFinished: text = Util.siteCoordinateText(text, 180, committed)
+                    }
+                }
+                FieldHint {
+                    Layout.columnSpan: 2
+                    Layout.minimumWidth: 0
+                    text: "Picking a city fills these; type decimal degrees to use your exact site."
                 }
             }
 

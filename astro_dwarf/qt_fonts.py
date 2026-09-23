@@ -171,8 +171,9 @@ def apply_hud_fonts(application, fonts: HudFonts | None = None) -> HudFonts:
     ui_font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
     strategy = QFont.StyleStrategy.PreferAntialias
     no_shape = getattr(QFont.StyleStrategy, "PreferNoShaping", None)
-    if no_shape is not None:
+    if no_shape is not None and sys.platform.startswith("linux"):
         # letterSpacing + HarfBuzz repeats the last cluster on some Linux fonts.
+        # The same flag makes macOS Core Text drop typed characters.
         strategy = strategy | no_shape
     ui_font.setStyleStrategy(strategy)
     application.setFont(ui_font)

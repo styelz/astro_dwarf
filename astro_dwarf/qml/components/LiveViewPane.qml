@@ -13,6 +13,8 @@ Item {
     property bool showFootprint: false
     property bool swallowClicks: false
     property bool inputEnabled: true
+    // Tele stream only. Wide double-click still centres.
+    property bool feedDoubleClick: false
     property bool chromeShown: true
     property real fovH: 2.95 / 45.06
     property real fovV: 1.66 / 25.93
@@ -31,6 +33,7 @@ Item {
     readonly property real frameX: frame.paintedX
     readonly property real frameY: frame.paintedY
     signal centerRequested(real nx, real ny, string diag)
+    signal feedDoubleClicked()
 
     LiveFrameItem {
         id: frame
@@ -64,8 +67,14 @@ Item {
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton
         hoverEnabled: false
-        enabled: pane.inputEnabled && (pane.swallowClicks || (pane.centerEnabled && pane.wideView))
-        onDoubleClicked: (mouse) => pane.centerOn(mouse.x, mouse.y)
+        enabled: pane.inputEnabled && (pane.swallowClicks || pane.feedDoubleClick || (pane.centerEnabled && pane.wideView))
+        onDoubleClicked: (mouse) => {
+            if (!pane.wideView && pane.feedDoubleClick) {
+                pane.feedDoubleClicked()
+                return
+            }
+            pane.centerOn(mouse.x, mouse.y)
+        }
     }
 
     Item {

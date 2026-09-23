@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -68,6 +69,20 @@ def stop_atlas_server() -> None:
     server.server_close()
 
 
+_SKY_NAME_UI_TEXT = re.compile(r"simbad pointer|want to know|use the simbad", re.IGNORECASE)
+
+
+def clean_sky_target_name(raw: Any, fallback: str = "") -> str:
+    """Return a single-line object name, dropping map UI/tooltip text."""
+    text = str(raw or "").strip()
+    line = next((part.strip() for part in text.splitlines() if part.strip()), "")
+    line = re.sub(r"<[^>]*>", " ", line)
+    line = re.sub(r"\s+", " ", line).strip()
+    if not line or len(line) > 60 or _SKY_NAME_UI_TEXT.search(line):
+        return fallback
+    return line
+
+
 def parse_atlas_harvest(raw: Any) -> dict[str, Any] | None:
     data = raw
     if isinstance(raw, str):
@@ -87,7 +102,7 @@ def parse_atlas_harvest(raw: Any) -> dict[str, Any] | None:
         return None
     if ra != ra or dec != dec:
         return None
-    name = str(data.get("name") or "").strip()
+    name = clean_sky_target_name(data.get("name"))
     out: dict[str, Any] = {
         "name": name,
         "ra_hours": round(((ra % 24.0) + 24.0) % 24.0, 6),
@@ -1711,16 +1726,21 @@ ATLAS_FOV_JS = r"""
     }
   }
   function simbadTooltipName() {
-    var nodes = document.querySelectorAll(
-      ".aladin-tooltip, #aladin-tooltip-mouse, .aladin-tooltip-container .aladin-tooltip"
-    );
-    for (var i = 0; i < nodes.length; i++) {
-      var text = String(nodes[i].textContent || "").trim();
-      if (!text) continue;
-      var line = text.split("\n")[0].trim();
-      if (line) return line;
+    // Only the Simbad pointer's mouse tooltip names an object. Toolbar
+    // ".aladin-tooltip" spans hold control help text ("Use the Simbad
+    // pointer tool!") and stay in the DOM while hidden.
+    var node = document.getElementById("aladin-tooltip-mouse");
+    if (!node) return "";
+    try {
+      var style = window.getComputedStyle(node);
+      if (!style || style.display === "none" || style.visibility === "hidden") return "";
+    } catch (err) {
+      return "";
     }
-    return "";
+    var text = String(node.innerText || node.textContent || "").trim();
+    var line = text.split("\n")[0].replace(/\s+/g, " ").trim();
+    if (!line || line.length > 60 || /simbad pointer|want to know/i.test(line)) return "";
+    return line;
   }
   function pickedObject(box) {
     if (box.lastObject && (Date.now() - Number(box.lastObjectAt || 0)) < 500)

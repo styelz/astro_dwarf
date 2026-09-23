@@ -29,7 +29,10 @@ ApplicationWindow {
     color: Theme.windowBase
     font.family: Theme.fontUi
     font.hintingPreference: Font.PreferVerticalHinting
-    font.preferShaping: false
+    // Linux letter-spacing repeats the last glyph when shaping is on.
+    // macOS Core Text drops typed characters when it is off: the caret blinks
+    // and the field never changes. Keep shaping everywhere except Linux.
+    font.preferShaping: Qt.platform.os !== "linux"
     flags: Qt.Window | Qt.WindowTitleHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint | Qt.WindowSystemMenuHint
     FontLoader {
         id: hudIconFont
@@ -88,6 +91,7 @@ ApplicationWindow {
         || scheduleTemplateDialog.visible
         || duplicateSessionDialog.visible
         || sessionDialog.visible
+    property bool macKeyboardReady: false
     property real joySpeed: 1
     readonly property real joyMin: 0.004
     readonly property real mappedJoySpeed: {
@@ -326,6 +330,23 @@ ApplicationWindow {
         return !!(item && (item instanceof TextInput || item instanceof TextEdit))
     }
 
+    // WKWebView keeps AppKit's first responder. While it does, a QML field
+    // shows a caret and Stellarium's target search shows a caret, and neither
+    // inserts text. The sky map owns keys only while it is the current page
+    // and no editor or dialog is waiting for them.
+    function syncMacKeyboard() {
+        if (!root.macKeyboardReady)
+            return
+        const mapLive = root.currentPage === root.skyPageIndex && root.skyToolsEnabled
+        const editor = root.isTextEditor(root.activeFocusItem)
+        const dialog = skyRaDecDialog.visible
+        backend.setMacWebViewTyping(mapLive && !root.appModalOpen && !dialog && !editor && backend.webViewAvailable)
+    }
+    onActiveFocusItemChanged: root.syncMacKeyboard()
+    onAppModalOpenChanged: root.syncMacKeyboard()
+    onCurrentPageChanged: root.syncMacKeyboard()
+    onSkyToolsEnabledChanged: root.syncMacKeyboard()
+
     function editorChrome(item) {
         let node = item
         while (node) {
@@ -351,24 +372,18 @@ ApplicationWindow {
             chrome.focus = false
     }
 
-    component EditorClickAway: HoverHandler {
-        property bool pressArmed: false
-        acceptedButtons: Qt.LeftButton
+    // HoverHandler never sees a button press, so a click on a panel that
+    // accepts the mouse left the field focused. PointHandler watches the
+    // press with a passive grab and does not accept the point, so the
+    // panel, button, or live view still receives the click.
+    component EditorClickAway: PointHandler {
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
         acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad | PointerDevice.TouchScreen
-        onPointChanged: {
-            const down = (point.pressedButtons & Qt.LeftButton) !== 0
-            if (!down) {
-                pressArmed = false
-                return
-            }
-            if (pressArmed)
-                return
-            pressArmed = true
-            root.releaseEditorFocusAt(point.scenePosition)
+        onActiveChanged: {
+            if (active)
+                root.releaseEditorFocusAt(point.scenePosition)
         }
     }
-
-    EditorClickAway { }
 
         QtObject {
         id: testHarness
@@ -668,6 +683,8 @@ ApplicationWindow {
         backend.setDeepCleanImages(Theme.deepCleanImages)
         backend.setEnhanceDenoise(Theme.enhanceDenoise)
         backend.setEnhanceSkyCrush(Theme.enhanceSkyCrush)
+        root.macKeyboardReady = true
+        Qt.callLater(root.syncMacKeyboard)
     }
 
     // Keep the native Windows caption in step with the theme hue (debounced while the slider moves).
@@ -1308,8 +1325,13 @@ ApplicationWindow {
         }
     }
 
-    EditorClickAway {
+    Item {
+        // A handler on the overlay item itself never sees the press. This
+        // pane sits above the page and behind popups and toasts.
         parent: Overlay.overlay
+        anchors.fill: parent
+        z: -1
+        EditorClickAway { }
     }
 
     Item {
@@ -1611,10 +1633,12 @@ ApplicationWindow {
     }
 
     SessionDialog { id: sessionDialog }
+
     SkyRaDecDialog {
         id: skyRaDecDialog
         transientParent: root
         hostActive: root.currentPage === root.skyPageIndex
         onGotoRequested: (raHours, decDegrees) => skyPage.gotoRaDec(raHours, decDegrees)
+        onVisibleChanged: root.syncMacKeyboard()
     }
 }

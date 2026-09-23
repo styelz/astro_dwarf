@@ -1930,6 +1930,9 @@ class AppBackend(QObject):
         self._last_preview_ui: dict[str, float] = {}
         self._preview_window = None
         self._preview_window_filter = None
+        self._mac_web_typing = False
+        self._mac_keyboard_applied = False
+        self._mac_keyboard_attempts = 0
         self._preview_hold_device_id = ""
         self._preview_hold_target = ""
         self._preview_tele_url = ""
@@ -4272,49 +4275,6 @@ class AppBackend(QObject):
                 device_id,
             )
             self._emit_sky_lock(label, coords)
-
-        worker.send("sky_pointing", {}, callback=done)
-
-    @Slot()
-    def lockSkyToDevicePointing(self) -> None:
-        """Lock the sky map on the mount's current az/alt, converted to RA/Dec."""
-        if self._sky_lock_inflight:
-            return
-        device_id = str(self._selected_device_id or "")
-        worker = self._workers.get(device_id)
-        if not worker or not worker.connected:
-            self._toast("Connect a telescope before locking the sky map", "warning")
-            return
-        self._sky_lock_inflight = True
-
-        def done(ok: bool, result: Any) -> None:
-            self._sky_lock_inflight = False
-            data = result if isinstance(result, dict) else {}
-            coords = self._target_coords(data) if ok else None
-            if coords is None:
-                detail = str(result or "").strip() if not ok else ""
-                self._toast(
-                    "Could not read where the telescope is pointing",
-                    "warning",
-                    detail or "Mount position is unavailable",
-                )
-                return
-            self._set_live_pointing(device_id, coords[0], coords[1])
-            try:
-                az_text = f"{float(data.get('az')):.2f}"
-                alt_text = f"{float(data.get('alt')):.2f}"
-            except (TypeError, ValueError):
-                az_text = alt_text = "?"
-            self.add_log(
-                "warning",
-                f"Motor-derived pointing {self._format_sky_coords(coords)} "
-                f"(az {az_text}° alt {alt_text}°). "
-                "Firmware does not publish tracked RA/Dec; this is only a mount estimate.",
-                device_id,
-            )
-            # Name stays "Pointing" so the map locks these coordinates
-            # instead of a catalog object with the same tracked name.
-            self._emit_sky_lock("Pointing", coords)
 
         worker.send("sky_pointing", {}, callback=done)
 
@@ -6797,6 +6757,43 @@ class AppBackend(QObject):
             app.applicationStateChanged.connect(self._on_preview_window_state)
         self._preview_window_filter = _PreviewWindowFilter(self)
         window.installEventFilter(self._preview_window_filter)
+        self._apply_mac_keyboard()
+
+    @Slot(bool)
+    def setMacWebViewTyping(self, enabled: bool) -> None:
+        """Let the sky map or the QML fields own the macOS keyboard."""
+        enabled = bool(enabled)
+        if enabled == self._mac_web_typing and self._mac_keyboard_applied and self._preview_window is not None:
+            return
+        self._mac_web_typing = enabled
+        self._mac_keyboard_attempts = 0
+        self._apply_mac_keyboard()
+
+    def _apply_mac_keyboard(self) -> None:
+        if sys.platform != "darwin":
+            self._mac_keyboard_applied = True
+            return
+        from .mac_keyboard import sync_keyboard_owner
+
+        applied = sync_keyboard_owner(self._preview_window, web_view=self._mac_web_typing)
+        self._mac_keyboard_applied = applied
+        if self._mac_web_typing and not applied and self._mac_keyboard_attempts < 20:
+            self._mac_keyboard_attempts += 1
+            QTimer.singleShot(250, self._apply_mac_keyboard)
+            return
+        if self._mac_web_typing and not applied:
+            sync_keyboard_owner(self._preview_window, web_view=False)
+            return
+        if not self._mac_web_typing:
+            QTimer.singleShot(500, self._reclaim_mac_keyboard)
+
+    def _reclaim_mac_keyboard(self) -> None:
+        if sys.platform != "darwin" or self._mac_web_typing:
+            return
+        from .mac_keyboard import sync_keyboard_owner
+
+        sync_keyboard_owner(self._preview_window, web_view=False)
+        self._mac_keyboard_applied = True
 
     def _on_preview_window_state(self, *_args) -> None:
         if self._preview_result:

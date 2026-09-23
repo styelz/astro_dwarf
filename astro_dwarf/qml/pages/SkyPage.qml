@@ -308,16 +308,6 @@ Item {
             dec_degrees: Number(plan.dec_degrees)
         })
     }
-    function showDevicePointingOnSky() {
-        if (!root.skyToolsEnabled)
-            return
-        if (!(backend.selectedDevice && backend.selectedDevice.connected))
-            return
-        skyPage.mapKeepAlive = true
-        if (root.currentPage !== root.skyPageIndex)
-            root.goToPage(root.skyPageIndex)
-        backend.lockSkyToDevicePointing()
-    }
     function lockToTrackedTarget() {
         const tracked = backend.trackedSkyTarget || ({})
         if (!tracked.available)
