@@ -71,61 +71,18 @@ Item {
             return
         calendarPage.shownMonth = new Date(calendarPage.shownMonth.getFullYear(), calendarPage.shownMonth.getMonth() + step, 1)
     }
-    function matchesScope(item) {
-        return calendarPage.showAllDevices || item.device_id === backend.selectedDeviceId
-    }
+    // Built once per sessions/history change. Day cells read their own bucket
+    // and must not scan backend.sessions or backend.history themselves.
+    readonly property var calendarBuckets: Util.calendarDayBuckets(
+        backend.sessions,
+        backend.history,
+        calendarPage.showHistory,
+        calendarPage.showAllDevices,
+        backend.selectedDeviceId
+    )
     function sessionsForDay(key) {
-        const planned = backend.sessions.filter(item => item.observing_date === key && calendarPage.matchesScope(item))
-        if (!calendarPage.showHistory)
-            return planned
-        return calendarPage.mergeCalendarEntries(planned, calendarPage.historyOnDay(key))
-    }
-    function historyEntries() {
-        if (!calendarPage.showHistory)
-            return []
-        const rows = backend.history || []
-        const out = []
-        for (let i = 0; i < rows.length; i++) {
-            const item = rows[i]
-            if (!item || !item.from_history || !item.observing_date || !Number(item.start_epoch_ms || 0))
-                continue
-            if (!calendarPage.matchesScope(item))
-                continue
-            if (calendarPage.sessionAlreadyShowsRun(item.session_id))
-                continue
-            out.push(item)
-        }
-        return out
-    }
-    function historyOnDay(key) {
-        return calendarPage.historyEntries().filter(item => item.observing_date === key)
-    }
-    function sessionAlreadyShowsRun(sessionId) {
-        if (!sessionId)
-            return false
-        const sessions = backend.sessions || []
-        for (let i = 0; i < sessions.length; i++) {
-            const item = sessions[i]
-            if (!item || item.id !== sessionId)
-                continue
-            const status = String(item.status || "")
-            return status === "done" || status === "error" || status === "skipped"
-        }
-        return false
-    }
-    function mergeCalendarEntries(planned, past) {
-        const items = (planned || []).slice()
-        const extra = past || []
-        for (let i = 0; i < extra.length; i++)
-            items.push(extra[i])
-        items.sort(function(a, b) {
-            const da = String(a.observing_date || "")
-            const db = String(b.observing_date || "")
-            if (da !== db)
-                return da < db ? -1 : 1
-            return Number(a.start_epoch_ms || 0) - Number(b.start_epoch_ms || 0)
-        })
-        return items
+        const bucket = (calendarPage.calendarBuckets || {})[String(key || "")]
+        return bucket ? bucket.slice() : []
     }
     function schedulableItems(items) {
         const out = []
@@ -196,17 +153,6 @@ Item {
         }
         calendarPage.setSingleDay(date)
     }
-    function sessionsForKeys(keys) {
-        const set = {}
-        const list = keys || []
-        for (let i = 0; i < list.length; i++)
-            set[list[i]] = true
-        const items = backend.sessions.filter(item => set[item.observing_date] && calendarPage.matchesScope(item))
-        if (!calendarPage.showHistory)
-            return calendarPage.mergeCalendarEntries(items, [])
-        const past = calendarPage.historyEntries().filter(item => set[item.observing_date])
-        return calendarPage.mergeCalendarEntries(items, past)
-    }
     function selectedNightsTitle() {
         const keys = calendarPage.sortedDayKeys()
         if (keys.length <= 1) {
@@ -224,34 +170,14 @@ Item {
             return item.start_time
         return Qt.formatDate(calendarPage.dateFromKey(item.observing_date), "d MMM") + "  " + item.start_time
     }
-    readonly property var nightSessions: {
-        const _sessions = backend.sessions
-        const _history = backend.history
-        const _show = calendarPage.showHistory
-        const _all = calendarPage.showAllDevices
-        const _device = backend.selectedDeviceId
-        return calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
-    }
-    readonly property var sidebarSessions: {
-        const _sessions = backend.sessions
-        const _history = backend.history
-        const _show = calendarPage.showHistory
-        const _all = calendarPage.showAllDevices
-        const _device = backend.selectedDeviceId
-        const _keys = calendarPage.selectedDayKeys
-        return calendarPage.sessionsForKeys(Object.keys(_keys || {}))
-    }
+    readonly property var nightSessions: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+    readonly property var sidebarSessions: Util.calendarEntriesForKeys(
+        calendarPage.calendarBuckets,
+        Object.keys(calendarPage.selectedDayKeys || {})
+    )
     readonly property int shownMonthSessionCount: {
-        const _sessions = backend.sessions
-        const _history = backend.history
-        const _show = calendarPage.showHistory
-        const _all = calendarPage.showAllDevices
-        const _device = backend.selectedDeviceId
         const prefix = calendarPage.shownMonth.getFullYear() + "-" + String(calendarPage.shownMonth.getMonth() + 1).padStart(2, "0")
-        const planned = backend.sessions.filter(item => calendarPage.matchesScope(item) && String(item.observing_date || "").indexOf(prefix) === 0).length
-        if (!calendarPage.showHistory)
-            return planned
-        return planned + calendarPage.historyEntries().filter(item => String(item.observing_date || "").indexOf(prefix) === 0).length
+        return Util.calendarBucketCount(calendarPage.calendarBuckets, prefix)
     }
     readonly property var nightLayout: calendarPage.layoutNight(calendarPage.nightSessions)
     function nightDeviceIds(items) {
@@ -624,7 +550,7 @@ Item {
                     ? Qt.formatDate(calendarPage.shownMonth, "MMMM yyyy").toUpperCase()
                     : Qt.formatDate(calendarPage.selectedDate, "dddd d MMMM").toUpperCase()
                 subtitle: {
-                    const planned = backend.sessions.filter(item => item.status === "planned" && calendarPage.matchesScope(item)).length
+                    const planned = Util.calendarPlannedCount(calendarPage.calendarBuckets)
                     const nightCount = calendarPage.viewMode === 0 ? calendarPage.sidebarSessions.length : calendarPage.nightSessions.length
                     const nightLabel = calendarPage.viewMode === 0 && calendarPage.selectedDayCount > 1 ? "on selected nights" : "on the selected night"
                     const scope = calendarPage.showAllDevices ? "all telescopes" : (backend.selectedDevice.name || "this telescope")
@@ -810,14 +736,7 @@ Item {
                                 return value
                             }
                             property string key: calendarPage.dateKey(cellDate)
-                            property var daySessions: {
-                                const _sessions = backend.sessions
-                                const _history = backend.history
-                                const _show = calendarPage.showHistory
-                                const _all = calendarPage.showAllDevices
-                                const _device = backend.selectedDeviceId
-                                return calendarPage.sessionsForDay(dayCell.key)
-                            }
+                            property var daySessions: calendarPage.sessionsForDay(dayCell.key)
                             readonly property bool isToday: key === calendarPage.currentObservingKey()
                             readonly property bool isSelected: calendarPage.isDaySelected(key)
                             readonly property bool inMonth: cellDate.getMonth() === calendarPage.shownMonth.getMonth()

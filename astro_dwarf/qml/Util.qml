@@ -855,4 +855,105 @@ QtObject {
         }
         return result
     }
+    function calendarDayBuckets(sessions, history, showHistory, showAllDevices, deviceId) {
+        const showAll = !!showAllDevices
+        const scopeId = String(deviceId || "")
+        function inScope(item) {
+            return showAll || !!(item && item.device_id === scopeId)
+        }
+        const finished = {}
+        const list = sessions || []
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i]
+            if (!item || !item.id)
+                continue
+            const status = String(item.status || "")
+            if (status === "done" || status === "error" || status === "skipped")
+                finished[item.id] = true
+        }
+        const byDate = {}
+        function push(item) {
+            const key = String((item && item.observing_date) || "")
+            if (!key)
+                return
+            let bucket = byDate[key]
+            if (!bucket) {
+                bucket = []
+                byDate[key] = bucket
+            }
+            bucket.push(item)
+        }
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i]
+            if (item && inScope(item))
+                push(item)
+        }
+        if (showHistory) {
+            const rows = history || []
+            for (let i = 0; i < rows.length; i++) {
+                const item = rows[i]
+                if (!item || !item.from_history || !item.observing_date || !Number(item.start_epoch_ms || 0))
+                    continue
+                if (!inScope(item))
+                    continue
+                if (item.session_id && finished[item.session_id])
+                    continue
+                push(item)
+            }
+        }
+        const keys = Object.keys(byDate)
+        for (let k = 0; k < keys.length; k++) {
+            byDate[keys[k]].sort(function(a, b) {
+                return Number(a.start_epoch_ms || 0) - Number(b.start_epoch_ms || 0)
+            })
+        }
+        return byDate
+    }
+    function calendarEntriesForKeys(buckets, keys) {
+        const map = buckets || {}
+        const list = keys || []
+        const items = []
+        for (let i = 0; i < list.length; i++) {
+            const bucket = map[list[i]]
+            if (!bucket)
+                continue
+            for (let j = 0; j < bucket.length; j++)
+                items.push(bucket[j])
+        }
+        items.sort(function(a, b) {
+            const da = String(a.observing_date || "")
+            const db = String(b.observing_date || "")
+            if (da !== db)
+                return da < db ? -1 : 1
+            return Number(a.start_epoch_ms || 0) - Number(b.start_epoch_ms || 0)
+        })
+        return items
+    }
+    function calendarBucketCount(buckets, prefix) {
+        const map = buckets || {}
+        const keys = Object.keys(map)
+        const head = String(prefix || "")
+        let total = 0
+        for (let i = 0; i < keys.length; i++) {
+            if (head && String(keys[i]).indexOf(head) !== 0)
+                continue
+            const bucket = map[keys[i]]
+            total += bucket ? bucket.length : 0
+        }
+        return total
+    }
+    function calendarPlannedCount(buckets) {
+        const map = buckets || {}
+        const keys = Object.keys(map)
+        let planned = 0
+        for (let i = 0; i < keys.length; i++) {
+            const bucket = map[keys[i]] || []
+            for (let j = 0; j < bucket.length; j++) {
+                const item = bucket[j]
+                if (item && !item.from_history && String(item.status || "") === "planned")
+                    planned += 1
+            }
+        }
+        return planned
+    }
 }

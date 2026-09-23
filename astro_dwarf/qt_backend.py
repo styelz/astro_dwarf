@@ -1825,6 +1825,8 @@ class AppBackend(QObject):
         self._sessions_view: list[dict[str, Any]] | None = None
         self._upcoming_sessions_view: list[dict[str, Any]] | None = None
         self._current_session_view: dict[str, Any] | None = None
+        self._history_view: list[dict[str, Any]] | None = None
+        self._duration_suggestion: dict[str, Any] | None = None
         self._devices_view: list[dict[str, Any]] | None = None
         self._selected_device_view: dict[str, Any] | None = None
         self._devices_dirty = True
@@ -2815,8 +2817,30 @@ class AppBackend(QObject):
             return []
         return [self._session_dict(item) for item in siblings]
 
+    def _invalidate_history_view(self) -> None:
+        # The calendar grid and history page both read this list. Rebuilding it
+        # on every QML read walks every record on the GUI thread.
+        self._history_view = None
+        self._duration_suggestion = None
+
+    def _emit_history_changed(self) -> None:
+        self._invalidate_history_view()
+        self.historyChanged.emit()
+
+    def _emit_duration_suggestion_changed(self) -> None:
+        self._duration_suggestion = None
+        self.durationSuggestionChanged.emit()
+
+    def _ensure_history_view(self) -> list[dict[str, Any]]:
+        if self._history_view is None:
+            self._history_view = self._build_history_view()
+        return self._history_view
+
     @Property("QVariantList", notify=historyChanged)
     def history(self) -> list[dict[str, Any]]:
+        return self._ensure_history_view()
+
+    def _build_history_view(self) -> list[dict[str, Any]]:
         result = []
         device_by_id = {device.id: device for device in self._devices}
         for record in sorted(self.store.history.all(), key=lambda item: item.recorded_at, reverse=True):
@@ -2899,8 +2923,16 @@ class AppBackend(QObject):
             result.append(data)
         return self._decorate_history_groups(result)
 
+    def _ensure_duration_suggestion(self) -> dict[str, Any]:
+        if self._duration_suggestion is None:
+            self._duration_suggestion = self._build_duration_suggestion()
+        return self._duration_suggestion
+
     @Property("QVariantMap", notify=durationSuggestionChanged)
     def durationSuggestion(self) -> dict[str, Any]:
+        return self._ensure_duration_suggestion()
+
+    def _build_duration_suggestion(self) -> dict[str, Any]:
         device = next((item for item in self._devices if item.id == self._selected_device_id), None)
         if not device:
             return {"available": False, "run_count": 0, "changes": [], "summary": "", "note": "", "change_text": ""}
@@ -2940,7 +2972,7 @@ class AppBackend(QObject):
         self._notify_devices()
         self.clockChanged.emit()
         self._emit_sessions_changed()
-        self.durationSuggestionChanged.emit()
+        self._emit_duration_suggestion_changed()
         self._toast("Duration profile updated from history", "success")
 
     @Property(str, notify=logFilterChanged)
@@ -7095,7 +7127,7 @@ class AppBackend(QObject):
                 self._clear_preview_coords()
                 self._refresh_tracked_catalog(device_id)
                 self.skyTargetChanged.emit()
-            self.durationSuggestionChanged.emit()
+            self._emit_duration_suggestion_changed()
             self._refresh_selected_session_views()
             self.clockChanged.emit()
             self.previewHoldChanged.emit()
@@ -7613,7 +7645,7 @@ class AppBackend(QObject):
             self._skip_manual_history.add(device_id)
             for record in records:
                 self.store.history.save(record)
-            self.historyChanged.emit()
+            self._emit_history_changed()
         self._emit_sessions_changed()
         return True
 
@@ -8704,7 +8736,7 @@ class AppBackend(QObject):
                 self._selected_device_id = updated.id
                 self._persist_last_device_id(updated.id)
                 self._notify_devices()
-                self.durationSuggestionChanged.emit()
+                self._emit_duration_suggestion_changed()
                 self.clockChanged.emit()
                 self._toast("Device added", "success")
                 return True
@@ -8729,7 +8761,7 @@ class AppBackend(QObject):
             self._selected_device_id = device.id
             self._persist_last_device_id(device.id)
             self._notify_devices()
-            self.durationSuggestionChanged.emit()
+            self._emit_duration_suggestion_changed()
             self.clockChanged.emit()
             self._toast("Device added", "success")
             return True
@@ -8773,10 +8805,10 @@ class AppBackend(QObject):
             self._selected_device_id = neighbor if neighbor in remaining else self._devices[0].id
             self._persist_last_device_id(self._selected_device_id)
         self._notify_devices()
-        self.durationSuggestionChanged.emit()
+        self._emit_duration_suggestion_changed()
         self._emit_sessions_changed()
         if history_ids:
-            self.historyChanged.emit()
+            self._emit_history_changed()
         extra = []
         if session_ids:
             extra.append(f"{len(session_ids)} session{'s' if len(session_ids) != 1 else ''}")
@@ -10430,7 +10462,8 @@ class AppBackend(QObject):
                 self._save_session(replace(session, planned_duration_seconds=DurationEngine.calculate(session, updated.hardware)))
             self._sequence_colliding_mosaics()
             self._notify_devices()
-            self.durationSuggestionChanged.emit()
+            self._emit_duration_suggestion_changed()
+            self._emit_history_changed()
             self.clockChanged.emit()
             self.appSettingsChanged.emit()
             self._toast("Device saved", "success")
@@ -10467,6 +10500,8 @@ class AppBackend(QObject):
             if not self._commit_device(current, updated):
                 return False
             self._notify_devices()
+            self._emit_sessions_changed()
+            self._emit_history_changed()
             self.clockChanged.emit()
             self._toast("Observing location saved", "success")
             return True
@@ -10948,7 +10983,7 @@ class AppBackend(QObject):
     @Slot()
     def clearHistory(self) -> None:
         self.store.history.clear()
-        self.historyChanged.emit()
+        self._emit_history_changed()
         self._toast("History cleared", "success")
 
     @Slot(str)
@@ -10961,7 +10996,7 @@ class AppBackend(QObject):
             if record.device_id == target and self.store.history.delete(record.id):
                 deleted += 1
         if deleted:
-            self.historyChanged.emit()
+            self._emit_history_changed()
             self._toast(
                 f"Cleared {deleted} recorded run{'s' if deleted != 1 else ''}",
                 "success",
@@ -10975,7 +11010,7 @@ class AppBackend(QObject):
             if self.store.history.delete(record_id):
                 deleted += 1
         if deleted:
-            self.historyChanged.emit()
+            self._emit_history_changed()
             self._toast(f"Deleted {deleted} recorded run{'s' if deleted != 1 else ''}", "success")
 
     def _duplicate_setup(self, session_id: str, mode: str, device_id: str, name: str = ""):
@@ -12365,7 +12400,7 @@ class AppBackend(QObject):
             self.add_log("error", f"Session failed · {final.target.name}: {outcome}", final.device_id)
             self._toast(f"Session failed · {final.target.name}", "error", outcome)
         self._emit_sessions_changed()
-        self.historyChanged.emit()
+        self._emit_history_changed()
         if was_stack_preview or (
             final.device_id == self._selected_device_id and self._preview_result
         ):
@@ -12586,7 +12621,7 @@ class AppBackend(QObject):
             hardware=device.hardware if device else None,
         )
         self.store.history.save(record)
-        self.historyChanged.emit()
+        self._emit_history_changed()
         self.add_log(
             "success" if outcome == "Completed" else "warning",
             f"History · {name} · {captured} stacked",
@@ -12629,7 +12664,7 @@ class AppBackend(QObject):
         self._skip_manual_history.add(device_id)
         for record in records:
             self.store.history.save(record)
-        self.historyChanged.emit()
+        self._emit_history_changed()
 
     def _captured_frames_for(self, session_id: str, planned: int, ok: bool) -> int:
         captured = self._session_capture_peak.pop(session_id, 0)
@@ -12652,6 +12687,7 @@ class AppBackend(QObject):
         self.clockChanged.emit()
         self._emit_sessions_changed()
         self._notify_devices()
+        self._emit_history_changed()
 
     def _persist_last_device_id(self, device_id: str) -> None:
         wanted = str(device_id or "")
