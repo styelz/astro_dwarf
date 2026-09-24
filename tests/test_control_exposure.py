@@ -53,6 +53,24 @@ def test_photo_notify_does_not_clobber_dso_exposure() -> None:
     _assert(updated.shooting_mode == 2, updated.shooting_mode)
 
 
+def test_stale_photo_hud_does_not_replace_dso_exposure() -> None:
+    saved = ControlSettings(shooting_mode=2, exposure="15", gain="60", wide_exposure="10", wide_gain="40")
+    updated = control_settings_from_telemetry(
+        {
+            "shooting_mode": 2,
+            "exposure_text": "1/30",
+            "wide_exposure_text": "1/30",
+            "gain": 0,
+            "wide_gain": 0,
+        },
+        saved,
+    )
+    _assert(updated.exposure == "15", updated.exposure)
+    _assert(updated.gain == "60", updated.gain)
+    _assert(updated.wide_exposure == "10", updated.wide_exposure)
+    _assert(updated.wide_gain == "40", updated.wide_gain)
+
+
 def test_dso_notify_updates_astro_slot_in_photo_mode() -> None:
     saved = ControlSettings(shooting_mode=2, exposure="8", photo_exposure="1/30")
     updated = control_settings_from_telemetry(
@@ -142,6 +160,7 @@ def test_worker_skips_matching_astro_exposure() -> None:
 if __name__ == "__main__":
     test_firmware_exposure_name_keeps_dso_seconds()
     test_photo_notify_does_not_clobber_dso_exposure()
+    test_stale_photo_hud_does_not_replace_dso_exposure()
     test_dso_notify_updates_astro_slot_in_photo_mode()
     test_hud_uses_astro_exposure_in_dso_mode()
     test_hud_uses_photo_exposure_in_photo_mode()

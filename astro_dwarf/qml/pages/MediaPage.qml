@@ -345,6 +345,14 @@ Item {
                         : (backend.mediaSource === "stills" ? "ON DEVICE  ·  CAMERA"
                             : ("ON DEVICE  ·  " + (backend.mediaFolder ? String(backend.mediaFolder).replace(/\\/g, "/").split("/").filter(Boolean).slice(-1)[0] || "FOLDERS" : "FOLDERS")))))
 
+            Text {
+                Layout.fillWidth: true
+                visible: mediaPage.items.length > 0 && backend.mediaStatus !== "" && !mediaPage.mediaError
+                text: backend.mediaStatus
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSm
+                elide: Text.ElideRight
+            }
             RowLayout {
                 Layout.fillWidth: true
                 spacing: Theme.s2

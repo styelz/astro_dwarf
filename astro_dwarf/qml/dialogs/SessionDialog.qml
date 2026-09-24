@@ -220,7 +220,7 @@ Dialog {
         }
         if (!dirty.camera) {
             const cam = agreed(item => sessionDialog.cameraOf(item).camera)
-            camera.currentIndex = cam === "wide" ? 1 : cam === "tele" ? 0 : -1
+            camera.currentIndex = (!camera.teleOnly && cam === "wide") ? 1 : cam === "tele" || camera.teleOnly ? 0 : -1
         }
         if (!dirty.ir_filter) {
             const ir = agreed(item => sessionDialog.irIndex(sessionDialog.cameraOf(item).ir_filter))
@@ -434,7 +434,7 @@ Dialog {
         exposure.text = data.camera.exposure_seconds
         gain.text = data.camera.gain
         frames.text = data.camera.frame_count
-        camera.currentIndex = data.camera.camera === "wide" ? 1 : 0
+        camera.currentIndex = (!camera.teleOnly && data.camera.camera === "wide") ? 1 : 0
         binning.currentIndex = sessionDialog.binningIndex(data.camera.binning)
         const ir = data.camera.ir_filter || "VIS Filter"
         irFilter.currentIndex = Math.max(0, ["VIS Filter", "Astro Filter", "Duo-Band Filter", "VIS"].indexOf(ir) % 3)
@@ -827,7 +827,15 @@ Dialog {
                 id: camera
                 objectName: "session-camera"
                 accessibleName: "Session camera"
-                model: ["Tele", "Wide"]
+                readonly property bool teleOnly: {
+                    const device = Util.deviceById(backend.devices, sessionDialog.editingDeviceId || backend.selectedDeviceId) || backend.selectedDevice
+                    return !!(device && String(device.model) === "Dwarf Mini")
+                }
+                model: camera.teleOnly ? ["Tele"] : ["Tele", "Wide"]
+                onTeleOnlyChanged: {
+                    if (camera.teleOnly)
+                        camera.currentIndex = 0
+                }
                 emptyText: "Mixed"
                 Layout.fillWidth: true
                 Layout.columnSpan: currentIndex === 1 ? 2 : 1

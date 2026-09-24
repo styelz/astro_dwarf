@@ -74,6 +74,7 @@ from .domain import (
     apply_camera_fov_defaults,
     camera_fov,
     camera_fov_plausible,
+    device_supports_wide,
     camera_settings_from_capture,
     mosaic_stack_camera,
     sky_map_camera,
@@ -1806,12 +1807,14 @@ class AppBackend(QObject):
         self._control_dirty: set[str] = set()
         self._control_restoring: set[str] = set()
         self._control_restore_pending: set[str] = set()
+        self._keep_auto_parameters: set[str] = set()
         self._control_persist_timer = QTimer(self)
         self._control_persist_timer.setSingleShot(True)
         self._control_persist_timer.setInterval(400)
         self._control_persist_timer.timeout.connect(self._flush_control_settings)
         self._album_items: list[dict[str, Any]] = []
         self._album_path = ""
+        self._media_album_root = ""
         self._album_busy = ""
         self._media_source = "folders"
         self._media_folder = ""
@@ -5870,7 +5873,7 @@ class AppBackend(QObject):
                         device.id,
                     )
 
-            if mosaic_preview_should_open_wide(
+            if device_supports_wide(device.model) and mosaic_preview_should_open_wide(
                 mosaic_running=self._mosaic_capture_continues(device.id)
             ):
                 worker.send("open_wide_camera", callback=after_wide)
@@ -5886,7 +5889,7 @@ class AppBackend(QObject):
         need_wide: bool,
     ) -> None:
         """Open only the firmware cameras that are not already encoding."""
-        if not mosaic_preview_should_open_wide(
+        if not device_supports_wide(device.model) or not mosaic_preview_should_open_wide(
             mosaic_running=self._mosaic_capture_continues(device.id)
         ):
             need_wide = False
@@ -7090,7 +7093,7 @@ class AppBackend(QObject):
         if camera == "tele":
             op = "enter_camera" if device.model in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI) else "open_camera"
         else:
-            if not mosaic_preview_should_open_wide(
+            if not device_supports_wide(device.model) or not mosaic_preview_should_open_wide(
                 mosaic_running=self._mosaic_capture_continues(device_id)
             ):
                 return False
@@ -7350,7 +7353,10 @@ class AppBackend(QObject):
             self._maybe_auto_start_preview(device_id)
             QTimer.singleShot(8000, lambda did=device_id: self._release_recovered_if_idle(did))
             delay_ms = 8000 if device and device.model == DeviceModel.DWARF_3 else 2500
-            QTimer.singleShot(delay_ms, lambda did=device_id: self.refreshCameraParams(did))
+            self._publish_saved_auto_parameters(device_id)
+            self._schedule_camera_param_refresh(
+                device_id, delay_ms, keep_auto=self._saved_auto_parameters(device_id)
+            )
             self._schedule_control_restore(device_id, delay_ms + 400)
         else:
             self._toast("Connection failed", "error", fail_text)
@@ -8940,25 +8946,6 @@ class AppBackend(QObject):
         if not self._control_persist_timer.isActive():
             self._control_persist_timer.start()
 
-    def _capture_defaults_from_control(self, device: Device) -> CaptureDefaults:
-        settings = device.control_settings
-        wide = device.camera == Camera.WIDE
-        exposure = exposure_seconds_from_text(settings.wide_exposure if wide else settings.exposure)
-        try:
-            gain = int(float(settings.wide_gain if wide else settings.gain))
-        except (TypeError, ValueError):
-            gain = device.capture_defaults.gain
-        try:
-            frames = int(float(settings.stack_count))
-        except (TypeError, ValueError):
-            frames = device.capture_defaults.frame_count
-        return replace(
-            device.capture_defaults,
-            exposure_seconds=float(exposure) if exposure else device.capture_defaults.exposure_seconds,
-            gain=gain if gain >= 0 else device.capture_defaults.gain,
-            frame_count=frames if frames >= 1 else device.capture_defaults.frame_count,
-        )
-
     def _flush_control_settings(self) -> None:
         dirty = set(self._control_dirty)
         self._control_dirty.clear()
@@ -8967,14 +8954,11 @@ class AppBackend(QObject):
             if current is None:
                 continue
             stored = self.store.devices.get(device_id)
-            capture = self._capture_defaults_from_control(current)
-            if (
-                stored is not None
-                and stored.control_settings == current.control_settings
-                and stored.capture_defaults == capture
-            ):
+            # Session defaults on the Settings page are edited there. Live
+            # PHOTO/wide values must not replace them on connect or refresh.
+            if stored is not None and stored.control_settings == current.control_settings:
                 continue
-            updated = replace(current, capture_defaults=capture)
+            updated = current
             self.store.devices.save(updated)
             self._devices = [updated if item.id == updated.id else item for item in self._devices]
             worker = self._workers.get(updated.id)
@@ -8982,6 +8966,26 @@ class AppBackend(QObject):
                 worker.device = updated
         if dirty:
             self._notify_devices(immediate=False)
+
+    def _saved_auto_parameters(self, device_id: str) -> bool:
+        device = self._device_by_id(device_id)
+        if device is None:
+            return False
+        return str(device.control_settings.auto_parameters).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _publish_saved_auto_parameters(self, device_id: str) -> None:
+        """The camera catalog does not report Auto Parameters after reconnect."""
+        device = self._device_by_id(device_id)
+        if device is None or not self._saved_auto_parameters(device_id):
+            return
+        wide = device.model != DeviceModel.DWARF_MINI
+        self._on_telemetry(
+            device_id,
+            {
+                "auto_parameters_tele": True,
+                "auto_parameters_wide": True if wide else False,
+            },
+        )
 
     def _schedule_control_restore(self, device_id: str, delay_ms: int) -> None:
         self._control_restore_pending.add(device_id)
@@ -9053,6 +9057,7 @@ class AppBackend(QObject):
         if device is None or not worker or not worker.connected:
             self._control_restore_pending.discard(device_id)
             return
+        self._publish_saved_auto_parameters(device_id)
         live = self._live_mosaic.get(device_id)
         if control_restore_should_defer(
             session_active=bool(self._active_sessions.get(device_id)),
@@ -9070,7 +9075,9 @@ class AppBackend(QObject):
         def finish() -> None:
             self._control_restoring.discard(device_id)
             self._control_restore_pending.discard(device_id)
-            self._schedule_camera_param_refresh(device_id, 200)
+            self._schedule_camera_param_refresh(
+                device_id, 200, keep_auto=self._saved_auto_parameters(device_id)
+            )
 
         def defer() -> None:
             self._control_restoring.discard(device_id)
@@ -9395,6 +9402,7 @@ class AppBackend(QObject):
             if mode == 1:
                 self._patch_control_settings(
                     device_id,
+                    auto_parameters="true",
                     photo_exposure="",
                     photo_gain="",
                     photo_wide_exposure="",
@@ -9403,13 +9411,23 @@ class AppBackend(QObject):
             else:
                 self._patch_control_settings(
                     device_id,
+                    auto_parameters="true",
                     exposure="",
                     gain="",
                     wide_exposure="",
                     wide_gain="",
                 )
         else:
+            self._patch_control_settings(device_id, auto_parameters="false")
             self._snapshot_manual_camera(device_id, mode)
+        wide = device.model != DeviceModel.DWARF_MINI
+        self._on_telemetry(
+            device_id,
+            {
+                "auto_parameters_tele": enabled,
+                "auto_parameters_wide": enabled if wide else False,
+            },
+        )
         self._apply_shooting_mode_camera(device_id)
 
     def _apply_shooting_mode_camera(self, device_id: str) -> None:
@@ -9422,6 +9440,24 @@ class AppBackend(QObject):
         mode = _shooting_mode_int(self._device_telemetry.get(device_id, {}).get("shooting_mode"))
         if mode not in {1, 2}:
             mode = device.control_settings.shooting_mode
+        device = self._device_by_id(device_id) or device
+        tel = self._device_telemetry.get(device_id) or {}
+        wide = device.model != DeviceModel.DWARF_MINI
+        live_auto = tel.get("auto_parameters_tele") is True and (
+            not wide or tel.get("auto_parameters_wide") is True
+        )
+        saved_auto = str(device.control_settings.auto_parameters).strip().lower() in {"1", "true", "yes", "on"}
+        if live_auto and not saved_auto:
+            self._patch_control_settings(device_id, auto_parameters="true")
+            device = self._device_by_id(device_id) or device
+        if str(device.control_settings.auto_parameters).strip().lower() in {"1", "true", "yes", "on"}:
+            self._on_telemetry(
+                device_id,
+                {
+                    "auto_parameters_tele": True,
+                    "auto_parameters_wide": True if wide else False,
+                },
+            )
         queue = shooting_mode_camera_steps(
             device.control_settings,
             mode,
@@ -9430,7 +9466,7 @@ class AppBackend(QObject):
 
         def next_param(ok: bool = True, result: Any = None) -> None:
             if self._shut_down or not queue:
-                self._schedule_camera_param_refresh(device_id)
+                self._schedule_camera_param_refresh(device_id, keep_auto=True)
                 return
             name, value, camera = queue.pop(0)
             self._send_camera_param(
@@ -9776,6 +9812,8 @@ class AppBackend(QObject):
         self._media_download_batch = 0
         self._media_download_ok = 0
         self._media_download_failed = 0
+        if self._media_device_id != device_id:
+            self._media_album_root = ""
         self._media_device_id = device_id
         self._media_source = source
         return self._media_request_id
@@ -9815,7 +9853,9 @@ class AppBackend(QObject):
             "3",
         )
 
-    def _schedule_camera_param_refresh(self, device_id: str, delay_ms: int = 150) -> None:
+    def _schedule_camera_param_refresh(self, device_id: str, delay_ms: int = 150, *, keep_auto: bool = False) -> None:
+        if keep_auto:
+            self._keep_auto_parameters.add(device_id)
         QTimer.singleShot(delay_ms, lambda did=device_id: self.refreshCameraParams(did))
 
     @Slot(str)
@@ -9827,9 +9867,14 @@ class AppBackend(QObject):
         model_id = self._camera_model_id(device_id)
 
         def done(ok: bool, result: Any) -> None:
+            keep_auto = device_id in self._keep_auto_parameters
+            self._keep_auto_parameters.discard(device_id)
             if not ok:
                 return
             changes = camera_params_to_telemetry(result, model_id)
+            if keep_auto:
+                changes.pop("auto_parameters_tele", None)
+                changes.pop("auto_parameters_wide", None)
             if changes:
                 self._on_telemetry(device_id, changes)
 
@@ -10031,6 +10076,9 @@ class AppBackend(QObject):
                 ip = str(result.get("ip") or device.ip_address)
                 self._media_folder = str(result.get("directory") or folder or "")
                 self._media_folder_parent = str(result.get("parent") or "")
+                reported_root = str(result.get("root") or "").strip()
+                if reported_root:
+                    self._media_album_root = reported_root
                 local_files = self._local_album_paths()
                 items = [
                     item
@@ -10044,7 +10092,10 @@ class AppBackend(QObject):
                     self._set_media_root_folders(items)
                 if self._toast_pending_album_delete(self._media_items, True):
                     return
-                if not self._media_items:
+                notice = str(result.get("notice") or "").strip()
+                if notice:
+                    self._set_media_status(notice)
+                elif not self._media_items:
                     self._set_media_status(
                         "This folder is empty." if self._media_folder_parent
                         else "No album folders found on this telescope."
@@ -10080,6 +10131,9 @@ class AppBackend(QObject):
         self._emit_media()
 
     def _selected_album_root(self) -> str:
+        reported = str(getattr(self, "_media_album_root", "") or "").strip()
+        if reported:
+            return reported
         device = next((item for item in self._devices if item.id == self._selected_device_id), None)
         return album_folder_root(device.model if device else "")
 
@@ -10677,7 +10731,7 @@ class AppBackend(QObject):
                 solar_name=values["target"] if target_kind == TargetKind.SOLAR else None,
             ),
             CameraSettings(
-                camera=Camera(values.get("camera", "tele")),
+                camera=self._session_camera(values.get("camera", "tele"), device),
                 exposure_seconds=float(values.get("exposure", capture.exposure_seconds)),
                 gain=int(values.get("gain", capture.gain)),
                 frame_count=int(values.get("frame_count", capture.frame_count)),
@@ -10707,10 +10761,16 @@ class AppBackend(QObject):
             ),
         )
 
-    def _patch_camera(self, camera: CameraSettings, values: dict[str, Any]) -> CameraSettings:
+    def _session_camera(self, camera: Any, device: Device | None) -> Camera:
+        choice = Camera(camera or Camera.TELE)
+        if device is not None and not device_supports_wide(device.model) and choice == Camera.WIDE:
+            raise ValueError("The Dwarf Mini only has a telephoto camera")
+        return choice
+
+    def _patch_camera(self, camera: CameraSettings, values: dict[str, Any], device: Device | None = None) -> CameraSettings:
         kwargs: dict[str, Any] = {}
         if "camera" in values:
-            kwargs["camera"] = Camera(values.get("camera") or Camera.TELE)
+            kwargs["camera"] = self._session_camera(values.get("camera") or Camera.TELE, device)
         if "exposure" in values:
             kwargs["exposure_seconds"] = float(values["exposure"])
         if "gain" in values:
@@ -10802,7 +10862,7 @@ class AppBackend(QObject):
                 if session.status == SessionStatus.RUNNING:
                     skipped_running += 1
                     continue
-                camera = self._patch_camera(session.camera, patch)
+                camera = self._patch_camera(session.camera, patch, self._device_by_id(session.device_id))
                 workflow = self._patch_workflow(session.workflow, patch)
                 if camera is session.camera and workflow is session.workflow:
                     continue

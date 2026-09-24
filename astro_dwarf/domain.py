@@ -160,14 +160,67 @@ _ASTRO_PATH_MARKERS = (
 )
 
 
-def album_model_prefix(model: DeviceModel | str) -> str:
+ALBUM_NO_FOLDER_INDEX = (
+    "This telescope lists sessions from its album and does not publish a folder index, "
+    "so frames inside a session are not browsable here."
+)
+_ALBUM_TYPE_FOLDERS = {
+    PHOTO_MEDIA_TYPE: "Normal_Photos",
+    VIDEO_MEDIA_TYPE: "Videos",
+    BURST_MEDIA_TYPE: "Burst",
+    ASTRO_MEDIA_TYPE: "Astronomy",
+    PANORAMA_MEDIA_TYPE: "Panorama",
+    ASTRO_LIST_MEDIA_TYPE: "Astronomy",
+}
+
+
+def album_model_prefix_candidates(model: DeviceModel | str) -> tuple[str, ...]:
+    """Fallback HTTP roots when the album API has not reported a path yet."""
     expected = str(model)
     if expected == DeviceModel.DWARF_3:
-        return "/DWARF3"
+        return ("/DWARF3",)
     if expected == DeviceModel.DWARF_MINI:
-        return "/DWARF_MINI"
+        return ("/DWARF_mini", "/DWARF_MINI")
     if expected == DeviceModel.DWARF_II:
-        return "/DWARF_II"
+        return ("/DWARF_II",)
+    return ()
+
+
+def album_model_prefix(model: DeviceModel | str) -> str:
+    candidates = album_model_prefix_candidates(model)
+    return candidates[0] if candidates else ""
+
+
+def album_is_model_segment(name: str) -> bool:
+    token = str(name or "").upper().replace("-", "_")
+    return token in {
+        "DWARF3",
+        "DWARF_3",
+        "DWARF_MINI",
+        "DWARFMINI",
+        "DWARF_II",
+        "DWARFII",
+        "DWARF2",
+        "DWARF_2",
+    }
+
+
+def album_root_from_path(path: str) -> str:
+    """Model folder spelled the way the device wrote it, such as /DWARF_mini."""
+    for part in album_http_path(path).split("/"):
+        if part and album_is_model_segment(part):
+            return "/" + part
+    return ""
+
+
+def album_root_from_entries(entries: list[dict[str, Any]] | None) -> str:
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        for key in ("filePath", "thumbnailPath"):
+            root = album_root_from_path(str(entry.get(key) or ""))
+            if root:
+                return root
     return ""
 
 
@@ -176,8 +229,7 @@ def album_prefixed_path(path: str, model: DeviceModel | str = "") -> str:
     prefix = album_model_prefix(model)
     if not value or not prefix:
         return value
-    text = value.upper()
-    if "DWARF3" in text or "DWARF_MINI" in text or "DWARFMINI" in text or "DWARF_II" in text or "DWARF2" in text:
+    if album_root_from_path(value):
         return value
     return prefix + value
 
@@ -441,16 +493,21 @@ def album_is_skip_dir(name: str = "") -> bool:
     return not token or token in {".", ".."} or token in _ALBUM_SKIP_DIR_NAMES
 
 
-def album_folder_root(model: DeviceModel | str = "") -> str:
+def album_folder_root(model: DeviceModel | str = "", resolved: str = "") -> str:
+    found = album_root_from_path(resolved)
+    if found:
+        return found
     return album_model_prefix(model) or "/DWARF3"
 
 
 def album_path_in_root(path: str, root: str) -> bool:
-    value = album_http_path(path)
+    value = album_http_path(path).rstrip("/")
     base = album_http_path(root).rstrip("/")
     if not value or not base:
         return False
-    return value == base or value.startswith(base + "/")
+    folded = value.upper()
+    prefix = base.upper()
+    return folded == prefix or folded.startswith(prefix + "/")
 
 
 def album_folder_parent(path: str, root: str = "") -> str:
@@ -717,6 +774,142 @@ def album_listing_entries(html_text: str) -> list[dict[str, Any]]:
     return entries
 
 
+def _album_category_of(path: str, media_type: Any = None) -> tuple[str, str]:
+    remote = album_http_path(path)
+    parts = [part for part in remote.split("/") if part]
+    for index, part in enumerate(parts):
+        if album_is_category_name(part):
+            return part, "/" + "/".join(parts[: index + 1])
+    try:
+        kind = int(media_type)
+    except (TypeError, ValueError):
+        kind = 0
+    name = _ALBUM_TYPE_FOLDERS.get(kind, "")
+    root = album_root_from_path(remote)
+    if name and root:
+        return name, album_join_path(root, name)
+    return "", ""
+
+
+def _album_api_row(
+    name: str,
+    remote: str,
+    *,
+    is_dir: bool,
+    media_type: int,
+    thumb: str = "",
+    modified: int = 0,
+) -> dict[str, Any]:
+    return {
+        "fileName": name,
+        "filePath": remote,
+        "thumbnailPath": thumb,
+        "mediaType": media_type,
+        "modificationTime": modified,
+        "isDir": is_dir,
+        "fileAvailable": False,
+        "previewResolved": False,
+    }
+
+
+def album_unindexed_listing(
+    entries: list[dict[str, Any]] | None,
+    folder: str,
+    root: str,
+) -> dict[str, Any]:
+    """Album rows from firmware filePath values when nginx has no directory index."""
+    requested = album_http_path(folder).rstrip("/") or album_http_path(root).rstrip("/")
+    base = album_http_path(root).rstrip("/")
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    at_root = requested.upper() == base.upper()
+    in_session = album_is_astro_session_folder(requested) or (
+        not at_root and not album_is_category_folder_path(requested)
+    )
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        remote = album_http_path(str(entry.get("filePath") or entry.get("thumbnailPath") or ""))
+        if not remote or not album_path_in_root(remote, base):
+            continue
+        try:
+            media_type = int(entry.get("mediaType") or 0)
+        except (TypeError, ValueError):
+            media_type = 0
+        try:
+            modified = int(entry.get("modificationTime") or 0)
+        except (TypeError, ValueError):
+            modified = 0
+        name = str(entry.get("fileName") or PurePosixPath(remote).name).strip()
+        thumb = album_http_path(str(entry.get("thumbnailPath") or ""))
+        if at_root:
+            label, category = _album_category_of(remote, media_type)
+            key = category.upper()
+            if not label or not category or key in seen:
+                continue
+            seen.add(key)
+            rows.append(_album_api_row(label, category, is_dir=True, media_type=media_type, modified=modified))
+            continue
+        session = album_session_dir(remote)
+        if album_is_category_folder_path(requested) and not in_session:
+            child = session if session and album_path_in_root(session, requested) and session.rstrip("/").upper() != requested.upper() else ""
+            if child and PurePosixPath(child).parent.as_posix().rstrip("/").upper() == requested.upper():
+                key = child.upper()
+                if key in seen:
+                    continue
+                seen.add(key)
+                child_name = name if name and not album_is_category_name(name) else PurePosixPath(child).name
+                rows.append(_album_api_row(
+                    child_name,
+                    child,
+                    is_dir=True,
+                    media_type=media_type or ASTRO_MEDIA_TYPE,
+                    thumb=thumb,
+                    modified=modified,
+                ))
+                continue
+            if album_is_media_file(remote) and PurePosixPath(remote).parent.as_posix().rstrip("/").upper() == requested.upper():
+                key = remote.upper()
+                if key in seen:
+                    continue
+                seen.add(key)
+                rows.append(_album_api_row(
+                    PurePosixPath(remote).name,
+                    remote,
+                    is_dir=False,
+                    media_type=media_type or PHOTO_MEDIA_TYPE,
+                    thumb=thumb,
+                    modified=modified,
+                ))
+            continue
+        if not album_is_media_file(remote):
+            continue
+        if album_session_dir(remote).rstrip("/").upper() != requested.upper() and remote.rstrip("/").upper() != requested.upper():
+            continue
+        key = remote.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(_album_api_row(
+            PurePosixPath(remote).name,
+            remote,
+            is_dir=False,
+            media_type=media_type or ASTRO_MEDIA_TYPE,
+            thumb=thumb,
+            modified=modified,
+        ))
+    notice = ""
+    if in_session or not rows:
+        notice = ALBUM_NO_FOLDER_INDEX
+    return {
+        "directory": requested,
+        "parent": album_folder_parent(requested, base),
+        "root": base,
+        "sessions": rows,
+        "notice": notice,
+    }
+
+
 def album_preview_name(names: list[str] | None) -> str:
     files = [str(name) for name in (names or []) if str(name).strip()]
     lookup = {name.lower(): name for name in files}
@@ -899,7 +1092,6 @@ _CAMERA_FOV: dict[DeviceModel, dict[Camera, tuple[float, float]]] = {
     },
     DeviceModel.DWARF_MINI: {
         Camera.TELE: (2.14, 1.20),
-        Camera.WIDE: (45.06, 25.93),
     },
 }
 
@@ -918,10 +1110,18 @@ def _as_camera(camera: Camera | str | None) -> Camera:
     return Camera.WIDE if value == Camera.WIDE.value else Camera.TELE
 
 
+def device_supports_wide(model: DeviceModel | str | None) -> bool:
+    """DWARF Mini is a single telephoto. Wide commands and sessions do not apply."""
+    return str(model or "") != DeviceModel.DWARF_MINI
+
+
 def camera_fov(model: DeviceModel | str | None = None, camera: Camera | str | None = Camera.TELE) -> tuple[float, float]:
     """Return the default horizontal × vertical FOV for a telescope model and lens."""
     table = _CAMERA_FOV.get(_as_device_model(model), _CAMERA_FOV[DeviceModel.DWARF_3])
-    return table[_as_camera(camera)]
+    lens = _as_camera(camera)
+    if lens not in table:
+        lens = Camera.TELE
+    return table[lens]
 
 
 def camera_fov_plausible(
@@ -1165,6 +1365,7 @@ class ControlSettings:
     timelapse_interval: str = ""
     timelapse_duration: str = ""
     auto_calibration: str = ""
+    auto_parameters: str = ""
     wb_scene: str = ""
     wb_value: str = ""
     brightness: str = ""
@@ -1219,6 +1420,7 @@ def control_settings_from_dict(data: Any) -> ControlSettings:
         timelapse_interval=_control_text(raw.get("timelapse_interval")),
         timelapse_duration=_control_text(raw.get("timelapse_duration")),
         auto_calibration=_control_text(raw.get("auto_calibration")).lower(),
+        auto_parameters=_control_text(raw.get("auto_parameters")).lower(),
         wb_scene=_control_text(raw.get("wb_scene")),
         wb_value=_control_text(raw.get("wb_value")),
         brightness=_control_text(raw.get("brightness")),
@@ -1284,17 +1486,10 @@ def control_settings_from_telemetry(
                 take("wide_exposure_text", "photo_wide_exposure")
             if tel.get("photo_wide_gain") in (None, "", "—"):
                 take("wide_gain", "photo_wide_gain")
-    elif mode == 2:
-        if not tele_auto:
-            if not tel.get("astro_exposure_text"):
-                take("exposure_text", "exposure")
-            if tel.get("astro_gain") in (None, "", "—"):
-                take("gain", "gain")
-        if not wide_auto:
-            if not tel.get("astro_wide_exposure_text"):
-                take("wide_exposure_text", "wide_exposure")
-            if tel.get("astro_wide_gain") in (None, "", "—"):
-                take("wide_gain", "wide_gain")
+    # DSO slots are updated only from astro_* keys above. The generic
+    # exposure_text / gain keys are the HUD view and still hold the last
+    # PHOTO values after a mode change, so copying them here turned a live
+    # 1/30 and gain 0 into the saved DSO exposure.
     take("stack_count", "stack_count")
     take("stack_format", "stack_format")
     if tel.get("ir_filter") not in (None, "", "—"):
@@ -1421,15 +1616,18 @@ def shooting_mode_camera_steps(
 ) -> list[tuple[str, str, str]]:
     """Camera writes after entering PHOTO or DSO.
 
-    A camera with a saved exposure or gain stays manual. A camera with neither
-    gets Auto Parameters, which is how the mobile app fills filter, shutter,
-    gain, and frame count. DSO manual mode also restores filter and stack count.
+    When Auto Parameters is selected it stays on in both PHOTO and DSO.
+    Otherwise a camera with a saved exposure or gain stays manual, and a camera
+    with neither gets Auto Parameters. DSO manual mode also restores filter
+    and stack count.
     """
     if shooting_mode not in {1, 2}:
         return []
     item = settings or ControlSettings()
     steps: list[tuple[str, str, str]] = []
     cameras = ["tele", "wide"] if include_wide else ["tele"]
+    if str(item.auto_parameters).strip().lower() in {"1", "true", "yes", "on"}:
+        return [("auto_parameters", "true", camera) for camera in cameras]
     manual_cameras: list[str] = []
     for camera in cameras:
         wide = camera == "wide"

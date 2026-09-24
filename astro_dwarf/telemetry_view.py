@@ -298,6 +298,46 @@ def _camera_label(entry: dict[str, Any], fallback: Any = None) -> str | None:
     return None
 
 
+def explicit_auto_parameter_state(result: Any) -> dict[str, bool]:
+    """Cameras whose catalog entry has an explicit Auto Parameters flag.
+
+    Exposure ``currentMode`` 1 is the manual table. It is also what the
+    catalog still shows immediately after Auto Parameters is turned on, so
+    that mode must not be reported as off.
+    """
+    if not isinstance(result, dict):
+        return {}
+    data = result.get("data") if isinstance(result.get("data"), dict) else result
+    if not isinstance(data, dict):
+        return {}
+    found: dict[str, bool] = {}
+
+    def consider(entry: Any, fallback: Any = None) -> None:
+        if not isinstance(entry, dict):
+            return
+        name = _camera_label(entry, fallback)
+        if name is None or name in found:
+            return
+        flag = _explicit_auto_param(entry)
+        if flag is not None:
+            found[name] = flag
+
+    raw_cameras = data.get("cameraParams")
+    if isinstance(raw_cameras, list):
+        for entry in raw_cameras:
+            consider(entry)
+    cleaned = data.get("cameras")
+    if isinstance(cleaned, dict):
+        for key, entry in cleaned.items():
+            consider(entry, key)
+    elif isinstance(cleaned, list):
+        for index, entry in enumerate(cleaned):
+            consider(entry, index)
+    for entry in data.get("shootingTechSettings") or []:
+        consider(entry)
+    return found
+
+
 def auto_parameter_cameras(result: Any) -> list[str]:
     """Tele and wide cameras with the mobile app's Auto Parameters switch on.
 
@@ -450,9 +490,10 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
     if isinstance(catalog, dict) and (
         catalog.get("cameraParams") or catalog.get("cameras") or catalog.get("shootingTechSettings")
     ):
-        reported = set(auto_parameter_cameras(result))
-        changes["auto_parameters_tele"] = "tele" in reported
-        changes["auto_parameters_wide"] = "wide" in reported
+        for camera, flag in explicit_auto_parameter_state(result).items():
+            changes[f"auto_parameters_{camera}"] = flag
+        for camera in auto_parameter_cameras(result):
+            changes.setdefault(f"auto_parameters_{camera}", True)
     return changes
 
 

@@ -73,6 +73,24 @@ def test_dso_entry_restores_dso_slots_not_photo() -> None:
     _assert(("count", "40", "tele") in steps, steps)
 
 
+def test_auto_parameters_stays_on_across_modes() -> None:
+    settings = ControlSettings(
+        shooting_mode=1,
+        auto_parameters="true",
+        exposure="15",
+        gain="60",
+        wide_exposure="10",
+        wide_gain="40",
+        photo_exposure="",
+        photo_gain="",
+    )
+    photo = shooting_mode_camera_steps(settings, 1, include_wide=True)
+    dso = shooting_mode_camera_steps(settings, 2, include_wide=True)
+    _assert(photo == [("auto_parameters", "true", "tele"), ("auto_parameters", "true", "wide")], photo)
+    _assert(dso == [("auto_parameters", "true", "tele"), ("auto_parameters", "true", "wide")], dso)
+    _assert(("exposure", "15", "tele") not in dso, dso)
+
+
 def test_empty_mode_enables_auto_parameters() -> None:
     settings = ControlSettings(shooting_mode=1, exposure="15", gain="60")
     steps = shooting_mode_camera_steps(settings, 1, include_wide=True)
@@ -116,7 +134,19 @@ def test_camera_read_reports_auto_and_does_not_clear_it() -> None:
         }
     )
     _assert(changes.get("auto_parameters_tele") is True, changes)
-    _assert(changes.get("auto_parameters_wide") is False, changes)
+    _assert("auto_parameters_wide" not in changes, changes)
+    explicit = camera_params_to_telemetry(
+        {
+            "data": {
+                "cameraParams": [
+                    {"cameraId": 0, "isAuto": False},
+                    {"cameraId": 1, "isAuto": True},
+                ]
+            }
+        }
+    )
+    _assert(explicit.get("auto_parameters_tele") is False, explicit)
+    _assert(explicit.get("auto_parameters_wide") is True, explicit)
     cleared: list[str] = []
     original_clear = worker._clear_auto_params
     original_sdk = worker.sdk_call
@@ -136,6 +166,7 @@ if __name__ == "__main__":
     test_stack_format_maps_legacy_indexes()
     test_stack_format_skip_uses_firmware_values()
     test_dso_entry_restores_dso_slots_not_photo()
+    test_auto_parameters_stays_on_across_modes()
     test_empty_mode_enables_auto_parameters()
     test_auto_telemetry_does_not_become_manual()
     test_camera_read_reports_auto_and_does_not_clear_it()

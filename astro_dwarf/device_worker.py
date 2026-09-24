@@ -54,7 +54,9 @@ from .domain import (
     album_entry_preview_path,
     album_folder_parent,
     album_folder_preview_path,
-    album_folder_root,
+    album_model_prefix_candidates,
+    album_root_from_entries,
+    album_unindexed_listing,
     album_http_path,
     album_http_url,
     album_is_astro_media,
@@ -78,6 +80,7 @@ from .domain import (
     capture_defaults_from_dict,
     choose_latest_astro_stack,
     device_name_model,
+    device_supports_wide,
     firmware_binning,
     firmware_exposure_name,
     firmware_stack_format,
@@ -3755,6 +3758,8 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     workflow = session["workflow"]
     mosaic = session["mosaic"]
     model_id = {"Dwarf II": "2", "Dwarf 3": "3", "Dwarf Mini": "5"}.get(_device.get("model"), "3")
+    if not device_supports_wide(_device.get("model")) and str(camera.get("camera") or "").lower() == "wide":
+        raise RuntimeError("The Dwarf Mini only has a telephoto camera")
 
     if not connect():
         if _stop.is_set():
@@ -4863,51 +4868,76 @@ def _album_synthetic_astronomy_folder(root: str) -> dict[str, Any]:
     }
 
 
+def _album_all_media_infos(ip: str) -> list[dict[str, Any]]:
+    groups: list[list[dict[str, Any]]] = []
+    for media_type in (0, ASTRO_MEDIA_TYPE, ASTRO_LIST_MEDIA_TYPE, 1, 2, 3, 5):
+        try:
+            groups.append(_album_media_infos(ip, media_type))
+        except Exception as exc:
+            log(f"Album type-{media_type} list skipped: {exc}", "debug")
+    return _album_filter_model(_album_unique_entries(groups))
+
+
+def _album_discover_root(ip: str, entries: list[dict[str, Any]]) -> tuple[str, bool]:
+    found = album_root_from_entries(entries)
+    if found:
+        _device["_album_root"] = found
+    remembered = str(_device.get("_album_root") or "").strip()
+    known = _device.get("_album_autoindex")
+    if remembered and known is True:
+        return remembered, True
+    if remembered and known is False:
+        return remembered, False
+    model = str(_device.get("model") or "")
+    candidates = [remembered] if remembered else list(album_model_prefix_candidates(model) or ("/DWARF3",))
+    for candidate in candidates:
+        listing = _album_dir_listing(ip, candidate)
+        if listing:
+            _device["_album_root"] = candidate
+            _device["_album_autoindex"] = True
+            return candidate, True
+    root = remembered or candidates[0]
+    _device["_album_root"] = root
+    _device["_album_autoindex"] = False
+    return root, False
+
+
+def _album_confirm_files(ip: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    confirmed: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry.get("isDir"):
+            confirmed.append(entry)
+            continue
+        remote = str(entry.get("filePath") or "").strip()
+        if not remote or not _album_http_exists(ip, remote):
+            continue
+        updated = dict(entry)
+        thumb = str(entry.get("thumbnailPath") or "").strip()
+        if thumb and not _album_http_exists(ip, thumb):
+            updated["thumbnailPath"] = ""
+        updated["fileAvailable"] = True
+        updated["previewResolved"] = True
+        confirmed.append(updated)
+    return confirmed
+
+
 def album_folder_list(folder: str = "") -> dict[str, Any]:
     ip = _device_ip()
     _album_model_matches()
-    model = str(_device.get("model") or "")
-    root = album_folder_root(model)
+    api_entries = _album_all_media_infos(ip)
+    root, indexed = _album_discover_root(ip, api_entries)
     requested = album_http_path(folder).rstrip("/")
     if not requested or not album_path_in_root(requested, root):
         requested = root
-    listing = _album_dir_listing(ip, requested)
+    listing = _album_dir_listing(ip, requested) if indexed else None
+    if not indexed or listing is None:
+        built = album_unindexed_listing(api_entries, requested, root)
+        sessions = _album_confirm_files(ip, built.get("sessions") or [])
+        log(f"Listed {len(sessions)} album items in {requested} on {ip} without a folder index")
+        return {"ip": ip, **built, "sessions": sessions}
     entries: list[dict[str, Any]] = []
-    astronomy = album_is_astronomy_category_folder(requested)
-    if astronomy:
+    if album_is_astronomy_category_folder(requested):
         entries = _album_astro_session_folder_entries()
-        if listing is None:
-            log(f"Listed {len(entries)} astronomy sessions on {ip}")
-            return {
-                "ip": ip,
-                "directory": requested,
-                "parent": album_folder_parent(requested, root),
-                "root": root,
-                "sessions": entries,
-            }
-    elif listing is None and album_is_astro_session_folder(requested):
-        name = requested.rsplit("/", 1)[-1]
-        stacked = album_join_path(requested, "stacked.jpg")
-        thumb = album_folder_preview_path(requested)
-        log(f"Listed astronomy session {requested} on {ip}")
-        return {
-            "ip": ip,
-            "directory": requested,
-            "parent": album_folder_parent(requested, root),
-            "root": root,
-            "sessions": [{
-                "fileName": name,
-                "filePath": stacked,
-                "thumbnailPath": thumb,
-                "mediaType": ASTRO_MEDIA_TYPE,
-                "modificationTime": 0,
-                "isDir": False,
-                "fileAvailable": True,
-                "previewResolved": bool(thumb),
-            }],
-        }
-    elif listing is None:
-        raise RuntimeError(f"Could not list {requested} on the telescope")
     seen = {
         album_http_path(str(entry.get("filePath") or "")).rstrip("/")
         for entry in entries
@@ -4971,6 +5001,7 @@ def album_folder_list(folder: str = "") -> dict[str, Any]:
         "parent": album_folder_parent(requested, root),
         "root": root,
         "sessions": entries,
+        "notice": "",
     }
 
 
@@ -5384,6 +5415,8 @@ def _prepare_manual_stack(camera: str = "", count: Any = None, stack_format: Any
         raise RuntimeError("Could not enter astro mode")
     _apply_stack_format(stack_format)
     choice = str(camera or _device.get("camera") or "tele").strip().lower()
+    if not device_supports_wide(_device.get("model")) and choice == "wide":
+        raise RuntimeError("The Dwarf Mini only has a telephoto camera")
     _device["camera"] = choice
     defaults = capture_defaults_from_dict(_device.get("capture_defaults") or {})
     chosen = _param_int(count)

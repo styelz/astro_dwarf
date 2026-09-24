@@ -1058,13 +1058,18 @@ Item {
                     enabled: root.commandEnabled("set_auto_params") && cameraPanel.captureParamsEnabled
                     accessibleName: "Auto parameters"
                     tooltip: "Let both cameras set exposure, gain, filter, and frame count for this PHOTO or DSO mode, as the mobile app does.\nA manual exposure, gain, filter, or stack count turns this off for that camera."
-                    readonly property bool liveOn: {
-                        const tele = root.scopeTelemetry.auto_parameters_tele === true
-                        const wide = cameraPanel.miniBody || root.scopeTelemetry.auto_parameters_wide === true
-                        return tele && wide
+                    readonly property var teleRaw: root.scopeTelemetry.auto_parameters_tele
+                    readonly property var wideRaw: root.scopeTelemetry.auto_parameters_wide
+                    function applyLive() {
+                        if (teleRaw !== true && teleRaw !== false)
+                            return
+                        if (!cameraPanel.miniBody && wideRaw !== true && wideRaw !== false)
+                            return
+                        setOn(teleRaw === true && (cameraPanel.miniBody || wideRaw === true))
                     }
-                    onLiveOnChanged: setOn(liveOn)
-                    Component.onCompleted: setOn(liveOn)
+                    onTeleRawChanged: applyLive()
+                    onWideRawChanged: applyLive()
+                    Component.onCompleted: applyLive()
                     onClicked: backend.setCameraParam(backend.selectedDeviceId, "auto_parameters", checked ? "true" : "false")
                 }
                 HudCheck {
@@ -1136,13 +1141,6 @@ Item {
                     visible: cameraPanel.teleSelected
                     HudField { id: liveHue; Layout.fillWidth: true; placeholderText: "hue"; accessibleName: "Hue"; tooltip: "Image hue shift."; enabled: root.commandEnabled("set_hue"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_hue : root.scopeTelemetry.hue; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "hue", value) } }
                     HudField { id: liveSharpness; Layout.fillWidth: true; placeholderText: "shp"; accessibleName: "Sharpness"; tooltip: "Image sharpening."; enabled: root.commandEnabled("set_sharpness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_sharpness : root.scopeTelemetry.sharpness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "sharpness", value) } }
-                }
-                FieldLabel { text: "MEDIA" }
-                HudButton {
-                    text: "OPEN MEDIA"
-                    Layout.fillWidth: true
-                    tooltip: "Open the Media page\nfor this telescope's album."
-                    onClicked: root.goToPage(root.mediaPageIndex)
                 }
             }
         }
