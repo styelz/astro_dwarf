@@ -4377,12 +4377,17 @@ class AppBackend(QObject):
         return self._device_fov(camera=mosaic_stack_camera(camera))
 
     def _sky_map_fov(self, *, mosaic_grid: bool = False) -> tuple[float, float, str]:
+        # A planned grid uses the selected lens, so Wide stays wide above 1×1.
+        # A mosaic that is already running keeps the tele grid it was commanded
+        # with; those pane centres must not be redrawn at the wide field.
         stacking = self._sky_live_uses_stack_frame()
-        if mosaic_grid and not stacking:
-            return self._mosaic_fov()
+        device_id = str(self._selected_device_id or "")
+        live = self._live_mosaic.get(device_id)
+        if mosaic_grid and self._live_mosaic_running(device_id, live):
+            return self._device_fov(camera=mosaic_stack_camera((live or {}).get("camera")))
         device = self._schedule_device()
         selected = device.camera if device is not None else Camera.TELE
-        return self._device_fov(camera=sky_map_camera(selected, mosaic_grid=mosaic_grid, stacking=stacking))
+        return self._device_fov(camera=sky_map_camera(selected, stacking=stacking))
 
     def _mosaic_group_sessions(self, device_id: str, group_id: str) -> list[Session]:
         return mosaic_group_sessions(self.store.sessions, device_id, group_id)

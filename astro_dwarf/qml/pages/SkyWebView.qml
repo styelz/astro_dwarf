@@ -226,7 +226,8 @@ Item {
         const viewPart = grid && isFinite(ra) && isFinite(dec)
             ? ra.toFixed(3) + "," + dec.toFixed(2)
             : ""
-        const overlayFov = grid ? backend.mosaicFovText : backend.skyFovText
+        const capturing = String((backend.mosaicPreview && backend.mosaicPreview.phase) || "") !== ""
+        const overlayFov = (grid && capturing) ? backend.mosaicFovText : backend.skyFovText
         return [
             map.selectedKey,
             viewPart,
@@ -662,6 +663,12 @@ Item {
         function onHostTitle(title) {
             map.handleHostTitle(title)
         }
+    }
+
+    // Windows QtWebView has no contextMenuAt. The Linux WebEngine item does,
+    // because accepting its menu request swallows the DOM event.
+    Connections {
+        target: map.engineItem && map.engineItem.contextMenuAt ? map.engineItem : null
         function onContextMenuAt(x, y) {
             map.contextMenuRequested(Number(x) || 0, Number(y) || 0)
         }

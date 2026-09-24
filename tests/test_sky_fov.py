@@ -29,9 +29,9 @@ def test_overlay_follows_selected_camera() -> None:
     _assert(sky_map_camera(Camera.WIDE) is Camera.WIDE, "wide enum")
 
 
-def test_mosaic_plan_and_stack_stay_on_tele() -> None:
+def test_mosaic_plan_follows_selected_camera() -> None:
     _assert(sky_map_camera("wide") is Camera.WIDE, "1×1 live FOV still follows Wide")
-    _assert(sky_map_camera("wide", mosaic_grid=True) is Camera.TELE, "mosaic grid")
+    _assert(sky_map_camera("wide", mosaic_grid=True) is Camera.WIDE, "wide mosaic grid")
     _assert(sky_map_camera("tele", mosaic_grid=True) is Camera.TELE, "tele mosaic grid")
     _assert(sky_map_camera("wide", stacking=True) is Camera.TELE, "stacking")
     _assert(sky_map_camera("wide", mosaic_grid=True, stacking=True) is Camera.TELE, "stacking wins")
@@ -106,7 +106,7 @@ def test_stellarium_overlay_listens_once() -> None:
 
 if __name__ == "__main__":
     test_overlay_follows_selected_camera()
-    test_mosaic_plan_and_stack_stay_on_tele()
+    test_mosaic_plan_follows_selected_camera()
     test_mosaic_stack_camera_ignores_selected_wide()
     test_dwarf3_wide_fov_is_much_larger_than_tele()
     test_implausible_firmware_fov_is_replaced()

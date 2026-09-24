@@ -139,7 +139,11 @@ Item {
                                        && (skyPage.mapLive || mapLoader.active)
                                        && !skyPage.mapInitialReady
                                        && !skyPage.mapInitialFailed
-    readonly property string overlayFovText: skyPage.mosaicGrid
+    readonly property bool mosaicCapture: {
+        const preview = backend.mosaicPreview || {}
+        return String(preview.phase || "") !== ""
+    }
+    readonly property string overlayFovText: (skyPage.mosaicGrid && skyPage.mosaicCapture)
                                             ? backend.mosaicFovText
                                             : backend.skyFovText
     readonly property string targetSubtitle: {
@@ -475,7 +479,7 @@ Item {
     }
 
     readonly property string mosaicHint: "Pane preview is a Telescopius-style camera frame for "
-                                         + backend.mosaicFovText
+                                         + skyPage.overlayFovText
                                          + ". EQ camera-up is east of north: unset is 0° N-up in the north and 180° S-up in the south. Alt-az follows the zenith."
 
     ColumnLayout {

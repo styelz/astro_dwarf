@@ -209,7 +209,8 @@ Item {
         const viewPart = grid && isFinite(ra) && isFinite(dec)
             ? ra.toFixed(3) + "," + dec.toFixed(2)
             : ""
-        const overlayFov = grid ? backend.mosaicFovText : backend.skyFovText
+        const capturing = String((backend.mosaicPreview && backend.mosaicPreview.phase) || "") !== ""
+        const overlayFov = (grid && capturing) ? backend.mosaicFovText : backend.skyFovText
         return [
             map.selectedKey,
             viewPart,

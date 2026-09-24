@@ -1155,11 +1155,14 @@ def sky_map_camera(
 ) -> Camera:
     """Lens used for the SKY map FOV rectangle.
 
-    The live FOV box follows the selected camera. Mosaic pane spacing and
-    STACK MOSAIC stay on tele so overlay numbers, RA/Dec, and GOTO match.
-    Live stacking frames also stay tele so JPEG previews do not inflate.
+    The box follows the selected camera, including a multi-pane plan. A 2×2
+    with Wide selected is a wide grid, not a jump to the tele field.
+    Live stacking frames stay tele so JPEG previews do not inflate.
+    ``mosaic_grid`` is retained so older callers keep working; it no longer
+    changes the lens.
     """
-    if stacking or mosaic_grid:
+    _ = mosaic_grid
+    if stacking:
         return Camera.TELE
     return _as_camera(selected)
 
