@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from astro_dwarf.mac_keyboard import find_named_view
+from astro_dwarf.mac_keyboard import find_named_view, qpa_blocks_appkit, sync_keyboard_owner
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -37,6 +38,16 @@ class MacKeyboardTests(unittest.TestCase):
         self.assertIn("font.preferShaping: true", field)
         self.assertIn("font.preferShaping: true", spin)
         self.assertIn("setMacWebViewTyping", main)
+
+    def test_offscreen_qpa_skips_appkit(self):
+        self.assertTrue(qpa_blocks_appkit("offscreen"))
+        self.assertTrue(qpa_blocks_appkit("offscreen:debug"))
+        self.assertFalse(qpa_blocks_appkit("cocoa"))
+        self.assertFalse(qpa_blocks_appkit(""))
+        window = mock.Mock()
+        self.assertTrue(sync_keyboard_owner(window, web_view=False))
+        self.assertFalse(sync_keyboard_owner(window, web_view=True))
+        window.winId.assert_not_called()
 
 
 if __name__ == "__main__":

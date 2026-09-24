@@ -276,7 +276,7 @@ jobs:
           cp packaging/icons/hicolor/256x256/apps/astro-dwarf.png AppDir/astro-dwarf.png
           cp packaging/icons/hicolor/256x256/apps/astro-dwarf.png AppDir/.DirIcon
           chmod +x AppDir/AppRun AppDir/usr/bin/AstroDwarf AppDir/usr/bin/AstroDwarfWorker
-          curl -fsSL -o appimagetool \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir \
@@ -287,7 +287,7 @@ jobs:
         run: |
           sed -i 's/\r$//' packaging/linux/astro-dwarf packaging/linux/AppRun packaging/linux/postinstall.sh
           chmod +x packaging/linux/astro-dwarf packaging/linux/postinstall.sh
-          curl -fsSL \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
             https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz \
             | tar -xz -C "$RUNNER_TEMP" nfpm
           "$RUNNER_TEMP/nfpm" package \

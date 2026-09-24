@@ -8,6 +8,7 @@ shows a caret. In both cases the caret blinks and nothing is inserted.
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any, Callable
 
@@ -25,9 +26,31 @@ def find_named_view(root: Any, name: str, *, children: Callable[[Any], list], cl
     return None
 
 
+def qpa_blocks_appkit(platform: str | None = None) -> bool:
+    """True when this process is not a Cocoa Qt session.
+
+    The installer smoke test uses the offscreen plugin. Its window id is not
+    an NSView, and messaging it through AppKit aborts the process.
+    """
+    raw = os.environ.get("QT_QPA_PLATFORM") if platform is None else platform
+    name = str(raw or "").split(":")[0].strip()
+    if name and name != "cocoa":
+        return True
+    if platform is not None:
+        return False
+    try:
+        from PySide6.QtGui import QGuiApplication
+
+        app = QGuiApplication.instance()
+        active = str(app.platformName() if app is not None else "")
+    except Exception:
+        active = ""
+    return bool(active) and active != "cocoa"
+
+
 def sync_keyboard_owner(window, *, web_view: bool) -> bool:
     """Point AppKit at WKWebView or the Qt view. False if the web view is not up yet."""
-    if sys.platform != "darwin" or window is None:
+    if sys.platform != "darwin" or window is None or qpa_blocks_appkit():
         return not web_view
     try:
         host = int(window.winId() or 0)
