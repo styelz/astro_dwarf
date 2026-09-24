@@ -341,30 +341,24 @@ jobs:
           path: release
           merge-multiple: true
 
-      - name: Remove previous version releases and tags
+      - name: Replace this version if it already exists
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          is_version_tag() {
-            [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          }
-          while IFS= read -r tag; do
-            if [[ -z "${tag}" ]]; then
-              continue
-            fi
-            if is_version_tag "${tag}"; then
-              echo "Deleting GitHub release ${tag}"
-              gh release delete "${tag}" --yes --cleanup-tag
-            fi
-          done < <(gh release list --limit 1000 --json tagName --jq '.[].tagName')
-          while IFS= read -r ref; do
-            tag="${ref#refs/tags/}"
-            if is_version_tag "${tag}"; then
-              echo "Deleting leftover tag ${tag}"
-              git push origin --delete "refs/tags/${tag}"
-            fi
-          done < <(git ls-remote --tags --refs origin | awk '{print $2}')
+          # A newer version keeps every other release. Only the tag being
+          # published is replaced, so a workflow_dispatch rebuild can update
+          # that one release without removing older versions.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Replacing GitHub release ${TAG}"
+            gh release delete "${TAG}" --yes --cleanup-tag
+          else
+            echo "No existing release for ${TAG}; keeping previous releases"
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Deleting leftover tag ${TAG}"
+            git push origin --delete "refs/tags/${TAG}"
+          fi
 
       - name: Record version and tag
         run: |
