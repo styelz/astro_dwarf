@@ -1,6 +1,6 @@
 # Astro Dwarf
 
-Tired of babysitting a Dwarf all night? Astro Dwarf is a desktop controller and unattended imaging scheduler for [Dwarf II](https://dwarflab.com/), Dwarf 3, and Dwarf Mini.
+Astro Dwarf is a desktop controller and unattended imaging scheduler for [Dwarf II](https://dwarflab.com/), Dwarf 3, and Dwarf Mini.
 
 [Project site](https://styelz.github.io/astro_dwarf/) · [Download](https://github.com/styelz/astro_dwarf/releases/latest)
 
@@ -41,3 +41,5 @@ chmod +x AstroDwarf-*-linux-x86_64.AppImage
 Set each telescope’s IP, model, and location in Settings. Start the scheduler from Control when you are ready to run the night.
 
 Astro Dwarf is an unofficial third-party tool. It is not affiliated with, endorsed by, or supported by [DwarfLab](https://dwarflab.com/) or [Stellarium Labs](https://stellarium-labs.com/). Licensed under the [MIT License](LICENSE).
+
+Telescope communication uses [dwarf_python_api](https://github.com/stevejcl/dwarf_python_api) by [stevejcl](https://github.com/stevejcl).
