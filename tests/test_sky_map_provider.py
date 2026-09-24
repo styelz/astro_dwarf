@@ -154,6 +154,7 @@ def test_map_left_click_dismisses_context_menu() -> None:
     web = sky_web_fov_script({})
     _assert("ctl.dismissAt = Date.now()" in web, "stellarium left click")
     _assert("astro-dwarf-host:menu" in web, "stellarium pushes the right-click")
+    _assert("ctl.timer = setTimeout" in web, "stellarium redraws without animation frames")
     _assert("ev.button !== 0" in web, "stellarium ignores the opening right-click")
     _assert("ctl.dismissAt = 0" in web, "stellarium right-click clears a stale dismiss")
     _assert('return "dismiss"' in SKY_WEB_DISMISS_POLL_JS and "ctl.dismissAt = 0" in SKY_WEB_DISMISS_POLL_JS, "stellarium poll")

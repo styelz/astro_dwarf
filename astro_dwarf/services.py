@@ -1745,12 +1745,17 @@ SKY_WEB_FOV_JS = r"""
   }
   function tick() {
     var ctl = window[CTL];
-    if (!ctl || ctl.paused) return;
-    ctl.raf = requestAnimationFrame(function() {
+    if (!ctl || ctl.paused || ctl.timer) return;
+    // Linux WebEngine with GPU compositing off does not deliver animation
+    // frames, so the field rectangle stayed where the last script inject drew it.
+    ctl.timer = setTimeout(function() {
       var next = window[CTL];
-      if (next && !next.paused && typeof next.tick === "function") next.tick();
-    });
-    try { (ctl.draw || draw)(false); } catch (err) {}
+      if (!next) return;
+      next.timer = 0;
+      if (next.paused) return;
+      try { (next.draw || draw)(false); } catch (err) {}
+      if (typeof next.tick === "function") next.tick();
+    }, 40);
   }
   function asSweObj(obj) {
     return obj && typeof obj.v === "number" ? obj : null;
@@ -1899,6 +1904,10 @@ SKY_WEB_FOV_JS = r"""
     var ctl = window[CTL];
     if (ctl && ctl.raf)
       cancelAnimationFrame(ctl.raf);
+    if (ctl && ctl.timer) {
+      clearTimeout(ctl.timer);
+      ctl.timer = 0;
+    }
     if (!ctl) {
       ctl = window[CTL] = {
         payload: p, payloadKey: "", lastKey: "", lastBase: "", lastPosKey: "", lastStatus: "", zSign: 0, raf: 0,

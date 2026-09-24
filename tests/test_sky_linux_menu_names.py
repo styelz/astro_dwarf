@@ -50,6 +50,11 @@ def test_linux_webengine_suppresses_native_context_menu() -> None:
         assert "request.accepted = true" in text, name
         assert "signal hostTitle" in text, name
         assert "onTitleChanged" in text, name
+    web = (QML / "pages" / "SkyWebEngineItem.qml").read_text(encoding="utf-8")
+    assert "signal contextMenuAt" in web
+    assert "root.contextMenuAt" in web
+    view = (QML / "pages" / "SkyWebView.qml").read_text(encoding="utf-8")
+    assert "onContextMenuAt" in view
     for name in ("SkyWebNativeItem.qml", "SkyAtlasNativeItem.qml"):
         text = (QML / "pages" / name).read_text(encoding="utf-8")
         assert "signal hostTitle" in text, name

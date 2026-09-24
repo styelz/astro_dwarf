@@ -8,6 +8,7 @@ Item {
     property bool shown: true
     property int abortCount: 0
     signal hostTitle(string title)
+    signal contextMenuAt(real x, real y)
 
     function runJavaScript(script, callback) {
         view.runJavaScript(script, callback)
@@ -41,10 +42,12 @@ Item {
         onNewWindowRequested: function(request) {
             request.openIn(popupSink)
         }
-        // The page's contextmenu listener hands the click to the HUD menu.
-        // Accepting here stops Chromium's own menu from taking the gesture.
+        // Stellarium's WebGL canvas often never emits a DOM contextmenu on
+        // Linux once this request is accepted. The HUD menu has to open here.
+        // Aladin still gets the DOM event, so its engine item stays on that path.
         onContextMenuRequested: function(request) {
             request.accepted = true
+            root.contextMenuAt(Number(request.x) || 0, Number(request.y) || 0)
         }
         onJavaScriptDialogRequested: function(request) {
             request.accepted = true

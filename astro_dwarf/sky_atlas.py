@@ -1350,6 +1350,7 @@ ATLAS_ASTRO_JS = r"""
       if (isChrome(ev.target)) return;
       markMoved();
       box.setFovValue = 0;
+      requestAnimationFrame(function() { try { drawHorizon(); } catch (err) {} });
     }, true);
     if (aladin && typeof aladin.on === "function") {
       try { aladin.on("positionChanged", function() { if (box.lookGen !== gen) return; requestSync(); }); } catch (err) {}
@@ -1566,10 +1567,19 @@ ATLAS_VIEW_POLL_JS = r"""
     if (!pos || !isFinite(Number(pos[0])) || !isFinite(Number(pos[1]))) return "";
     var box = window.__astroDwarfAtlas;
     var fov = 0;
-    if (box && isFinite(Number(box.setFovValue)) && Number(box.setFovValue) > 0)
-      fov = Number(box.setFovValue);
-    else if (box && box.astro && typeof box.astro.inscribedFov === "function")
-      fov = Number(box.astro.inscribedFov());
+    var live = 0;
+    if (box && box.astro && typeof box.astro.inscribedFov === "function")
+      live = Number(box.astro.inscribedFov()) || 0;
+    var pinned = box && Number(box.setFovValue);
+    if (pinned > 0 && live > 0 && Math.abs(live - pinned) > Math.max(0.6, pinned * 0.04)) {
+      box.setFovValue = 0;
+      box.userMoved = true;
+      pinned = 0;
+    }
+    if (pinned > 0)
+      fov = pinned;
+    else if (live > 0)
+      fov = live;
     else {
       try {
         var zoom = aladin.getFov();
@@ -1594,6 +1604,9 @@ ATLAS_VIEW_POLL_JS = r"""
         view.az = hor.az;
         view.alt = hor.alt;
       }
+    }
+    if (box && box.astro && typeof box.astro.drawHorizon === "function") {
+      try { box.astro.drawHorizon(); } catch (err) {}
     }
     return JSON.stringify(view);
   } catch (err) {

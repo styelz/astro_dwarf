@@ -308,7 +308,7 @@ Item {
         map.runJavaScript(backend.skyWebPaneScript(backend.skyMosaicPaneUrls))
     }
     function pauseSkyEngine() {
-        map.runJavaScript("(function(){var c=window.__astroDwarfFovCtl;if(!c)return \"\";c.paused=true;if(c.raf){cancelAnimationFrame(c.raf);c.raf=0}return \"ok\"})()")
+        map.runJavaScript("(function(){var c=window.__astroDwarfFovCtl;if(!c)return \"\";c.paused=true;if(c.raf){cancelAnimationFrame(c.raf);c.raf=0}if(c.timer){clearTimeout(c.timer);c.timer=0}return \"ok\"})()")
     }
     function resumeSkyEngine() {
         map.runJavaScript("(function(){var c=window.__astroDwarfFovCtl;if(!c)return \"\";c.paused=false;if(typeof c.tick===\"function\")c.tick();return \"ok\"})()")
@@ -656,6 +656,9 @@ Item {
         }
         function onHostTitle(title) {
             map.handleHostTitle(title)
+        }
+        function onContextMenuAt(x, y) {
+            map.contextMenuRequested(Number(x) || 0, Number(y) || 0)
         }
     }
 
