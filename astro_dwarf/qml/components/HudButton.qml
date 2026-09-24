@@ -8,6 +8,7 @@ Button {
     property color foregroundColor: Theme.textPrimary
     property string busyText: ""
     property string tooltip: ""
+    property string accessibleName: ""
     property string accessibleDescription: ""
     property bool busy: false
     property int busyMs: 1400
@@ -25,7 +26,7 @@ Button {
     readonly property color lineColor: inactive ? Theme.disabledOutline : lit ? Theme.accent : Theme.outline
     hoverEnabled: enabled
     focusPolicy: Qt.StrongFocus
-    Accessible.name: text
+    Accessible.name: accessibleName !== "" ? accessibleName : text
     Accessible.description: isBusy && busyText !== "" ? busyText : (accessibleDescription || tooltip)
     HudToolTip {
         visible: hudBtn.tooltip !== "" && hudBtn.hovered

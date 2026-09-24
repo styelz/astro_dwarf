@@ -273,7 +273,8 @@ ATLAS_ASTRO_JS = r"""
 (function(){
   var box = window.__astroDwarfAtlas = window.__astroDwarfAtlas || {};
   if (box.astro && typeof box.astro.labelOnFov === "function" && typeof box.astro.drawScreenMosaic === "function"
-      && typeof box.astro.drawPaneMedia === "function" && typeof box.astro.bindLiveOpacityWheel === "function"
+      && typeof box.astro.drawPaneMedia === "function" && typeof box.astro.paintOverlayImages === "function"
+      && typeof box.astro.bindLiveOpacityWheel === "function"
       && typeof box.astro.paneCenterXY === "function" && typeof box.astro.overlayPixRoll === "function"
       && typeof box.astro.paintIndex === "function"
       && typeof box.astro.strokeTargetQuad === "function"
@@ -912,11 +913,25 @@ ATLAS_ASTRO_JS = r"""
     var url = urls[String(index)] || urls[index] || "";
     return url ? rememberImage("pane:" + index, url) : null;
   }
-  function liveMedia(index) {
+  function livePaneIndex() {
+    var n = Number(box.livePane || 0);
+    return n >= 1 ? n : 0;
+  }
+  function paneStills() {
+    var urls = box.paneUrls || {};
+    for (var key in urls) {
+      if (urls[key]) return true;
+    }
+    return false;
+  }
+  function liveFrame() {
     if (!box.liveEnabled || !box.liveUrl) return null;
-    var livePane = Number(box.livePane || 0);
-    if (livePane !== 0 && livePane !== Number(index)) return null;
     return rememberImage("live", box.liveUrl);
+  }
+  function imageForPane(index) {
+    var livePane = livePaneIndex();
+    if (livePane && livePane === Number(index)) return liveFrame();
+    return paneMedia(index);
   }
   function mediaCanvas(width, height) {
     var canvas = box.mediaCanvas;
@@ -930,30 +945,78 @@ ATLAS_ASTRO_JS = r"""
   }
   function drawImageIn(ctx, img, pts, opacity) {
     if (!img || !img.width || !pts || pts.length < 4) return;
+    var p0 = pts[0], p1 = pts[1], p3 = pts[3] || pts[2];
+    if (!p0 || !p1 || !p3) return;
     ctx.save();
     ctx.globalAlpha = opacity;
     ctx.beginPath();
-    ctx.moveTo(pts[0][0], pts[0][1]);
+    ctx.moveTo(p0[0], p0[1]);
     for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
     ctx.closePath();
     ctx.clip();
-    var xs = pts.map(function(pt) { return pt[0]; });
-    var ys = pts.map(function(pt) { return pt[1]; });
-    var left = Math.min.apply(null, xs);
-    var top = Math.min.apply(null, ys);
-    var width = Math.max.apply(null, xs) - left;
-    var height = Math.max.apply(null, ys) - top;
-    if (width > 1 && height > 1)
-      ctx.drawImage(img, left, top, width, height);
+    var w = 100, h = 100;
+    ctx.setTransform(
+      (p1[0] - p0[0]) / w, (p1[1] - p0[1]) / w,
+      (p3[0] - p0[0]) / h, (p3[1] - p0[1]) / h,
+      p0[0], p0[1]
+    );
+    ctx.drawImage(img, 0, 0, w, h);
+    box.mediaPainted = (Number(box.mediaPainted) || 0) + 1;
     ctx.restore();
   }
   function drawPaneMedia(ctx, index, pts, x, y, w, h) {
-    var live = liveMedia(index);
-    var pane = live ? null : paneMedia(index);
-    var img = live || pane;
+    var img = imageForPane(index);
     if (!img) return;
     if (pts) drawImageIn(ctx, img, pts, 1);
-    else if (w > 1 && h > 1) ctx.drawImage(img, x, y, w, h);
+    else if (w > 1 && h > 1) {
+      ctx.drawImage(img, x, y, w, h);
+      box.mediaPainted = (Number(box.mediaPainted) || 0) + 1;
+    }
+  }
+  function drawLiveFrame(ctx, quad, x, y, w, h) {
+    var img = liveFrame();
+    if (!img) return;
+    if (quad && quad.length >= 4) {
+      drawImageIn(ctx, img, quad, 1);
+      return;
+    }
+    if (w > 1 && h > 1) {
+      ctx.drawImage(img, x, y, w, h);
+      box.mediaPainted = (Number(box.mediaPainted) || 0) + 1;
+    }
+  }
+  function centerPaneQuad(projected) {
+    var quads = [];
+    for (var i = 0; i < (projected || []).length; i++) {
+      if (projected[i].quad && projected[i].quad.length >= 4)
+        quads.push(projected[i].quad);
+    }
+    if (!quads.length) return null;
+    if (quads.length === 1) return quads[0];
+    var q0 = quads[0];
+    var ux = (q0[1][0] - q0[0][0]) / 2, uy = (q0[1][1] - q0[0][1]) / 2;
+    var vx = (q0[3][0] - q0[0][0]) / 2, vy = (q0[3][1] - q0[0][1]) / 2;
+    var outer = outerQuad(projected);
+    if (outer.length < 4) return q0;
+    var cx = 0, cy = 0;
+    for (var n = 0; n < 4; n++) { cx += outer[n][0]; cy += outer[n][1]; }
+    cx /= 4; cy /= 4;
+    return [
+      [cx - ux - vx, cy - uy - vy],
+      [cx + ux - vx, cy + uy - vy],
+      [cx + ux + vx, cy + uy + vy],
+      [cx - ux + vx, cy - uy + vy]
+    ];
+  }
+  function paintOverlayImages(ctx, panes, centerQuad, x, y, w, h) {
+    if (livePaneIndex() || paneStills()) {
+      for (var i = 0; i < panes.length; i++) {
+        var pane = panes[i];
+        drawPaneMedia(ctx, pane.index, pane.quad || null, pane.x, pane.y, pane.w, pane.h);
+      }
+      return;
+    }
+    drawLiveFrame(ctx, centerQuad, x, y, w, h);
   }
   function mediaOverlay() {
     var el = document.getElementById("astro-dwarf-mosaic-media");
@@ -997,7 +1060,10 @@ ATLAS_ASTRO_JS = r"""
     mctx.globalCompositeOperation = "source-over";
     mctx.clearRect(0, 0, width, height);
     mctx.globalCompositeOperation = "lighten";
+    box.mediaPainted = 0;
     paint(mctx);
+    if (!box.mediaPainted)
+      return;
     var overlay = mediaOverlay();
     if (overlay.width !== width) overlay.width = width;
     if (overlay.height !== height) overlay.height = height;
@@ -1006,10 +1072,11 @@ ATLAS_ASTRO_JS = r"""
       var octx = overlay.getContext("2d");
       var t = ctx.getTransform();
       octx.setTransform(1, 0, 0, 1, 0, 0);
-      octx.clearRect(0, 0, width, height);
+      octx.globalCompositeOperation = "copy";
       octx.setTransform(t.a, t.b, t.c, t.d, t.e, t.f);
       octx.drawImage(off, 0, 0);
       octx.setTransform(1, 0, 0, 1, 0, 0);
+      octx.globalCompositeOperation = "source-over";
       overlay.style.opacity = String(liveOpacity());
       placed = true;
     } catch (err) {
@@ -1059,8 +1126,10 @@ ATLAS_ASTRO_JS = r"""
       blitMosaicMedia(ctx, width, height, function(mctx) {
         mctx.translate(width / 2, height / 2);
         mctx.rotate(tilt);
+        var placed = [];
         for (var i = 0; i < cells.length; i++)
-          drawPaneMedia(mctx, cells[i].index, null, cells[i].x, cells[i].y, w, h);
+          placed.push({index: cells[i].index, x: cells[i].x, y: cells[i].y, w: w, h: h});
+        paintOverlayImages(mctx, placed, null, -w / 2, -h / 2, w, h);
       });
     }
     ctx.save();
@@ -1091,7 +1160,8 @@ ATLAS_ASTRO_JS = r"""
     return rotatedRect(width / 2, height / 2, totalW, totalH, tilt);
   }
   function paintFov(ctx, width, height) {
-    clearMediaOverlay();
+    if (!hasMosaicMedia())
+      clearMediaOverlay();
     var fovH = Number(box.fovH);
     var fovV = Number(box.fovV);
     if (!(fovH > 0) || !(fovV > 0)) return;
@@ -1165,10 +1235,7 @@ ATLAS_ASTRO_JS = r"""
         }
         if (hasMosaicMedia()) {
           blitMosaicMedia(mctxHost, width, height, function(mctx) {
-            for (var ri = 0; ri < projected.length; ri++) {
-              if (projected[ri].quad)
-                drawPaneMedia(mctx, projected[ri].index, projected[ri].quad, 0, 0, 0, 0);
-            }
+            paintOverlayImages(mctx, projected, centerPaneQuad(projected), 0, 0, 0, 0);
           });
         } else {
           clearMediaOverlay();
@@ -1183,10 +1250,7 @@ ATLAS_ASTRO_JS = r"""
       }
       if (hasMosaicMedia()) {
         blitMosaicMedia(ctx, width, height, function(mctx) {
-          for (var i = 0; i < projected.length; i++) {
-            if (projected[i].quad)
-              drawPaneMedia(mctx, projected[i].index, projected[i].quad, 0, 0, 0, 0);
-          }
+          paintOverlayImages(mctx, projected, centerPaneQuad(projected), 0, 0, 0, 0);
         });
       }
       for (var i = 0; i < projected.length; i++) {
@@ -1298,13 +1362,12 @@ ATLAS_ASTRO_JS = r"""
       box.mediaRev || 0,
       box.liveEnabled ? 1 : 0,
       box.livePane || 0,
-      liveOpacity(),
       box.dragging ? 1 : 0
     ].join("|");
   }
   function skyFingerprint(aladin, size) {
     var full = paintFingerprint(aladin, size);
-    var media = "|" + (box.mediaRev || 0) + "|" + (box.liveEnabled ? 1 : 0) + "|" + (box.livePane || 0) + "|" + liveOpacity();
+    var media = "|" + (box.mediaRev || 0) + "|" + (box.liveEnabled ? 1 : 0) + "|" + (box.livePane || 0);
     var at = full.lastIndexOf(media);
     return at >= 0 ? full.slice(0, at) + full.slice(at + media.length) : full;
   }
@@ -1438,19 +1501,40 @@ ATLAS_ASTRO_JS = r"""
       if (typeof ev.stopImmediatePropagation === "function")
         ev.stopImmediatePropagation();
       if (!box.liveEnabled) return;
-      var delta = -Number(ev.deltaY);
-      if (!isFinite(delta) || delta === 0) return;
-      if (ev.deltaMode === 1) delta *= 16;
-      else if (ev.deltaMode === 2) delta *= 120;
-      var cur = liveOpacity();
-      var next = Math.max(0, Math.min(1, Math.round((cur + delta / 120 * 0.05) * 100) / 100));
-      if (next === cur) return;
-      box.liveOpacity = next;
+      var dy = Number(ev.deltaY);
+      if (!isFinite(dy) || dy === 0) return;
+      if (ev.deltaMode === 1) dy *= 16;
+      else if (ev.deltaMode === 2) dy *= 120;
+      // Ctrl+wheel on Windows reports zoom-sized pixel deltas. One event
+      // must not be able to slam the overlay from bright to invisible.
+      if (dy > 120) dy = 120;
+      if (dy < -120) dy = -120;
+      box.wheelNotches = (Number(box.wheelNotches) || 0) + (-dy / 120);
       box.wheelOpacity = true;
+      box.wheelUntil = Date.now() + 600;
       box.opacityAt = Date.now();
-      if (box.mediaCss && applyMediaOpacity())
+      if (box.opacityRaf)
         return;
-      drawHorizon();
+      box.opacityRaf = requestAnimationFrame(function() {
+        var live = window.__astroDwarfAtlas;
+        if (!live) return;
+        live.opacityRaf = 0;
+        var notches = Number(live.wheelNotches) || 0;
+        live.wheelNotches = 0;
+        if (notches > 1) notches = 1;
+        if (notches < -1) notches = -1;
+        if (!notches) return;
+        var cur = liveOpacity();
+        var next = Math.max(0, Math.min(1, Math.round((cur + notches * 0.05) * 100) / 100));
+        if (next === cur) return;
+        live.liveOpacity = next;
+        live.wheelOpacity = true;
+        live.wheelUntil = Date.now() + 600;
+        live.opacityAt = Date.now();
+        if (live.mediaCss && applyMediaOpacity())
+          return;
+        drawHorizon();
+      });
     }, {capture: true, passive: false});
   }
   function objectName(obj) {
@@ -1617,6 +1701,7 @@ ATLAS_ASTRO_JS = r"""
     strokeTargetQuad: strokeTargetQuad,
     drawScreenMosaic: drawScreenMosaic,
     drawPaneMedia: drawPaneMedia,
+    paintOverlayImages: paintOverlayImages,
     overlayPixRoll: overlayPixRoll,
     horizonOf: function(raDeg, decDeg) {
       if (!box.hasSite) return null;
@@ -2076,7 +2161,10 @@ ATLAS_LIVE_JS = r"""
   box.liveUrl = href;
   var op = Number(opacity);
   if (!isFinite(op) || op < 0 || op > 1) op = 0.65;
-  if (box.wheelOpacity) {
+  if (Date.now() < (Number(box.wheelUntil) || 0)) {
+    // The wheel gesture owns opacity until it settles. A live-frame push
+    // still carries the previous host value and would snap the image back.
+  } else if (box.wheelOpacity) {
     if (Math.abs(Number(box.liveOpacity) - op) < 0.005)
       box.wheelOpacity = false;
   } else {

@@ -171,9 +171,17 @@ Item {
         return Qt.formatDate(calendarPage.dateFromKey(item.observing_date), "d MMM") + "  " + item.start_time
     }
     readonly property var nightSessions: calendarPage.sessionsForDay(calendarPage.dateKey(calendarPage.selectedDate))
+    property int sidebarStatusFilter: 0
+    readonly property var sidebarStatusKeys: ["", "planned", "running", "done", "error", "skipped"]
+    readonly property bool sidebarFilterActive: calendarSidebarFilter.query !== "" || sidebarStatusFilter !== 0
     readonly property var sidebarSessions: Util.calendarEntriesForKeys(
         calendarPage.calendarBuckets,
         Object.keys(calendarPage.selectedDayKeys || {})
+    )
+    readonly property var filteredSidebarSessions: Util.filterByQueryAndStatus(
+        calendarPage.sidebarSessions,
+        calendarSidebarFilter.query,
+        calendarPage.sidebarStatusKeys[calendarPage.sidebarStatusFilter] || ""
     )
     readonly property int shownMonthSessionCount: {
         const prefix = calendarPage.shownMonth.getFullYear() + "-" + String(calendarPage.shownMonth.getMonth() + 1).padStart(2, "0")
@@ -1762,7 +1770,8 @@ Item {
         }
         HudPanel {
             id: nightPanel
-            readonly property var nightSessions: calendarPage.sidebarSessions
+            readonly property var nightSessions: calendarPage.filteredSidebarSessions
+            readonly property var nightSessionsAll: calendarPage.sidebarSessions
             readonly property int nightSeconds: nightSessions.reduce((sum, item) => sum + calendarPage.sessionSpanSeconds(item), 0)
             visible: calendarPage.viewMode === 0
             title: {
@@ -1780,6 +1789,19 @@ Item {
                 HudChip { visible: nightPanel.nightSeconds > 0; label: "PLAN"; value: Util.formatDuration(nightPanel.nightSeconds); tone: Theme.textSecondary }
                 HudChip { visible: calendarPage.isDaySelected(calendarPage.currentObservingKey()); label: "TONIGHT"; tone: Theme.warning; glow: true }
                 Item { Layout.fillWidth: true }
+            }
+            ListFilterBar {
+                id: calendarSidebarFilter
+                Layout.fillWidth: true
+                comboWidth: Theme.px(132)
+                placeholderText: "Target or device"
+                searchAccessibleName: "Search night sessions"
+                searchObjectName: "calendar-sidebar-search"
+                comboAccessibleName: "Filter night sessions by status"
+                comboObjectName: "calendar-sidebar-status"
+                comboModel: ["All statuses", "Planned", "Running", "Done", "Error", "Skipped"]
+                comboIndex: calendarPage.sidebarStatusFilter
+                onComboActivated: index => calendarPage.sidebarStatusFilter = index
             }
             SelectionBar {
                 readonly property var choosable: calendarPage.schedulableItems(nightPanel.nightSessions)
@@ -1828,6 +1850,7 @@ Item {
                 SessionInsertDrop {
                     id: daySessionInsert
                     anchors.fill: parent
+                    reorderEnabled: !calendarPage.sidebarFilterActive
                     targetList: daySessionList
                     rowHeight: Theme.px(76)
                     observingDate: calendarPage.selectedDayCount <= 1 ? calendarPage.dateKey(calendarPage.selectedDate) : ""
@@ -1854,6 +1877,7 @@ Item {
                             Accessible.name: calendarPage.sessionWhenText(modelData) + " " + calendarPage.sessionLabel(modelData)
                             SessionDragArea {
                                 dragItem: daySessionRow.modelData
+                                dragEnabled: !calendarPage.sidebarFilterActive
                                 onEditRequested: session => calendarPage.editItem(session)
                             }
                             HoverHandler { id: daySessionHover }
@@ -1928,7 +1952,9 @@ Item {
                     anchors.centerIn: parent
                     glyph: "☾"
                     visible: nightPanel.nightSessions.length === 0
-                    text: calendarPage.showHistory
+                    text: nightPanel.nightSessionsAll.length > 0
+                          ? "No sessions match this search."
+                          : calendarPage.showHistory
                           ? (calendarPage.showAllDevices
                              ? (calendarPage.selectedDayCount > 1 ? "No sessions or history on these observing nights" : "No sessions or history this observing night")
                              : (calendarPage.selectedDayCount > 1 ? "No sessions or history on this telescope for these nights" : "No sessions or history on this telescope for this night"))

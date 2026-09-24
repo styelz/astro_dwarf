@@ -991,4 +991,72 @@ QtObject {
         }
         return planned
     }
+    function itemSearchHaystack(item) {
+        if (!item)
+            return ""
+        const keys = [
+            "name", "target_name", "pane_name", "display_title", "group_title",
+            "device_name", "status", "outcome", "summary", "subtitle", "notes",
+            "start_date", "start_time", "date", "duration_text", "pane_position",
+            "filter_text", "gain_text", "camera_text", "workflow_text", "mosaic_text",
+            "coords_text", "capture_text", "grid_text"
+        ]
+        const parts = []
+        for (let i = 0; i < keys.length; i++) {
+            const value = item[keys[i]]
+            if (value !== undefined && value !== null && String(value) !== "")
+                parts.push(String(value))
+        }
+        return parts.join(" ").toLowerCase()
+    }
+    function itemMatchesQuery(item, query) {
+        const q = String(query || "").trim().toLowerCase()
+        if (!q)
+            return true
+        return Util.itemSearchHaystack(item).indexOf(q) >= 0
+    }
+    function filterByQueryAndStatus(items, query, status) {
+        const list = items || []
+        const wanted = String(status || "").trim().toLowerCase()
+        const out = []
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i]
+            if (!item)
+                continue
+            if (wanted && String(item.status || "").toLowerCase() !== wanted)
+                continue
+            if (!Util.itemMatchesQuery(item, query))
+                continue
+            out.push(item)
+        }
+        return out
+    }
+    function templateCamera(item) {
+        const text = String((item && item.camera_text) || "").toUpperCase()
+        if (text.indexOf("WIDE") >= 0)
+            return "wide"
+        if (text.indexOf("TELE") >= 0)
+            return "tele"
+        const nested = item && item.camera
+        const raw = String((nested && nested.camera) || "").toLowerCase()
+        if (raw === "wide" || raw === "tele")
+            return raw
+        return ""
+    }
+    function filterTemplates(items, query, camera) {
+        const list = items || []
+        const lens = String(camera || "").trim().toLowerCase()
+        const out = []
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i]
+            if (!item)
+                continue
+            if (lens && Util.templateCamera(item) !== lens)
+                continue
+            if (!Util.itemMatchesQuery(item, query))
+                continue
+            out.push(item)
+        }
+        return out
+    }
 }

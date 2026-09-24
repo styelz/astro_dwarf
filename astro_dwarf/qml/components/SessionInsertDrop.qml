@@ -11,7 +11,8 @@ DropArea {
     required property real rowHeight
     property real headerHeight: 0
     property string observingDate: ""
-    keys: ["session"]
+    property bool reorderEnabled: true
+    keys: reorderEnabled ? ["session"] : []
     // Written from refreshInsert(). Do not bind these to itemAtIndex / mapToItem:
     // those walk the same ListView that owns the drag and can relayout the
     // delegate mid-gesture, which hangs the GUI thread.
@@ -123,6 +124,8 @@ DropArea {
     }
 
     onDropped: drop => {
+        if (!insertDrop.reorderEnabled)
+            return
         drop.accept()
         DragCoordinator.reorderFromInsert(insertDrop.targetList, insertDrop.insertIndex, DragCoordinator.data, insertDrop.observingDate)
     }

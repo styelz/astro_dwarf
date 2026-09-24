@@ -79,6 +79,7 @@ from .domain import (
     device_mosaic_from_scales,
     device_supports_wide,
     camera_settings_from_capture,
+    device_mosaic_allowed,
     mosaic_stack_camera,
     sky_map_camera,
     capture_defaults_from_dict,
@@ -3379,6 +3380,8 @@ class AppBackend(QObject):
     @Slot(str, int, int)
     def setSkyDeviceMosaic(self, mode: str, horizontal_scale: int, vertical_scale: int) -> None:
         next_mode = "device" if str(mode or "").strip().lower() == "device" else "custom"
+        if next_mode == "device" and not self.skyDeviceMosaicAllowed:
+            next_mode = "custom"
         horizontal = clamp_firmware_mosaic_scale(horizontal_scale)
         vertical = clamp_firmware_mosaic_scale(vertical_scale)
         if (
@@ -5315,6 +5318,11 @@ class AppBackend(QObject):
     def mosaicFovText(self) -> str:
         fov_h, fov_v, camera = self._mosaic_fov()
         return f"{camera.upper()} {fov_h:.2f}° × {fov_v:.2f}°"
+
+    @Property(bool, notify=selectedDeviceChanged)
+    def skyDeviceMosaicAllowed(self) -> bool:
+        _fov_h, _fov_v, camera = self._sky_map_fov()
+        return device_mosaic_allowed(camera)
 
     @Property(str, notify=selectedDeviceChanged)
     def skyFovText(self) -> str:
@@ -9705,9 +9713,10 @@ class AppBackend(QObject):
 
         def done(ok: bool, result: Any) -> None:
             if notify:
+                stopped = name == "focus" and not ok and "stopped" in str(result or "").lower()
                 self._toast(
-                    f"{name.replace('_', ' ').title()} set" if ok else str(result),
-                    "success" if ok else "error",
+                    "Focus stopped" if stopped else (f"{name.replace('_', ' ').title()} set" if ok else str(result)),
+                    "notice" if stopped else ("success" if ok else "error"),
                 )
             if ok and notify:
                 QTimer.singleShot(150, lambda did=device_id: self.refreshCameraParams(did))

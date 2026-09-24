@@ -299,7 +299,10 @@ Item {
         if (!url)
             return
         map.liveInjectedKey = key
-        map.runJavaScript(backend.skyWebLiveScript(url, true, map.liveOpacity, pane))
+        map.runJavaScript(backend.skyWebLiveScript(url, true, map.liveOpacity, pane), result => {
+            if (String(result || "") === "loading" && map.liveInjectedKey === key)
+                map.liveInjectedKey = ""
+        })
     }
     function applyMosaicPaneImages() {
         if (!map.pageReady || !map.shown)

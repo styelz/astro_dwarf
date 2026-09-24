@@ -113,9 +113,41 @@ def test_short_move_single_steps_without_a_slew() -> None:
     _assert(15002 not in motor.commands, motor.commands)
 
 
+def test_four_hundred_steps_is_one_burst_not_one_step_each() -> None:
+    motor = _Motor(200)
+    _assert(_run(motor, 600), "move should finish")
+    _assert(motor.pos == 600, motor.pos)
+    _assert(motor.commands.count(15002) == 1, motor.commands)
+    _assert(motor.commands.count(15001) < 40, motor.commands.count(15001))
+
+
+def test_cancel_stops_the_burst() -> None:
+    motor = _Motor(200)
+    original = motor.send
+
+    def send(message, command, module, timeout=None, *, wait=True):
+        ok = original(message, command, module, timeout, wait=wait)
+        if command == 15002:
+            device_worker._focus_cancel.set()
+        return ok
+
+    motor.send = send
+    try:
+        _run(motor, 600)
+        raised = False
+    except InterruptedError:
+        raised = True
+    _assert(raised, "cancel should interrupt the move")
+    _assert(motor.commands.count(15001) == 0, motor.commands)
+    _assert(15003 in motor.commands, motor.commands)
+    device_worker._focus_cancel.clear()
+
+
 if __name__ == "__main__":
     test_hundred_steps_slews_then_trims_onto_the_target()
     test_long_move_stops_before_the_coast()
     test_downward_move_lands_on_the_typed_step()
     test_short_move_single_steps_without_a_slew()
+    test_four_hundred_steps_is_one_burst_not_one_step_each()
+    test_cancel_stops_the_burst()
     print("ok")

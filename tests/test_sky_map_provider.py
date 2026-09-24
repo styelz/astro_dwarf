@@ -16,7 +16,7 @@ from astro_dwarf.domain import (
     normalized_sky_map_provider,
     to_dict,
 )
-from astro_dwarf.services import SKY_WEB_DISMISS_POLL_JS, sky_web_fov_script
+from astro_dwarf.services import SKY_WEB_DISMISS_POLL_JS, sky_web_fov_script, sky_web_live_script
 from astro_dwarf.sky_atlas import (
     SKY_MAP_FOV_DEG,
     atlas_set_fov_from_view,
@@ -112,9 +112,13 @@ def test_atlas_view_and_lock_helpers() -> None:
     _assert("paintIndex" in boot and "strokeTargetQuad" in boot, "target corners and numbered cells")
     _assert("payload.columns" in boot and "col1OnRight" in boot, "mosaic grid")
     _assert("ctrlKey" in boot and "bindLiveOpacityWheel" in boot, "ctrl wheel opacity")
+    _assert("wheelNotches" in boot and "wheelUntil" in boot, "ctrl wheel step is capped")
     _assert("drawPaneMedia" in boot and "rememberImage" in boot, "live preview on fov")
+    _assert("paintOverlayImages" in boot and "drawLiveFrame" in boot, "live frame fills the field box")
+    _assert("livePane !== 0 && livePane !== Number(index)" not in boot, "idle mosaic must not tile the video")
+    _assert("mediaPainted" in boot and "globalCompositeOperation = \"copy\"" in boot, "zoom keeps the live frame")
     live = sky_atlas_live_script("data:image/jpeg;base64,xx", True, 0.4, 0)
-    _assert("drawHorizon" in live and "wheelOpacity" in live, live)
+    _assert("drawHorizon" in live and "wheelOpacity" in live and "wheelUntil" in live, live)
     _assert("liveEnabled" in live and "0.4" in live, live)
     _assert("hor.az - 180" in boot, "heading compass")
     site = sky_atlas_site_script(-37.81, 144.96)
@@ -156,6 +160,11 @@ def test_map_left_click_dismisses_context_menu() -> None:
     _assert("astro-dwarf-host:menu" in web, "stellarium pushes the right-click")
     _assert("ctl.timer = setTimeout" in web, "stellarium redraws without animation frames")
     _assert("ev.button !== 0" in web, "stellarium ignores the opening right-click")
+    _assert("wheelNotches" in web and "wheelUntil" in web, "stellarium ctrl wheel step is capped")
+    _assert("ctl.liveEnabled" in web and "mediaBuffer" in web, "zoom keeps the last live frame")
+    _assert("toFixed(2)" in web and "bindZoomFollow" in web, "one wheel notch moves the live frame with the box")
+    _assert('globalCompositeOperation = "copy"' in web, "zoom replaces the frame in one paint")
+    _assert("wheelUntil" in sky_web_live_script("", True, 0.4, 0), "stellarium keeps wheel opacity")
     _assert("ctl.dismissAt = 0" in web, "stellarium right-click clears a stale dismiss")
     _assert('return "dismiss"' in SKY_WEB_DISMISS_POLL_JS and "ctl.dismissAt = 0" in SKY_WEB_DISMISS_POLL_JS, "stellarium poll")
     atlas = sky_atlas_boot_script()

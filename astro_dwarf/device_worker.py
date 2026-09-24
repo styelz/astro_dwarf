@@ -120,6 +120,8 @@ _LINKAGE_AF_POLL_S = 0.75
 _autofocus_started = 0.0
 _autofocus_last_move = 0.0
 _autofocus_last_pos: int | None = None
+_focus_moving = False
+_focus_cancel = threading.Event()
 _linkage_af_until = 0.0
 _MODEL_IDS = {"Dwarf II": "2", "Dwarf 3": "3", "Dwarf Mini": "5"}
 # Set once the steppers answer CODE_STEP_MOTOR_NEED_RESET: absolute position
@@ -732,6 +734,9 @@ _FOCUS_STEP_MAX = 1
 _FOCUS_COAST = 80
 # Below this, the coast is longer than the move, so single steps are faster.
 _FOCUS_SLEW_MIN = 56
+# Steps per second while 15002 is held, used when position packets lag the motor.
+_FOCUS_SLEW_RATE = 100
+_FOCUS_BURST_MAX_S = 4.0
 
 
 def _focus_position() -> int | None:
@@ -848,6 +853,28 @@ def _maybe_finish_photo_autofocus(snapshot: dict[str, Any], now: float) -> None:
         _clear_photo_autofocus("Photo autofocus settled")
 
 
+def _focus_interrupted() -> bool:
+    return _stop.is_set() or _focus_cancel.is_set()
+
+
+def _begin_manual_focus_activity() -> None:
+    """Light AUTO FOCUS for a typed move so that pad can stop it."""
+    global _focus_moving
+    _focus_moving = True
+    _focus_cancel.clear()
+    if _tap is not None:
+        _tap._hold_photo_autofocus = True
+        _tap.update({"autofocus_state": "running"}, force=True)
+
+
+def _end_manual_focus_activity() -> None:
+    global _focus_moving
+    _focus_moving = False
+    if _tap is not None:
+        _tap._hold_photo_autofocus = False
+        _tap.update({"autofocus_state": "idle"}, force=True)
+
+
 def _focus_advanced(direction: int, previous: int, position: int) -> bool:
     return position < previous if direction == _FOCUS_NEAR else position > previous
 
@@ -877,7 +904,7 @@ def _focus_one_step(
         return None
     step_deadline = min(deadline, time.monotonic() + _FOCUS_STEP_TIMEOUT)
     while time.monotonic() < step_deadline:
-        if _stop.is_set():
+        if _focus_interrupted():
             raise InterruptedError("Focus move stopped")
         time.sleep(0.05)
         position = _focus_position()
@@ -905,24 +932,39 @@ def _focus_remaining(direction: int, target: int, position: int) -> int:
     return position - target if direction == _FOCUS_NEAR else target - position
 
 
-def _focus_pulse(direction: int, hold_s: float) -> bool:
-    """Run continuous focus for a short hold, then stop.
+def _focus_slew(direction: int, target: int, current: int, deadline: float) -> int | None:
+    """Run continuous focus until the remainder is about one coast, then stop.
 
-    A held 15002 on this motor reaches about 100 steps per second and keeps
-    going after 15003. The hold is what limits the burst. False means the
-    start command was not sent.
+    CMD 15002 moves about 100 steps per second and keeps going for about 80
+    steps after 15003. Stopping on the live position, and on that rate when
+    packets lag, covers a long gap in one burst. None means the start was
+    not sent.
     """
     from dwarf_python_api.proto import focus_pb2
 
     message = focus_pb2.ReqManualContinuFocus()
     message.direction = direction
     if send_without_response(message, 15002, 8) is False:
-        return False
+        return None
+    started = time.monotonic()
+    start_pos = current
     try:
-        time.sleep(max(0.05, float(hold_s)))
+        while True:
+            if _focus_interrupted():
+                raise InterruptedError("Focus move stopped")
+            if time.monotonic() >= deadline or time.monotonic() - started >= _FOCUS_BURST_MAX_S:
+                break
+            position = _focus_position()
+            if position is not None:
+                current = position
+            remaining = _focus_remaining(direction, target, current)
+            predicted = abs(target - start_pos) - int((time.monotonic() - started) * _FOCUS_SLEW_RATE)
+            if remaining <= _FOCUS_COAST or predicted <= _FOCUS_COAST or _focus_past(direction, target, current):
+                break
+            time.sleep(0.05)
     finally:
         send_without_response(focus_pb2.ReqStopManualContinuFocus(), 15003, 8)
-    return True
+    return _wait_focus_settled(current, deadline)
 
 
 def _wait_focus_settled(fallback: int, deadline: float) -> int:
@@ -933,7 +975,7 @@ def _wait_focus_settled(fallback: int, deadline: float) -> int:
     stable = time.monotonic()
     limit = min(deadline, time.monotonic() + 1.5)
     while time.monotonic() < limit:
-        if _stop.is_set():
+        if _focus_interrupted():
             raise InterruptedError("Focus move stopped")
         time.sleep(0.05)
         position = _focus_position()
@@ -950,7 +992,7 @@ def _focus_trim(target: int, current: int, deadline: float) -> int | None:
     """Single-step a settled remainder. None means a step command was not sent."""
     misses = 0
     while current != target:
-        if _stop.is_set():
+        if _focus_interrupted():
             raise InterruptedError("Focus move stopped")
         if time.monotonic() >= deadline:
             raise RuntimeError(f"Focus stopped at {current}, wanted {target}")
@@ -972,9 +1014,10 @@ def _focus_trim(target: int, current: int, deadline: float) -> int | None:
 def _set_focus_position(target: int) -> bool:
     """Move the telephoto focus motor to a step count.
 
-    There is no absolute focus command. CMD 15002 runs until 15003. On this
-    telescope a short hold moves a long way and then coasts, so a large gap
-    gets one brief burst and CMD 15001 walks the remainder.
+    There is no absolute focus command. CMD 15002 runs until 15003 and then
+    coasts about 80 steps, so a long gap is one timed burst. CMD 15001 only
+    walks the last few steps. AUTO FOCUS stays lit until the move ends, and
+    that pad's stop cancels the burst.
     """
     target = int(target)
     current = _focus_position()
@@ -983,19 +1026,34 @@ def _set_focus_position(target: int) -> bool:
     if current == target:
         return True
 
-    direction = _FOCUS_NEAR if target < current else _FOCUS_FAR
     gap = abs(target - current)
-    deadline = time.monotonic() + min(180.0, max(45.0, gap * 0.35 + 8.0))
+    deadline = time.monotonic() + min(60.0, max(12.0, gap / _FOCUS_SLEW_RATE + 8.0))
     log(f"Focus {current} → {target}", "info")
-    if gap > _FOCUS_SLEW_MIN:
-        if not _focus_pulse(direction, 0.15):
-            return False
-        current = _wait_focus_settled(current, deadline)
-    if current != target:
-        trimmed = _focus_trim(target, current, deadline)
-        if trimmed is None:
-            return False
-        current = trimmed
+    _begin_manual_focus_activity()
+    slews = 0
+    try:
+        while current != target:
+            if _focus_interrupted():
+                raise InterruptedError("Focus move stopped")
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"Focus stopped at {current}, wanted {target}")
+            gap = abs(target - current)
+            direction = _FOCUS_NEAR if target < current else _FOCUS_FAR
+            if gap > _FOCUS_SLEW_MIN and slews < 3:
+                slews += 1
+                moved = _focus_slew(direction, target, current, deadline)
+                if moved is None:
+                    return False
+                if moved == current and gap > _FOCUS_SLEW_MIN:
+                    raise RuntimeError("Focus motor did not move")
+                current = moved
+                continue
+            trimmed = _focus_trim(target, current, deadline)
+            if trimmed is None:
+                return False
+            current = trimmed
+    finally:
+        _end_manual_focus_activity()
     log(f"Focus at {current}", "info")
     return True
 
@@ -1044,6 +1102,12 @@ def sdk_call(operation: str, *args: Any) -> Any:
         return _nudge_focus(int(args[0]) if args else _FOCUS_FAR)
     if operation == "set_focus":
         return _set_focus_position(int(args[0]))
+    if operation == "stop_autofocus" and _focus_cancel.is_set():
+        from dwarf_python_api.proto import focus_pb2
+
+        _focus_cancel.clear()
+        send_without_response(focus_pb2.ReqStopManualContinuFocus(), 15003, 8)
+        return True
     if operation in {"set_burst_interval", "set_timelapse_interval", "set_timelapse_duration"}:
         seconds = photo_capture_seconds(args[0] if args else None)
         if seconds is None:
@@ -6156,6 +6220,9 @@ def main() -> None:
                 _connecting.set()
                 _connect_cancel.clear()
                 enqueue_command(message)
+            elif command == "stop_autofocus" and _focus_moving:
+                _focus_cancel.set()
+                enqueue_command(message, _PRIORITY_URGENT)
             elif command in _URGENT_COMMANDS or (
                 command in _SESSION_STOP_COMMANDS and _session_active.is_set()
             ):

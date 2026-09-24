@@ -1170,6 +1170,7 @@ SKY_WEB_FOV_JS = r"""
     var cache = ctl.imageCache = ctl.imageCache || {};
     var entry = cache[key];
     if (!entry || entry.url !== url) {
+      var prev = entry && entry.img && entry.img.complete && entry.img.naturalWidth ? entry.img : (entry && entry.prev);
       var img = new Image();
       img.onload = function() {
         var live = window[CTL];
@@ -1179,14 +1180,17 @@ SKY_WEB_FOV_JS = r"""
           return;
         }
         live.lastKey = "";
-        try { if (typeof live.draw === "function") live.draw(false); } catch (err) {}
+        live.lastBase = "";
+        try { if (typeof live.draw === "function") live.draw(true); } catch (err) {}
       };
       img.src = url;
-      cache[key] = {url: url, img: img};
+      cache[key] = {url: url, img: img, prev: prev || null};
       entry = cache[key];
     }
     var ready = entry.img;
-    return (ready && ready.complete && ready.naturalWidth) ? ready : null;
+    if (ready && ready.complete && ready.naturalWidth) return ready;
+    var shown = entry.prev;
+    return (shown && shown.complete && shown.naturalWidth) ? shown : null;
   }
   function drawQuadImage(ctx, img, quad) {
     if (!img || !quad || quad.length < 3) return;
@@ -1213,10 +1217,15 @@ SKY_WEB_FOV_JS = r"""
     if (ctl) ctl.mediaQueue = [];
     var canvas = document.getElementById("astro-dwarf-mosaic-media");
     if (!jobs.length) {
+      // A zoom step can miss every pane for one sample. Clearing here is the
+      // blink. Drop the picture only when the live overlay is actually off.
+      if (ctl && ctl.liveEnabled)
+        return;
       if (canvas) {
         var blank = canvas.getContext("2d");
         if (blank) blank.clearRect(0, 0, canvas.width, canvas.height);
       }
+      if (ctl) ctl.mediaBlitKey = "";
       return;
     }
     if (!canvas) {
@@ -1229,7 +1238,7 @@ SKY_WEB_FOV_JS = r"""
     }
     var width = Math.max(1, Math.round(box.width));
     var height = Math.max(1, Math.round(box.height));
-    var sig = [width, height, imageOpacity()];
+    var sig = [width, height];
     var cache = ctl.imageCache || {};
     for (var s = 0; s < jobs.length; s++) {
       var job = jobs[s];
@@ -1239,29 +1248,52 @@ SKY_WEB_FOV_JS = r"""
       sig.push(job.live ? "L" : String(job.key || job.href || "").slice(0, 64));
       sig.push(stamp && stamp.naturalWidth ? stamp.naturalWidth : 0);
       for (var k = 0; k < quad.length; k++)
-        sig.push(Math.round(quad[k].x), Math.round(quad[k].y));
+        sig.push(Number(quad[k].x).toFixed(2), Number(quad[k].y).toFixed(2));
     }
     var blitKey = sig.join(",");
-    if (blitKey === ctl.mediaBlitKey && canvas.width === width && canvas.height === height)
+    if (blitKey === ctl.mediaBlitKey && canvas.width === width && canvas.height === height) {
+      canvas.style.opacity = String(imageOpacity());
       return;
-    ctl.mediaBlitKey = blitKey;
-    if (canvas.width !== width) canvas.width = width;
-    if (canvas.height !== height) canvas.height = height;
-    canvas.style.opacity = String(imageOpacity());
-    var ctx = canvas.getContext("2d");
+    }
+    var buffer = ctl.mediaBuffer;
+    if (!buffer) {
+      buffer = document.createElement("canvas");
+      ctl.mediaBuffer = buffer;
+    }
+    if (buffer.width !== width) buffer.width = width;
+    if (buffer.height !== height) buffer.height = height;
+    var ctx = buffer.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
     ctx.clearRect(0, 0, width, height);
     ctx.globalCompositeOperation = "lighten";
     var liveImg = ctl && ctl.liveEnabled ? cachedStill("live", String(ctl.liveUrl || "")) : null;
+    var painted = 0;
     for (var i = 0; i < jobs.length; i++) {
       var job = jobs[i];
       var img = job.live ? liveImg : cachedStill(job.key || "still", job.href || "");
       if (!img) continue;
       drawQuadImage(ctx, img, job.quad);
+      painted += 1;
     }
     ctx.globalCompositeOperation = "source-over";
-    if (ctl) ctl.mediaJobs = jobs;
+    if (!painted) {
+      ctl.mediaJobs = jobs;
+      ctl.mediaBlitKey = "";
+      return;
+    }
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+    var view = canvas.getContext("2d");
+    if (!view) return;
+    view.setTransform(1, 0, 0, 1, 0, 0);
+    view.globalCompositeOperation = "copy";
+    view.drawImage(buffer, 0, 0);
+    view.globalCompositeOperation = "source-over";
+    canvas.style.opacity = String(imageOpacity());
+    ctl.mediaBlitKey = blitKey;
+    ctl.mediaJobs = jobs;
   }
   function refreshMedia() {
     var ctl = window[CTL];
@@ -1803,8 +1835,8 @@ SKY_WEB_FOV_JS = r"""
       });
     } else {
       media += liveImageQuad(
-        livePointingQuad(p, stel, box)
-        || (!mosaic && drawn[0] && drawn[0].quad)
+        (!mosaic && drawn[0] && drawn[0].quad)
+        || livePointingQuad(p, stel, box)
         || mosaicCenterFovQuad(drawn)
       );
     }
@@ -2074,6 +2106,23 @@ SKY_WEB_FOV_JS = r"""
       signalHostMenu(e.clientX, e.clientY);
     }, true);
   }
+  function bindZoomFollow(ctl) {
+    if (!ctl || ctl.zoomBound) return;
+    ctl.zoomBound = true;
+    document.addEventListener("wheel", function(e) {
+      if (e.ctrlKey || e.metaKey) return;
+      // Stellarium applies the notch in its own handler. Draw after that,
+      // with the cache cleared, so one notch moves the picture with the box.
+      setTimeout(function() {
+        var live = window[CTL];
+        if (!live || live.paused || typeof live.draw !== "function") return;
+        live.lastBase = "";
+        live.lastKey = "";
+        live.mediaBlitKey = "";
+        try { live.draw(true); } catch (err) {}
+      }, 0);
+    }, true);
+  }
   function bindLiveOpacityWheel(ctl) {
     if (!ctl || ctl.wheelBound) return;
     ctl.wheelBound = true;
@@ -2083,14 +2132,17 @@ SKY_WEB_FOV_JS = r"""
       e.stopPropagation();
       if (typeof e.stopImmediatePropagation === "function")
         e.stopImmediatePropagation();
-      var delta = -Number(e.deltaY);
-      if (!isFinite(delta) || delta === 0) return;
-      if (e.deltaMode === 1) delta *= 16;
-      else if (e.deltaMode === 2) delta *= 120;
-      var next = clampLiveOpacity(ctl.liveOpacity + delta / 120 * 0.05);
-      if (next === clampLiveOpacity(ctl.liveOpacity)) return;
-      ctl.liveOpacity = next;
+      var dy = Number(e.deltaY);
+      if (!isFinite(dy) || dy === 0) return;
+      if (e.deltaMode === 1) dy *= 16;
+      else if (e.deltaMode === 2) dy *= 120;
+      // Ctrl+wheel on Windows reports zoom-sized pixel deltas. One event
+      // must not be able to slam the overlay from bright to invisible.
+      if (dy > 120) dy = 120;
+      if (dy < -120) dy = -120;
+      ctl.wheelNotches = (Number(ctl.wheelNotches) || 0) + (-dy / 120);
       ctl.wheelOpacity = true;
+      ctl.wheelUntil = Date.now() + 600;
       ctl.opacityAt = Date.now();
       if (ctl.opacityRaf)
         return;
@@ -2099,6 +2151,17 @@ SKY_WEB_FOV_JS = r"""
         if (!live)
           return;
         live.opacityRaf = 0;
+        var notches = Number(live.wheelNotches) || 0;
+        live.wheelNotches = 0;
+        if (notches > 1) notches = 1;
+        if (notches < -1) notches = -1;
+        if (!notches) return;
+        var next = clampLiveOpacity(live.liveOpacity + notches * 0.05);
+        if (next === clampLiveOpacity(live.liveOpacity)) return;
+        live.liveOpacity = next;
+        live.wheelOpacity = true;
+        live.wheelUntil = Date.now() + 600;
+        live.opacityAt = Date.now();
         try { applyLiveOpacity(document.getElementById("astro-dwarf-sky-overlay")); } catch (err) {}
       });
     }, {capture: true, passive: false});
@@ -2148,6 +2211,7 @@ SKY_WEB_FOV_JS = r"""
     bindLevelDrag(ctl);
     bindContextMenu(ctl);
     bindLiveOpacityWheel(ctl);
+    bindZoomFollow(ctl);
     ctl.payload = p;
     ctl.payloadKey = [
       p.mode, p.label, p.color, p.fov_h, p.fov_v, p.columns, p.rows, p.overlap, p.south_up, p.position_angle,
@@ -2204,7 +2268,10 @@ SKY_WEB_LIVE_JS = r"""
   var hrefChanged = href !== String(ctl.liveUrl || "");
   ctl.liveEnabled = on;
   ctl.liveUrl = href;
-  if (ctl.wheelOpacity) {
+  if (Date.now() < (Number(ctl.wheelUntil) || 0)) {
+    // The wheel gesture owns opacity until it settles. A live-frame push
+    // still carries the previous host value and would snap the image back.
+  } else if (ctl.wheelOpacity) {
     if (Math.abs(Number(ctl.liveOpacity) - op) < 0.005)
       ctl.wheelOpacity = false;
   } else {

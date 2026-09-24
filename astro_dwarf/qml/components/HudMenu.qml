@@ -15,6 +15,7 @@ Menu {
     // still close immediately. Child menus stay in the cascade: a press
     // inside an open submenu is inside this popup tree.
     property var appWindow: null
+    property var trackedPopup: null
     property bool dismissArmed: false
     closePolicy: Popup.CloseOnEscape | (dismissArmed ? Popup.CloseOnPressOutside : Popup.NoAutoClose)
     function captureAppWindow() {
@@ -33,17 +34,43 @@ Menu {
             item = item.parent
         }
     }
+    function popupWindow() {
+        const win = hudMenu.contentItem ? hudMenu.contentItem.Window.window : null
+        if (!win || win === hudMenu.appWindow)
+            return null
+        return win
+    }
     function hideMenu() {
+        const win = hudMenu.trackedPopup || hudMenu.popupWindow()
         if (hudMenu.opened || hudMenu.visible)
             hudMenu.close()
+        // close() during a focus change can leave a topmost popup mapped,
+        // which is how the sky menu stayed above the next application.
+        if (win && win !== hudMenu.appWindow)
+            win.visible = false
+        if (win && hudMenu.trackedPopup === win)
+            hudMenu.trackedPopup = null
     }
     function ownPopupWindow() {
-        const popupWindow = hudMenu.contentItem ? hudMenu.contentItem.Window.window : null
+        const popupWindow = hudMenu.popupWindow()
         const owner = hudMenu.appWindow
-        if (!popupWindow || !owner || popupWindow === owner || popupWindow.visible)
+        if (!popupWindow || !owner || popupWindow.visible)
             return
         popupWindow.transientParent = owner
         popupWindow.flags = Qt.Tool | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
+        hudMenu.trackedPopup = popupWindow
+    }
+    function rememberPopup() {
+        const win = hudMenu.popupWindow()
+        const owner = hudMenu.appWindow
+        if (!win)
+            return
+        hudMenu.trackedPopup = win
+        // The sky menu is already showing above WebView2 by the time its
+        // window exists, so the pre-show flag change never runs. Owning it
+        // here still ties that window to the HUD.
+        if (owner && win.transientParent !== owner)
+            win.transientParent = owner
     }
     Timer {
         id: dismissArm
@@ -60,13 +87,17 @@ Menu {
         hudMenu.ownPopupWindow()
     }
     onOpened: {
+        hudMenu.rememberPopup()
+        Qt.callLater(hudMenu.rememberPopup)
         dismissArm.restart()
         if (Qt.application.state !== Qt.ApplicationActive)
-            hudMenu.hideMenu()
+            Qt.callLater(hudMenu.hideMenu)
     }
     onClosed: {
         dismissArm.stop()
         hudMenu.dismissArmed = false
+        if (!hudMenu.trackedPopup || !hudMenu.trackedPopup.visible)
+            hudMenu.trackedPopup = null
     }
     Connections {
         target: hudMenu.appWindow
@@ -78,7 +109,16 @@ Menu {
         target: Qt.application
         function onStateChanged() {
             if (Qt.application.state !== Qt.ApplicationActive)
-                hudMenu.hideMenu()
+                Qt.callLater(hudMenu.hideMenu)
+        }
+    }
+    Connections {
+        target: hudMenu.trackedPopup
+        function onActiveChanged() {
+            if (!hudMenu.trackedPopup || hudMenu.trackedPopup.active)
+                return
+            if (Qt.application.state !== Qt.ApplicationActive)
+                Qt.callLater(hudMenu.hideMenu)
         }
     }
     Component.onCompleted: hudMenu.captureAppWindow()

@@ -1167,6 +1167,11 @@ def sky_map_camera(
     return _as_camera(selected)
 
 
+def device_mosaic_allowed(camera: Camera | str | None) -> bool:
+    """Telescope mosaic frames the telephoto field. Wide overlay stays on custom."""
+    return _as_camera(camera) != Camera.WIDE
+
+
 def mosaic_stack_camera(selected: Camera | str | None = None) -> Camera:
     """Lens used for mosaic pane spacing and MOSAIC STACK. Always tele.
 

@@ -11,8 +11,6 @@ import "../components"
 Item {
     id: historyPage
     objectName: "historyRoot"
-    property string query: ""
-    property string pendingQuery: ""
     property int outcomeFilter: 0
     property var expandedIds: ({})
     property var expandedGroups: ({})
@@ -128,7 +126,7 @@ Item {
     }
     readonly property var filteredHistory: {
         const items = historyPage.scopedHistory
-        const q = historyPage.query.trim().toLowerCase()
+        const q = historyFilter.query
         const out = []
         for (let i = 0; i < items.length; i++) {
             const item = items[i]
@@ -136,11 +134,8 @@ Item {
                 continue
             if (historyPage.outcomeFilter === 2 && item.ok)
                 continue
-            if (q) {
-                const hay = [item.date, item.target_name, item.device_name, item.outcome, item.summary, item.notes, item.filter_text, item.gain_text, item.camera_text, item.workflow_text, item.mosaic_text, item.coords_text].join(" ").toLowerCase()
-                if (hay.indexOf(q) < 0)
-                    continue
-            }
+            if (!Util.itemMatchesQuery(item, q))
+                continue
             out.push(item)
         }
         return out
@@ -207,13 +202,6 @@ Item {
         function onDevicesChanged() {
             historyPage.syncDeviceCount()
         }
-    }
-
-    Timer {
-        id: searchDebounce
-        interval: 300
-        repeat: false
-        onTriggered: historyPage.query = historyPage.pendingQuery
     }
 
     Flickable {
@@ -323,24 +311,17 @@ Item {
                 }
             }
         }
-        RowLayout {
+        ListFilterBar {
+            id: historyFilter
             Layout.fillWidth: true
-            HudField {
-                Layout.fillWidth: true
-                placeholderText: "Search target, device, or outcome"
-                accessibleName: "Search history"
-                onTextChanged: {
-                    historyPage.pendingQuery = text
-                    searchDebounce.restart()
-                }
-            }
-            HudCombo {
-                Layout.preferredWidth: Theme.px(160)
-                accessibleName: "Filter by outcome"
-                model: ["All outcomes", "Completed", "Failed"]
-                currentIndex: historyPage.outcomeFilter
-                onActivated: historyPage.outcomeFilter = currentIndex
-            }
+            placeholderText: "Search target, device, or outcome"
+            searchAccessibleName: "Search history"
+            searchObjectName: "history-search"
+            comboAccessibleName: "Filter by outcome"
+            comboObjectName: "history-outcome"
+            comboModel: ["All outcomes", "Completed", "Failed"]
+            comboIndex: historyPage.outcomeFilter
+            onComboActivated: index => historyPage.outcomeFilter = index
         }
         HudPanel {
             visible: historyPage.durationBannerVisible

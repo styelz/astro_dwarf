@@ -14,6 +14,7 @@ from astro_dwarf.domain import (
     camera_fov,
     camera_fov_plausible,
     mosaic_stack_camera,
+    device_mosaic_allowed,
     sky_map_camera,
 )
 
@@ -21,6 +22,15 @@ from astro_dwarf.domain import (
 def _assert(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def test_sky_menu_toggles_selected_camera() -> None:
+    menu = (ROOT / "astro_dwarf" / "qml" / "components" / "SkyContextMenu.qml").read_text(encoding="utf-8")
+    page = (ROOT / "astro_dwarf" / "qml" / "pages" / "SkyPage.qml").read_text(encoding="utf-8")
+    _assert('objectName: "cameraToggleMenuItem"' in menu, "sky menu camera item")
+    _assert("backend.setLiveCamera" in menu, "menu uses the live camera slot")
+    _assert("Dwarf Mini" in menu, "mini stays tele-only")
+    _assert('key === "camera"' in page and "skyMenu.toggleCamera()" in page, "harness can toggle the lens")
 
 
 def test_overlay_follows_selected_camera() -> None:
@@ -35,6 +45,9 @@ def test_mosaic_plan_follows_selected_camera() -> None:
     _assert(sky_map_camera("tele", mosaic_grid=True) is Camera.TELE, "tele mosaic grid")
     _assert(sky_map_camera("wide", stacking=True) is Camera.TELE, "stacking")
     _assert(sky_map_camera("wide", mosaic_grid=True, stacking=True) is Camera.TELE, "stacking wins")
+    _assert(not device_mosaic_allowed("wide"), "wide overlay cannot select device mosaic")
+    _assert(device_mosaic_allowed("tele"), "tele overlay can select device mosaic")
+    _assert(device_mosaic_allowed(sky_map_camera("wide", stacking=True)), "stacking overlay is tele")
 
 
 def test_mosaic_stack_camera_ignores_selected_wide() -> None:
@@ -105,6 +118,7 @@ def test_stellarium_overlay_listens_once() -> None:
 
 
 if __name__ == "__main__":
+    test_sky_menu_toggles_selected_camera()
     test_overlay_follows_selected_camera()
     test_mosaic_plan_follows_selected_camera()
     test_mosaic_stack_camera_ignores_selected_wide()

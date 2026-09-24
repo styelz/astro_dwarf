@@ -129,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     lock.add_argument("ra_hours", type=float)
     lock.add_argument("dec_degrees", type=float)
     menu = sub.add_parser("sky-menu")
-    menu.add_argument("action", choices=("overlay", "preview", "dblclick", "track", "atlas", "clipboard"))
+    menu.add_argument("action", choices=("overlay", "preview", "camera", "dblclick", "track", "atlas", "clipboard"))
     grid = sub.add_parser("sky-grid", help="Set the sky mosaic columns and rows")
     grid.add_argument("columns", type=int)
     grid.add_argument("rows", type=int)

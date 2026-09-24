@@ -83,7 +83,9 @@ Item {
         backend.setSkyMosaicGrid(columnsBox.value, rowsBox.value, overlapBox.value / 100)
     }
     function pushDeviceMosaic() {
-        const mode = skyStore.mosaicMode === "device" ? "device" : "custom"
+        let mode = skyStore.mosaicMode === "device" ? "device" : "custom"
+        if (mode === "device" && !backend.skyDeviceMosaicAllowed)
+            mode = "custom"
         skyStore.mosaicMode = mode
         skyStore.mosaicHScale = hFactor.value * 10
         skyStore.mosaicVScale = vFactor.value * 10
@@ -144,7 +146,9 @@ Item {
                 skyStore.sync()
         }
     }
-    readonly property bool deviceMode: skyStore.mosaicMode === "device"
+    readonly property bool deviceMosaicAllowed: backend.skyDeviceMosaicAllowed
+    readonly property bool deviceMode: skyPage.deviceMosaicAllowed && skyStore.mosaicMode === "device"
+    onDeviceMosaicAllowedChanged: if (!skyPage.deviceMosaicAllowed) skyPage.pushDeviceMosaic()
     readonly property bool mosaicGrid: skyPage.deviceMode
                                        ? (backend.mosaicColumns > 1 || backend.mosaicRows > 1)
                                        : (columnsBox.value > 1 || rowsBox.value > 1)
@@ -434,6 +438,8 @@ Item {
             skyMenu.overlayToggled()
         else if (key === "preview")
             skyMenu.previewToggled()
+        else if (key === "camera")
+            skyMenu.toggleCamera()
         else if (key === "dblclick")
             skyMenu.dblclickTrackToggled()
         else if (key === "track")
@@ -544,11 +550,16 @@ Item {
                 HudButton {
                     implicitHeight: Theme.compactControlHeight
                     text: "DEVICE"
+                    enabled: skyPage.deviceMosaicAllowed
                     buttonColor: skyPage.deviceMode ? Theme.fillActive : Theme.surfaceHigh
                     foregroundColor: skyPage.deviceMode ? Theme.accent : Theme.textSecondary
                     accessibleDescription: "Device mosaic"
-                    tooltip: "Stretch the tele field from 1.0× to 1.8× on each axis. The telescope shoots one pane at 1.0× and two panes above that, four views at most. Equatorial mode keeps the field from rotating between panes."
+                    tooltip: skyPage.deviceMosaicAllowed
+                             ? "Stretch the tele field from 1.0× to 1.8× on each axis. The telescope shoots one pane at 1.0× and two panes above that, four views at most. Equatorial mode keeps the field from rotating between panes."
+                             : "Device mosaic uses the telephoto field. Switch the camera to Tele. Custom mosaic stays available on Wide."
                     onClicked: {
+                        if (!skyPage.deviceMosaicAllowed)
+                            return
                         skyStore.mosaicMode = "device"
                         skyPage.pushDeviceMosaic()
                     }

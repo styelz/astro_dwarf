@@ -739,137 +739,160 @@ Item {
                         liveFilter.appliedValue = liveFilter.currentText
                     }
                 }
-                FieldLabel { text: "SHOOTING MODE · " + (cameraPanel.shootingMode === "—" ? "UNKNOWN" : cameraPanel.shootingMode) }
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Theme.s1
-                    HudButton {
-                        text: "PHOTO"
+                SettingGroup {
+                    title: "SHOOTING MODE"
+                    columns: 1
+                    RowLayout {
                         Layout.fillWidth: true
-                        buttonColor: cameraPanel.photoMode ? Theme.fillChecked : Theme.surfaceHigh
-                        foregroundColor: cameraPanel.photoMode ? Theme.accent : Theme.textPrimary
-                        busy: root.scopePending === "photo_mode"
-                        busyText: "SWITCHING…"
-                        busyMs: 0
-                        enabled: root.commandEnabled("photo_mode")
-                        tooltip: cameraPanel.photoMode ? "Current shooting mode:\nstills, burst, video, and timelapse"
-                            : "Switch to photo shooting mode\nfor stills, burst, video, and timelapse"
-                        onClicked: if (!cameraPanel.photoMode) backend.deviceAction(backend.selectedDeviceId, "photo_mode")
-                    }
-                    HudButton {
-                        text: "DSO"
-                        Layout.fillWidth: true
-                        buttonColor: cameraPanel.dsoMode ? Theme.fillChecked : Theme.surfaceHigh
-                        foregroundColor: cameraPanel.dsoMode ? Theme.accent : Theme.textPrimary
-                        busy: root.scopePending === "astro_mode"
-                        busyText: "SWITCHING…"
-                        busyMs: 0
-                        enabled: root.commandEnabled("astro_mode")
-                        tooltip: cameraPanel.dsoMode ? "Current shooting mode:\ndeep-sky stacking"
-                            : "Switch to deep-sky shooting mode\nfor astronomical stacking"
-                        onClicked: if (!cameraPanel.dsoMode) backend.deviceAction(backend.selectedDeviceId, "astro_mode")
-                    }
-                }
-                FieldLabel { text: "CAMERA" }
-                HudCombo {
-                    id: liveCamera
-                    Layout.fillWidth: true
-                    enabled: !root.scopeOccupied && !root.scopeLinking
-                    accessibleName: "Live camera"
-                    tooltip: (cameraPanel.miniBody
-                        ? "Dwarf Mini has a single telephoto camera."
-                        : "Camera for capture and settings.\nSWAP only rearranges the live panes; it does not change this.\nWide is fixed-focus; focus controls apply to Tele only.")
-                        + "\nSKY FOV follows this camera (" + backend.skyFovText + "). Mosaic panes and MOSAIC STACK always use Tele."
-                    model: cameraPanel.miniBody ? ["Tele"] : ["Tele", "Wide"]
-                    function syncFromDevice() {
-                        if (cameraPanel.miniBody && backend.selectedDevice.camera === "wide")
-                            backend.setLiveCamera(backend.selectedDeviceId, "tele")
-                        currentIndex = backend.selectedDevice.camera === "wide" && !cameraPanel.miniBody ? 1 : 0
-                    }
-                    Component.onCompleted: syncFromDevice()
-                    onActivated: backend.setLiveCamera(backend.selectedDeviceId, currentIndex === 1 ? "wide" : "tele")
-                    Connections {
-                        target: backend
-                        function onSelectedDeviceChanged() { liveCamera.syncFromDevice() }
-                    }
-                }
-                FieldLabel { text: "FOCUS"; visible: cameraPanel.teleSelected }
-                HudField {
-                    id: liveFocus
-                    Layout.fillWidth: true
-                    visible: cameraPanel.teleSelected
-                    placeholderText: "steps"
-                    accessibleName: "Focus position"
-                    tooltip: "Telephoto focus motor position in steps.\nWide is fixed-focus."
-                    inputMethodHints: Qt.ImhDigitsOnly
-                    enabled: root.commandEnabled("set_focus")
-                    readonly property string liveValue: {
-                        const value = root.scopeTelemetry.focus_text
-                        return value && value !== "—" ? String(value) : ""
-                    }
-                    onLiveValueChanged: if (!activeFocus) text = liveValue
-                    Component.onCompleted: text = liveValue
-                    onEditingFinished: {
-                        const value = text.trim()
-                        if (!value) {
-                            text = liveValue
-                            return
-                        }
-                        if (value === liveValue)
-                            return
-                        backend.setCameraParam(backend.selectedDeviceId, "focus", value)
-                    }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: cameraPanel.teleSelected
-                    Item {
-                        Layout.fillWidth: true
-                        implicitHeight: nearFocus.implicitHeight
+                        spacing: Theme.s1
                         HudButton {
-                            id: nearFocus
-                            anchors.fill: parent
-                            text: "NEAR"
-                            busy: backend.selectedDevice.pending_action === "focus_near"
-                            busyText: "FOCUSING…"
+                            text: "PHOTO"
+                            Layout.fillWidth: true
+                            buttonColor: cameraPanel.photoMode ? Theme.fillChecked : Theme.surfaceHigh
+                            foregroundColor: cameraPanel.photoMode ? Theme.accent : Theme.textPrimary
+                            busy: root.scopePending === "photo_mode"
+                            busyText: "SWITCHING…"
                             busyMs: 0
-                            enabled: root.commandEnabled("focus_near")
-                            tooltip: "Nudge the telephoto focus motor toward near.\nHold is not supported; each tap is one acknowledged move."
-                            onClicked: backend.manualFocus(backend.selectedDeviceId, 1)
+                            enabled: root.commandEnabled("photo_mode")
+                            tooltip: cameraPanel.photoMode ? "Current shooting mode:\nstills, burst, video, and timelapse"
+                                : "Switch to photo shooting mode\nfor stills, burst, video, and timelapse"
+                            onClicked: if (!cameraPanel.photoMode) backend.deviceAction(backend.selectedDeviceId, "photo_mode")
                         }
-                        HudBlockedHover {
-                            control: nearFocus
-                            reason: root.scopeStacking ? "Unavailable while stacking" : "Unavailable"
-                        }
-                    }
-                    Item {
-                        Layout.fillWidth: true
-                        implicitHeight: farFocus.implicitHeight
                         HudButton {
-                            id: farFocus
-                            anchors.fill: parent
-                            text: "FAR"
-                            busy: backend.selectedDevice.pending_action === "focus_far"
-                            busyText: "FOCUSING…"
+                            text: "DSO"
+                            Layout.fillWidth: true
+                            buttonColor: cameraPanel.dsoMode ? Theme.fillChecked : Theme.surfaceHigh
+                            foregroundColor: cameraPanel.dsoMode ? Theme.accent : Theme.textPrimary
+                            busy: root.scopePending === "astro_mode"
+                            busyText: "SWITCHING…"
                             busyMs: 0
-                            enabled: root.commandEnabled("focus_far")
-                            tooltip: "Nudge the telephoto focus motor toward infinity.\nHold is not supported; each tap is one acknowledged move."
-                            onClicked: backend.manualFocus(backend.selectedDeviceId, 0)
-                        }
-                        HudBlockedHover {
-                            control: farFocus
-                            reason: root.scopeStacking ? "Unavailable while stacking" : "Unavailable"
+                            enabled: root.commandEnabled("astro_mode")
+                            tooltip: cameraPanel.dsoMode ? "Current shooting mode:\ndeep-sky stacking"
+                                : "Switch to deep-sky shooting mode\nfor astronomical stacking"
+                            onClicked: if (!cameraPanel.dsoMode) backend.deviceAction(backend.selectedDeviceId, "astro_mode")
                         }
                     }
                 }
-                FieldLabel {
-                    text: "FILTER"
-                    visible: cameraPanel.teleSelected
+                SettingGroup {
+                    title: "LENS"
+                    columns: 1
+                    HudCombo {
+                        id: liveCamera
+                        Layout.fillWidth: true
+                        enabled: !root.scopeOccupied && !root.scopeLinking
+                        accessibleName: "Live camera"
+                        tooltip: (cameraPanel.miniBody
+                            ? "Dwarf Mini has a single telephoto camera."
+                            : "Lens for capture and settings.\nSWAP only rearranges the live panes; it does not change this.\nWide is fixed-focus; focus controls apply to Tele only.")
+                            + "\nSKY FOV follows this lens (" + backend.skyFovText + "). Mosaic panes and MOSAIC STACK always use Tele."
+                        model: cameraPanel.miniBody ? ["Tele"] : ["Tele", "Wide"]
+                        function syncFromDevice() {
+                            if (cameraPanel.miniBody && backend.selectedDevice.camera === "wide")
+                                backend.setLiveCamera(backend.selectedDeviceId, "tele")
+                            currentIndex = backend.selectedDevice.camera === "wide" && !cameraPanel.miniBody ? 1 : 0
+                        }
+                        Component.onCompleted: syncFromDevice()
+                        onActivated: backend.setLiveCamera(backend.selectedDeviceId, currentIndex === 1 ? "wide" : "tele")
+                        Connections {
+                            target: backend
+                            function onSelectedDeviceChanged() { liveCamera.syncFromDevice() }
+                        }
+                    }
                 }
+                SettingGroup {
+                    title: "FOCUS"
+                    columns: 1
+                    visible: cameraPanel.teleSelected
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.s1
+                        Item {
+                            Layout.preferredWidth: Theme.controlHeight
+                            Layout.preferredHeight: Theme.controlHeight
+                            implicitWidth: Theme.controlHeight
+                            implicitHeight: Theme.controlHeight
+                            HudButton {
+                                id: nearFocus
+                                anchors.fill: parent
+                                text: "−"
+                                accessibleName: "Focus nearer"
+                                leftPadding: 0
+                                rightPadding: 0
+                                font.pixelSize: Theme.fontPx(18)
+                                font.letterSpacing: 0
+                                busy: backend.selectedDevice.pending_action === "focus_near"
+                                busyText: ""
+                                busyMs: 0
+                                enabled: root.commandEnabled("focus_near")
+                                tooltip: "Step the telephoto focus nearer.\nThe position number goes down. Each tap is one acknowledged move."
+                                onClicked: backend.manualFocus(backend.selectedDeviceId, 1)
+                            }
+                            HudBlockedHover {
+                                control: nearFocus
+                                reason: root.scopeStacking ? "Unavailable while stacking" : "Unavailable"
+                            }
+                        }
+                        HudField {
+                            id: liveFocus
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: Theme.px(36)
+                            placeholderText: "steps"
+                            accessibleName: "Focus position"
+                            tooltip: "Telephoto focus position in steps.\n− moves nearer. + moves farther, toward infinity.\nWide is fixed-focus."
+                            inputMethodHints: Qt.ImhDigitsOnly
+                            enabled: root.commandEnabled("set_focus")
+                            readonly property string liveValue: {
+                                const value = root.scopeTelemetry.focus_text
+                                return value && value !== "—" ? String(value) : ""
+                            }
+                            onLiveValueChanged: if (!activeFocus) text = liveValue
+                            Component.onCompleted: text = liveValue
+                            onEditingFinished: {
+                                const value = text.trim()
+                                if (!value) {
+                                    text = liveValue
+                                    return
+                                }
+                                if (value === liveValue)
+                                    return
+                                backend.setCameraParam(backend.selectedDeviceId, "focus", value)
+                            }
+                        }
+                        Item {
+                            Layout.preferredWidth: Theme.controlHeight
+                            Layout.preferredHeight: Theme.controlHeight
+                            implicitWidth: Theme.controlHeight
+                            implicitHeight: Theme.controlHeight
+                            HudButton {
+                                id: farFocus
+                                anchors.fill: parent
+                                text: "+"
+                                accessibleName: "Focus farther"
+                                leftPadding: 0
+                                rightPadding: 0
+                                font.pixelSize: Theme.fontPx(18)
+                                font.letterSpacing: 0
+                                busy: backend.selectedDevice.pending_action === "focus_far"
+                                busyText: ""
+                                busyMs: 0
+                                enabled: root.commandEnabled("focus_far")
+                                tooltip: "Step the telephoto focus farther, toward infinity.\nThe position number goes up. Each tap is one acknowledged move."
+                                onClicked: backend.manualFocus(backend.selectedDeviceId, 0)
+                            }
+                            HudBlockedHover {
+                                control: farFocus
+                                reason: root.scopeStacking ? "Unavailable while stacking" : "Unavailable"
+                            }
+                        }
+                    }
+                }
+                SettingGroup {
+                    title: "FILTER"
+                    columns: 1
+                    visible: cameraPanel.teleSelected
                 HudCombo {
                     id: liveFilter
                     Layout.fillWidth: true
-                    visible: cameraPanel.teleSelected
                     enabled: root.commandEnabled("set_ir")
                     accessibleName: "IR filter"
                     tooltip: "Telephoto IR filter.\nVIS for daytime, Astro for broadband night, Duo-Band for Ha/OIII."
@@ -894,9 +917,17 @@ Item {
                         appliedValue = currentText
                     }
                 }
-                FieldLabel { text: "EXPOSURE / GAIN" }
-                RowLayout {
-                    Layout.fillWidth: true
+                }
+                SettingGroup {
+                    title: "CAPTURE"
+                    columns: 1
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.s1
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "EXPOSURE"; Layout.fillWidth: true; Layout.preferredWidth: 1 }
                     HudField {
                         id: liveExposure
                         Layout.fillWidth: true
@@ -924,6 +955,11 @@ Item {
                                 backend.setCameraParam(backend.selectedDeviceId, "exposure", value)
                         }
                     }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "GAIN"; Layout.fillWidth: true; Layout.preferredWidth: 1 }
                     HudField {
                         id: liveGain
                         Layout.fillWidth: true
@@ -953,10 +989,19 @@ Item {
                                 backend.setCameraParam(backend.selectedDeviceId, "gain", value)
                         }
                     }
+                        }
+                    }
                 }
-                FieldLabel { text: "STACK COUNT" }
-                RowLayout {
-                    Layout.fillWidth: true
+                SettingGroup {
+                    title: "STACK"
+                    columns: 1
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.s1
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "FRAMES"; Layout.fillWidth: true; Layout.preferredWidth: 1 }
                     HudField {
                         id: liveStackCount
                         Layout.fillWidth: true
@@ -987,6 +1032,11 @@ Item {
                                 backend.setCameraParam(backend.selectedDeviceId, "count", value)
                         }
                     }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "FORMAT"; Layout.fillWidth: true; Layout.preferredWidth: 1 }
                     HudCombo {
                         id: liveStackFormat
                         Layout.fillWidth: true
@@ -1005,14 +1055,29 @@ Item {
                         }
                         onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                     }
+                        }
+                    }
                 }
-                FieldLabel { text: "BURST / TIMELAPSE" }
-                RowLayout {
-                    Layout.fillWidth: true
+                SettingGroup {
+                    title: "BURST"
+                    columns: 1
+                    FieldHint {
+                        visible: cameraPanel.dsoMode
+                        text: "Switch to photo mode for burst and timelapse."
+                        Layout.minimumWidth: 0
+                        Layout.fillWidth: true
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.s1
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "FRAMES"; Layout.fillWidth: true; Layout.preferredWidth: 1 }
                     HudField {
                         id: liveBurstCount
                         Layout.fillWidth: true
-                        placeholderText: "burst #"
+                        placeholderText: "count"
                         accessibleName: "Burst count"
                         tooltip: "Number of stills in a burst sequence."
                         enabled: root.commandEnabled("set_burst_count") && cameraPanel.photoMode
@@ -1026,6 +1091,11 @@ Item {
                         Component.onCompleted: if (liveValue) text = liveValue
                         onEditingFinished: if (text.trim() && text.trim() !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "burst_count", text)
                     }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "INTERVAL"; Layout.fillWidth: true; Layout.preferredWidth: 1; elide: Text.ElideRight }
                     HudCombo {
                         id: liveBurstInterval
                         Layout.fillWidth: true
@@ -1037,9 +1107,19 @@ Item {
                         readonly property int liveIndex: cameraPanel.comboIndex(cameraPanel.burstIntervalItems, root.scopeTelemetry.burst_interval)
                         onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                     }
+                        }
+                    }
                 }
-                RowLayout {
-                    Layout.fillWidth: true
+                SettingGroup {
+                    title: "TIMELAPSE"
+                    columns: 1
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.s1
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "INTERVAL"; Layout.fillWidth: true; Layout.preferredWidth: 1; elide: Text.ElideRight }
                     HudCombo {
                         id: liveTimelapseInterval
                         Layout.fillWidth: true
@@ -1051,6 +1131,11 @@ Item {
                         readonly property int liveIndex: cameraPanel.comboIndex(cameraPanel.timelapseIntervalItems, root.scopeTelemetry.timelapse_interval)
                         onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                     }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "LENGTH"; Layout.fillWidth: true; Layout.preferredWidth: 1 }
                     HudCombo {
                         id: liveTimelapseDuration
                         Layout.fillWidth: true
@@ -1062,16 +1147,21 @@ Item {
                         readonly property int liveIndex: cameraPanel.comboIndex(cameraPanel.timelapseDurationItems, root.scopeTelemetry.timelapse_duration)
                         onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                     }
+                        }
+                    }
+                    Text {
+                        visible: cameraPanel.photoMode && cameraPanel.timelapsePlanText !== ""
+                        text: cameraPanel.timelapsePlanText
+                        color: Theme.textSecondary
+                        font.pixelSize: Theme.fontXs
+                        font.family: Theme.fontMono
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
                 }
-                Text {
-                    visible: cameraPanel.photoMode && cameraPanel.timelapsePlanText !== ""
-                    text: cameraPanel.timelapsePlanText
-                    color: Theme.textSecondary
-                    font.pixelSize: Theme.fontXs
-                    font.family: Theme.fontMono
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
+                SettingGroup {
+                    title: "AUTO"
+                    columns: 1
                 HudCheck {
                     id: liveAutoParameters
                     text: "Auto parameters"
@@ -1103,11 +1193,15 @@ Item {
                     Component.onCompleted: if (liveRaw === true || liveRaw === false) setOn(liveRaw === true)
                     onClicked: backend.setCameraParam(backend.selectedDeviceId, "auto_calibration", checked ? "true" : "false")
                 }
-                FieldLabel { text: "WHITE BALANCE"; visible: cameraPanel.teleSelected }
+                }
+                SettingGroup {
+                    title: "WHITE BALANCE"
+                    columns: 1
+                    visible: cameraPanel.teleSelected
+                    FieldLabel { text: "PRESET"; Layout.fillWidth: true; Layout.preferredWidth: 1 }
                 HudCombo {
                     id: liveWb
                     Layout.fillWidth: true
-                    visible: cameraPanel.teleSelected
                     enabled: root.commandEnabled("set_wb_preset")
                     accessibleName: "White-balance preset"
                     tooltip: "White-balance scene preset for the tele camera."
@@ -1122,10 +1216,10 @@ Item {
                     }
                     onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                 }
+                    FieldLabel { text: "KELVIN"; Layout.fillWidth: true; Layout.preferredWidth: 1 }
                 HudField {
                     id: liveWbKelvin
                     Layout.fillWidth: true
-                    visible: cameraPanel.teleSelected
                     enabled: root.commandEnabled("set_wb")
                     placeholderText: "Kelvin 2800–7500"
                     accessibleName: "White-balance Kelvin"
@@ -1148,19 +1242,49 @@ Item {
                             backend.setCameraParam(backend.selectedDeviceId, "wb", value)
                     }
                 }
-                FieldLabel { text: "IMAGE"; visible: cameraPanel.teleSelected }
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: cameraPanel.teleSelected
-                    HudField { id: liveBrightness; Layout.fillWidth: true; placeholderText: "bri"; accessibleName: "Brightness"; tooltip: "Image brightness."; enabled: root.commandEnabled("set_brightness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_brightness : root.scopeTelemetry.brightness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "brightness", value) } }
-                    HudField { id: liveContrast; Layout.fillWidth: true; placeholderText: "con"; accessibleName: "Contrast"; tooltip: "Image contrast."; enabled: root.commandEnabled("set_contrast"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_contrast : root.scopeTelemetry.contrast; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "contrast", value) } }
-                    HudField { id: liveSaturation; Layout.fillWidth: true; placeholderText: "sat"; accessibleName: "Saturation"; tooltip: "Image colour saturation."; enabled: root.commandEnabled("set_saturation"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_saturation : root.scopeTelemetry.saturation; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "saturation", value) } }
                 }
-                RowLayout {
-                    Layout.fillWidth: true
+                SettingGroup {
+                    title: "IMAGE"
+                    columns: 1
                     visible: cameraPanel.teleSelected
-                    HudField { id: liveHue; Layout.fillWidth: true; placeholderText: "hue"; accessibleName: "Hue"; tooltip: "Image hue shift."; enabled: root.commandEnabled("set_hue"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_hue : root.scopeTelemetry.hue; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "hue", value) } }
-                    HudField { id: liveSharpness; Layout.fillWidth: true; placeholderText: "shp"; accessibleName: "Sharpness"; tooltip: "Image sharpening."; enabled: root.commandEnabled("set_sharpness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_sharpness : root.scopeTelemetry.sharpness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "sharpness", value) } }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.s1
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "BRIGHT"; Layout.fillWidth: true; Layout.preferredWidth: 1; elide: Text.ElideRight }
+                            HudField { id: liveBrightness; Layout.fillWidth: true; accessibleName: "Brightness"; tooltip: "Image brightness."; enabled: root.commandEnabled("set_brightness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_brightness : root.scopeTelemetry.brightness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "brightness", value) } }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "CONTRAST"; Layout.fillWidth: true; Layout.preferredWidth: 1; elide: Text.ElideRight }
+                            HudField { id: liveContrast; Layout.fillWidth: true; accessibleName: "Contrast"; tooltip: "Image contrast."; enabled: root.commandEnabled("set_contrast"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_contrast : root.scopeTelemetry.contrast; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "contrast", value) } }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "SAT"; Layout.fillWidth: true; Layout.preferredWidth: 1; elide: Text.ElideRight }
+                            HudField { id: liveSaturation; Layout.fillWidth: true; accessibleName: "Saturation"; tooltip: "Image colour saturation."; enabled: root.commandEnabled("set_saturation"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_saturation : root.scopeTelemetry.saturation; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "saturation", value) } }
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.s1
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "HUE"; Layout.fillWidth: true; Layout.preferredWidth: 1 }
+                            HudField { id: liveHue; Layout.fillWidth: true; accessibleName: "Hue"; tooltip: "Image hue shift."; enabled: root.commandEnabled("set_hue"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_hue : root.scopeTelemetry.hue; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "hue", value) } }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.s1
+                            FieldLabel { text: "SHARP"; Layout.fillWidth: true; Layout.preferredWidth: 1 }
+                            HudField { id: liveSharpness; Layout.fillWidth: true; accessibleName: "Sharpness"; tooltip: "Image sharpening."; enabled: root.commandEnabled("set_sharpness"); readonly property var liveRaw: backend.selectedDevice.camera === "wide" ? root.scopeTelemetry.wide_sharpness : root.scopeTelemetry.sharpness; readonly property string liveValue: liveRaw !== undefined && liveRaw !== null ? String(liveRaw) : ""; onLiveValueChanged: if (!activeFocus) text = liveValue; Component.onCompleted: text = liveValue; onEditingFinished: { const value = text.trim(); if (!value) { text = liveValue; return } if (value !== liveValue) backend.setCameraParam(backend.selectedDeviceId, "sharpness", value) } }
+                        }
+                    }
                 }
             }
         }

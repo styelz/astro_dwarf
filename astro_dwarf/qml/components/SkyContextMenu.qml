@@ -24,6 +24,12 @@ HudMenu {
     property real clipboardRaHours: 0
     property real clipboardDecDegrees: 0
 
+    readonly property bool hasSelectedDevice: !!(backend.selectedDeviceId)
+    readonly property bool miniBody: String((backend.selectedDevice && backend.selectedDevice.model) || "") === "Dwarf Mini"
+    readonly property bool cameraWide: String((backend.selectedDevice && backend.selectedDevice.camera) || "") === "wide"
+    readonly property bool cameraSwitchEnabled: skyMenu.hasSelectedDevice && !skyMenu.miniBody
+                                                 && !(root && root.scopeOccupied) && !(root && root.scopeLinking)
+
     signal overlayToggled()
     signal previewToggled()
     signal dblclickTrackToggled()
@@ -32,6 +38,12 @@ HudMenu {
     signal atlasMenuRequested()
     signal clipboardGotoRequested()
     signal enterRaDecRequested()
+
+    function toggleCamera() {
+        if (!skyMenu.cameraSwitchEnabled)
+            return
+        backend.setLiveCamera(backend.selectedDeviceId, skyMenu.cameraWide ? "tele" : "wide")
+    }
 
     function refreshClipboard() {
         const coords = backend.clipboardCoordinates() || ({})
@@ -94,6 +106,23 @@ HudMenu {
                                ? "Stop the telescope live preview used by the FOV overlay"
                                : "Start the telescope live preview so it can be overlaid on the FOV"
         onTriggered: skyMenu.previewToggled()
+    }
+    HudMenuItem {
+        objectName: "cameraToggleMenuItem"
+        text: skyMenu.cameraWide ? "Switch to tele camera" : "Switch to wide camera"
+        glyph: "\uE8AB"
+        trailingText: skyMenu.cameraWide ? "WIDE" : "TELE"
+        enabled: skyMenu.cameraSwitchEnabled
+        accessibleDescription: !skyMenu.hasSelectedDevice
+                               ? "Select a telescope first"
+                               : skyMenu.miniBody
+                                 ? "Dwarf Mini has a single telephoto camera"
+                                 : !skyMenu.cameraSwitchEnabled
+                                   ? "Wait until the telescope is idle before switching cameras"
+                                   : skyMenu.cameraWide
+                                     ? "Sky field of view follows the wide camera. Switch to the telephoto camera. Mosaic panes still use tele."
+                                     : "Sky field of view follows the telephoto camera. Switch to the wide camera."
+        onTriggered: skyMenu.toggleCamera()
     }
     HudMenuItem {
         text: skyMenu.dblclickTrack ? "Double-click starts tracking" : "Double-click only centers"

@@ -171,8 +171,12 @@ Item {
                 property var selectedIds: ({})
                 property string selectionAnchorId: ""
                 property var expandedGroups: ({})
-                readonly property int selectedCount: Util.idSetCount(selectedIds)
-                readonly property var clusteredSessions: Util.clusterSessions(backend.sessions)
+                property int statusFilter: 0
+                readonly property var statusKeys: ["", "planned", "running", "done", "error", "skipped"]
+                readonly property bool filterActive: scheduledFilter.query !== "" || statusFilter !== 0
+                readonly property var filteredSessions: Util.filterByQueryAndStatus(backend.sessions, scheduledFilter.query, statusKeys[statusFilter] || "")
+                readonly property int selectedCount: Util.filterByQueryAndStatus(filteredSessions, "", "").filter(item => Util.idSetHas(selectedIds, item.id)).length
+                readonly property var clusteredSessions: Util.clusterSessions(filteredSessions)
                 readonly property var visibleSessions: Util.visibleClusteredSessions(clusteredSessions, expandedGroups)
                 readonly property var mosaicGroupKeys: Util.mosaicGroupKeys(clusteredSessions)
                 readonly property int groupedCount: mosaicGroupKeys.length
@@ -263,7 +267,7 @@ Item {
                         selectionAnchorId = id
                         return
                     }
-                    const result = Util.clickSelect(selectedIds, scheduledPage.clusteredSessions, id, shift, selectionAnchorId)
+                    const result = Util.clickSelect(selectedIds, scheduledPage.filteredSessions, id, shift, selectionAnchorId)
                     selectedIds = result.map
                     selectionAnchorId = result.anchor
                 }
@@ -307,21 +311,46 @@ Item {
                         scheduledPage.selectedIds = Util.pruneIdSet(scheduledPage.selectedIds, backend.sessions)
                     }
                 }
-                EmptyHint { visible: backend.sessions.length === 0; glyph: "✦"; text: "No scheduled sessions yet. Create one manually or import a Stellarium / Telescopius target list."; anchors.centerIn: parent }
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: Theme.s1
-                    visible: backend.sessions.length > 0
+                    ListFilterBar {
+                        id: scheduledFilter
+                        Layout.fillWidth: true
+                        placeholderText: "Search target, device, or status"
+                        searchAccessibleName: "Search scheduled sessions"
+                        searchObjectName: "sessions-schedule-search"
+                        comboAccessibleName: "Filter by status"
+                        comboObjectName: "sessions-schedule-status"
+                        comboModel: ["All statuses", "Planned", "Running", "Done", "Error", "Skipped"]
+                        comboIndex: scheduledPage.statusFilter
+                        onComboActivated: index => scheduledPage.statusFilter = index
+                    }
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        EmptyHint {
+                            anchors.centerIn: parent
+                            visible: scheduledPage.filteredSessions.length === 0
+                            glyph: backend.sessions.length === 0 ? "✦" : "⌕"
+                            text: backend.sessions.length === 0
+                                  ? "No scheduled sessions yet. Create one manually or import a Stellarium / Telescopius target list."
+                                  : "No sessions match this search."
+                        }
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: Theme.s1
+                    visible: scheduledPage.filteredSessions.length > 0
                     SelectionBar {
                         selectedCount: scheduledPage.selectedCount
-                        totalCount: backend.sessions.length
+                        totalCount: scheduledPage.filteredSessions.length
                         noun: "session"
                         allowMove: true
                         sessionIds: Util.idSetKeys(scheduledPage.selectedIds)
-                        onSelectAllRequested: scheduledPage.selectedIds = Util.idSetAll(backend.sessions, true)
+                        onSelectAllRequested: scheduledPage.selectedIds = Util.idSetAll(scheduledPage.filteredSessions, true)
                         onClearRequested: scheduledPage.selectedIds = ({})
                         onEditRequested: sessionDialog.openSelected(Util.itemsByIds(backend.sessions, scheduledPage.selectedIds))
-                        onDeleteRequested: root.confirmBulkDelete("deleteSessions", scheduledPage.selectedIds, "session")
+                        onDeleteRequested: root.confirmBulkDelete("deleteSessions", Util.pruneIdSet(scheduledPage.selectedIds, scheduledPage.filteredSessions), "session")
                     }
                     Item {
                         Layout.fillWidth: true
@@ -357,6 +386,7 @@ Item {
                         id: scheduledInsert
                         Layout.fillWidth: true
                         Layout.fillHeight: true
+                        reorderEnabled: !scheduledPage.filterActive
                         targetList: scheduledList
                         rowHeight: Theme.px(76)
                         headerHeight: Theme.px(30)
@@ -483,6 +513,7 @@ Item {
                                         anchors.rightMargin: scheduledPage.rowInset + scheduledPage.actionsWidth
                                         SessionDragArea {
                                             dragItem: scheduledRow.modelData
+                                            dragEnabled: !scheduledPage.filterActive
                                             onEditRequested: session => scheduledPage.editItem(scheduledRow.modelData)
                                         }
                                     },
@@ -731,6 +762,8 @@ Item {
                         }
                     }
                 }
+                    }
+                }
                 SessionContextMenu {
                     id: sessionMenu
                     objectName: "sessionContextMenu"
@@ -743,7 +776,7 @@ Item {
                     onEditRequested: session => scheduledPage.editItem(session)
                     onEditSelectedRequested: sessionDialog.openSelected(Util.itemsByIds(backend.sessions, scheduledPage.selectedIds))
                     onDuplicateRequested: (session, mode) => duplicateSessionDialog.openFor(session, mode)
-                    onSelectAllRequested: scheduledPage.selectedIds = Util.idSetAll(backend.sessions, true)
+                    onSelectAllRequested: scheduledPage.selectedIds = Util.idSetAll(scheduledPage.filteredSessions, true)
                     onUnselectAllRequested: {
                         scheduledPage.selectedIds = ({})
                         scheduledPage.selectionAnchorId = ""
@@ -757,9 +790,12 @@ Item {
                 property var selectedIds: ({})
                 property var flashIds: ({})
                 property string selectionAnchorId: ""
-                readonly property int selectedCount: Util.idSetCount(selectedIds)
+                property int cameraFilter: 0
+                readonly property var cameraKeys: ["", "tele", "wide"]
+                readonly property var filteredTemplates: Util.filterTemplates(backend.templates, templateFilter.query, cameraKeys[cameraFilter] || "")
+                readonly property int selectedCount: filteredTemplates.filter(item => Util.idSetHas(selectedIds, item.id)).length
                 function selectClick(id, shift) {
-                    const result = Util.clickSelect(selectedIds, backend.templates, id, shift, selectionAnchorId)
+                    const result = Util.clickSelect(selectedIds, templatesPage.filteredTemplates, id, shift, selectionAnchorId)
                     selectedIds = result.map
                     selectionAnchorId = result.anchor
                 }
@@ -770,6 +806,8 @@ Item {
                         root.confirmBulkDelete("deleteTemplates", id, "template")
                 }
                 function revealCreated(ids) {
+                    templateFilter.clearSearch()
+                    templatesPage.cameraFilter = 0
                     const wanted = {}
                     const list = backend.templates
                     let firstIndex = -1
@@ -806,19 +844,44 @@ Item {
                         templatesPage.selectedIds = Util.pruneIdSet(templatesPage.selectedIds, backend.templates)
                     }
                 }
-                EmptyHint { anchors.centerIn: parent; visible: backend.templates.length === 0; glyph: "❖"; text: "No templates yet. Save a session as a reusable template, or import Stellarium / Telescopius." }
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: Theme.s1
-                    visible: backend.templates.length > 0
+                    ListFilterBar {
+                        id: templateFilter
+                        Layout.fillWidth: true
+                        placeholderText: "Search name, target, or camera"
+                        searchAccessibleName: "Search templates"
+                        searchObjectName: "sessions-template-search"
+                        comboAccessibleName: "Filter by camera"
+                        comboObjectName: "sessions-template-camera"
+                        comboModel: ["All cameras", "Tele", "Wide"]
+                        comboIndex: templatesPage.cameraFilter
+                        onComboActivated: index => templatesPage.cameraFilter = index
+                    }
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        EmptyHint {
+                            anchors.centerIn: parent
+                            visible: templatesPage.filteredTemplates.length === 0
+                            glyph: backend.templates.length === 0 ? "❖" : "⌕"
+                            text: backend.templates.length === 0
+                                  ? "No templates yet. Save a session as a reusable template, or import Stellarium / Telescopius."
+                                  : "No templates match this search."
+                        }
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: Theme.s1
+                    visible: templatesPage.filteredTemplates.length > 0
                     SelectionBar {
                         selectedCount: templatesPage.selectedCount
-                        totalCount: backend.templates.length
+                        totalCount: templatesPage.filteredTemplates.length
                         noun: "template"
-                        onSelectAllRequested: templatesPage.selectedIds = Util.idSetAll(backend.templates, true)
+                        onSelectAllRequested: templatesPage.selectedIds = Util.idSetAll(templatesPage.filteredTemplates, true)
                         onClearRequested: templatesPage.selectedIds = ({})
                         onEditRequested: sessionDialog.openSelected(Util.itemsByIds(backend.templates, templatesPage.selectedIds), true)
-                        onDeleteRequested: root.confirmBulkDelete("deleteTemplates", templatesPage.selectedIds, "template")
+                        onDeleteRequested: root.confirmBulkDelete("deleteTemplates", Util.pruneIdSet(templatesPage.selectedIds, templatesPage.filteredTemplates), "template")
                     }
                 GridView {
                     id: templatesView
@@ -830,7 +893,7 @@ Item {
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: HiddenBar {}
                     ScrollBar.horizontal: HiddenBar {}
-                    model: backend.templates
+                    model: templatesPage.filteredTemplates
                     delegate: HudPanel {
                         id: templateCard
                         objectName: "template-" + modelData.id
@@ -945,8 +1008,8 @@ Item {
                                 HudMenuItem {
                                     text: "Select all"
                                     glyph: "\uE8A5"
-                                    enabled: backend.templates.length > 0
-                                    onTriggered: templatesPage.selectedIds = Util.idSetAll(backend.templates, true)
+                                    enabled: templatesPage.filteredTemplates.length > 0
+                                    onTriggered: templatesPage.selectedIds = Util.idSetAll(templatesPage.filteredTemplates, true)
                                 }
                                 HudMenuItem {
                                     text: "Unselect all"
@@ -1045,6 +1108,8 @@ Item {
                         Item { Layout.fillWidth: true; Layout.preferredHeight: Theme.px(34) }
                     }
                 }
+                }
+                    }
                 }
             }
         }

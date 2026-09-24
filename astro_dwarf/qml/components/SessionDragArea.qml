@@ -10,6 +10,7 @@ Item {
     required property var dragItem
     property var pressedAction: null
     property bool editOnDoubleTap: true
+    property bool dragEnabled: true
     signal editRequested(var session)
     readonly property bool canEdit: {
         const item = root.dragItem || {}
@@ -56,7 +57,7 @@ Item {
         acceptedButtons: Qt.LeftButton
         acceptedModifiers: Qt.NoModifier
         cursorShape: Qt.ClosedHandCursor
-        enabled: root.canEdit
+        enabled: root.canEdit && root.dragEnabled
         property bool started: false
         property bool live: false
 
