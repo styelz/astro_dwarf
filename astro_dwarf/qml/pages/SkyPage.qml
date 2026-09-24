@@ -356,6 +356,16 @@ Item {
                 backend.reportSkyLockResult(status, String(target.name || ""))
         })
     }
+    function harnessGrid(columns, rows) {
+        const nextColumns = skyPage.clampInt(columns, 1, 10, columnsBox.value)
+        const nextRows = skyPage.clampInt(rows, 1, 10, rowsBox.value)
+        if (columnsBox.value !== nextColumns)
+            columnsBox.value = nextColumns
+        if (rowsBox.value !== nextRows)
+            rowsBox.value = nextRows
+        skyPage.saveSkyGrid()
+        return columnsBox.value + "x" + rowsBox.value
+    }
     function harnessSetView(raHours, decDegrees) {
         const map = mapLoader.item
         if (!map)

@@ -130,6 +130,9 @@ def main(argv: list[str] | None = None) -> int:
     lock.add_argument("dec_degrees", type=float)
     menu = sub.add_parser("sky-menu")
     menu.add_argument("action", choices=("overlay", "preview", "dblclick", "track", "atlas", "clipboard"))
+    grid = sub.add_parser("sky-grid", help="Set the sky mosaic columns and rows")
+    grid.add_argument("columns", type=int)
+    grid.add_argument("rows", type=int)
     eval_js = sub.add_parser("sky-eval", help="Run JavaScript in the sky map and print the result")
     eval_js.add_argument("script")
 
@@ -220,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.cmd == "sky-menu":
         return _print(request(base, "POST", "/sky/menu", {"action": args.action}))
+    if args.cmd == "sky-grid":
+        return _print(request(base, "POST", "/sky/grid", {"columns": args.columns, "rows": args.rows}))
     if args.cmd == "sky-eval":
         return _print(request(base, "POST", "/sky/eval", {"script": args.script}))
     if args.cmd == "confirm":

@@ -1169,6 +1169,13 @@ class TestHarness:
                 action = str(payload.get("action") or "")
                 result = self.call_hook("skyMenu", action)
                 return {"action": action, "result": result}
+            if method == "POST" and route == "/sky/grid":
+                result = self.call_hook(
+                    "skyGrid",
+                    int(payload.get("columns") or 1),
+                    int(payload.get("rows") or 1),
+                )
+                return {"result": result}
             if method == "POST" and route == "/sky/eval":
                 script = str(payload.get("script") or payload.get("js") or "")
                 started = self.call_hook("skyEval", script)

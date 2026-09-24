@@ -603,6 +603,10 @@ ApplicationWindow {
             return "ok"
         }
 
+        function skyGrid(columns, rows) {
+            return skyPage.harnessGrid(Number(columns), Number(rows))
+        }
+
         function skyMenu(action) {
             return skyPage.harnessMenu(String(action || ""))
         }
