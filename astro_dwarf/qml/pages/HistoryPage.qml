@@ -652,6 +652,13 @@ Item {
                                 HudMenu {
                                     id: historyMenu
                                     HudMenuItem {
+                                        objectName: "history-stitch"
+                                        text: "Stitch mosaic"
+                                        glyph: "\uE8B9"
+                                        enabled: !!(historyRow.modelData.group_id) && Number(historyRow.modelData.pane_count || historyRow.modelData.mosaic_panes || 0) > 1 && backend.stitchStatus !== "working"
+                                        onTriggered: backend.stitchHistoryGroup(String(historyRow.modelData.group_id || ""), String(historyRow.modelData.device_id || ""))
+                                    }
+                                    HudMenuItem {
                                         text: "Run again"
                                         glyph: "\uE768"
                                         enabled: !!historyRow.modelData.has_session

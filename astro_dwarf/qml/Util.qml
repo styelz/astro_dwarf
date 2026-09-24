@@ -615,6 +615,30 @@ QtObject {
             group_action: action
         }
     }
+    function sessionDeleteIds(item) {
+        if (item && item.group_collapsed && item.group_members && item.group_members.length) {
+            const ids = []
+            for (let i = 0; i < item.group_members.length; i++) {
+                const id = item.group_members[i] && item.group_members[i].id
+                if (id)
+                    ids.push(String(id))
+            }
+            if (ids.length)
+                return ids
+        }
+        const id = item && item.id
+        return id ? [String(id)] : []
+    }
+    function sessionDeleteEnabled(item) {
+        const members = item && item.group_collapsed && item.group_members && item.group_members.length
+            ? item.group_members
+            : [item]
+        for (let i = 0; i < members.length; i++) {
+            if (members[i] && String(members[i].status || "") !== "running")
+                return true
+        }
+        return false
+    }
     function sessionGroupKey(item) {
         if (item && item.is_grouped)
             return String(item.group_key || "")

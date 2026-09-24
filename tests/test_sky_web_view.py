@@ -91,6 +91,12 @@ def test_time_now_helper_blocks_stellarium_night_jump() -> None:
     _assert("mdi-history" in SKY_WEB_TIME_NOW_JS, "helper clicks Stellarium reset-to-now")
     _assert("clickStellariumNow" in SKY_WEB_TIME_NOW_JS, "helper uses Stellarium now control")
     _assert("[0, 50, 250, 800, 1600]" in SKY_WEB_TIME_NOW_JS, "helper reapplies after Vue nextTick")
+    _assert("__astroDwarfSkyTimeNow" in SKY_WEB_TIME_NOW_JS, "clock jumps to now only once per page")
+    qml = (ROOT / "astro_dwarf" / "qml" / "pages" / "SkyWebView.qml").read_text(encoding="utf-8")
+    _assert(
+        "appliedSiteKey !== backend.skyWebSiteScript" in qml.split("onSelectedDeviceChanged")[1],
+        "device updates must not reapply the site clock",
+    )
 
 
 if __name__ == "__main__":

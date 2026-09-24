@@ -32,6 +32,8 @@ Control {
     signal stopClicked()
     hoverEnabled: enabled
     focusPolicy: Qt.StrongFocus
+    opacity: enabled || pending || activeState ? 1 : 0.45
+    Behavior on opacity { NumberAnimation { duration: Theme.quick } }
     implicitWidth: Theme.px(120)
     implicitHeight: Theme.px(58)
     leftPadding: Theme.s2

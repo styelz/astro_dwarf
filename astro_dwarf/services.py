@@ -409,18 +409,20 @@ SKY_WEB_TIME_NOW_JS = r"""
   }
   function keepSkyTimeNow(stel) {
     silenceSunsetJump();
-    setSkyTimeNow(stel);
-    clickStellariumNow();
-    var delays = [0, 50, 250, 800, 1600];
-    for (var i = 0; i < delays.length; i++) {
-      (function(ms) {
-        setTimeout(function() {
-          silenceSunsetJump();
-          setSkyTimeNow(stel);
-          clickStellariumNow();
-        }, ms);
-      })(delays[i]);
+    // Stellarium's sunset watcher can land after the first inject. Re-apply
+    // through that window once per page, then leave a time the user sets.
+    if (window.__astroDwarfSkyTimeNow)
+      return;
+    window.__astroDwarfSkyTimeNow = true;
+    function apply() {
+      silenceSunsetJump();
+      setSkyTimeNow(stel);
+      clickStellariumNow();
     }
+    apply();
+    var delays = [0, 50, 250, 800, 1600];
+    for (var i = 0; i < delays.length; i++)
+      setTimeout(apply, delays[i]);
   }
 """
 

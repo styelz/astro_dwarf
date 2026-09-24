@@ -906,7 +906,7 @@ Dialog {
                     onActivated: sessionDialog.markDirty("binning")
                 }
             }
-            FieldLabel { text: "MOSAIC"; visible: sessionDialog.mosaicVisible }
+            FieldLabel { text: "MOSAIC"; visible: sessionDialog.mosaicVisible && sessionDialog.importedPlan }
             ColumnLayout {
                 visible: sessionDialog.mosaicVisible && sessionDialog.importedPlan
                 spacing: Theme.px(2)
@@ -975,6 +975,12 @@ Dialog {
                     }
                     onValueModified: sessionDialog.markDirty("vertical_scale")
                 }
+            }
+            Item {
+                visible: sessionDialog.mosaicScaleVisible && sessionDialog.deviceLayoutText !== ""
+                Layout.preferredWidth: 0
+                Layout.preferredHeight: 0
+                Layout.maximumHeight: 0
             }
             Text {
                 visible: sessionDialog.mosaicScaleVisible && sessionDialog.deviceLayoutText !== ""

@@ -613,7 +613,11 @@ Item {
         function onSelectedDeviceChanged() {
             if (!map.pageReady)
                 return
-            map.applyObservingSite()
+            // Device flushes fire this on telemetry. Re-apply the site only
+            // when the location script actually changed, so a time the user
+            // set is not snapped back to now.
+            if (map.appliedSiteKey !== backend.skyWebSiteScript)
+                map.applyObservingSite()
             map.applyFovOverlay()
             if (!map.viewRestored)
                 map.restoreSavedView()

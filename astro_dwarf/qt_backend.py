@@ -60,6 +60,7 @@ from .domain import (
     album_http_path,
     album_http_url,
     album_is_astro_media,
+    album_is_astro_stack_product,
     album_is_stack_display_image,
     album_item_preview_path,
     album_is_media_file,
@@ -139,6 +140,7 @@ from .services import (
     mosaic_pane_number,
     mosaic_pane_workflow,
     mosaic_session_footprints,
+    mosaic_position_angle,
     copy_session_name,
     duplicate_session_drafts,
     duplicate_session_scope,
@@ -232,6 +234,7 @@ from .image_enhance import (
     is_enhance_cache_valid,
     set_enhance_levels,
 )
+from .mosaic_stitch import StitchJob, StitchPane, StitchSignals, overlap_warning, qimage_rgb, stitch_available
 from .media_preview import (
     DEFAULT_BLACK_PCT,
     DEFAULT_MID,
@@ -1741,6 +1744,7 @@ class AppBackend(QObject):
     previewResultChanged = Signal()
     centerTapBusyChanged = Signal()
     mosaicPreviewChanged = Signal()
+    stitchChanged = Signal()
     skyMosaicGridChanged = Signal()
     mosaicPaChanged = Signal()
     enhanceImagesChanged = Signal()
@@ -1994,6 +1998,16 @@ class AppBackend(QObject):
         self._media_preview_failed: set[str] = set()
         self._media_preview_signals = MediaPreviewSignals(self)
         self._media_preview_signals.finished.connect(self._on_media_preview_ready)
+        self._stitch_pool = QThreadPool(self)
+        self._stitch_pool.setMaxThreadCount(1)
+        self._stitch_signals = StitchSignals(self)
+        self._stitch_signals.finished.connect(self._on_stitch_finished)
+        self._stitch_token = 0
+        self._stitch_status = ""
+        self._stitch_detail = ""
+        self._stitch_warning = ""
+        self._stitch_path = ""
+        self._stitch_source = ""
         self._shut_down = False
         self._preview_thread = QThread(self)
         self._tele_player = StreamPlayer()
@@ -2751,7 +2765,8 @@ class AppBackend(QObject):
             grid = f"{first.mosaic.grid_text} · " if first.mosaic.grid_text else ""
             data["summary"] = f"{len(members)} panes · {grid}{exposure}"
         else:
-            data["summary"] = f"{exposure} · {first.mosaic.rows}×{first.mosaic.columns}"
+            size = first.mosaic.scale_text or f"{first.mosaic.rows}×{first.mosaic.columns}"
+            data["summary"] = f"{exposure} · {size}"
         data.update(self._template_detail_fields(first, ordered))
         return data
 
@@ -2783,7 +2798,7 @@ class AppBackend(QObject):
             if mosaic.grid_text:
                 mosaic_text += f" · {mosaic.grid_text}"
         elif mosaic.rows > 1 or mosaic.columns > 1:
-            mosaic_text = f"{mosaic.rows}×{mosaic.columns}"
+            mosaic_text = mosaic.scale_text or f"{mosaic.rows}×{mosaic.columns}"
             if mosaic.rotation_degrees:
                 mosaic_text += f" · {mosaic.rotation_degrees:g}°"
         else:
@@ -4932,6 +4947,8 @@ class AppBackend(QObject):
         self._reset_mosaic_last_frame_hold()
         self._stack_result_mosaic_pane = 0
         self._mosaic_result_held = False
+        if self._stitch_source == "held":
+            self.dismissStitch()
         if had:
             self.mosaicPreviewChanged.emit()
 
@@ -5077,6 +5094,207 @@ class AppBackend(QObject):
                 self._mosaic_preview_error = True
                 logging.getLogger(__name__).exception("mosaicPreview failed")
             return mosaic_preview_empty()
+
+    @Property(str, notify=stitchChanged)
+    def stitchStatus(self) -> str:
+        return self._stitch_status
+
+    @Property(str, notify=stitchChanged)
+    def stitchDetail(self) -> str:
+        return self._stitch_detail
+
+    @Property(str, notify=stitchChanged)
+    def stitchWarning(self) -> str:
+        return self._stitch_warning
+
+    @Property(str, notify=stitchChanged)
+    def stitchImage(self) -> str:
+        if self._stitch_status != "done" or not self._stitch_path:
+            return ""
+        return QUrl.fromLocalFile(self._stitch_path).toString()
+
+    def _stitch_cache_dir(self) -> Path:
+        folder = self.store.root / "stitch-cache"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def _set_stitch(self, status: str, detail: str = "", warning: str = "", path: str = "", source: str = "") -> None:
+        self._stitch_status = status
+        self._stitch_detail = detail
+        self._stitch_warning = warning
+        self._stitch_path = path
+        self._stitch_source = source
+        self.stitchChanged.emit()
+        if status in {"failed", "done"} and detail:
+            message = f"{warning} {detail}".strip() if warning else detail
+            self._toast(message, "success" if status == "done" else "error")
+
+    def _local_stack_for_name(self, name: str) -> Path | None:
+        token = "".join(ch for ch in str(name or "").casefold() if ch.isalnum())
+        if len(token) < 3:
+            return None
+        fits: list[Path] = []
+        jpegs: list[Path] = []
+        try:
+            entries = list(self._album_dir().iterdir())
+        except OSError:
+            return None
+        for path in entries:
+            if not path.is_file() or not album_is_astro_stack_product("", path.name):
+                continue
+            label = "".join(ch for ch in path.name.casefold() if ch.isalnum())
+            if token not in label:
+                continue
+            if path.suffix.lower() in {".fits", ".fit", ".fts"} or "stacked-16" in path.name.casefold():
+                fits.append(path)
+            else:
+                jpegs.append(path)
+        if fits:
+            return sorted(fits)[0]
+        if jpegs:
+            return sorted(jpegs)[0]
+        return None
+
+    def _stitch_geometry(self, members: list[Session]) -> list[dict[str, Any]]:
+        if not members:
+            return []
+        fov_h, fov_v, _camera = self._mosaic_fov()
+        pa = mosaic_position_angle(self._mosaic_south_up(), members[0].mosaic.rotation_degrees)
+        return mosaic_session_footprints(members, fov_h, fov_v, pa)
+
+    def _queue_stitch(self, panes: list[StitchPane], overlap: float, key: str, source: str) -> None:
+        if not stitch_available():
+            self._set_stitch("failed", "numpy and opencv are required to stitch a mosaic", source=source)
+            return
+        self._stitch_token += 1
+        token = self._stitch_token
+        dest = self._stitch_cache_dir() / f"{key}.jpg"
+        warning = overlap_warning(overlap)
+        self._set_stitch("working", "Matching stars", warning, source=source)
+        self._stitch_pool.start(StitchJob(token, panes, overlap, dest, self._stitch_signals))
+
+    @Slot()
+    def stitchHeldMosaic(self) -> None:
+        if self._stitch_status == "working":
+            return
+        device_id = str(self._selected_device_id or "")
+        live = self._live_mosaic.get(device_id) or {}
+        if live.get("worker_running") or live.get("stopping"):
+            self._set_stitch("failed", "Wait until the mosaic finishes", source="held")
+            return
+        _active, columns, rows, _current, images = self.mosaic_frames.snapshot()
+        if not self.mosaicPreview.get("active") or columns * rows < 2:
+            self._set_stitch("failed", "Hold a finished custom mosaic first", source="held")
+            return
+        session, members = self._mosaic_context(device_id)
+        if session is not None and session.mosaic.firmware_layout() is not None and not session.mosaic.imported_plan:
+            self._set_stitch("failed", "The telescope stitches its own mosaic", source="held")
+            return
+        footprints = {int(item["index"]): item for item in self._stitch_geometry(members)}
+        panes: list[StitchPane] = []
+        for index in sorted(images):
+            if index < 1 or images[index] is None or images[index].isNull():
+                continue
+            foot = footprints.get(index) or {}
+            row = int(foot.get("row") or ((index - 1) // max(columns, 1)) + 1)
+            column = int(foot.get("column") or ((index - 1) % max(columns, 1)) + 1)
+            member = next((item for item in members if mosaic_pane_number(item.mosaic, columns, item.name) == index), None)
+            local = self._local_stack_for_name(member.target.name if member is not None else "")
+            array = None if local is not None else qimage_rgb(self._raw_mosaic_panes.get(index) or images[index])
+            if local is None and array is None:
+                continue
+            panes.append(
+                StitchPane(
+                    index=index,
+                    row=row,
+                    column=column,
+                    image=array,
+                    ra_hours=foot.get("ra_hours"),
+                    dec_degrees=foot.get("dec_degrees"),
+                    position_angle=float(foot.get("position_angle") or 0.0),
+                    path=str(local) if local is not None else "",
+                )
+            )
+        if len(panes) < 2:
+            self._set_stitch("failed", "At least two panes need a still", source="held")
+            return
+        group = self.mosaic_frames.group() or "held"
+        safe = "".join(ch for ch in group if ch.isalnum())[:48] or "held"
+        self._queue_stitch(panes, float(self._sky_mosaic_overlap), safe, "held")
+
+    @Slot(str, str)
+    def stitchHistoryGroup(self, group_id: str, device_id: str) -> None:
+        if self._stitch_status == "working":
+            return
+        group = str(group_id or "").strip()
+        owner = str(device_id or self._selected_device_id or "").strip()
+        if not group:
+            self._set_stitch("failed", "This history row is not a mosaic group", source="history")
+            return
+        records = [
+            item
+            for item in self.store.history.all()
+            if str(item.mosaic_group_id or "").strip() == group and (not owner or item.device_id == owner)
+        ]
+        if not records:
+            records = [
+                item
+                for item in self._ensure_history_view()
+                if str(item.get("group_id") or "") == group and (not owner or str(item.get("device_id") or "") == owner)
+            ]
+        if len(records) < 2:
+            self._set_stitch("failed", "Stacks are not downloaded yet", source="history")
+            return
+        panes: list[StitchPane] = []
+        found_file = False
+        for record in records:
+            if isinstance(record, dict):
+                name = str(record.get("target_name") or record.get("pane_name") or "")
+                session = self.store.sessions.get(str(record.get("session_id") or ""))
+                index = int(record.get("pane_index") or 0)
+            else:
+                name = str(record.target_name or "")
+                session = self.store.sessions.get(record.session_id)
+                index = 0
+            local = self._local_stack_for_name(name)
+            if local is not None:
+                found_file = True
+            if local is None or session is None:
+                continue
+            row = int(session.mosaic.row or 0)
+            column = int(session.mosaic.column or 0)
+            if row < 1 or column < 1:
+                continue
+            panes.append(
+                StitchPane(
+                    index=index or (row * 100 + column),
+                    row=row,
+                    column=column,
+                    image=None,
+                    ra_hours=session.target.ra_hours,
+                    dec_degrees=session.target.dec_degrees,
+                    position_angle=float(session.mosaic.rotation_degrees or 0.0),
+                    path=str(local),
+                )
+            )
+        if len(panes) < 2:
+            detail = "Pane positions are not stored for this group" if found_file else "Stacks are not downloaded yet"
+            self._set_stitch("failed", detail, source="history")
+            return
+        overlap = float(self._sky_mosaic_overlap)
+        safe = "".join(ch for ch in group if ch.isalnum())[:48] or "history"
+        self._queue_stitch(panes, overlap, safe, "history")
+
+    @Slot()
+    def dismissStitch(self) -> None:
+        self._stitch_token += 1
+        self._set_stitch("", source="")
+
+    def _on_stitch_finished(self, token: int, status: str, detail: str, warning: str, path: str) -> None:
+        if int(token) != self._stitch_token:
+            return
+        source = self._stitch_source
+        self._set_stitch(str(status or "failed"), str(detail or ""), str(warning or ""), str(path or ""), source)
 
     @Property("QVariantMap", notify=mosaicPreviewChanged)
     def skyMosaicPaneUrls(self) -> dict[str, str]:

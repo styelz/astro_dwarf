@@ -4,6 +4,7 @@ HudButton 1.0 HudButton.qml
 SessionDragArea 1.0 SessionDragArea.qml
 SessionInsertDrop 1.0 SessionInsertDrop.qml
 HudCommandPad 1.0 HudCommandPad.qml
+HudBlockedHover 1.0 HudBlockedHover.qml
 LedDot 1.0 LedDot.qml
 HudChip 1.0 HudChip.qml
 BatteryGauge 1.0 BatteryGauge.qml

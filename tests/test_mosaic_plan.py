@@ -343,7 +343,12 @@ def test_device_mosaic_template_is_one_session() -> None:
     _assert(template.mosaic.columns == 2 and template.mosaic.rows == 1, template.mosaic)
     _assert(template.mosaic.horizontal_scale == 150 and template.mosaic.vertical_scale == 100, template.mosaic)
     _assert(template.mosaic.rotation_degrees == 0, "new device mosaics send rotation 0")
+    _assert(template.mosaic.scale_text == "1.5×1.0", template.mosaic.scale_text)
     _assert(template.target.ra_hours == 5.5, "the session stays on the centre")
+    square = Mosaic(rows=2, columns=2, horizontal_scale=180, vertical_scale=160)
+    _assert(square.scale_text == "1.8×1.6", square.scale_text)
+    single = Mosaic(rows=1, columns=1, horizontal_scale=180, vertical_scale=180)
+    _assert(single.scale_text == "", "a single frame has no device mosaic size")
 
 
 if __name__ == "__main__":

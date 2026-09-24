@@ -1,0 +1,8 @@
+- Feature: The sky mosaic can run on the telescope: each axis frames the tele field from 1.0× to 1.8×, one pane at 1.0× and two panes above that.
+- UX: Custom planning stays separate, and the session editor shows those field factors for a device mosaic and the pane grid only for an imported plan.
+- UX: Mosaic progress reads the current pane from the firmware fov_id.
+- Optimise: The sky atlas and Stellarium field overlays update from one payload, including the horizon.
+- Feature: A finished custom mosaic can be stitched into one image from the control sheet or a history group.
+- UX: A collapsed mosaic can be deleted as a group, or one pane at a time, while a running session is left alone.
+- UX: Disabled command pads fade and say why they are blocked.
+- Fix: the time you set on the Stellarium map stays put when device telemetry refreshes the site.

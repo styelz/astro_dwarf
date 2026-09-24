@@ -20,17 +20,18 @@ Item {
             return rows
         for (let i = 0; i < commandPads.count; i++) {
             const item = commandPads.itemAt(i)
-            if (!item)
+            const pad = item && item.commandPad ? item.commandPad : item
+            if (!pad)
                 continue
             rows.push({
-                objectName: String(item.objectName || ""),
-                name: String(item.text || ""),
+                objectName: String(pad.objectName || ""),
+                name: String(pad.text || ""),
                 type: "button",
-                enabled: !!item.enabled,
-                visible: !!item.visible,
-                value: String(item.text || ""),
-                path: "controlPage/" + String(item.objectName || item.text || ""),
-                showStop: !!item.showStop
+                enabled: !!pad.enabled,
+                visible: !!pad.visible,
+                value: String(pad.text || ""),
+                path: "controlPage/" + String(pad.objectName || pad.text || ""),
+                showStop: !!pad.showStop
             })
         }
         return rows
@@ -46,16 +47,17 @@ Item {
             return "missing"
         for (let i = 0; i < commandPads.count; i++) {
             const item = commandPads.itemAt(i)
-            if (!item)
+            const pad = item && item.commandPad ? item.commandPad : item
+            if (!pad)
                 continue
-            const startId = item.modelData && item.modelData.start ? String(item.modelData.start) : ""
-            if (item.objectName === name || startId === key) {
+            const startId = pad.modelData && pad.modelData.start ? String(pad.modelData.start) : ""
+            if (pad.objectName === name || startId === key) {
                 if (wantStop) {
-                    item.stopClicked()
-                    return (item.objectName || name) + "-stop"
+                    pad.stopClicked()
+                    return (pad.objectName || name) + "-stop"
                 }
-                item.clicked()
-                return item.objectName || name
+                pad.clicked()
+                return pad.objectName || name
             }
         }
         return "missing"
@@ -821,25 +823,43 @@ Item {
                 RowLayout {
                     Layout.fillWidth: true
                     visible: cameraPanel.teleSelected
-                    HudButton {
-                        text: "NEAR"
+                    Item {
                         Layout.fillWidth: true
-                        busy: backend.selectedDevice.pending_action === "focus_near"
-                        busyText: "FOCUSING…"
-                        busyMs: 0
-                        enabled: root.commandEnabled("focus_near")
-                        tooltip: "Nudge the telephoto focus motor toward near.\nHold is not supported; each tap is one acknowledged move."
-                        onClicked: backend.manualFocus(backend.selectedDeviceId, 1)
+                        implicitHeight: nearFocus.implicitHeight
+                        HudButton {
+                            id: nearFocus
+                            anchors.fill: parent
+                            text: "NEAR"
+                            busy: backend.selectedDevice.pending_action === "focus_near"
+                            busyText: "FOCUSING…"
+                            busyMs: 0
+                            enabled: root.commandEnabled("focus_near")
+                            tooltip: "Nudge the telephoto focus motor toward near.\nHold is not supported; each tap is one acknowledged move."
+                            onClicked: backend.manualFocus(backend.selectedDeviceId, 1)
+                        }
+                        HudBlockedHover {
+                            control: nearFocus
+                            reason: root.scopeStacking ? "Unavailable while stacking" : "Unavailable"
+                        }
                     }
-                    HudButton {
-                        text: "FAR"
+                    Item {
                         Layout.fillWidth: true
-                        busy: backend.selectedDevice.pending_action === "focus_far"
-                        busyText: "FOCUSING…"
-                        busyMs: 0
-                        enabled: root.commandEnabled("focus_far")
-                        tooltip: "Nudge the telephoto focus motor toward infinity.\nHold is not supported; each tap is one acknowledged move."
-                        onClicked: backend.manualFocus(backend.selectedDeviceId, 0)
+                        implicitHeight: farFocus.implicitHeight
+                        HudButton {
+                            id: farFocus
+                            anchors.fill: parent
+                            text: "FAR"
+                            busy: backend.selectedDevice.pending_action === "focus_far"
+                            busyText: "FOCUSING…"
+                            busyMs: 0
+                            enabled: root.commandEnabled("focus_far")
+                            tooltip: "Nudge the telephoto focus motor toward infinity.\nHold is not supported; each tap is one acknowledged move."
+                            onClicked: backend.manualFocus(backend.selectedDeviceId, 0)
+                        }
+                        HudBlockedHover {
+                            control: farFocus
+                            reason: root.scopeStacking ? "Unavailable while stacking" : "Unavailable"
+                        }
                     }
                 }
                 FieldLabel {
@@ -1623,10 +1643,31 @@ Item {
                     MosaicViewPane {
                         id: mosaicFrame
                         anchors.fill: parent
-                        visible: previewHost.mosaicSheet
-                        playing: !previewHost.feedFullscreen && previewHost.mosaicSheet
+                        visible: previewHost.mosaicSheet && backend.stitchStatus !== "done"
+                        playing: !previewHost.feedFullscreen && previewHost.mosaicSheet && backend.stitchStatus !== "done"
                         camera: "tele"
                         accent: Theme.fov
+                    }
+                    Image {
+                        anchors.fill: parent
+                        visible: backend.stitchStatus === "done" && backend.stitchImage !== ""
+                        source: backend.stitchImage
+                        fillMode: Image.PreserveAspectFit
+                        cache: false
+                        asynchronous: true
+                    }
+                    Text {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: Theme.px(14)
+                        visible: backend.stitchStatus !== "" && (previewHost.mosaicSheet || backend.stitchStatus === "done" || backend.stitchStatus === "failed")
+                        text: (backend.stitchWarning ? backend.stitchWarning + "  ·  " : "") + (backend.stitchDetail || backend.stitchStatus)
+                        color: backend.stitchStatus === "failed" ? Theme.danger : Theme.textPrimary
+                        font.pixelSize: Theme.fontSm
+                        font.family: Theme.fontMono
+                        elide: Text.ElideRight
+                        z: 6
                     }
 
                     Item {
@@ -2345,9 +2386,25 @@ Item {
                         anchors.top: parent.top
                         anchors.margins: Theme.px(14)
                         spacing: Theme.s2
-                        opacity: previewHost.mosaicActive || ((backend.previewActive || backend.previewResult) && previewHost.chromeShown) ? 1 : 0
+                        opacity: previewHost.mosaicActive || backend.stitchStatus !== "" || ((backend.previewActive || backend.previewResult) && previewHost.chromeShown) ? 1 : 0
                         visible: opacity > 0
                         Behavior on opacity { NumberAnimation { duration: Theme.normal } }
+                        HudButton {
+                            objectName: "mosaicStitch"
+                            visible: backend.stitchStatus === "done" || backend.stitchStatus === "working" || backend.stitchStatus === "failed"
+                                     || (previewHost.mosaicActive && !controlPage.mosaicRunning && (mosaicPreview.completed || []).length >= 2)
+                            text: backend.stitchStatus === "done" ? "SHEET" : "STITCH"
+                            busyText: "STITCHING…"
+                            tooltip: backend.stitchStatus === "done"
+                                     ? "Return to the contact sheet"
+                                     : "Align the finished panes into one image"
+                            enabled: backend.stitchStatus !== "working"
+                            busy: backend.stitchStatus === "working"
+                            buttonColor: Theme.fillActive
+                            foregroundColor: Theme.accent
+                            onHoveredChanged: previewHost.holdControls(hovered)
+                            onClicked: backend.stitchStatus === "done" ? backend.dismissStitch() : backend.stitchHeldMosaic()
+                        }
                         HudButton {
                             objectName: "mosaicViewToggle"
                             visible: previewHost.mosaicActive
@@ -2653,9 +2710,34 @@ Item {
                         {label: "REBOOT", glyph: "↻", start: "reboot", stop: "", state: "", detail: "SYSTEM", destructive: true},
                         {label: "POWER", glyph: "⏻", start: "power_down", stop: "", state: "", detail: "SYSTEM", destructive: true}
                     ]
-                    delegate: HudCommandPad {
-                        id: pad
+                    delegate: Item {
+                        id: padShell
                         required property var modelData
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.minimumHeight: Theme.px(44)
+                        Layout.preferredHeight: Theme.px(58)
+                        implicitWidth: Theme.px(120)
+                        implicitHeight: Theme.px(58)
+                        readonly property var commandPad: pad
+                        readonly property string blockedReason: {
+                            if (pad.enabled)
+                                return ""
+                            if (pad.trackingPad && root.scopeStacking)
+                                return "Tracking stays on while stacking. Press STACK to end the capture."
+                            if (root.scopeStacking)
+                                return "Unavailable while stacking"
+                            if (!pad.cameraAllowed)
+                                return "Telephoto camera only"
+                            if (!pad.modeAllowed)
+                                return "Unavailable in this shooting mode"
+                            return "Unavailable"
+                        }
+
+                    HudCommandPad {
+                        id: pad
+                        anchors.fill: parent
+                        readonly property var modelData: padShell.modelData
                         objectName: "pad-" + String(modelData.start || "")
                         readonly property var t: root.scopeTelemetry
                         readonly property bool trackingPad: modelData.start === "track"
@@ -2882,10 +2964,6 @@ Item {
                                 return root.scopeActivityDetail ? root.scopeActivityDetail + " · STOP" : "ACTIVE · STOP"
                             }
                         }
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        Layout.minimumHeight: Theme.px(44)
-                        Layout.preferredHeight: Theme.px(58)
                         text: padLabel
                         glyph: modelData.glyph
                         detail: {
@@ -2958,6 +3036,11 @@ Item {
                                     pad.showFlash(ok ? "success" : "error")
                             }
                         }
+                    }
+                    HudBlockedHover {
+                        control: pad
+                        reason: padShell.blockedReason
+                    }
                     }
                     }
                 }

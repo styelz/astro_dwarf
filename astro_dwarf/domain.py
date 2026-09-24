@@ -1852,6 +1852,15 @@ class Mosaic:
         return f"{self.grid_rows}×{self.grid_columns}"
 
     @property
+    def scale_text(self) -> str:
+        """Device mosaic framed field as width × height. Empty for a single frame."""
+        layout = self.firmware_layout()
+        if layout is None:
+            return ""
+        _columns, _rows, horizontal, vertical = layout
+        return f"{horizontal / 100:.1f}×{vertical / 100:.1f}"
+
+    @property
     def position_text(self) -> str:
         if self.row < 1 or self.column < 1:
             return ""

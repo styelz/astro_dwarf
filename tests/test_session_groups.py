@@ -56,6 +56,9 @@ Item {
     property string historyOutcome: ""
     property string historySummary: ""
     property string historyFrames: ""
+    property string collapsedDeleteIds: ""
+    property string expandedDeleteId: ""
+    property bool collapsedDeleteEnabled: false
     Component.onCompleted: {
         const items = [
             {
@@ -143,6 +146,9 @@ Item {
         root.historyOutcome = String((histCollapsed[0] && histCollapsed[0].outcome) || "")
         root.historySummary = String((histCollapsed[0] && histCollapsed[0].group_summary) || "")
         root.historyFrames = String((histCollapsed[0] && histCollapsed[0].frame_text) || "")
+        root.collapsedDeleteIds = Util.sessionDeleteIds(collapsed[0]).join(",")
+        root.expandedDeleteId = Util.sessionDeleteIds(expanded[0]).join(",")
+        root.collapsedDeleteEnabled = Util.sessionDeleteEnabled(collapsed[0])
     }
 }
 """
@@ -182,6 +188,9 @@ def test_mosaic_sessions_collapse_by_default() -> None:
     _assert(str(host.property("historySummary") or "") == "2 panes · 2×1", host.property("historySummary"))
     _assert(str(host.property("historyFrames") or "") == "14/20", host.property("historyFrames"))
     _assert(int(host.property("historyExpandedCount")) == 3, "expanded history shows both panes")
+    _assert(str(host.property("collapsedDeleteIds") or "") == "pane-1,pane-2", host.property("collapsedDeleteIds"))
+    _assert(str(host.property("expandedDeleteId") or "") == "pane-1", host.property("expandedDeleteId"))
+    _assert(bool(host.property("collapsedDeleteEnabled")), "collapsed mosaic can delete the planned pane")
 
 
 if __name__ == "__main__":

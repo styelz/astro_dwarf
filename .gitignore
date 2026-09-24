@@ -5,7 +5,10 @@ __pycache__/
 .venv/
 build/
 dist/
-.cursor/
+.cursor/*
+!.cursor/commands/
+.cursor/commands/*
+!.cursor/commands/version-bump.md
 tests/*
 !tests/test_*.py
 MEMORIES.md

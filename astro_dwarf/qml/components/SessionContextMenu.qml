@@ -157,10 +157,13 @@ HudMenu {
     }
     HudMenuSeparator {}
     HudMenuItem {
-        text: "Delete"
+        objectName: "session-delete"
+        text: sessionContextMenu.mosaicCollapsed
+              ? "Delete mosaic"
+              : (sessionContextMenu.mosaicPaneRow ? "Delete pane" : "Delete")
         glyph: "\uE74D"
         destructive: true
-        enabled: sessionContextMenu.sessionStatus !== "running"
-        onTriggered: backend.deleteSession(sessionContextMenu.sessionId)
+        enabled: Util.sessionDeleteEnabled(sessionContextMenu.sessionData)
+        onTriggered: backend.deleteSessions(Util.sessionDeleteIds(sessionContextMenu.sessionData))
     }
 }
