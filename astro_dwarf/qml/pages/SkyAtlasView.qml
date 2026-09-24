@@ -232,28 +232,27 @@ Item {
         const key = map.fovInputKey()
         if (map.fovEngineReady && key === map.fovPushKey)
             return
-        map.readSelectedTarget(raw => {
-            if (!map.shown)
+        const sent = key
+        const script = backend.skyAtlasFovScript(
+            map.overlayPayload(map.selectedTarget || ({})),
+            map.mosaicColumns,
+            map.mosaicRows,
+            map.mosaicOverlap,
+            String(Theme.fov),
+            map.mosaicPa
+        )
+        map.runJavaScript(script, result => {
+            if (map.fovInputKey() !== sent)
                 return
-            const script = backend.skyAtlasFovScript(
-                map.overlayPayload(raw),
-                map.mosaicColumns,
-                map.mosaicRows,
-                map.mosaicOverlap,
-                String(Theme.fov),
-                map.mosaicPa
-            )
-            map.runJavaScript(script, result => {
-                const status = String(result || "")
-                if (status === "panes" || status === "center" || status === "grid" || status === "hidden") {
-                    map.fovEngineReady = true
-                    map.fovPushKey = map.fovInputKey()
-                    map.overlayKey = map.fovPushKey + "|" + status
-                }
-                if (map.liveOverlay)
-                    map.applyLiveOverlay()
-                map.applyMosaicPaneImages()
-            })
+            const status = String(result || "")
+            if (status === "panes" || status === "center" || status === "grid" || status === "hidden") {
+                map.fovEngineReady = true
+                map.fovPushKey = sent
+                map.overlayKey = sent + "|" + status
+            }
+            if (map.liveOverlay)
+                map.applyLiveOverlay()
+            map.applyMosaicPaneImages()
         })
     }
     function applyLiveOverlay() {
@@ -300,7 +299,7 @@ Item {
         const marker = "astro-dwarf-host:"
         if (text.indexOf(marker) !== 0)
             return
-        const parts = text.slice(marker.length).split("\t")
+        const parts = text.slice(marker.length).split(/[\t| ]+/)
         if (parts[0] !== "menu")
             return
         map.contextMenuRequested(Number(parts[1]) || 0, Number(parts[2]) || 0)
@@ -498,7 +497,7 @@ Item {
     }
     function handleLoadState(state) {
         if (state === "started") {
-            if (map.initialLoadDone)
+            if (map.initialLoadDone || map.pageReady)
                 return
             map.pageReady = false
             map.documentReady = false
@@ -621,6 +620,7 @@ Item {
         repeat: false
         onTriggered: {
             map.initialLoadDone = true
+            map.pageReady = true
             map.applyFovOverlay()
             map.restoreSavedView()
         }

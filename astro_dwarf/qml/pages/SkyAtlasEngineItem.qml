@@ -17,6 +17,7 @@ Item {
         id: view
         anchors.fill: parent
         url: backend.skyAtlasUrl
+        lifecycleState: WebEngineView.LifecycleState.Active
         onTitleChanged: root.hostTitle(view.title)
         profile: atlasProfile
         settings.webGLEnabled: true

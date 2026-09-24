@@ -679,10 +679,14 @@ Item {
                         return 1
                     return mapSlot.mapToItem(root.contentItem, 0, 0).y
                 }
+                // Keep the map after the first visit. Destroying the Linux
+                // WebEngine on every page change reloaded Stellarium and Aladin.
                 active: skyPage.webReady && root.skyToolsEnabled && (
+                    skyPage.mapLive || skyPage.mapKeepAlive
+                ) && (
                     mapLoader.nativeMapOverlay
-                    ? (skyPage.mapLive || skyPage.mapKeepAlive)
-                    : (skyPage.mapLive && mapSlot.width > 1)
+                    || mapSlot.width > 1
+                    || skyPage.mapKeepAlive
                 )
                 source: Qt.resolvedUrl(backend.skyMapUsesStellariumWeb ? "SkyWebView.qml" : "SkyAtlasView.qml")
                 onLoaded: {

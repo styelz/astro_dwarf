@@ -18,6 +18,8 @@ Item {
         id: view
         anchors.fill: parent
         url: backend.stellariumWebUrl
+        // Hiding the sky page recommends Discarded, which unloads the document.
+        lifecycleState: WebEngineView.LifecycleState.Active
         onTitleChanged: root.hostTitle(view.title)
         profile: skyProfile
         settings.webGLEnabled: true

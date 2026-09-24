@@ -80,10 +80,8 @@ def test_linux_webengine_stays_in_sky_slot() -> None:
         "Linux WebEngine must stay in the sky slot",
     )
     _assert("if (!mapLoader.nativeMapOverlay)" in qml, "Linux must skip the -4096 park")
-    _assert(
-        "mapLoader.nativeMapOverlay\n                    ? (skyPage.mapLive || skyPage.mapKeepAlive)" in qml,
-        "Linux must not keep a culled off-screen WebEngine alive",
-    )
+    _assert("skyPage.mapLive || skyPage.mapKeepAlive" in qml, "map stays loaded after the first visit")
+    _assert("LifecycleState.Active" in (ROOT / "astro_dwarf" / "qml" / "pages" / "SkyWebEngineItem.qml").read_text(encoding="utf-8"), "hidden sky page must not discard Stellarium")
 
 
 def test_time_now_helper_blocks_stellarium_night_jump() -> None:
