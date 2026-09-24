@@ -50,13 +50,19 @@ Dialog {
             : ""
         return size + "Each pane is captured on its own; the telescope mosaic is not used."
     }
-    readonly property bool mosaicScaleVisible: {
-        if (!mosaicVisible || importedPlan)
-            return false
-        const r = Math.max(1, parseInt(rows.text, 10) || 1)
-        const c = Math.max(1, parseInt(columns.text, 10) || 1)
-        return r * c > 1
+    property real storedRotation: 0
+    readonly property int deviceColumns: Math.max(1, Math.round(hFactor.value) > 10 ? 2 : 1)
+    readonly property int deviceRows: Math.max(1, Math.round(vFactor.value) > 10 ? 2 : 1)
+    readonly property string deviceLayoutText: {
+        if (sessionDialog.importedPlan)
+            return ""
+        const h = (hFactor.value / 10).toFixed(1)
+        const v = (vFactor.value / 10).toFixed(1)
+        if (sessionDialog.deviceColumns * sessionDialog.deviceRows <= 1)
+            return h + "× " + v + "× · single frame"
+        return h + "× " + v + "× framed field"
     }
+    readonly property bool mosaicScaleVisible: mosaicVisible && !importedPlan
     readonly property bool dirty: Object.keys(dirtyFields || {}).length > 0
     padding: 0
 
@@ -343,8 +349,11 @@ Dialog {
             columns.text = mosaic.column || ""
             return
         }
-        rows.text = mosaic.rows
-        columns.text = mosaic.columns
+        const product = Math.max(1, parseInt(mosaic.rows, 10) || 1) * Math.max(1, parseInt(mosaic.columns, 10) || 1)
+        const h = product > 1 ? (parseInt(mosaic.horizontal_scale, 10) || 150) : 100
+        const v = product > 1 ? (parseInt(mosaic.vertical_scale, 10) || 150) : 100
+        hFactor.value = Math.max(10, Math.min(18, Math.round(h / 10)))
+        vFactor.value = Math.max(10, Math.min(18, Math.round(v / 10)))
     }
     function loadPaneCoordinates(data) {
         sessionName.text = data.pane_name || data.name || ""
@@ -439,9 +448,7 @@ Dialog {
         const ir = data.camera.ir_filter || "VIS Filter"
         irFilter.currentIndex = Math.max(0, ["VIS Filter", "Astro Filter", "Duo-Band Filter", "VIS"].indexOf(ir) % 3)
         sessionDialog.loadMosaicFields(data)
-        rotation.text = data.mosaic.rotation_degrees
-        hScale.text = data.mosaic.horizontal_scale
-        vScale.text = data.mosaic.vertical_scale
+        sessionDialog.storedRotation = Number(data.mosaic.rotation_degrees) || 0
         waitBefore.text = data.workflow.wait_before_seconds
         waitAfter.text = data.workflow.wait_after_seconds
         notes.text = data.notes || ""
@@ -471,9 +478,11 @@ Dialog {
             camera: camera.currentIndex === 1 ? "wide" : "tele", exposure: Number(exposure.text),
             gain: Number(gain.text), frame_count: Number(frames.text), binning: sessionDialog.binningValue(),
             ir_filter: irFilter.currentText,
-            rows: sessionDialog.importedPlan ? 1 : Number(rows.text),
-            columns: sessionDialog.importedPlan ? 1 : Number(columns.text),
-            rotation: Number(rotation.text), horizontal_scale: Number(hScale.text), vertical_scale: Number(vScale.text),
+            rows: 1,
+            columns: 1,
+            rotation: sessionDialog.storedRotation,
+            horizontal_scale: sessionDialog.importedPlan ? 100 : hFactor.value * 10,
+            vertical_scale: sessionDialog.importedPlan ? 100 : vFactor.value * 10,
             wait_before: Number(waitBefore.text), wait_after: Number(waitAfter.text), notes: notes.text,
             calibrate: paneFlags.calibrate, autofocus: paneFlags.autofocus, infinite_focus: paneFlags.infiniteFocus,
             polar_align: paneFlags.polar, goto: paneFlags.doGoto, save_template: saveTemplate.checked
@@ -548,9 +557,9 @@ Dialog {
         camera.currentIndex = 0
         rows.text = "1"
         columns.text = "1"
-        rotation.text = "0"
-        hScale.text = "150"
-        vScale.text = "150"
+        sessionDialog.storedRotation = 0
+        hFactor.value = 10
+        vFactor.value = 10
         waitBefore.text = "0"
         waitAfter.text = "10"
         notes.text = ""
@@ -899,28 +908,82 @@ Dialog {
             }
             FieldLabel { text: "MOSAIC"; visible: sessionDialog.mosaicVisible }
             ColumnLayout {
-                visible: sessionDialog.mosaicVisible
+                visible: sessionDialog.mosaicVisible && sessionDialog.importedPlan
                 spacing: Theme.px(2)
                 Layout.fillWidth: true
-                FieldCaption { text: sessionDialog.importedPlan ? "ROW" : "ROWS" }
+                FieldCaption { text: "ROW" }
                 HudField {
                     id: rows
                     placeholderText: "1"
-                    enabled: !sessionDialog.importedPlan
+                    enabled: false
                     Layout.fillWidth: true
                 }
             }
             ColumnLayout {
-                visible: sessionDialog.mosaicVisible
+                visible: sessionDialog.mosaicVisible && sessionDialog.importedPlan
                 spacing: Theme.px(2)
                 Layout.fillWidth: true
-                FieldCaption { text: sessionDialog.importedPlan ? "COLUMN" : "COLUMNS" }
+                FieldCaption { text: "COLUMN" }
                 HudField {
                     id: columns
                     placeholderText: "1"
-                    enabled: !sessionDialog.importedPlan
+                    enabled: false
                     Layout.fillWidth: true
                 }
+            }
+            FieldLabel { text: "DEVICE FOV"; visible: sessionDialog.mosaicScaleVisible }
+            ColumnLayout {
+                visible: sessionDialog.mosaicScaleVisible
+                spacing: Theme.px(2)
+                Layout.fillWidth: true
+                FieldCaption { text: "H FACTOR" }
+                HudSpinBox {
+                    id: hFactor
+                    editFormatted: true
+                    from: 10
+                    to: 18
+                    value: 10
+                    Layout.fillWidth: true
+                    accessibleName: "Device mosaic horizontal factor"
+                    tooltip: "Horizontal framed field, 1.0× to 1.8× one tele view."
+                    textFromValue: (value, locale) => (value / 10).toFixed(1) + "×"
+                    valueFromText: (text, locale) => {
+                        const n = parseFloat(String(text).replace("×", "").trim())
+                        return isNaN(n) ? hFactor.value : Math.round(n * 10)
+                    }
+                    onValueModified: sessionDialog.markDirty("horizontal_scale")
+                }
+            }
+            ColumnLayout {
+                visible: sessionDialog.mosaicScaleVisible
+                spacing: Theme.px(2)
+                Layout.fillWidth: true
+                FieldCaption { text: "V FACTOR" }
+                HudSpinBox {
+                    id: vFactor
+                    editFormatted: true
+                    from: 10
+                    to: 18
+                    value: 10
+                    Layout.fillWidth: true
+                    accessibleName: "Device mosaic vertical factor"
+                    tooltip: "Vertical framed field, 1.0× to 1.8× one tele view."
+                    textFromValue: (value, locale) => (value / 10).toFixed(1) + "×"
+                    valueFromText: (text, locale) => {
+                        const n = parseFloat(String(text).replace("×", "").trim())
+                        return isNaN(n) ? vFactor.value : Math.round(n * 10)
+                    }
+                    onValueModified: sessionDialog.markDirty("vertical_scale")
+                }
+            }
+            Text {
+                visible: sessionDialog.mosaicScaleVisible && sessionDialog.deviceLayoutText !== ""
+                Layout.columnSpan: 2
+                Layout.fillWidth: true
+                text: sessionDialog.deviceLayoutText
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontMd
+                wrapMode: Text.Wrap
             }
             FieldLabel { text: "PLAN GRID"; visible: sessionDialog.mosaicVisible && sessionDialog.planGridText !== "" }
             Text {
@@ -931,31 +994,6 @@ Dialog {
                 color: Theme.textSecondary
                 font.pixelSize: Theme.fontMd
                 wrapMode: Text.Wrap
-            }
-            FieldLabel { text: "ROTATION / SCALE"; visible: sessionDialog.mosaicScaleVisible }
-            ColumnLayout {
-                visible: sessionDialog.mosaicScaleVisible
-                spacing: Theme.px(2)
-                Layout.fillWidth: true
-                FieldCaption { text: "ROTATION °" }
-                HudField { id: rotation; Layout.fillWidth: true }
-            }
-            RowLayout {
-                visible: sessionDialog.mosaicScaleVisible
-                Layout.fillWidth: true
-                spacing: Theme.px(10)
-                ColumnLayout {
-                    spacing: Theme.px(2)
-                    Layout.fillWidth: true
-                    FieldCaption { text: "H SCALE %" }
-                    HudField { id: hScale; Layout.fillWidth: true; Layout.minimumWidth: 0 }
-                }
-                ColumnLayout {
-                    spacing: Theme.px(2)
-                    Layout.fillWidth: true
-                    FieldCaption { text: "V SCALE %" }
-                    HudField { id: vScale; Layout.fillWidth: true; Layout.minimumWidth: 0 }
-                }
             }
             FieldLabel { text: "WAIT S" }
             ColumnLayout {

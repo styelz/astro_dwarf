@@ -6,6 +6,8 @@ import ".."
 SpinBox {
     id: box
     property string tooltip: ""
+    // Factors such as 1.1× keep their formatted text when the arrows focus the box.
+    property bool editFormatted: false
     property string accessibleName: ""
     property string accessibleDescription: ""
     editable: true
@@ -47,11 +49,13 @@ SpinBox {
             return
         box.value = next
         if (spinText.activeFocus)
-            spinText.text = String(box.value)
+            spinText.text = box.editFormatted ? box.textFromValue(box.value, box.locale) : String(box.value)
         box.valueModified()
     }
     onValueChanged: {
-        if (spinText.activeFocus)
+        if (spinText.activeFocus && box.editFormatted)
+            spinText.text = box.textFromValue(box.value, box.locale)
+        else if (spinText.activeFocus)
             spinText.text = String(box.value)
     }
     WheelHandler {
@@ -92,7 +96,7 @@ SpinBox {
         onActiveFocusChanged: {
             if (!spinText.activeFocus)
                 return
-            spinText.text = String(box.value)
+            spinText.text = box.editFormatted ? box.textFromValue(box.value, box.locale) : String(box.value)
             spinText.selectAll()
         }
         Keys.onPressed: event => {

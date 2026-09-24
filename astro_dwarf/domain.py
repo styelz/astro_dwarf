@@ -1729,12 +1729,87 @@ class Workflow:
     wait_after_seconds: float = 10
 
 
+# Device mosaic framing is the tele field times this ratio (protocol integer).
+# 100 is 1.00× (one pane on that axis). 110–180 is 1.10×–1.80× (two panes).
+FIRMWARE_MOSAIC_SCALE_MIN = 100
+FIRMWARE_MOSAIC_SCALE_MAX = 180
+FIRMWARE_MOSAIC_SCALE_STEP = 10
+
+
+def clamp_firmware_mosaic_scale(value: Any, default: int = 150) -> int:
+    """Snap a device-mosaic scale to 100–180, step 10."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = float(default)
+    if number != number:
+        number = float(default)
+    snapped = int(round(number / FIRMWARE_MOSAIC_SCALE_STEP) * FIRMWARE_MOSAIC_SCALE_STEP)
+    return max(FIRMWARE_MOSAIC_SCALE_MIN, min(FIRMWARE_MOSAIC_SCALE_MAX, snapped))
+
+
+def firmware_mosaic_axis_panes(scale: int) -> int:
+    """1.0× stays one pane. Anything above 1.0× is two panes on that axis."""
+    return 1 if int(scale) <= FIRMWARE_MOSAIC_SCALE_MIN else 2
+
+
+def firmware_mosaic_overlap(scale: int) -> float:
+    """Overlap when two panes cover ``scale/100`` tele fields. 1.0× has no second pane."""
+    snapped = int(scale)
+    if snapped <= FIRMWARE_MOSAIC_SCALE_MIN:
+        return 0.0
+    return max(0.0, 2.0 - snapped / 100.0)
+
+
+def resolve_firmware_mosaic(
+    *,
+    rows: int = 1,
+    columns: int = 1,
+    grid_rows: int = 0,
+    grid_columns: int = 0,
+    horizontal_scale: Any = 150,
+    vertical_scale: Any = 150,
+) -> tuple[int, int, int, int] | None:
+    """Device mosaic as (columns, rows, horizontal_scale, vertical_scale).
+
+    Imported custom panes and a stored 1×1 stay host-side or a single frame.
+    A stored 3×3 still resolves from the scales, which the telescope actually
+    uses: each axis above 1.0× is two panes, never more. Both scales at 1.0×
+    are not a mosaic even if rows and columns were left above 1.
+    """
+    try:
+        imported = int(grid_rows or 0) >= 1 and int(grid_columns or 0) >= 1
+        stored = max(1, int(rows or 1)) * max(1, int(columns or 1))
+    except (TypeError, ValueError):
+        return None
+    if imported or stored <= 1:
+        return None
+    horizontal = clamp_firmware_mosaic_scale(horizontal_scale)
+    vertical = clamp_firmware_mosaic_scale(vertical_scale)
+    pane_columns = firmware_mosaic_axis_panes(horizontal)
+    pane_rows = firmware_mosaic_axis_panes(vertical)
+    if pane_columns * pane_rows <= 1:
+        return None
+    return pane_columns, pane_rows, horizontal, vertical
+
+
+def device_mosaic_from_scales(horizontal_scale: Any, vertical_scale: Any) -> tuple[int, int, int, int]:
+    """(columns, rows, horizontal_scale, vertical_scale). 1.0×1.0 is 1×1."""
+    horizontal = clamp_firmware_mosaic_scale(horizontal_scale, default=100)
+    vertical = clamp_firmware_mosaic_scale(vertical_scale, default=100)
+    return (
+        firmware_mosaic_axis_panes(horizontal),
+        firmware_mosaic_axis_panes(vertical),
+        horizontal,
+        vertical,
+    )
+
+
 @dataclass(slots=True)
 class Mosaic:
-    # rows/columns drive the telescope's own mosaic. Imported Telescopius panes
-    # keep those at 1x1 and store the CSV grid in grid_rows/grid_columns plus
-    # this pane's row/column. The editor shows the CSV grid; capture still
-    # treats each pane as a single pointing.
+    # rows/columns record a device mosaic (1 or 2 per axis). Imported custom
+    # panes keep those at 1x1 and store the grid in grid_rows/grid_columns.
+    # The telescope sizes its own mosaic from horizontal_scale/vertical_scale.
     rows: int = 1
     columns: int = 1
     rotation_degrees: float = 0
@@ -1750,11 +1825,25 @@ class Mosaic:
     def imported_plan(self) -> bool:
         return self.grid_rows >= 1 and self.grid_columns >= 1
 
+    def firmware_layout(self) -> tuple[int, int, int, int] | None:
+        return resolve_firmware_mosaic(
+            rows=self.rows,
+            columns=self.columns,
+            grid_rows=self.grid_rows,
+            grid_columns=self.grid_columns,
+            horizontal_scale=self.horizontal_scale,
+            vertical_scale=self.vertical_scale,
+        )
+
     @property
     def panes(self) -> int:
         if self.imported_plan:
             return 1
-        return max(1, self.rows * self.columns)
+        layout = self.firmware_layout()
+        if layout is None:
+            return 1
+        columns, rows, _horizontal, _vertical = layout
+        return columns * rows
 
     @property
     def grid_text(self) -> str:

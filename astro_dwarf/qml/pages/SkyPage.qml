@@ -27,6 +27,9 @@ Item {
         property int mosaicColumns: 1
         property int mosaicRows: 1
         property int mosaicOverlap: 20
+        property string mosaicMode: "custom"
+        property int mosaicHScale: 150
+        property int mosaicVScale: 150
         property bool liveFovOverlay: false
         property real liveFovOpacity: 0.65
         property bool dblclickTrack: false
@@ -67,14 +70,24 @@ Item {
         columnsBox.value = skyPage.clampInt(skyStore.mosaicColumns, 1, 10, 1)
         rowsBox.value = skyPage.clampInt(skyStore.mosaicRows, 1, 10, 1)
         overlapBox.value = skyPage.clampInt(skyStore.mosaicOverlap, 0, 80, 20)
+        hFactor.value = skyPage.clampInt(skyStore.mosaicHScale, 100, 180, 150) / 10
+        vFactor.value = skyPage.clampInt(skyStore.mosaicVScale, 100, 180, 150) / 10
         skyPage.applyDevicePa()
         backend.setSkyMosaicGrid(columnsBox.value, rowsBox.value, overlapBox.value / 100)
+        skyPage.pushDeviceMosaic()
     }
     function saveSkyGrid() {
         skyStore.mosaicColumns = columnsBox.value
         skyStore.mosaicRows = rowsBox.value
         skyStore.mosaicOverlap = overlapBox.value
         backend.setSkyMosaicGrid(columnsBox.value, rowsBox.value, overlapBox.value / 100)
+    }
+    function pushDeviceMosaic() {
+        const mode = skyStore.mosaicMode === "device" ? "device" : "custom"
+        skyStore.mosaicMode = mode
+        skyStore.mosaicHScale = hFactor.value * 10
+        skyStore.mosaicVScale = vFactor.value * 10
+        backend.setSkyDeviceMosaic(mode, skyStore.mosaicHScale, skyStore.mosaicVScale)
     }
     function applyDevicePa() {
         if (paBox.activeFocus)
@@ -131,7 +144,10 @@ Item {
                 skyStore.sync()
         }
     }
-    readonly property bool mosaicGrid: columnsBox.value > 1 || rowsBox.value > 1
+    readonly property bool deviceMode: skyStore.mosaicMode === "device"
+    readonly property bool mosaicGrid: skyPage.deviceMode
+                                       ? (backend.mosaicColumns > 1 || backend.mosaicRows > 1)
+                                       : (columnsBox.value > 1 || rowsBox.value > 1)
     readonly property bool mapHasTarget: !!(mapLoader.item && mapLoader.item.hasSelectedTarget)
     readonly property bool mapInitialReady: !!(mapLoader.item && mapLoader.item.initialLoadDone)
     readonly property bool mapInitialFailed: !!(mapLoader.item && mapLoader.item.initialLoadFailed)
@@ -189,10 +205,14 @@ Item {
         harvestTimeout.stop()
         const action = skyPage.pendingAction
         skyPage.pendingAction = ""
-        if (action === "mosaic")
-            backend.generateStellariumMosaic(
-                raw, columnsBox.value, rowsBox.value, overlapBox.value / 100,
-                backend.mosaicPaManual ? paBox.value : backend.mosaicPa)
+        if (action === "mosaic") {
+            if (skyPage.deviceMode)
+                backend.generateDeviceMosaic(raw, hFactor.value * 10, vFactor.value * 10)
+            else
+                backend.generateStellariumMosaic(
+                    raw, columnsBox.value, rowsBox.value, overlapBox.value / 100,
+                    backend.mosaicPaManual ? paBox.value : backend.mosaicPa)
+        }
         else if (action === "import")
             backend.importStellariumSmart(raw)
         else if (action === "push")
@@ -282,26 +302,40 @@ Item {
         const plan = backend.skyShowPlan(item) || ({})
         if (!plan.ok)
             return
-        const columns = skyPage.clampInt(plan.columns, 1, 10, 1)
-        const rows = skyPage.clampInt(plan.rows, 1, 10, 1)
-        if (columnsBox.value !== columns)
-            columnsBox.value = columns
-        if (rowsBox.value !== rows)
-            rowsBox.value = rows
-        if (plan.mosaic) {
-            const overlapPct = skyPage.clampInt(Math.round(Number(plan.overlap) * 100), 0, 80, 0)
-            if (overlapBox.value !== overlapPct)
-                overlapBox.value = overlapPct
-            if (backend.mosaicPaManual && isFinite(Number(plan.position_angle))) {
-                const pa = ((Math.round(Number(plan.position_angle)) % 360) + 360) % 360
-                if (paBox.value !== pa) {
-                    skyPage.applyingPa = true
-                    paBox.value = pa
-                    skyPage.applyingPa = false
-                }
+        const device = plan.mode === "device"
+        if (device) {
+            const horizontal = skyPage.clampInt(plan.horizontal_scale, 100, 180, 150)
+            const vertical = skyPage.clampInt(plan.vertical_scale, 100, 180, 150)
+            if (hFactor.value !== horizontal / 10)
+                hFactor.value = horizontal / 10
+            if (vFactor.value !== vertical / 10)
+                vFactor.value = vertical / 10
+            skyStore.mosaicMode = "device"
+            skyPage.pushDeviceMosaic()
+        } else {
+            const columns = skyPage.clampInt(plan.columns, 1, 10, 1)
+            const rows = skyPage.clampInt(plan.rows, 1, 10, 1)
+            if (columnsBox.value !== columns)
+                columnsBox.value = columns
+            if (rowsBox.value !== rows)
+                rowsBox.value = rows
+            if (plan.mosaic) {
+                const overlapPct = skyPage.clampInt(Math.round(Number(plan.overlap) * 100), 0, 80, 0)
+                if (overlapBox.value !== overlapPct)
+                    overlapBox.value = overlapPct
+            }
+            skyStore.mosaicMode = "custom"
+            skyPage.saveSkyGrid()
+            skyPage.pushDeviceMosaic()
+        }
+        if (plan.mosaic && backend.mosaicPaManual && isFinite(Number(plan.position_angle))) {
+            const pa = ((Math.round(Number(plan.position_angle)) % 360) + 360) % 360
+            if (paBox.value !== pa) {
+                skyPage.applyingPa = true
+                paBox.value = pa
+                skyPage.applyingPa = false
             }
         }
-        skyPage.saveSkyGrid()
         skyPage.mapKeepAlive = true
         if (root.currentPage !== root.skyPageIndex)
             root.goToPage(root.skyPageIndex)
@@ -495,12 +529,38 @@ Item {
                 spacing: Theme.s2
                 anchors.verticalCenter: parent.verticalCenter
                 implicitHeight: Theme.compactControlHeight
+                HudButton {
+                    implicitHeight: Theme.compactControlHeight
+                    text: "CUSTOM"
+                    buttonColor: skyPage.deviceMode ? Theme.surfaceHigh : Theme.fillActive
+                    foregroundColor: skyPage.deviceMode ? Theme.textSecondary : Theme.accent
+                    accessibleDescription: "Custom mosaic grid"
+                    tooltip: "Host-planned columns, rows, and overlap. Each pane is its own GOTO and stack."
+                    onClicked: {
+                        skyStore.mosaicMode = "custom"
+                        skyPage.pushDeviceMosaic()
+                    }
+                }
+                HudButton {
+                    implicitHeight: Theme.compactControlHeight
+                    text: "DEVICE"
+                    buttonColor: skyPage.deviceMode ? Theme.fillActive : Theme.surfaceHigh
+                    foregroundColor: skyPage.deviceMode ? Theme.accent : Theme.textSecondary
+                    accessibleDescription: "Device mosaic"
+                    tooltip: "Stretch the tele field from 1.0× to 1.8× on each axis. The telescope shoots one pane at 1.0× and two panes above that, four views at most. Equatorial mode keeps the field from rotating between panes."
+                    onClicked: {
+                        skyStore.mosaicMode = "device"
+                        skyPage.pushDeviceMosaic()
+                    }
+                }
                 FieldLabel {
                     text: "COL"
+                    visible: !skyPage.deviceMode
                     Layout.preferredWidth: implicitWidth
                 }
                 HudSpinBox {
                     id: columnsBox
+                    visible: !skyPage.deviceMode
                     objectName: "skyColumns"
                     from: 1
                     to: 10
@@ -514,10 +574,12 @@ Item {
                 }
                 FieldLabel {
                     text: "ROW"
+                    visible: !skyPage.deviceMode
                     Layout.preferredWidth: implicitWidth
                 }
                 HudSpinBox {
                     id: rowsBox
+                    visible: !skyPage.deviceMode
                     objectName: "skyRows"
                     from: 1
                     to: 10
@@ -531,10 +593,12 @@ Item {
                 }
                 FieldLabel {
                     text: "OVL"
+                    visible: !skyPage.deviceMode
                     Layout.preferredWidth: implicitWidth
                 }
                 HudSpinBox {
                     id: overlapBox
+                    visible: !skyPage.deviceMode
                     objectName: "skyOverlap"
                     from: 0
                     to: 80
@@ -551,6 +615,56 @@ Item {
                         return isNaN(n) ? overlapBox.value : n
                     }
                     onValueModified: skyPage.saveSkyGrid()
+                }
+                FieldLabel {
+                    text: "H"
+                    visible: skyPage.deviceMode
+                    Layout.preferredWidth: implicitWidth
+                }
+                HudSpinBox {
+                    id: hFactor
+                    objectName: "skyDeviceH"
+                    editFormatted: true
+                    visible: skyPage.deviceMode
+                    from: 10
+                    to: 18
+                    value: 15
+                    implicitHeight: Theme.compactControlHeight
+                    implicitWidth: Theme.px(78)
+                    Layout.preferredWidth: Theme.px(78)
+                    accessibleName: "Device mosaic horizontal factor"
+                    tooltip: "Horizontal framed field, 1.0× to 1.8× one tele view, in 0.1 steps. " + backend.deviceMosaicCaption
+                    textFromValue: (value, locale) => (value / 10).toFixed(1) + "×"
+                    valueFromText: (text, locale) => {
+                        const n = parseFloat(String(text).replace("×", "").trim())
+                        return isNaN(n) ? hFactor.value : Math.round(n * 10)
+                    }
+                    onValueModified: skyPage.pushDeviceMosaic()
+                }
+                FieldLabel {
+                    text: "V"
+                    visible: skyPage.deviceMode
+                    Layout.preferredWidth: implicitWidth
+                }
+                HudSpinBox {
+                    id: vFactor
+                    objectName: "skyDeviceV"
+                    editFormatted: true
+                    visible: skyPage.deviceMode
+                    from: 10
+                    to: 18
+                    value: 15
+                    implicitHeight: Theme.compactControlHeight
+                    implicitWidth: Theme.px(78)
+                    Layout.preferredWidth: Theme.px(78)
+                    accessibleName: "Device mosaic vertical factor"
+                    tooltip: "Vertical framed field, 1.0× to 1.8× one tele view, in 0.1 steps. " + backend.deviceMosaicCaption
+                    textFromValue: (value, locale) => (value / 10).toFixed(1) + "×"
+                    valueFromText: (text, locale) => {
+                        const n = parseFloat(String(text).replace("×", "").trim())
+                        return isNaN(n) ? vFactor.value : Math.round(n * 10)
+                    }
+                    onValueModified: skyPage.pushDeviceMosaic()
                 }
                 FieldLabel {
                     text: "PA"
@@ -615,25 +729,31 @@ Item {
             HudButton {
                 implicitHeight: Theme.compactControlHeight
                 text: skyPage.mosaicGrid
-                      ? (skyHeader.tight ? "CREATE MOSAIC" : "CREATE MOSAIC SESSION")
+                      ? (skyPage.deviceMode
+                         ? (skyHeader.tight ? "DEVICE MOSAIC" : "CREATE DEVICE MOSAIC")
+                         : (skyHeader.tight ? "CREATE MOSAIC" : "CREATE MOSAIC SESSION"))
                       : (skyHeader.tight ? "CREATE SESSION" : "CREATE SINGLE SESSION")
                 buttonColor: Theme.fillActive
                 foregroundColor: Theme.accent
                 busy: (skyPage.harvestBusy && (skyPage.pendingAction === "mosaic" || skyPage.pendingAction === "import"))
-                      || backend.uiBusy === "stellariumMosaic" || backend.uiBusy === "stellarium"
-                busyText: (skyPage.pendingAction === "mosaic" || backend.uiBusy === "stellariumMosaic")
+                      || backend.uiBusy === "stellariumMosaic" || backend.uiBusy === "deviceMosaic" || backend.uiBusy === "stellarium"
+                busyText: (skyPage.pendingAction === "mosaic" || backend.uiBusy === "stellariumMosaic" || backend.uiBusy === "deviceMosaic")
                           ? "GENERATING…" : "CREATING…"
                 busyMs: 0
                 enabled: backend.uiBusy === "" && !skyPage.harvestBusy && skyPage.mapHasTarget
                 hoverEnabled: true
                 accessibleDescription: !skyPage.mapHasTarget
                                        ? "Select a target in the sky map first"
-                                       : skyPage.mosaicGrid
+                                       : skyPage.deviceMode && skyPage.mosaicGrid
+                                         ? "Create one device mosaic at the selected target. The telescope shoots up to four panes."
+                                         : skyPage.mosaicGrid
                                          ? "Create an X by Y mosaic session from the sky map selection"
                                          : "Create a single session from the sky map selection"
                 tooltip: !skyPage.mapHasTarget
                          ? "Select a target in the sky map first"
-                         : skyPage.mosaicGrid
+                         : skyPage.deviceMode && skyPage.mosaicGrid
+                           ? "One session at the centre. The telescope frames " + backend.deviceMosaicCaption + ". Or press STACK on Control to start it now. Equatorial mode is recommended."
+                           : skyPage.mosaicGrid
                            ? "Create scheduled mosaic pane sessions from the selected target. Or press STACK on Control to capture the grid now. " + skyPage.mosaicHint
                            : "Create a single session from the selected target"
                 onClicked: skyPage.withSkySources(skyPage.mosaicGrid ? "mosaic" : "import")
@@ -709,9 +829,9 @@ Item {
                     if (!map)
                         return
                     map.shown = Qt.binding(() => skyPage.mapLive && !root.appModalOpen)
-                    map.mosaicColumns = Qt.binding(() => columnsBox.value)
-                    map.mosaicRows = Qt.binding(() => rowsBox.value)
-                    map.mosaicOverlap = Qt.binding(() => overlapBox.value / 100)
+                    map.mosaicColumns = Qt.binding(() => skyPage.deviceMode ? 1 : columnsBox.value)
+                    map.mosaicRows = Qt.binding(() => skyPage.deviceMode ? 1 : rowsBox.value)
+                    map.mosaicOverlap = Qt.binding(() => skyPage.deviceMode ? 0 : overlapBox.value / 100)
                     map.mosaicPa = Qt.binding(() => backend.mosaicPaManual ? paBox.value : backend.mosaicPa)
                     map.liveOverlay = Qt.binding(() => skyStore.liveFovOverlay)
                     map.liveOpacity = Qt.binding(() => skyPage.clampOpacity(skyStore.liveFovOpacity))

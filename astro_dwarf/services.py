@@ -22,6 +22,9 @@ from .domain import (
     HardwareProfile,
     Mosaic,
     Session,
+    clamp_firmware_mosaic_scale,
+    device_mosaic_from_scales,
+    firmware_mosaic_overlap,
     SessionStatus,
     SessionTemplate,
     Target,
@@ -498,6 +501,10 @@ SKY_WEB_FOV_JS = r"""
     var best = null;
     var area = 0;
     for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].id === "astro-dwarf-mosaic-media")
+        continue;
+      if (nodes[i].closest && nodes[i].closest("#astro-dwarf-sky-overlay"))
+        continue;
       var box = nodes[i].getBoundingClientRect();
       var next = box.width * box.height;
       if (next > area) {
@@ -664,12 +671,8 @@ SKY_WEB_FOV_JS = r"""
     return null;
   }
   function sphericalToCart(stel, ra, dec) {
-    if (typeof stel.s2c === "function") {
-      try {
-        var v = asVec(stel.s2c(ra, dec));
-        if (v) return v;
-      } catch (err) {}
-    }
+    // Unit-sphere math matches s2c. Calling the engine once per pane corner
+    // stalled a 10×10 overlay on every sky frame.
     var cdec = Math.cos(dec);
     return [cdec * Math.cos(ra), cdec * Math.sin(ra), Math.sin(dec), 0];
   }
@@ -741,8 +744,47 @@ SKY_WEB_FOV_JS = r"""
     var n = Math.hypot(xyz[0], xyz[1], xyz[2]) || 1;
     return [xyz[0] / n, xyz[1] / n, xyz[2] / n, 0];
   }
+  function viewBasis(stel) {
+    var ctl = window[CTL];
+    if (!stel || !stel.observer || typeof stel.convertFrame !== "function") return null;
+    var a = coreAngles(stel) || {};
+    var o = stel.observer || {};
+    var key = [a.yaw, a.pitch, o.roll, o.latitude, o.longitude, o.lat, o.phi].join("|");
+    if (ctl && ctl.viewBasis && ctl.viewBasis.key === key) return ctl.viewBasis;
+    var frames = (ctl && ctl.viewFrame) ? [ctl.viewFrame] : ["ICRF", "CIRS", "JNOW"];
+    var axes = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]];
+    for (var f = 0; f < frames.length; f++) {
+      var cols = [];
+      var ok = true;
+      for (var i = 0; i < 3; i++) {
+        var view = null;
+        try { view = asVec(stel.convertFrame(stel.observer, frames[f], "VIEW", axes[i])); } catch (err) {}
+        if (!view) { ok = false; break; }
+        cols.push(view);
+      }
+      if (!ok) continue;
+      var basis = {key: key, frame: frames[f], c: cols};
+      if (ctl) {
+        ctl.viewFrame = frames[f];
+        ctl.viewBasis = basis;
+      }
+      return basis;
+    }
+    return null;
+  }
   function convertToView(stel, xyz) {
     if (!xyz || !stel.observer || typeof stel.convertFrame !== "function") return null;
+    var basis = viewBasis(stel);
+    if (basis) {
+      var x = Number(xyz[0]) || 0, y = Number(xyz[1]) || 0, z = Number(xyz[2]) || 0;
+      var c = basis.c;
+      return [
+        c[0][0] * x + c[1][0] * y + c[2][0] * z,
+        c[0][1] * x + c[1][1] * y + c[2][1] * z,
+        c[0][2] * x + c[1][2] * y + c[2][2] * z,
+        0
+      ];
+    }
     var dir = [xyz[0], xyz[1], xyz[2], 0];
     var frames = ["ICRF", "CIRS", "JNOW"];
     var i, view;
@@ -813,7 +855,14 @@ SKY_WEB_FOV_JS = r"""
   }
   function projectCorners(stel, corners, box) {
     if (!corners || !corners.length) return null;
-    var dense = densifyCorners(corners, 8);
+    var steps = 8;
+    if (corners.length >= 2) {
+      var a = raDecToXyz(corners[0].ra_hours, corners[0].dec_degrees);
+      var b = raDecToXyz(corners[1].ra_hours, corners[1].dec_degrees);
+      var edge = Math.acos(Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]))) * 180 / Math.PI;
+      steps = edge < 6 ? 1 : edge < 14 ? 2 : edge < 28 ? 4 : 8;
+    }
+    var dense = steps <= 1 ? corners : densifyCorners(corners, steps);
     var pts = [];
     for (var i = 0; i < dense.length; i++) {
       var pt = projectPoint(stel, dense[i].ra_hours, dense[i].dec_degrees, box);
@@ -963,6 +1012,8 @@ SKY_WEB_FOV_JS = r"""
         var centerPt = offsetCamera(center.ra_hours, center.dec_degrees, right, up, pa);
         panes.push({
           index: index,
+          row: row,
+          column: col,
           ra_hours: centerPt.ra_hours,
           dec_degrees: centerPt.dec_degrees,
           corners: cameraCorners(centerPt.ra_hours, centerPt.dec_degrees, fovH, fovV, pa)
@@ -988,7 +1039,9 @@ SKY_WEB_FOV_JS = r"""
     var groups = el ? el.querySelectorAll("g.astro-dwarf-mosaic-media") : [];
     for (var g = 0; g < groups.length; g++)
       groups[g].setAttribute("opacity", String(op));
-    if (groups.length)
+    var canvas = document.getElementById("astro-dwarf-mosaic-media");
+    if (canvas) canvas.style.opacity = String(op);
+    if (groups.length || canvas)
       return;
     var imgs = el ? el.querySelectorAll("image.astro-dwarf-live") : [];
     for (var i = 0; i < imgs.length; i++)
@@ -1046,19 +1099,33 @@ SKY_WEB_FOV_JS = r"""
   function mosaicImageStyle(blend) {
     return blend ? ' opacity="1" style="mix-blend-mode:lighten"' : (' opacity="' + imageOpacity() + '"');
   }
+  function queueMedia(job) {
+    var ctl = window[CTL];
+    if (!ctl || !job) return;
+    if (!ctl.mediaQueue) ctl.mediaQueue = [];
+    ctl.mediaQueue.push(job);
+  }
+  function screenQuad(x, y, w, h) {
+    var ctl = window[CTL];
+    var tilt = ctl ? Number(ctl.mediaTilt) || 0 : 0;
+    var cx = ctl ? Number(ctl.mediaCx) : NaN;
+    var cy = ctl ? Number(ctl.mediaCy) : NaN;
+    var pts = [{x: x, y: y}, {x: x + w, y: y}, {x: x + w, y: y + h}, {x: x, y: y + h}];
+    if (!(Math.abs(tilt) > 0.05) || !isFinite(cx) || !isFinite(cy)) return pts;
+    var out = [];
+    for (var i = 0; i < 4; i++)
+      out.push(rotatePoint(cx, cy, pts[i].x, pts[i].y, tilt));
+    return out;
+  }
   function liveImageRect(x, y, w, h, blend) {
     if (!liveEnabled() || !(w > 2) || !(h > 2)) return "";
-    return '<image class="astro-dwarf-live" href="" x="' + Number(x).toFixed(1)
-      + '" y="' + Number(y).toFixed(1) + '" width="' + Number(w).toFixed(1)
-      + '" height="' + Number(h).toFixed(1) + '"'
-      + mosaicImageStyle(blend) + ' preserveAspectRatio="xMidYMid slice"/>';
+    queueMedia({quad: screenQuad(x, y, w, h), live: true, blend: !!blend});
+    return "";
   }
   function stillImageRect(x, y, w, h, href, blend) {
     if (!href || !(w > 2) || !(h > 2)) return "";
-    return '<image class="astro-dwarf-pane" href="' + href + '" x="' + Number(x).toFixed(1)
-      + '" y="' + Number(y).toFixed(1) + '" width="' + Number(w).toFixed(1)
-      + '" height="' + Number(h).toFixed(1) + '"'
-      + mosaicImageStyle(blend) + ' preserveAspectRatio="xMidYMid slice"/>';
+    queueMedia({quad: screenQuad(x, y, w, h), href: href, key: "still:" + href.slice(0, 48), blend: !!blend});
+    return "";
   }
   function imageMatrix(quad, cls, href, blend) {
     if (!quad || quad.length < 3) return "";
@@ -1075,11 +1142,13 @@ SKY_WEB_FOV_JS = r"""
   }
   function liveImageQuad(quad, blend) {
     if (!liveEnabled() || !quad || quad.length < 3) return "";
-    return imageMatrix(quad, "astro-dwarf-live", "", blend);
+    queueMedia({quad: quad, live: true, blend: !!blend});
+    return "";
   }
   function stillImageQuad(quad, href, blend) {
     if (!href || !quad || quad.length < 3) return "";
-    return imageMatrix(quad, "astro-dwarf-pane", href, blend);
+    queueMedia({quad: quad, href: href, key: "still:" + href.slice(0, 48), blend: !!blend});
+    return "";
   }
   function paneFillQuad(quad, index) {
     var live = livePaneIndex();
@@ -1093,11 +1162,129 @@ SKY_WEB_FOV_JS = r"""
       return liveImageRect(x, y, w, h, true);
     return stillImageRect(x, y, w, h, paneImageHref(index), true);
   }
+  function cachedStill(key, url) {
+    var ctl = window[CTL];
+    if (!ctl || !url) return null;
+    var cache = ctl.imageCache = ctl.imageCache || {};
+    var entry = cache[key];
+    if (!entry || entry.url !== url) {
+      var img = new Image();
+      img.onload = function() {
+        var live = window[CTL];
+        if (!live) return;
+        if (typeof live.refreshMedia === "function" && live.mediaJobs && live.mediaJobs.length) {
+          try { live.refreshMedia(); } catch (err) {}
+          return;
+        }
+        live.lastKey = "";
+        try { if (typeof live.draw === "function") live.draw(false); } catch (err) {}
+      };
+      img.src = url;
+      cache[key] = {url: url, img: img};
+      entry = cache[key];
+    }
+    var ready = entry.img;
+    return (ready && ready.complete && ready.naturalWidth) ? ready : null;
+  }
+  function drawQuadImage(ctx, img, quad) {
+    if (!img || !quad || quad.length < 3) return;
+    var p0 = quad[0], p1 = quad[1], p3 = quad[3] || quad[2];
+    if (!p0 || !p1 || !p3) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    for (var i = 1; i < quad.length; i++) ctx.lineTo(quad[i].x, quad[i].y);
+    ctx.closePath();
+    ctx.clip();
+    var w = 100, h = 100;
+    ctx.setTransform(
+      (p1.x - p0.x) / w, (p1.y - p0.y) / w,
+      (p3.x - p0.x) / h, (p3.y - p0.y) / h,
+      p0.x, p0.y
+    );
+    ctx.drawImage(img, 0, 0, w, h);
+    ctx.restore();
+  }
+  function blitMediaCanvas(el, box) {
+    var ctl = window[CTL];
+    var jobs = (ctl && ctl.mediaQueue) || [];
+    if (ctl) ctl.mediaQueue = [];
+    var canvas = document.getElementById("astro-dwarf-mosaic-media");
+    if (!jobs.length) {
+      if (canvas) {
+        var blank = canvas.getContext("2d");
+        if (blank) blank.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      return;
+    }
+    if (!canvas) {
+      canvas = document.createElement("canvas");
+      canvas.id = "astro-dwarf-mosaic-media";
+      canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;";
+      el.insertBefore(canvas, el.firstChild);
+    } else if (canvas.parentElement !== el) {
+      el.insertBefore(canvas, el.firstChild);
+    }
+    var width = Math.max(1, Math.round(box.width));
+    var height = Math.max(1, Math.round(box.height));
+    var sig = [width, height, imageOpacity()];
+    var cache = ctl.imageCache || {};
+    for (var s = 0; s < jobs.length; s++) {
+      var job = jobs[s];
+      var quad = job.quad || [];
+      var stampKey = job.live ? "live" : (job.key || "still");
+      var stamp = cache[stampKey] && cache[stampKey].img;
+      sig.push(job.live ? "L" : String(job.key || job.href || "").slice(0, 64));
+      sig.push(stamp && stamp.naturalWidth ? stamp.naturalWidth : 0);
+      for (var k = 0; k < quad.length; k++)
+        sig.push(Math.round(quad[k].x), Math.round(quad[k].y));
+    }
+    var blitKey = sig.join(",");
+    if (blitKey === ctl.mediaBlitKey && canvas.width === width && canvas.height === height)
+      return;
+    ctl.mediaBlitKey = blitKey;
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+    canvas.style.opacity = String(imageOpacity());
+    var ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.globalCompositeOperation = "lighten";
+    var liveImg = ctl && ctl.liveEnabled ? cachedStill("live", String(ctl.liveUrl || "")) : null;
+    for (var i = 0; i < jobs.length; i++) {
+      var job = jobs[i];
+      var img = job.live ? liveImg : cachedStill(job.key || "still", job.href || "");
+      if (!img) continue;
+      drawQuadImage(ctx, img, job.quad);
+    }
+    ctx.globalCompositeOperation = "source-over";
+    if (ctl) ctl.mediaJobs = jobs;
+  }
+  function refreshMedia() {
+    var ctl = window[CTL];
+    var el = document.getElementById(ID);
+    var box = canvasRect();
+    if (!ctl || !el || !box || !ctl.mediaJobs) return;
+    ctl.mediaQueue = ctl.mediaJobs.slice();
+    blitMediaCanvas(el, box);
+  }
   function paintSvg(el, box, inner) {
     el.style.display = "block";
-    el.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 '
-      + box.width + " " + box.height + '" preserveAspectRatio="none">' + inner + "</svg>";
-    applyLiveImages(el);
+    var svg = el.querySelector("svg.astro-dwarf-fov");
+    if (!svg) {
+      el.textContent = "";
+      svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("class", "astro-dwarf-fov");
+      el.appendChild(svg);
+    }
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("height", "100%");
+    svg.setAttribute("viewBox", "0 0 " + box.width + " " + box.height);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;";
+    svg.innerHTML = inner;
+    blitMediaCanvas(el, box);
   }
   function wrapDeg(deg) {
     var n = Number(deg);
@@ -1467,6 +1654,12 @@ SKY_WEB_FOV_JS = r"""
     var left = (box.width - size.w) / 2;
     var top = (box.height - size.h) / 2;
     var tilt = cameraHudTilt(p, stel, box);
+    var ctl = window[CTL];
+    if (ctl) {
+      ctl.mediaTilt = tilt;
+      ctl.mediaCx = box.width / 2;
+      ctl.mediaCy = box.height / 2;
+    }
     paintSvg(el, box, rotateChartGroup(box, p, stel,
       liveImageRect(left, top, size.w, size.h)
       + targetFrameSvg([
@@ -1502,6 +1695,12 @@ SKY_WEB_FOV_JS = r"""
     var chartEdge = (pa > 90 && pa < 270) === !!p.south_up;
     var col1OnRight = zenithCamera || chartEdge;
     var row1AtTop = zenithCamera || chartEdge;
+    var ctl = window[CTL];
+    if (ctl) {
+      ctl.mediaTilt = tilt;
+      ctl.mediaCx = box.width / 2;
+      ctl.mediaCy = box.height / 2;
+    }
     var media = "";
     var labels = "";
     var index = 0;
@@ -1543,34 +1742,11 @@ SKY_WEB_FOV_JS = r"""
   }
   function drawPanes(el, box, p, stel, panes) {
     var color = String(p.color || "#02900A");
+    var host = window[CTL];
+    if (host) host.mediaTilt = 0;
     var drawn = [];
     for (var i = 0; i < panes.length; i++) {
-      var pts = projectCorners(stel, panes[i].corners, box);
-      var center = projectPoint(stel, panes[i].ra_hours, panes[i].dec_degrees, box);
-      if (!pts && !center) continue;
-      var points = pts ? pts.map(function(pt) { return pt.x.toFixed(1) + "," + pt.y.toFixed(1); }).join(" ") : "";
-      var cx = 0, cy = 0;
-      if (center) {
-        cx = center.x;
-        cy = center.y;
-      } else {
-        pts.forEach(function(pt) { cx += pt.x; cy += pt.y; });
-        cx /= pts.length;
-        cy /= pts.length;
-      }
-      var tick = "";
-      var quad = [];
       var corners = panes[i].corners || [];
-      if (corners.length >= 4) {
-        var upA = projectPoint(stel, corners[3].ra_hours, corners[3].dec_degrees, box);
-        var upB = projectPoint(stel, corners[0].ra_hours, corners[0].dec_degrees, box);
-        tick = edgeTick(upA, upB, color);
-        var order = imageQuadOrder();
-        for (var q = 0; q < 4; q++) {
-          var cpt = projectPoint(stel, corners[order[q]].ra_hours, corners[order[q]].dec_degrees, box);
-          if (cpt) quad.push(cpt);
-        }
-      }
       var ring = [];
       if (corners.length >= 4) {
         for (var r = 0; r < 4; r++) {
@@ -1578,9 +1754,25 @@ SKY_WEB_FOV_JS = r"""
           if (rpt) ring.push(rpt);
         }
       }
+      var center = projectPoint(stel, panes[i].ra_hours, panes[i].dec_degrees, box);
+      if (ring.length < 4 && !center) continue;
+      var cx = 0, cy = 0;
+      if (center) {
+        cx = center.x;
+        cy = center.y;
+      } else {
+        for (var c = 0; c < ring.length; c++) { cx += ring[c].x; cy += ring[c].y; }
+        cx /= ring.length;
+        cy /= ring.length;
+      }
+      var quad = null;
+      if (ring.length === 4) {
+        var order = imageQuadOrder();
+        quad = [ring[order[0]], ring[order[1]], ring[order[2]], ring[order[3]]];
+      }
       drawn.push({
-        points: points, cx: cx, cy: cy, tick: tick,
-        quad: quad.length === 4 ? quad : null,
+        cx: cx, cy: cy,
+        quad: quad,
         ring: ring.length === 4 ? ring : null,
         row: Number(panes[i].row) || 0,
         column: Number(panes[i].column) || 0,
@@ -1597,8 +1789,10 @@ SKY_WEB_FOV_JS = r"""
         return pt.x >= -40 && pt.y >= -40 && pt.x <= box.width + 40 && pt.y <= box.height + 40;
       });
     });
-    if (!onScreen)
+    if (!onScreen) {
+      if (host) host.mediaQueue = [];
       return "";
+    }
     var media = "";
     var mosaic = drawn.length > 1;
     if (mosaic && mosaicUsesPaneImages()) {
@@ -1619,17 +1813,21 @@ SKY_WEB_FOV_JS = r"""
         if (!p1 || !p2 || !q1 || !q2) return;
         svg += dottedLine((p1.x + q1.x) / 2, (p1.y + q1.y) / 2, (p2.x + q2.x) / 2, (p2.y + q2.y) / 2, color);
       }
+      var byCell = {};
       for (var i = 0; i < drawn.length; i++) {
         var item = drawn[i];
-        if (!item.ring) continue;
-        for (var j = 0; j < drawn.length; j++) {
-          var other = drawn[j];
-          if (!other.ring || other === item) continue;
-          if (item.row && other.row === item.row && other.column === item.column + 1)
-            seam(item.ring[3], item.ring[2], other.ring[0], other.ring[1]);
-          else if (item.column && other.column === item.column && other.row === item.row + 1)
-            seam(item.ring[1], item.ring[2], other.ring[0], other.ring[3]);
-        }
+        if (item.row && item.column)
+          byCell[item.row + "," + item.column] = item;
+      }
+      for (var n = 0; n < drawn.length; n++) {
+        var cell = drawn[n];
+        if (!cell.ring || !cell.row || !cell.column) continue;
+        var right = byCell[cell.row + "," + (cell.column + 1)];
+        if (right && right.ring)
+          seam(cell.ring[3], cell.ring[2], right.ring[0], right.ring[1]);
+        var below = byCell[(cell.row + 1) + "," + cell.column];
+        if (below && below.ring)
+          seam(cell.ring[1], cell.ring[2], below.ring[0], below.ring[3]);
       }
       if (outer.length === 4)
         svg += targetFrameSvg(outer, color);
@@ -1668,8 +1866,11 @@ SKY_WEB_FOV_JS = r"""
     var ra = center && isFinite(center.ra_hours) ? Number(center.ra_hours).toFixed(3) : "";
     var dec = center && isFinite(center.dec_degrees) ? Number(center.dec_degrees).toFixed(2) : "";
     var roll = isFinite(tilt) ? Number(tilt).toFixed(1) : "";
+    function q(n, digits) {
+      return isFinite(Number(n)) ? Number(n).toFixed(digits) : "";
+    }
     return [
-      a.yaw, a.pitch, o.roll, stel.core && stel.core.fov,
+      q(a.yaw, 5), q(a.pitch, 5), q(o.roll, 4), q(stel.core && stel.core.fov, 5),
       box && box.width, box && box.height,
       nightModeOn() ? "N" : "D",
       ra, dec, roll
@@ -1706,6 +1907,7 @@ SKY_WEB_FOV_JS = r"""
     if (ctl && ctl.levelUntil && Date.now() < ctl.levelUntil)
       levelHorizon(stel);
     if (!ctl) return "loading";
+    ctl.drewAt = Date.now();
     var p = Object.assign({}, ctl.payload || {});
     p.color = resolvedColor(p);
     if (!stel || !stel.core || !box)
@@ -1753,9 +1955,11 @@ SKY_WEB_FOV_JS = r"""
       if (!next) return;
       next.timer = 0;
       if (next.paused) return;
-      try { (next.draw || draw)(false); } catch (err) {}
+      if (!next.drawQueued && Date.now() - (next.drewAt || 0) >= 48) {
+        try { (next.draw || draw)(false); } catch (err) {}
+      }
       if (typeof next.tick === "function") next.tick();
-    }, 40);
+    }, 50);
   }
   function asSweObj(obj) {
     return obj && typeof obj.v === "number" ? obj : null;
@@ -1918,6 +2122,7 @@ SKY_WEB_FOV_JS = r"""
       };
     }
     ctl.draw = draw;
+    ctl.refreshMedia = refreshMedia;
     ctl.tick = tick;
     // stel.change fires on every engine frame. Binding again on each inject
     // stacked another full redraw per frame for as long as the map stayed open.
@@ -1926,7 +2131,13 @@ SKY_WEB_FOV_JS = r"""
         stel.change(function() {
           var live = window[CTL];
           if (!live || live.paused || typeof live.draw !== "function") return;
-          live.draw(false);
+          if (live.drawQueued) return;
+          live.drawQueued = true;
+          setTimeout(function() {
+            live.drawQueued = false;
+            if (!live || live.paused) return;
+            live.draw(false);
+          }, 50);
         });
         ctl.changeBound = true;
       } catch (err) {}
@@ -1958,6 +2169,24 @@ def sky_web_fov_script(payload: dict[str, Any]) -> str:
     return f"{SKY_WEB_FOV_JS}({json.dumps(payload)})"
 
 
+SKY_WEB_FOV_UPDATE_JS = r"""
+(function(p){
+  var ctl = window.__astroDwarfFovCtl;
+  if (!ctl || typeof ctl.draw !== "function") return "loading";
+  ctl.payload = p || {};
+  ctl.payloadKey = "";
+  ctl.lastKey = "";
+  ctl.lastBase = "";
+  ctl.mediaBlitKey = "";
+  try { return ctl.draw(true); } catch (err) { return "error"; }
+})
+"""
+
+
+def sky_web_fov_update_script(payload: dict[str, Any]) -> str:
+    return f"{SKY_WEB_FOV_UPDATE_JS}({json.dumps(payload)})"
+
+
 SKY_WEB_LIVE_JS = r"""
 (function(url, enabled, opacity, livePane) {
   var CTL = "__astroDwarfFovCtl";
@@ -1983,36 +2212,31 @@ SKY_WEB_LIVE_JS = r"""
   var el = document.getElementById("astro-dwarf-sky-overlay");
   op = Number(ctl.liveOpacity);
   if (!isFinite(op) || op < 0 || op > 1) op = 0.65;
+  var canvas = document.getElementById("astro-dwarf-mosaic-media");
   if (!hrefChanged && on === was && !paneChanged) {
+    if (canvas) canvas.style.opacity = String(op);
     var groups = el ? el.querySelectorAll("g.astro-dwarf-mosaic-media") : [];
     for (var g = 0; g < groups.length; g++)
       groups[g].setAttribute("opacity", String(op));
-    if (!groups.length) {
+    if (!groups.length && !canvas) {
       var fades = el ? el.querySelectorAll("image.astro-dwarf-live") : [];
       for (var f = 0; f < fades.length; f++)
         fades[f].setAttribute("opacity", String(op));
     }
     return "opacity";
   }
-  var imgs = el ? el.querySelectorAll("image.astro-dwarf-live") : [];
-  if (on !== was || paneChanged || (on && !imgs.length)) {
+  if (on !== was || paneChanged || (on && hrefChanged && !canvas && !(ctl.mediaJobs && ctl.mediaJobs.length))) {
     ctl.lastKey = "";
     try { if (typeof ctl.draw === "function") ctl.draw(true); } catch (err) {}
     return on ? "shown" : "hidden";
   }
-  var groups = el ? el.querySelectorAll("g.astro-dwarf-mosaic-media") : [];
-  for (var g = 0; g < groups.length; g++)
-    groups[g].setAttribute("opacity", String(op));
-  for (var i = 0; i < imgs.length; i++) {
-    if (href) {
-      imgs[i].setAttribute("href", href);
-      try { imgs[i].setAttributeNS("http://www.w3.org/1999/xlink", "href", href); } catch (err) {}
-      var grouped = imgs[i].closest && imgs[i].closest("g.astro-dwarf-mosaic-media");
-      imgs[i].setAttribute("opacity", grouped ? "1" : String(op));
-    } else {
-      imgs[i].removeAttribute("href");
-    }
+  if (canvas) canvas.style.opacity = String(op);
+  if (hrefChanged && typeof ctl.refreshMedia === "function") {
+    try { ctl.refreshMedia(); } catch (err) {}
+    return href ? "updated" : "empty";
   }
+  ctl.lastKey = "";
+  try { if (typeof ctl.draw === "function") ctl.draw(true); } catch (err) {}
   return href ? "updated" : "empty";
 })
 """
@@ -3027,15 +3251,20 @@ def _sky_separation_deg(ra_a: float, dec_a: float, ra_b: float, dec_b: float) ->
 
 
 def _sky_overlap_from_scale(mosaic: Mosaic) -> float:
+    """Mean overlap of axes the telescope splits into two panes.
+
+    Scale 150 is 1.50× the tele field, so two panes overlap by ``2 - 1.5``.
+    A 1.00× axis is one pane and does not contribute.
+    """
     fractions: list[float] = []
     for scale in (mosaic.horizontal_scale, mosaic.vertical_scale):
-        try:
-            fractions.append(1.0 - float(scale) / 100.0)
-        except (TypeError, ValueError):
+        snapped = clamp_firmware_mosaic_scale(scale)
+        if snapped <= 100:
             continue
+        fractions.append(firmware_mosaic_overlap(snapped))
     if not fractions:
         return 0.0
-    return _clamp_sky_overlap(sum(fractions) / len(fractions))
+    return min(0.95, max(0.0, sum(fractions) / len(fractions)))
 
 
 def _sky_overlap_from_panes(
@@ -3095,6 +3324,12 @@ def sky_show_plan(
     rows, columns = mosaic_grid_size(*mosaics)
     rows = max(1, min(MAX_MOSAIC_AXIS, rows))
     columns = max(1, min(MAX_MOSAIC_AXIS, columns))
+    if mosaics and not mosaics[0].imported_plan:
+        layout = mosaics[0].firmware_layout()
+        if layout is not None:
+            columns, rows = layout[0], layout[1]
+        elif max(1, int(mosaics[0].rows or 1)) * max(1, int(mosaics[0].columns or 1)) > 1:
+            rows, columns = 1, 1
     points: list[dict[str, float]] = []
     for entry, mosaic in zip(panes, mosaics):
         coords = _sky_show_coords(entry)
@@ -3114,9 +3349,15 @@ def sky_show_plan(
         pane_count = 0
     grouped = bool(source.get("is_grouped") or source.get("is_group") or pane_count > 1 or len(points) > 1)
     mosaic = rows > 1 or columns > 1 or grouped
+    primary = mosaics[0] if mosaics else None
+    device_layout = primary.firmware_layout() if primary is not None and not primary.imported_plan else None
+    mode = "device" if device_layout is not None else "custom"
+    horizontal_scale = int(device_layout[2]) if device_layout is not None else 100
+    vertical_scale = int(device_layout[3]) if device_layout is not None else 100
     empty = {
         "ok": False,
         "mosaic": mosaic,
+        "mode": mode,
         "name": "",
         "ra_hours": None,
         "dec_degrees": None,
@@ -3124,6 +3365,8 @@ def sky_show_plan(
         "rows": 1,
         "overlap": 0.0,
         "position_angle": 0.0,
+        "horizontal_scale": horizontal_scale,
+        "vertical_scale": vertical_scale,
     }
     if not points:
         return empty
@@ -3158,6 +3401,9 @@ def sky_show_plan(
         "rows": rows,
         "overlap": overlap,
         "position_angle": position_angle,
+        "mode": mode,
+        "horizontal_scale": horizontal_scale,
+        "vertical_scale": vertical_scale,
     }
 
 
@@ -3921,6 +4167,19 @@ def _pane_corners(
     ]
 
 
+def _axis_overlap(explicit: float | None, fallback: float) -> float:
+    """Per-axis overlap. Custom grids keep the shared 0–0.8 value."""
+    if explicit is None:
+        return fallback
+    try:
+        value = float(explicit)
+    except (TypeError, ValueError):
+        return fallback
+    if value != value:
+        return fallback
+    return min(0.95, max(0.0, value))
+
+
 def mosaic_pane_footprints(
     target: Target,
     columns: int,
@@ -3930,13 +4189,15 @@ def mosaic_pane_footprints(
     overlap: float = 0.2,
     south_up: bool = False,
     position_angle: Any = None,
+    overlap_h: float | None = None,
+    overlap_v: float | None = None,
 ) -> list[dict[str, Any]]:
     columns, rows, fov_h, fov_v, overlap, center_ra_deg, center_dec = _mosaic_grid_args(
         target, columns, rows, fov_h, fov_v, overlap
     )
     pa = mosaic_position_angle(south_up, position_angle)
-    step_x = fov_h * (1.0 - overlap)
-    step_y = fov_v * (1.0 - overlap)
+    step_x = fov_h * (1.0 - _axis_overlap(overlap_h, overlap))
+    step_y = fov_v * (1.0 - _axis_overlap(overlap_v, overlap))
     panes: list[dict[str, Any]] = []
     index = 0
     for row in range(1, rows + 1):
@@ -4247,6 +4508,65 @@ def sessions_for_command_stack(
             )
         )
     return members
+
+
+def device_mosaic_footprints(
+    target: Target,
+    horizontal_scale: Any,
+    vertical_scale: Any,
+    fov_h: float,
+    fov_v: float,
+    south_up: bool = False,
+    position_angle: Any = None,
+) -> list[dict[str, Any]]:
+    """One composed frame. Scale 110 is 1.10× the tele field, not two tiles.
+
+    The telescope still covers a factor above 1.0× with two panes per axis.
+    The sky preview is the framed field the phone app stretches.
+    """
+    _columns, _rows, horizontal, vertical = device_mosaic_from_scales(horizontal_scale, vertical_scale)
+    try:
+        framed_h = float(fov_h) * horizontal / 100.0
+        framed_v = float(fov_v) * vertical / 100.0
+    except (TypeError, ValueError):
+        framed_h = framed_v = 0.0
+    return mosaic_pane_footprints(
+        target,
+        1,
+        1,
+        framed_h,
+        framed_v,
+        0.0,
+        south_up=south_up,
+        position_angle=position_angle,
+    )
+
+
+def device_mosaic_template(
+    target: Target,
+    horizontal_scale: Any,
+    vertical_scale: Any,
+) -> SessionTemplate:
+    """One session at the framed centre. The telescope shoots the panes."""
+    columns, rows, horizontal, vertical = device_mosaic_from_scales(horizontal_scale, vertical_scale)
+    notes = ""
+    if columns * rows > 1:
+        notes = (
+            f"Device mosaic {horizontal / 100:.1f}× {vertical / 100:.1f}× tele FOV, "
+            f"{columns}×{rows} panes"
+        )
+    return SessionTemplate(
+        name=target.name,
+        target=replace(target, kind=TargetKind.EQUATORIAL),
+        mosaic=Mosaic(
+            rows=rows,
+            columns=columns,
+            horizontal_scale=horizontal,
+            vertical_scale=vertical,
+            rotation_degrees=0,
+        ),
+        notes=notes,
+    )
 
 
 def generate_mosaic_plan(

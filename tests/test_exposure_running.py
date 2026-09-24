@@ -202,6 +202,22 @@ def test_progress_packet_marks_zero_zero_seen() -> None:
     _assert(changes["capture_active"] is True, "progress packet arms capture")
 
 
+def test_mosaic_progress_uses_fov_id() -> None:
+    message = SimpleNamespace(
+        total_count=50,
+        target_name="M42",
+        current_count=3,
+        stacked_count=2,
+        update_type=2,
+        fov_id=2,
+        fov_total=4,
+    )
+    changes = _stacking_progress_changes(message, mosaic=True)
+    _assert(changes["mosaic_index"] == 2, changes)
+    _assert(changes["mosaic_total"] == 4, changes)
+    _assert(changes["mosaic_active"] is True, changes)
+
+
 def main() -> int:
     test_capture_accepted_is_not_exposing()
     test_capture_accepted_with_exposure_waits()
@@ -219,6 +235,7 @@ def main() -> int:
     test_stack_counter_falls_back_to_taken()
     test_taken_ahead_does_not_bump_capture_text()
     test_progress_packet_marks_zero_zero_seen()
+    test_mosaic_progress_uses_fov_id()
     print("exposure running tests ok")
     return 0
 

@@ -223,7 +223,7 @@ Item {
         const view = grid ? map.viewForOverlay() : ({})
         const ra = Number(view.ra_hours)
         const dec = Number(view.dec_degrees)
-        const viewPart = grid && isFinite(ra) && isFinite(dec)
+        const viewPart = grid && !map.selectedKey && isFinite(ra) && isFinite(dec)
             ? ra.toFixed(3) + "," + dec.toFixed(2)
             : ""
         const capturing = String((backend.mosaicPreview && backend.mosaicPreview.phase) || "") !== ""
@@ -234,6 +234,9 @@ Item {
             map.mosaicColumns,
             map.mosaicRows,
             Number(map.mosaicOverlap).toFixed(3),
+            backend.mosaicMode,
+            backend.deviceMosaicHorizontal,
+            backend.deviceMosaicVertical,
             Number(map.mosaicPa).toFixed(1),
             overlayFov,
             backend.mosaicPaChip,
@@ -253,14 +256,12 @@ Item {
         // Push the grid immediately. Waiting on a harvest callback left the
         // rectangle on the previous columns while other scripts occupied the page.
         const sent = key
-        const script = backend.skyWebFovScript(
-            map.overlayPayload(map.selectedTarget || ({})),
-            map.mosaicColumns,
-            map.mosaicRows,
-            map.mosaicOverlap,
-            String(Theme.fov),
-            map.mosaicPa
-        )
+        const payload = map.overlayPayload(map.selectedTarget || ({}))
+        const script = map.fovEngineReady
+            ? backend.skyWebFovUpdateScript(
+                payload, map.mosaicColumns, map.mosaicRows, map.mosaicOverlap, String(Theme.fov), map.mosaicPa)
+            : backend.skyWebFovScript(
+                payload, map.mosaicColumns, map.mosaicRows, map.mosaicOverlap, String(Theme.fov), map.mosaicPa)
         map.runJavaScript(script, result => {
             if (map.fovInputKey() !== sent)
                 return

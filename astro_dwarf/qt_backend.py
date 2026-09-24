@@ -74,6 +74,8 @@ from .domain import (
     apply_camera_fov_defaults,
     camera_fov,
     camera_fov_plausible,
+    clamp_firmware_mosaic_scale,
+    device_mosaic_from_scales,
     device_supports_wide,
     camera_settings_from_capture,
     mosaic_stack_camera,
@@ -113,6 +115,9 @@ from .services import (
     SKY_WEB_BOOT_JS,
     SKY_WEB_HARVEST_JS,
     StellariumClient,
+    device_mosaic_footprints,
+    device_mosaic_template,
+    firmware_mosaic_overlap,
     generate_mosaic_plan,
     sessions_for_command_stack,
     templates_from_mosaic_panes,
@@ -128,6 +133,7 @@ from .services import (
     mosaic_pane_footprints,
     mosaic_panes_match_center,
     named_mosaic_center,
+    command_panel_workflow,
     live_mosaic_keep_sheet,
     mosaic_pane_index,
     mosaic_pane_number,
@@ -163,6 +169,7 @@ from .services import (
     SKY_WEB_OPACITY_POLL_JS,
     SKY_WEB_VIEW_POLL_JS,
     sky_web_fov_script,
+    sky_web_fov_update_script,
     sky_web_center_view_script,
     sky_web_lock_target_script,
     sky_web_pin_target_script,
@@ -186,6 +193,7 @@ from .sky_atlas import (
     sky_atlas_dismiss_poll_script,
     sky_atlas_dblclick_poll_script,
     sky_atlas_fov_script,
+    sky_atlas_fov_update_script,
     sky_atlas_harvest_script,
     sky_atlas_live_script,
     sky_atlas_lock_target_script,
@@ -1926,8 +1934,11 @@ class AppBackend(QObject):
         self._sky_mosaic_columns = 1
         self._sky_mosaic_rows = 1
         self._sky_mosaic_overlap = 0.2
+        self._sky_mosaic_mode = "custom"
+        self._sky_device_h = 150
+        self._sky_device_v = 150
         self._sky_preview_panes: list[dict[str, Any]] = []
-        self._sky_preview_key: tuple[int, int, float, float, float, float] | None = None
+        self._sky_preview_key: tuple[Any, ...] | None = None
         self._live_mosaic: dict[str, dict[str, Any]] = {}
         self._load_sky_mosaic_grid()
         self._restore_live_mosaics()
@@ -3275,9 +3286,25 @@ class AppBackend(QObject):
         self._sky_mosaic_columns = self._clamp_mosaic_axis(store.value("mosaicColumns", 1), 1)
         self._sky_mosaic_rows = self._clamp_mosaic_axis(store.value("mosaicRows", 1), 1)
         self._sky_mosaic_overlap = self._clamp_mosaic_overlap(store.value("mosaicOverlap", 20), 0.2)
+        mode = str(store.value("mosaicMode", "custom") or "custom").strip().lower()
+        self._sky_mosaic_mode = "device" if mode == "device" else "custom"
+        self._sky_device_h = clamp_firmware_mosaic_scale(store.value("mosaicHScale", 150))
+        self._sky_device_v = clamp_firmware_mosaic_scale(store.value("mosaicVScale", 150))
         store.endGroup()
 
+    def _sky_device_layout(self) -> tuple[int, int, int, int]:
+        return device_mosaic_from_scales(self._sky_device_h, self._sky_device_v)
+
     def _sky_mosaic_grid(self) -> tuple[int, int, float]:
+        if self._sky_mosaic_mode == "device":
+            columns, rows, horizontal, vertical = self._sky_device_layout()
+            overlaps = [
+                firmware_mosaic_overlap(scale)
+                for scale, panes in ((horizontal, columns), (vertical, rows))
+                if panes > 1
+            ]
+            overlap = sum(overlaps) / len(overlaps) if overlaps else 0.0
+            return columns, rows, overlap
         return (
             self._clamp_mosaic_axis(self._sky_mosaic_columns, 1),
             self._clamp_mosaic_axis(self._sky_mosaic_rows, 1),
@@ -3295,6 +3322,23 @@ class AppBackend(QObject):
     @Property(float, notify=skyMosaicGridChanged)
     def mosaicOverlap(self) -> float:
         return self._sky_mosaic_grid()[2]
+
+    @Property(str, notify=skyMosaicGridChanged)
+    def mosaicMode(self) -> str:
+        return self._sky_mosaic_mode
+
+    @Property(int, notify=skyMosaicGridChanged)
+    def deviceMosaicHorizontal(self) -> int:
+        return int(self._sky_device_layout()[2])
+
+    @Property(int, notify=skyMosaicGridChanged)
+    def deviceMosaicVertical(self) -> int:
+        return int(self._sky_device_layout()[3])
+
+    @Property(str, notify=skyMosaicGridChanged)
+    def deviceMosaicCaption(self) -> str:
+        columns, rows, horizontal, vertical = self._sky_device_layout()
+        return f"{horizontal / 100:.1f}× {vertical / 100:.1f}× framed field"
 
     @Property(bool, notify=skyMosaicGridChanged)
     def mosaicGridActive(self) -> bool:
@@ -3315,6 +3359,28 @@ class AppBackend(QObject):
         self._sky_mosaic_columns = next_columns
         self._sky_mosaic_rows = next_rows
         self._sky_mosaic_overlap = next_overlap
+        self.skyMosaicGridChanged.emit()
+
+    @Slot(str, int, int)
+    def setSkyDeviceMosaic(self, mode: str, horizontal_scale: int, vertical_scale: int) -> None:
+        next_mode = "device" if str(mode or "").strip().lower() == "device" else "custom"
+        horizontal = clamp_firmware_mosaic_scale(horizontal_scale)
+        vertical = clamp_firmware_mosaic_scale(vertical_scale)
+        if (
+            next_mode == self._sky_mosaic_mode
+            and horizontal == self._sky_device_h
+            and vertical == self._sky_device_v
+        ):
+            return
+        self._sky_mosaic_mode = next_mode
+        self._sky_device_h = horizontal
+        self._sky_device_v = vertical
+        store = QSettings()
+        store.beginGroup("sky")
+        store.setValue("mosaicMode", next_mode)
+        store.setValue("mosaicHScale", horizontal)
+        store.setValue("mosaicVScale", vertical)
+        store.endGroup()
         self.skyMosaicGridChanged.emit()
 
     def _live_mosaic_center(self) -> Target | None:
@@ -3411,14 +3477,19 @@ class AppBackend(QObject):
         position_angle: float,
         fov_h: float = 0.0,
         fov_v: float = 0.0,
-    ) -> tuple[int, int, float, float, float, float]:
+        overlap_h: float | None = None,
+        overlap_v: float | None = None,
+    ) -> tuple[Any, ...]:
+        shared = round(float(overlap), 4)
         return (
             int(columns),
             int(rows),
-            round(float(overlap), 4),
+            shared,
             round(float(position_angle) % 360.0, 3),
             round(float(fov_h), 4),
             round(float(fov_v), 4),
+            shared if overlap_h is None else round(float(overlap_h), 4),
+            shared if overlap_v is None else round(float(overlap_v), 4),
         )
 
     def _cache_sky_preview_panes(
@@ -3430,13 +3501,15 @@ class AppBackend(QObject):
         position_angle: float = 0.0,
         fov_h: float = 0.0,
         fov_v: float = 0.0,
+        overlap_h: float | None = None,
+        overlap_v: float | None = None,
     ) -> None:
         payload = self._preview_pane_payload(panes)
         if len(payload) < 2:
             return
         self._sky_preview_panes = payload
         self._sky_preview_key = self._sky_preview_cache_key(
-            columns, rows, overlap, position_angle, fov_h, fov_v
+            columns, rows, overlap, position_angle, fov_h, fov_v, overlap_h, overlap_v
         )
 
     def _cached_sky_preview_panes(
@@ -3447,8 +3520,12 @@ class AppBackend(QObject):
         position_angle: float = 0.0,
         fov_h: float = 0.0,
         fov_v: float = 0.0,
+        overlap_h: float | None = None,
+        overlap_v: float | None = None,
     ) -> list[dict[str, Any]]:
-        key = self._sky_preview_cache_key(columns, rows, overlap, position_angle, fov_h, fov_v)
+        key = self._sky_preview_cache_key(
+            columns, rows, overlap, position_angle, fov_h, fov_v, overlap_h, overlap_v
+        )
         if self._sky_preview_key != key:
             return []
         panes = self._preview_pane_payload(self._sky_preview_panes)
@@ -4426,6 +4503,11 @@ class AppBackend(QObject):
             return 1, 1, 0, ""
         mosaics = [session.mosaic, *(item.mosaic for item in members)]
         rows, columns = mosaic_grid_size(*mosaics)
+        layout = session.mosaic.firmware_layout()
+        if layout is not None:
+            columns, rows = layout[0], layout[1]
+        elif not session.mosaic.imported_plan and session.mosaic.rows * session.mosaic.columns > 1:
+            columns, rows = 1, 1
         index = mosaic_pane_number(session.mosaic, columns, session.name)
         if not session.mosaic.imported_plan and session.mosaic.panes > 1:
             index = max(1, min(session.mosaic.panes, int(self._mosaic_firmware_pane or 1)))
@@ -5121,16 +5203,33 @@ class AppBackend(QObject):
                 return payload
             if session is not None and session.target.ra_hours is not None and session.target.dec_degrees is not None:
                 try:
-                    payload["panes"] = mosaic_pane_footprints(
-                        session.target,
-                        mosaic_columns,
-                        mosaic_rows,
-                        fov_h,
-                        fov_v,
-                        overlap_n,
-                        south_up=south_up,
-                        position_angle=payload["position_angle"],
-                    )
+                    layout = session.mosaic.firmware_layout()
+                    if layout is not None:
+                        payload["columns"] = 1
+                        payload["rows"] = 1
+                        payload["overlap"] = 0.0
+                        payload["fov_h"] = fov_h * layout[2] / 100.0
+                        payload["fov_v"] = fov_v * layout[3] / 100.0
+                        payload["panes"] = device_mosaic_footprints(
+                            session.target,
+                            layout[2],
+                            layout[3],
+                            fov_h,
+                            fov_v,
+                            south_up=south_up,
+                            position_angle=payload["position_angle"],
+                        )
+                    else:
+                        payload["panes"] = mosaic_pane_footprints(
+                            session.target,
+                            mosaic_columns,
+                            mosaic_rows,
+                            fov_h,
+                            fov_v,
+                            overlap_n,
+                            south_up=south_up,
+                            position_angle=payload["position_angle"],
+                        )
                     payload["mode"] = "panes"
                     return payload
                 except ValueError:
@@ -5141,18 +5240,41 @@ class AppBackend(QObject):
             and view_ra == view_ra
         ):
             center = Target(name="FOV centre", ra_hours=view_ra, dec_degrees=view_dec)
-        if center is not None and center.ra_hours is not None and center.dec_degrees is not None and grid_ok:
+        device_plan = self._sky_mosaic_mode == "device" and not mosaic_active
+        if device_plan:
+            _columns_n, _rows_n, horizontal, vertical = self._sky_device_layout()
+            columns_n, rows_n = 1, 1
+            payload["columns"] = 1
+            payload["rows"] = 1
+            payload["overlap"] = 0.0
+            payload["fov_h"] = fov_h * horizontal / 100.0
+            payload["fov_v"] = fov_v * vertical / 100.0
+            payload["label"] = (
+                f"{camera.upper()} {payload['fov_h']:.2f}° × {payload['fov_v']:.2f}°  PA {pa:.0f}°"
+            )
+        if center is not None and center.ra_hours is not None and center.dec_degrees is not None and (grid_ok or device_plan):
             try:
-                payload["panes"] = mosaic_pane_footprints(
-                    center,
-                    columns_n,
-                    rows_n,
-                    fov_h,
-                    fov_v,
-                    overlap_n,
-                    south_up=south_up,
-                    position_angle=payload["position_angle"],
-                )
+                if device_plan:
+                    payload["panes"] = device_mosaic_footprints(
+                        center,
+                        horizontal,
+                        vertical,
+                        fov_h,
+                        fov_v,
+                        south_up=south_up,
+                        position_angle=payload["position_angle"],
+                    )
+                else:
+                    payload["panes"] = mosaic_pane_footprints(
+                        center,
+                        columns_n,
+                        rows_n,
+                        fov_h,
+                        fov_v,
+                        overlap_n,
+                        south_up=south_up,
+                        position_angle=payload["position_angle"],
+                    )
                 payload["mode"] = "panes"
                 self._sky_mosaic_center = Target(
                     name=str(center.name or "Sky target"),
@@ -5167,6 +5289,8 @@ class AppBackend(QObject):
                     payload["position_angle"],
                     fov_h,
                     fov_v,
+                    firmware_mosaic_overlap(horizontal) if device_plan else None,
+                    firmware_mosaic_overlap(vertical) if device_plan else None,
                 )
             except ValueError:
                 payload["mode"] = "center"
@@ -5179,10 +5303,22 @@ class AppBackend(QObject):
         return sky_web_fov_script(self._sky_overlay_payload(web_raw, columns, rows, overlap, color, position_angle))
 
     @Slot("QVariant", int, int, float, str, float, result=str)
+    def skyWebFovUpdateScript(
+        self, web_raw: Any, columns: int, rows: int, overlap: float, color: str, position_angle: float = 0.0
+    ) -> str:
+        return sky_web_fov_update_script(self._sky_overlay_payload(web_raw, columns, rows, overlap, color, position_angle))
+
+    @Slot("QVariant", int, int, float, str, float, result=str)
     def skyAtlasFovScript(
         self, web_raw: Any, columns: int, rows: int, overlap: float, color: str, position_angle: float = 0.0
     ) -> str:
         return sky_atlas_fov_script(self._sky_overlay_payload(web_raw, columns, rows, overlap, color, position_angle))
+
+    @Slot("QVariant", int, int, float, str, float, result=str)
+    def skyAtlasFovUpdateScript(
+        self, web_raw: Any, columns: int, rows: int, overlap: float, color: str, position_angle: float = 0.0
+    ) -> str:
+        return sky_atlas_fov_update_script(self._sky_overlay_payload(web_raw, columns, rows, overlap, color, position_angle))
 
     @Property(str, constant=True)
     def skyAtlasHarvestScript(self) -> str:
@@ -7668,6 +7804,61 @@ class AppBackend(QObject):
         self._emit_sessions_changed()
         return True
 
+    def _start_live_device_mosaic(self, device_id: str) -> bool:
+        """GOTO the centre and let the telescope shoot its own mosaic."""
+        worker = self._workers.get(device_id)
+        device = self._device_by_id(device_id)
+        if not worker or not worker.connected or device is None:
+            self._toast("Connect a telescope before stacking a mosaic", "warning")
+            return False
+        if device_id in self._active_sessions or worker.busy:
+            self._toast("Another session is running on this telescope", "warning")
+            return False
+        if self._telemetry_capturing(device_id):
+            self._toast("Telescope is already stacking", "warning")
+            return False
+        if not device.location_configured:
+            self._toast("Set an observing location before stacking a mosaic", "warning")
+            return False
+        columns, rows, horizontal, vertical = self._sky_device_layout()
+        if columns <= 1 and rows <= 1:
+            return False
+        target = self._live_mosaic_center()
+        if target is None or target.ra_hours is None or target.dec_degrees is None:
+            self._toast("Select the target on SKY first", "warning")
+            return False
+        if not self.mosaicPaManual:
+            self._toast(
+                "Alt-az keeps the frame horizontal",
+                "info",
+                "Equatorial mode tracks field rotation between mosaic panes.",
+            )
+        template = device_mosaic_template(target, horizontal, vertical)
+        settings = replace(self._device_stack_camera_settings(device_id), camera=Camera.TELE)
+        session = Session(
+            name=template.name,
+            target=template.target,
+            device_id=device_id,
+            scheduled_start=self._store_session_time(self._now_local(device), device),
+            camera=settings,
+            workflow=command_panel_workflow(goto=True),
+            mosaic=template.mosaic,
+            notes=template.notes,
+            status=SessionStatus.PLANNED,
+            current_step="Waiting",
+        )
+        saved = self._persist_command_sessions([session])
+        if not saved:
+            return False
+        self._command_panel_sessions.add(saved[0].id)
+        self.add_log(
+            "notice",
+            f"Device mosaic {columns}×{rows} · {target.name} · {horizontal / 100:.1f}× {vertical / 100:.1f}×",
+            device_id,
+        )
+        self._start_session(worker, saved[0], prompt_darks=True)
+        return True
+
     def _start_live_mosaic_stack(self, device_id: str, camera: str) -> bool:
         worker = self._workers.get(device_id)
         device = self._device_by_id(device_id)
@@ -8267,6 +8458,11 @@ class AppBackend(QObject):
         elif operation == "stack":
             camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
             columns, rows, _overlap = self._sky_mosaic_grid()
+            if self._sky_mosaic_mode == "device" and (columns > 1 or rows > 1):
+                if self._start_live_device_mosaic(device_id):
+                    return
+                self._complete_activity(device_id, operation, False)
+                return
             if columns > 1 or rows > 1:
                 if self._start_live_mosaic_stack(device_id, mosaic_stack_camera(camera).value):
                     return
@@ -10753,11 +10949,37 @@ class AppBackend(QObject):
                 wait_after_seconds=float(values.get("wait_after", 10)),
             ),
             Mosaic(
-                rows=1 if (existing_mosaic and existing_mosaic.imported_plan) else int(values.get("rows", 1)),
-                columns=1 if (existing_mosaic and existing_mosaic.imported_plan) else int(values.get("columns", 1)),
-                rotation_degrees=float(values.get("rotation", 0)),
-                horizontal_scale=int(values.get("horizontal_scale", 150)),
-                vertical_scale=int(values.get("vertical_scale", 150)),
+                rows=1 if (existing_mosaic and existing_mosaic.imported_plan) else device_mosaic_from_scales(
+                    values.get("horizontal_scale", 100),
+                    values.get("vertical_scale", 100),
+                )[1],
+                columns=1 if (existing_mosaic and existing_mosaic.imported_plan) else device_mosaic_from_scales(
+                    values.get("horizontal_scale", 100),
+                    values.get("vertical_scale", 100),
+                )[0],
+                rotation_degrees=float(
+                    values.get(
+                        "rotation",
+                        existing_mosaic.rotation_degrees if existing_mosaic is not None else 0,
+                    )
+                    or 0
+                ),
+                horizontal_scale=(
+                    existing_mosaic.horizontal_scale
+                    if existing_mosaic is not None and existing_mosaic.imported_plan
+                    else device_mosaic_from_scales(
+                        values.get("horizontal_scale", 100),
+                        values.get("vertical_scale", 100),
+                    )[2]
+                ),
+                vertical_scale=(
+                    existing_mosaic.vertical_scale
+                    if existing_mosaic is not None and existing_mosaic.imported_plan
+                    else device_mosaic_from_scales(
+                        values.get("horizontal_scale", 100),
+                        values.get("vertical_scale", 100),
+                    )[3]
+                ),
                 group_id=existing_mosaic.group_id if existing_mosaic else None,
                 grid_rows=existing_mosaic.grid_rows if existing_mosaic else 0,
                 grid_columns=existing_mosaic.grid_columns if existing_mosaic else 0,
@@ -12014,6 +12236,28 @@ class AppBackend(QObject):
 
         self._run_async("stellariumMosaic", work)
 
+    @Slot("QVariant", int, int)
+    def generateDeviceMosaic(self, web_raw: Any, horizontal_scale: int, vertical_scale: int) -> None:
+        payload = self._snapshot_web_raw(web_raw)
+        columns, rows, horizontal, vertical = device_mosaic_from_scales(horizontal_scale, vertical_scale)
+
+        def work() -> dict[str, Any]:
+            target = self._resolve_stellarium_target(payload)
+            extra = sky_web_template_notes(payload)
+            template = device_mosaic_template(target, horizontal, vertical)
+            if extra and template.notes:
+                template = replace(template, notes="  ·  ".join((extra, template.notes)))
+            elif extra:
+                template = replace(template, notes=extra)
+            return {
+                "target": target,
+                "fetched": True,
+                "templates": [template],
+                "device": columns > 1 or rows > 1,
+            }
+
+        self._run_async("deviceMosaic", work)
+
     def _run_async(self, operation: str, function: Callable[[], Any]) -> None:
         if self._ui_busy:
             self._toast("Another import is still running", "warning")
@@ -12145,6 +12389,7 @@ class AppBackend(QObject):
                 "stellarium": "Stellarium",
                 "stellariumLock": "Stellarium",
                 "stellariumMosaic": "Mosaic",
+                "deviceMosaic": "Device mosaic",
                 "stellariumPush": "Stellarium",
                 "telescopius": "Telescopius",
             }
@@ -12188,12 +12433,14 @@ class AppBackend(QObject):
             self._toast(f"Locked {value.name}", "success")
         elif operation == "stellariumPush":
             self._toast(f"Pushed {value} to desktop Stellarium", "success")
-        elif operation == "stellariumMosaic":
+        elif operation in {"stellariumMosaic", "deviceMosaic"}:
             payload = value if isinstance(value, dict) else {}
             templates = payload.get("templates") or []
             if payload.get("fetched") and payload.get("target") is not None:
                 self._set_sky_target(payload["target"])
             camera = self._camera_settings_for()
+            if operation == "deviceMosaic":
+                camera = replace(camera, camera=Camera.TELE)
             saved_ids: list[str] = []
             for template in templates:
                 saved = replace(template, camera=camera)
@@ -12201,10 +12448,13 @@ class AppBackend(QObject):
                 saved_ids.append(saved.id)
             self.templatesChanged.emit()
             count = len(saved_ids)
-            self._toast_templates(
-                f"Generated {count} mosaic pane template{'s' if count != 1 else ''}",
-                saved_ids,
-            )
+            if operation == "deviceMosaic":
+                self._toast_templates("Created a device mosaic session", saved_ids)
+            else:
+                self._toast_templates(
+                    f"Generated {count} mosaic pane template{'s' if count != 1 else ''}",
+                    saved_ids,
+                )
             self._maybe_push_sky_to_desktop(payload.get("target"))
 
     def _scheduler_tick(self) -> None:

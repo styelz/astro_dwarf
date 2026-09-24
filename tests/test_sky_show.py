@@ -44,6 +44,7 @@ def test_single_target_is_one_frame_at_its_coordinates() -> None:
     plan = sky_show_plan(item, fov_h=2.95, fov_v=1.66)
     _assert(plan["ok"] is True, plan)
     _assert(plan["mosaic"] is False, plan)
+    _assert(plan["mode"] == "custom", plan)
     _assert(plan["columns"] == 1 and plan["rows"] == 1, plan)
     _assert(plan["name"] == "M42", plan)
     _close(float(plan["ra_hours"]), 5.588, 6)
@@ -65,8 +66,8 @@ def test_firmware_mosaic_keeps_its_centre_and_scale() -> None:
             "rows": 2,
             "columns": 3,
             "rotation_degrees": 15,
-            "horizontal_scale": 80,
-            "vertical_scale": 80,
+            "horizontal_scale": 180,
+            "vertical_scale": 150,
             "grid_rows": 0,
             "grid_columns": 0,
             "row": 0,
@@ -75,8 +76,10 @@ def test_firmware_mosaic_keeps_its_centre_and_scale() -> None:
     )
     plan = sky_show_plan(item, fov_h=3.0, fov_v=2.0)
     _assert(plan["mosaic"] is True, plan)
-    _assert(plan["columns"] == 3 and plan["rows"] == 2, plan)
-    _close(float(plan["overlap"]), 0.2, 6)
+    _assert(plan["mode"] == "device", plan)
+    _assert(plan["horizontal_scale"] == 180 and plan["vertical_scale"] == 150, plan)
+    _assert(plan["columns"] == 2 and plan["rows"] == 2, plan)
+    _close(float(plan["overlap"]), 0.35, 6)
     _close(float(plan["ra_hours"]), 1.0, 6)
     _close(float(plan["dec_degrees"]), 10.0, 6)
     _close(float(plan["position_angle"]), 15.0, 6)
@@ -97,7 +100,10 @@ def test_firmware_mosaic_keeps_its_centre_and_scale() -> None:
         },
     )
     gapped_plan = sky_show_plan(gapped, fov_h=3.0, fov_v=2.0)
-    _close(float(gapped_plan["overlap"]), 0.0, 6)
+    _assert(gapped_plan["mode"] == "device", gapped_plan)
+    _assert(gapped_plan["horizontal_scale"] == 150 and gapped_plan["vertical_scale"] == 150, gapped_plan)
+    _assert(gapped_plan["columns"] == 2 and gapped_plan["rows"] == 2, gapped_plan)
+    _close(float(gapped_plan["overlap"]), 0.5, 6)
 
 
 def test_pane_group_uses_grid_centre_and_overlap() -> None:
@@ -128,6 +134,7 @@ def test_pane_group_uses_grid_centre_and_overlap() -> None:
     members[0]["group_title"] = "Eq"
     plan = sky_show_plan(members[0], members, fov_h=2.95, fov_v=1.66)
     _assert(plan["ok"] is True and plan["mosaic"] is True, plan)
+    _assert(plan["mode"] == "custom", plan)
     _assert(plan["columns"] == 2 and plan["rows"] == 2, plan)
     _assert(plan["name"] == "Eq", plan)
     _close(float(plan["ra_hours"]), 5.0, 2)

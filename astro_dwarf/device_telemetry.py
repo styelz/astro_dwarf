@@ -414,7 +414,8 @@ def _stacking_progress_changes(message: Any, mosaic: bool = False) -> dict[str, 
     }
     if mosaic:
         changes["mosaic_active"] = True
-        for attr in ("index", "mosaic_index", "cur_index", "mosaic_num"):
+        # ProgressCaptureMosaic reports the current pane as fov_id.
+        for attr in ("fov_id", "index", "mosaic_index", "cur_index", "mosaic_num"):
             if not hasattr(message, attr):
                 continue
             try:
@@ -424,6 +425,13 @@ def _stacking_progress_changes(message: Any, mosaic: bool = False) -> dict[str, 
             if pane >= 1:
                 changes["mosaic_index"] = pane
                 break
+        if hasattr(message, "fov_total"):
+            try:
+                total = int(message.fov_total)
+            except (TypeError, ValueError):
+                total = 0
+            if total >= 1:
+                changes["mosaic_total"] = total
     try:
         current = int(message.current_count)
     except (TypeError, ValueError):

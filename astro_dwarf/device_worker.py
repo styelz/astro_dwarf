@@ -2334,9 +2334,11 @@ def _capture_request(operation: str, args: list[Any], force_start: bool) -> Any:
         message.force_start = force_start
         return message
     if operation == "mosaic":
+        from .domain import clamp_firmware_mosaic_scale
+
         message = astro_pb2.ReqStartMosaic()
-        message.horizontal_scale = int(args[0])
-        message.vertical_scale = int(args[1])
+        message.horizontal_scale = clamp_firmware_mosaic_scale(args[0] if args else 100, default=100)
+        message.vertical_scale = clamp_firmware_mosaic_scale(args[1] if len(args) > 1 else 100, default=100)
         message.rotation = int(round(float(args[2]))) if len(args) > 2 else 0
         message.ir_index = int(args[3]) if len(args) > 3 else 1
         message.force_start = force_start
@@ -2433,22 +2435,32 @@ def _mark_capture_started() -> None:
     _tap.update({"capture_active": True, "capture_state": "running"}, force=True)
 
 
-def _firmware_mosaic(session: dict[str, Any] | None) -> bool:
+def _firmware_mosaic_layout(session: dict[str, Any] | None) -> tuple[int, int, int, int] | None:
+    from .domain import resolve_firmware_mosaic
+
     mosaic = (session or {}).get("mosaic") or {}
-    try:
-        imported = int(mosaic.get("grid_rows") or 0) >= 1 and int(mosaic.get("grid_columns") or 0) >= 1
-        panes = max(1, int(mosaic.get("rows") or 1) * int(mosaic.get("columns") or 1))
-    except (TypeError, ValueError):
-        return False
-    return (not imported) and panes > 1
+    if not isinstance(mosaic, dict):
+        return None
+    return resolve_firmware_mosaic(
+        rows=mosaic.get("rows") or 1,
+        columns=mosaic.get("columns") or 1,
+        grid_rows=mosaic.get("grid_rows") or 0,
+        grid_columns=mosaic.get("grid_columns") or 0,
+        horizontal_scale=mosaic.get("horizontal_scale", 150),
+        vertical_scale=mosaic.get("vertical_scale", 150),
+    )
+
+
+def _firmware_mosaic(session: dict[str, Any] | None) -> bool:
+    return _firmware_mosaic_layout(session) is not None
 
 
 def _mosaic_pane_count(session: dict[str, Any] | None) -> int:
-    mosaic = (session or {}).get("mosaic") or {}
-    try:
-        return max(1, int(mosaic.get("rows") or 1) * int(mosaic.get("columns") or 1))
-    except (TypeError, ValueError):
+    layout = _firmware_mosaic_layout(session)
+    if layout is None:
         return 1
+    columns, rows, _horizontal, _vertical = layout
+    return max(1, columns * rows)
 
 
 def _goto_busy(snapshot: dict[str, Any]) -> bool:
@@ -3991,10 +4003,20 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     _wait_seconds(2, "Waiting before capture", step)
     _wait_for_capture_slot(step)
     ir_index = _ir_index(camera.get("ir_filter"))
-    imported_plan = int(mosaic.get("grid_rows") or 0) >= 1 and int(mosaic.get("grid_columns") or 0) >= 1
-    if not imported_plan and max(1, mosaic["rows"] * mosaic["columns"]) > 1:
+    firmware = _firmware_mosaic_layout(session)
+    if firmware is not None and str(camera.get("camera") or "").lower() == "wide":
+        raise RuntimeError("Device mosaic uses the telephoto camera")
+    if firmware is not None:
+        _columns, _rows, horizontal_scale, vertical_scale = firmware
         step("Set mosaic count", "set_mosaic_count", camera["frame_count"])
-        step("Start mosaic", "mosaic", mosaic["horizontal_scale"], mosaic["vertical_scale"], mosaic["rotation_degrees"], ir_index)
+        step(
+            "Start mosaic",
+            "mosaic",
+            horizontal_scale,
+            vertical_scale,
+            mosaic.get("rotation_degrees") or 0,
+            ir_index,
+        )
         step("Waiting for mosaic", "wait_astro")
     elif camera["camera"] == "wide":
         step("Start wide capture", "wide_astro")

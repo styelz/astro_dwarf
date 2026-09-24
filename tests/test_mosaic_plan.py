@@ -10,10 +10,19 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from astro_dwarf.domain import Target, TargetKind
+from astro_dwarf.domain import (
+    Mosaic,
+    Target,
+    TargetKind,
+    clamp_firmware_mosaic_scale,
+    firmware_mosaic_axis_panes,
+    firmware_mosaic_overlap,
+)
 from astro_dwarf.services import (
     SKY_WEB_FOV_JS,
+    device_mosaic_footprints,
     device_mosaic_pa,
+    device_mosaic_template,
     generate_mosaic_plan,
     mosaic_camera_up_is_south,
     mosaic_chart_tilt,
@@ -295,6 +304,48 @@ def test_stellarium_wide_fov_keeps_camera_overlay_small() -> None:
     _assert(_stereo_half(view_185) > 0.0, "stereographic scale at 185° must stay positive")
 
 
+def test_device_scale_is_one_or_two_panes() -> None:
+    _assert(clamp_firmware_mosaic_scale(80) == 100, "below 1.0× snaps to 100")
+    _assert(clamp_firmware_mosaic_scale(155) == 160, "step 10")
+    _assert(clamp_firmware_mosaic_scale(200) == 180, "cap 1.8×")
+    _assert(firmware_mosaic_axis_panes(100) == 1, "1.0× is one pane")
+    for scale in (110, 150, 180):
+        _assert(firmware_mosaic_axis_panes(scale) == 2, scale)
+    _close(firmware_mosaic_overlap(150), 0.5, 6)
+    _close(firmware_mosaic_overlap(180), 0.2, 6)
+    _close(firmware_mosaic_overlap(100), 0.0, 6)
+    single = Mosaic(rows=1, columns=1, horizontal_scale=150, vertical_scale=150)
+    _assert(single.panes == 1, "default scale on a 1×1 is not a mosaic")
+    stale = Mosaic(rows=3, columns=3, horizontal_scale=150, vertical_scale=150)
+    _assert(stale.panes == 4, "stored 3×3 still shoots 2×2")
+    collapsed = Mosaic(rows=2, columns=2, horizontal_scale=100, vertical_scale=100)
+    _assert(collapsed.panes == 1 and collapsed.firmware_layout() is None, "1.0×1.0 does not start")
+
+
+def test_device_frame_grows_as_one_rectangle() -> None:
+    target = Target(name="Eq", kind=TargetKind.EQUATORIAL, ra_hours=5.0, dec_degrees=0.0)
+    panes = device_mosaic_footprints(target, 110, 150, 2.0, 1.0, position_angle=0)
+    _assert(len(panes) == 1, panes)
+    corners = panes[0]["corners"]
+    width = abs(float(corners[0]["ra_hours"]) - float(corners[3]["ra_hours"])) * 15.0
+    height = abs(float(corners[0]["dec_degrees"]) - float(corners[1]["dec_degrees"]))
+    _close(width, 2.0 * 1.1, 2)
+    _close(height, 1.0 * 1.5, 2)
+    custom = generate_mosaic_plan(target, 2, 2, 2.0, 1.0, 0.2, position_angle=0)
+    _assert(len(custom) == 4, "custom grid is still one template per pane")
+    _assert(all(item.mosaic.imported_plan for item in custom), "custom panes stay imported")
+
+
+def test_device_mosaic_template_is_one_session() -> None:
+    target = Target(name="M42", kind=TargetKind.EQUATORIAL, ra_hours=5.5, dec_degrees=-5.4)
+    template = device_mosaic_template(target, 150, 100)
+    _assert(template.mosaic.imported_plan is False, template)
+    _assert(template.mosaic.columns == 2 and template.mosaic.rows == 1, template.mosaic)
+    _assert(template.mosaic.horizontal_scale == 150 and template.mosaic.vertical_scale == 100, template.mosaic)
+    _assert(template.mosaic.rotation_degrees == 0, "new device mosaics send rotation 0")
+    _assert(template.target.ra_hours == 5.5, "the session stays on the centre")
+
+
 if __name__ == "__main__":
     test_pane_one_is_west_and_north_at_pa0()
     test_templates_keep_overlay_pane_coordinates()
@@ -308,4 +359,7 @@ if __name__ == "__main__":
     test_center_view_script_uses_engine_lookat()
     test_atlas_overlay_labels_icrs_pane_centres()
     test_stellarium_wide_fov_keeps_camera_overlay_small()
+    test_device_scale_is_one_or_two_panes()
+    test_device_frame_grows_as_one_rectangle()
+    test_device_mosaic_template_is_one_session()
     print("ok")
