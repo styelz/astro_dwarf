@@ -446,6 +446,13 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
             count = _as_int(entry.get("stackCount", entry.get("stack_count")))
             if count is not None:
                 changes[f"{prefix}stack_count"] = count
+    catalog = result.get("data") if isinstance(result.get("data"), dict) else result
+    if isinstance(catalog, dict) and (
+        catalog.get("cameraParams") or catalog.get("cameras") or catalog.get("shootingTechSettings")
+    ):
+        reported = set(auto_parameter_cameras(result))
+        changes["auto_parameters_tele"] = "tele" in reported
+        changes["auto_parameters_wide"] = "wide" in reported
     return changes
 
 

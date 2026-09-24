@@ -85,6 +85,8 @@ from .domain import (
     control_settings_patch,
     control_settings_to_telemetry,
     firmware_exposure_name,
+    firmware_stack_format,
+    shooting_mode_camera_steps,
     DEVICE_COLORS,
     default_device_name,
     device_from_dict,
@@ -416,7 +418,11 @@ class TelescopeProcess(QObject):
             self.availabilityChanged.emit()
             callback(ok, result)
 
-        self.send("run_session", {"session": to_dict(session), "prompt_darks": bool(prompt_darks)}, done)
+        payload: dict[str, Any] = {"session": to_dict(session), "prompt_darks": bool(prompt_darks)}
+        fmt = firmware_stack_format(getattr(self.device.control_settings, "stack_format", ""))
+        if fmt is not None:
+            payload["stack_format"] = fmt
+        self.send("run_session", payload, done)
 
     def shutdown(self, wait: bool = True) -> None:
         self._stopping = True
@@ -3725,6 +3731,9 @@ class AppBackend(QObject):
             {
                 "panes": panes,
                 "camera": mosaic_stack_camera(live.get("camera")).value,
+                "stack_format": firmware_stack_format(
+                    getattr(getattr(self._device_by_id(device_id), "control_settings", None), "stack_format", "")
+                ),
                 "start_index": start_index,
                 "join_current": join_current,
                 "prompt_darks": False,
@@ -7811,7 +7820,12 @@ class AppBackend(QObject):
 
         worker.send(
             "stack_mosaic",
-            {"panes": payload, "camera": mosaic_stack_camera(camera).value, "prompt_darks": True},
+            {
+                "panes": payload,
+                "camera": mosaic_stack_camera(camera).value,
+                "prompt_darks": True,
+                "stack_format": firmware_stack_format(device.control_settings.stack_format) if device is not None else None,
+            },
             callback=done,
         )
         self._notify_devices()
@@ -8025,7 +8039,7 @@ class AppBackend(QObject):
                     device_id,
                     {"shooting_mode": 2, "shooting_tech": 0, "photo_primed": False},
                 )
-                self._schedule_camera_param_refresh(device_id)
+                self._apply_shooting_mode_camera(device_id)
                 self.deviceAction(device_id, operation)
                 return
             self.commandFeedback.emit(device_id, operation, False)
@@ -8169,7 +8183,7 @@ class AppBackend(QObject):
             self._complete_activity(device_id, operation, ok)
             if ok and operation == "photo_mode":
                 self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1})
-                self._schedule_camera_param_refresh(device_id)
+                self._apply_shooting_mode_camera(device_id)
             elif ok and operation in {"photo", "wide_photo"}:
                 self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": True})
             elif ok and operation in {"burst_start", "record_start", "timelapse_start"}:
@@ -8181,7 +8195,7 @@ class AppBackend(QObject):
             ):
                 self._on_telemetry(device_id, {"shooting_mode": 2, "shooting_tech": 0, "photo_primed": False})
                 if operation == "astro_mode":
-                    self._schedule_camera_param_refresh(device_id)
+                    self._apply_shooting_mode_camera(device_id)
             elif ok and operation == "stop_goto":
                 self._on_telemetry(device_id, {"tracking_state": "idle", "goto_state": "idle"})
             if ok and operation in {"lights_on", "lights_off"}:
@@ -8262,7 +8276,7 @@ class AppBackend(QObject):
                     "wide_stack_count" if str(camera).lower() == "wide" else "stack_count"
                 )
                 count = "" if reported in (None, "", "—") else str(reported)
-            payload = {"args": [camera, count]}
+            payload = {"args": [camera, count, firmware_stack_format(device.control_settings.stack_format) if device is not None else None]}
         elif operation == "burst_start":
             telemetry = self._device_telemetry.get(device_id) or {}
             count = telemetry.get("burst_count")
@@ -8981,7 +8995,6 @@ class AppBackend(QObject):
         wanted_mode = settings.shooting_mode
         if wanted_mode not in {1, 2}:
             wanted_mode = _shooting_mode_int(telemetry.get("shooting_mode"))
-        photo = wanted_mode == 1
         steps: list[tuple[str, str, str]] = []
 
         def add(name: str, wanted: str, current: Any, camera: str = "") -> None:
@@ -9001,53 +9014,14 @@ class AppBackend(QObject):
                     pass
             steps.append((name, text, camera or default_camera))
 
-        def live_exposure(camera: str) -> Any:
-            if photo:
-                key = "photo_wide_exposure_text" if camera == "wide" else "photo_exposure_text"
-            else:
-                key = "astro_wide_exposure_text" if camera == "wide" else "astro_exposure_text"
-            fallback = "wide_exposure_text" if camera == "wide" else "exposure_text"
-            value = telemetry.get(key)
-            return value if value not in (None, "", "—") else telemetry.get(fallback)
-
-        def live_gain(camera: str) -> Any:
-            if photo:
-                key = "photo_wide_gain" if camera == "wide" else "photo_gain"
-            else:
-                key = "astro_wide_gain" if camera == "wide" else "astro_gain"
-            fallback = "wide_gain" if camera == "wide" else "gain"
-            value = telemetry.get(key)
-            return value if value not in (None, "", "—") else telemetry.get(fallback)
-
-        add(
-            "exposure",
-            settings.photo_exposure if photo else settings.exposure,
-            live_exposure("tele"),
-            "tele",
-        )
-        add(
-            "gain",
-            settings.photo_gain if photo else settings.gain,
-            live_gain("tele"),
-            "tele",
-        )
-        if device.model != DeviceModel.DWARF_MINI:
-            add(
-                "exposure",
-                settings.photo_wide_exposure if photo else settings.wide_exposure,
-                live_exposure("wide"),
-                "wide",
+        steps.extend(
+            shooting_mode_camera_steps(
+                settings,
+                wanted_mode,
+                include_wide=device.model != DeviceModel.DWARF_MINI,
             )
-            add(
-                "gain",
-                settings.photo_wide_gain if photo else settings.wide_gain,
-                live_gain("wide"),
-                "wide",
-            )
-        add("count", settings.stack_count, telemetry.get("stack_count"))
-        add("stack_format", settings.stack_format, telemetry.get("stack_format"))
-        if not wide:
-            add("ir", settings.ir_filter, telemetry.get("ir_filter"))
+        )
+        add("stack_format", str(firmware_stack_format(settings.stack_format) or ""), telemetry.get("stack_format"))
         add("burst_count", settings.burst_count, telemetry.get("burst_count"))
         add("burst_interval", settings.burst_interval, telemetry.get("burst_interval"))
         add("timelapse_interval", settings.timelapse_interval, telemetry.get("timelapse_interval"))
@@ -9281,7 +9255,13 @@ class AppBackend(QObject):
                     raise ValueError("timelapse duration")
                 operation, args = "set_timelapse_duration", [seconds]
             elif name == "stack_format":
-                operation, args = "set_stack_format", [int(value)]
+                fmt = firmware_stack_format(value)
+                if fmt is None:
+                    raise ValueError("stack format")
+                operation, args = "set_stack_format", [fmt]
+            elif name == "auto_parameters":
+                enabled = value.strip().lower() in {"1", "true", "yes", "on"}
+                operation, args = "set_auto_params", [choice, enabled, shooting_mode]
             elif name == "count":
                 operation, args = "set_count", [int(value), choice]
             elif name == "auto_calibration":
@@ -9332,7 +9312,11 @@ class AppBackend(QObject):
         elif name == "count":
             self._patch_control_settings(device_id, stack_count=value)
         elif name == "stack_format":
-            self._patch_control_settings(device_id, stack_format=value)
+            fmt = firmware_stack_format(value)
+            self._patch_control_settings(device_id, stack_format="" if fmt is None else str(fmt))
+        elif name == "auto_parameters":
+            self._set_auto_parameters(device_id, value.strip().lower() in {"1", "true", "yes", "on"})
+            return
         elif name == "ir":
             self._patch_control_settings(device_id, ir_filter=value)
             self._on_telemetry(device_id, {"ir_filter": value})
@@ -9357,7 +9341,103 @@ class AppBackend(QObject):
             self._flush_control_settings()
             self._notify_devices()
             return
+        if name in {"exposure", "gain", "ir", "count"}:
+            camera = "wide" if wide else "tele"
+
+            def after_auto(ok: bool, result: Any, did: str = device_id, param: str = name, param_value: str = value) -> None:
+                self._send_camera_param(did, param, param_value)
+
+            self._send_camera_param(
+                device_id, "auto_parameters", "false", notify=False, callback=after_auto, camera=camera
+            )
+            return
         self._send_camera_param(device_id, name, value)
+
+    def _snapshot_manual_camera(self, device_id: str, mode: int) -> None:
+        """Keep the live exposure and gain as the manual values for this mode."""
+        tel = self._device_telemetry.get(device_id) or {}
+
+        def text(key: str) -> str:
+            value = tel.get(key)
+            return "" if value in (None, "", "—") else str(value).strip()
+
+        if mode == 1:
+            changes = {
+                "photo_exposure": text("photo_exposure_text") or text("exposure_text"),
+                "photo_gain": text("photo_gain") or text("gain"),
+                "photo_wide_exposure": text("photo_wide_exposure_text") or text("wide_exposure_text"),
+                "photo_wide_gain": text("photo_wide_gain") or text("wide_gain"),
+            }
+        else:
+            changes = {
+                "exposure": text("astro_exposure_text") or text("exposure_text"),
+                "gain": text("astro_gain") or text("gain"),
+                "wide_exposure": text("astro_wide_exposure_text") or text("wide_exposure_text"),
+                "wide_gain": text("astro_wide_gain") or text("wide_gain"),
+                "ir_filter": text("ir_filter"),
+                "stack_count": text("stack_count") or text("wide_stack_count"),
+            }
+        filled = {key: value for key, value in changes.items() if value}
+        if filled:
+            self._patch_control_settings(device_id, **filled)
+
+    def _set_auto_parameters(self, device_id: str, enabled: bool) -> None:
+        device = self._device_by_id(device_id)
+        if device is None:
+            return
+        mode = _shooting_mode_int(self._device_telemetry.get(device_id, {}).get("shooting_mode"))
+        if mode not in {1, 2}:
+            mode = device.control_settings.shooting_mode
+        if mode not in {1, 2}:
+            self._toast("Select PHOTO or DSO mode before changing camera settings", "warning")
+            return
+        if enabled:
+            if mode == 1:
+                self._patch_control_settings(
+                    device_id,
+                    photo_exposure="",
+                    photo_gain="",
+                    photo_wide_exposure="",
+                    photo_wide_gain="",
+                )
+            else:
+                self._patch_control_settings(
+                    device_id,
+                    exposure="",
+                    gain="",
+                    wide_exposure="",
+                    wide_gain="",
+                )
+        else:
+            self._snapshot_manual_camera(device_id, mode)
+        self._apply_shooting_mode_camera(device_id)
+
+    def _apply_shooting_mode_camera(self, device_id: str) -> None:
+        """Restore a mode's manual exposure and gain, or turn Auto Parameters on."""
+        device = self._device_by_id(device_id)
+        worker = self._workers.get(device_id)
+        if device is None or not worker or not worker.connected:
+            self._flush_control_settings()
+            return
+        mode = _shooting_mode_int(self._device_telemetry.get(device_id, {}).get("shooting_mode"))
+        if mode not in {1, 2}:
+            mode = device.control_settings.shooting_mode
+        queue = shooting_mode_camera_steps(
+            device.control_settings,
+            mode,
+            include_wide=device.model != DeviceModel.DWARF_MINI,
+        )
+
+        def next_param(ok: bool = True, result: Any = None) -> None:
+            if self._shut_down or not queue:
+                self._schedule_camera_param_refresh(device_id)
+                return
+            name, value, camera = queue.pop(0)
+            self._send_camera_param(
+                device_id, name, value, notify=False, callback=next_param, camera=camera
+            )
+
+        next_param()
 
     def _album_dir(self) -> Path:
         folder = self.store.root / "album"
@@ -9749,19 +9829,6 @@ class AppBackend(QObject):
         def done(ok: bool, result: Any) -> None:
             if not ok:
                 return
-            cleared = result.get("auto_params_cleared") if isinstance(result, dict) else None
-            if cleared:
-                names = " and ".join(str(camera).title() for camera in cleared)
-                self.add_log("notice", f"Auto parameters turned off · {names}", device_id)
-                self._toast(
-                    "Auto parameters turned off",
-                    "notice",
-                    f"{names} can use manual exposure, gain, and stack count",
-                )
-                device = self._device_by_id(device_id)
-                count = str(getattr(getattr(device, "control_settings", None), "stack_count", "") or "").strip()
-                if count and mode_id == 2:
-                    self._send_camera_param(device_id, "count", count, notify=False)
             changes = camera_params_to_telemetry(result, model_id)
             if changes:
                 self._on_telemetry(device_id, changes)

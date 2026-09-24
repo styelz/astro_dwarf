@@ -105,6 +105,7 @@ def test_posix_lc_all_becomes_utf8() -> None:
 
 def test_webengine_flags_avoid_vulkan_fallback() -> None:
     _assert("disable-features=Vulkan" in LINUX_WEBENGINE_FLAGS, LINUX_WEBENGINE_FLAGS)
+    _assert("disable-gpu-compositing" in LINUX_WEBENGINE_FLAGS, LINUX_WEBENGINE_FLAGS)
     _assert("swiftshader" in LINUX_WEBENGINE_FLAGS, LINUX_WEBENGINE_FLAGS)
 
 

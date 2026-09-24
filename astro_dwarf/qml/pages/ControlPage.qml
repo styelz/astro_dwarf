@@ -972,12 +972,16 @@ Item {
                         Layout.fillWidth: true
                         enabled: root.commandEnabled("set_stack_format") && cameraPanel.captureParamsEnabled
                         accessibleName: "Stack format"
-                        tooltip: "File format for stacked DSO frames:\nFITS or TIFF."
+                        tooltip: "Subframe format for a DSO stack.\nFITS saves each frame as FITS. TIFF saves each frame as TIFF, and the finished stack is still one FITS file."
                         model: ["FITS", "TIFF"]
-                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "stack_format", String(currentIndex))
+                        onActivated: backend.setCameraParam(backend.selectedDeviceId, "stack_format", currentIndex === 1 ? "3" : "2")
                         readonly property int liveIndex: {
                             const index = Number(root.scopeTelemetry.stack_format)
-                            return isFinite(index) && index >= 0 && index < count ? index : -1
+                            if (index === 3 || index === 1)
+                                return 1
+                            if (index === 2 || index === 0)
+                                return 0
+                            return -1
                         }
                         onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                     }
@@ -1047,6 +1051,21 @@ Item {
                     font.family: Theme.fontMono
                     elide: Text.ElideRight
                     Layout.fillWidth: true
+                }
+                HudCheck {
+                    id: liveAutoParameters
+                    text: "Auto parameters"
+                    enabled: root.commandEnabled("set_auto_params") && cameraPanel.captureParamsEnabled
+                    accessibleName: "Auto parameters"
+                    tooltip: "Let both cameras set exposure, gain, filter, and frame count for this PHOTO or DSO mode, as the mobile app does.\nA manual exposure, gain, filter, or stack count turns this off for that camera."
+                    readonly property bool liveOn: {
+                        const tele = root.scopeTelemetry.auto_parameters_tele === true
+                        const wide = cameraPanel.miniBody || root.scopeTelemetry.auto_parameters_wide === true
+                        return tele && wide
+                    }
+                    onLiveOnChanged: setOn(liveOn)
+                    Component.onCompleted: setOn(liveOn)
+                    onClicked: backend.setCameraParam(backend.selectedDeviceId, "auto_parameters", checked ? "true" : "false")
                 }
                 HudCheck {
                     id: liveAutoCalibration

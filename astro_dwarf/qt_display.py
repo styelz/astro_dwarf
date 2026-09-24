@@ -143,12 +143,15 @@ SOFTWARE_WEBENGINE_FLAGS = (
     "--disable-features=Vulkan --enable-unsafe-swiftshader "
     "--use-gl=angle --use-angle=swiftshader"
 )
-# GBM often fails on virtio / some Mesa stacks; Chromium then picks Vulkan
-# and Stellarium's WASM abort()s in a tight js: Aborted(undefined) loop.
+# GBM often fails on virtio / some Mesa stacks and on NVIDIA without
+# nvidia-drm modeset. Chromium then picks Vulkan, and Stellarium's WASM
+# abort()s. SwiftShader still draws, but its dma-buf never reaches the
+# Qt window ("Compositor returned null texture"), so both atlases stay
+# blank unless compositing is done on the CPU.
 LINUX_WEBENGINE_FLAGS = (
     "--enable-webgl --ignore-gpu-blocklist --disable-gpu-sandbox "
-    "--disable-features=Vulkan --enable-unsafe-swiftshader "
-    "--use-gl=angle --use-angle=swiftshader"
+    "--disable-gpu-compositing --disable-features=Vulkan "
+    "--enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader"
 )
 
 
@@ -298,6 +301,11 @@ def configure_qt_display() -> None:
         elif "--enable-webgl" not in _chromium_flag_tokens(flags):
             os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --enable-webgl"
         elif "--disable-features=Vulkan" not in flags:
-            os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --disable-features=Vulkan --enable-unsafe-swiftshader"
+            os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
+                f"{flags} --disable-features=Vulkan --enable-unsafe-swiftshader "
+                "--disable-gpu-compositing"
+            )
+        elif "--disable-gpu-compositing" not in _chromium_flag_tokens(flags):
+            os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --disable-gpu-compositing"
     if sys.platform.startswith("linux"):
         install_qt_message_filter()

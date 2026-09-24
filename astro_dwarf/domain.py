@@ -1212,7 +1212,7 @@ def control_settings_from_dict(data: Any) -> ControlSettings:
         photo_gain=_control_text(raw.get("photo_gain")),
         photo_wide_gain=_control_text(raw.get("photo_wide_gain")),
         stack_count=_control_text(raw.get("stack_count")),
-        stack_format=_control_text(raw.get("stack_format")),
+        stack_format=_control_text(firmware_stack_format(raw.get("stack_format"))),
         ir_filter=normalize_ir_filter(raw.get("ir_filter")),
         burst_count=_control_text(raw.get("burst_count")),
         burst_interval=_control_text(raw.get("burst_interval")),
@@ -1259,32 +1259,42 @@ def control_settings_from_telemetry(
         data["shooting_mode"] = mode
     # Photo and DSO keep independent firmware tables. Never let a PHOTO
     # 1/30 notify overwrite a saved DSO exposure such as 15s.
-    take("astro_exposure_text", "exposure")
-    take("astro_wide_exposure_text", "wide_exposure")
-    take("astro_gain", "gain")
-    take("astro_wide_gain", "wide_gain")
-    take("photo_exposure_text", "photo_exposure")
-    take("photo_wide_exposure_text", "photo_wide_exposure")
-    take("photo_gain", "photo_gain")
-    take("photo_wide_gain", "photo_wide_gain")
+    # Auto Parameters owns exposure and gain. Saving those live numbers would
+    # make the next mode entry treat them as a manual choice and turn auto off.
+    tele_auto = tel.get("auto_parameters_tele") is True
+    wide_auto = tel.get("auto_parameters_wide") is True
+    if not tele_auto:
+        take("astro_exposure_text", "exposure")
+        take("astro_gain", "gain")
+        take("photo_exposure_text", "photo_exposure")
+        take("photo_gain", "photo_gain")
+    if not wide_auto:
+        take("astro_wide_exposure_text", "wide_exposure")
+        take("astro_wide_gain", "wide_gain")
+        take("photo_wide_exposure_text", "photo_wide_exposure")
+        take("photo_wide_gain", "photo_wide_gain")
     if mode == 1:
-        if not tel.get("photo_exposure_text"):
-            take("exposure_text", "photo_exposure")
-        if not tel.get("photo_wide_exposure_text"):
-            take("wide_exposure_text", "photo_wide_exposure")
-        if tel.get("photo_gain") in (None, "", "—"):
-            take("gain", "photo_gain")
-        if tel.get("photo_wide_gain") in (None, "", "—"):
-            take("wide_gain", "photo_wide_gain")
+        if not tele_auto:
+            if not tel.get("photo_exposure_text"):
+                take("exposure_text", "photo_exposure")
+            if tel.get("photo_gain") in (None, "", "—"):
+                take("gain", "photo_gain")
+        if not wide_auto:
+            if not tel.get("photo_wide_exposure_text"):
+                take("wide_exposure_text", "photo_wide_exposure")
+            if tel.get("photo_wide_gain") in (None, "", "—"):
+                take("wide_gain", "photo_wide_gain")
     elif mode == 2:
-        if not tel.get("astro_exposure_text"):
-            take("exposure_text", "exposure")
-        if not tel.get("astro_wide_exposure_text"):
-            take("wide_exposure_text", "wide_exposure")
-        if tel.get("astro_gain") in (None, "", "—"):
-            take("gain", "gain")
-        if tel.get("astro_wide_gain") in (None, "", "—"):
-            take("wide_gain", "wide_gain")
+        if not tele_auto:
+            if not tel.get("astro_exposure_text"):
+                take("exposure_text", "exposure")
+            if tel.get("astro_gain") in (None, "", "—"):
+                take("gain", "gain")
+        if not wide_auto:
+            if not tel.get("astro_wide_exposure_text"):
+                take("wide_exposure_text", "wide_exposure")
+            if tel.get("astro_wide_gain") in (None, "", "—"):
+                take("wide_gain", "wide_gain")
     take("stack_count", "stack_count")
     take("stack_format", "stack_format")
     if tel.get("ir_filter") not in (None, "", "—"):
@@ -1393,6 +1403,53 @@ def control_gain_field(shooting_mode: int, wide: bool) -> str:
     if shooting_mode == 1:
         return "photo_wide_gain" if wide else "photo_gain"
     return "wide_gain" if wide else "gain"
+
+
+def camera_has_manual_settings(settings: ControlSettings | None, shooting_mode: int, wide: bool) -> bool:
+    """True when this mode and camera have a saved exposure or gain."""
+    item = settings or ControlSettings()
+    exposure = getattr(item, control_exposure_field(shooting_mode, wide), "")
+    gain = getattr(item, control_gain_field(shooting_mode, wide), "")
+    return bool(str(exposure or "").strip() or str(gain or "").strip())
+
+
+def shooting_mode_camera_steps(
+    settings: ControlSettings | None,
+    shooting_mode: int,
+    *,
+    include_wide: bool,
+) -> list[tuple[str, str, str]]:
+    """Camera writes after entering PHOTO or DSO.
+
+    A camera with a saved exposure or gain stays manual. A camera with neither
+    gets Auto Parameters, which is how the mobile app fills filter, shutter,
+    gain, and frame count. DSO manual mode also restores filter and stack count.
+    """
+    if shooting_mode not in {1, 2}:
+        return []
+    item = settings or ControlSettings()
+    steps: list[tuple[str, str, str]] = []
+    cameras = ["tele", "wide"] if include_wide else ["tele"]
+    manual_cameras: list[str] = []
+    for camera in cameras:
+        wide = camera == "wide"
+        if camera_has_manual_settings(item, shooting_mode, wide):
+            manual_cameras.append(camera)
+            steps.append(("auto_parameters", "false", camera))
+            exposure = str(getattr(item, control_exposure_field(shooting_mode, wide)) or "").strip()
+            gain = str(getattr(item, control_gain_field(shooting_mode, wide)) or "").strip()
+            if exposure:
+                steps.append(("exposure", exposure, camera))
+            if gain:
+                steps.append(("gain", gain, camera))
+        else:
+            steps.append(("auto_parameters", "true", camera))
+    if shooting_mode == 2 and manual_cameras:
+        if "tele" in manual_cameras and item.ir_filter:
+            steps.append(("ir", item.ir_filter, "tele"))
+        if item.stack_count:
+            steps.append(("count", item.stack_count, manual_cameras[0]))
+    return steps
 
 
 def control_settings_patch(previous: ControlSettings | None, **changes: Any) -> ControlSettings:
@@ -1710,6 +1767,20 @@ def firmware_binning(value: Any) -> int:
     except (TypeError, ValueError):
         n = 1
     return 1 if n >= 2 else 0
+
+
+def firmware_stack_format(value: Any) -> int | None:
+    """Map a panel choice onto firmware stackFormat: 2 = FITS, 3 = TIFF.
+
+    The control combo used to send its index, 0 or 1. Those are not firmware
+    values. 0 is kept as FITS and 1 as TIFF so a saved selection still applies.
+    """
+    text = str(value if value is not None else "").strip().lower()
+    if text in {"2", "fits", "fit", "0"}:
+        return 2
+    if text in {"3", "tiff", "tif", "1"}:
+        return 3
+    return None
 
 
 # Names from the Dwarf 3 / Mini exposure tables (astro_dwarf_session dropdowns).

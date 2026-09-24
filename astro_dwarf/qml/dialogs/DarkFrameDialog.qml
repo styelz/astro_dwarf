@@ -18,6 +18,9 @@ Dialog {
     property string resolutionText: ""
     property string temperatureText: ""
     property int frames: 10
+    property int done: 0
+    property int frameElapsed: 0
+    property int frameSeconds: 0
     property bool gainOk: true
     property bool exposureOk: true
     property string blockReason: ""
@@ -28,23 +31,19 @@ Dialog {
     readonly property bool canTake: gainOk && exposureOk && !capturing
     readonly property string settingsLine: cameraLabel + " · " + exposureText + " · GAIN " + gainText
         + " · " + resolutionText + " · " + temperatureText + " · " + frames + " FRAMES"
+    readonly property real darkProgress: {
+        if (!capturing || done <= 0 || frames <= 0)
+            return -1
+        const frac = frameSeconds > 0 ? Math.min(1, frameElapsed / frameSeconds) : 0
+        return Math.min(0.99, Math.max(0.02, ((done - 1) + frac) / frames))
+    }
     readonly property string progressLine: {
         if (!capturing)
             return ""
-        const devices = backend.devices || []
-        for (let i = 0; i < devices.length; i++) {
-            const item = devices[i]
-            if (String(item.id || "") !== deviceId)
-                continue
-            if (String(item.activity || "") !== "dark")
-                return "TAKING DARKS"
-            const detail = String(item.activity_detail || "")
-            const remain = item.telemetry ? Number(item.telemetry.dark_remaining_s || 0) : 0
-            if (remain > 0)
-                return "TAKING DARKS · " + (detail || "") + " · " + remain + "s LEFT"
-            return detail ? "TAKING DARKS · " + detail : "TAKING DARKS"
-        }
-        return "TAKING DARKS"
+        if (done <= 0)
+            return "STARTING"
+        const clock = frameSeconds > 0 ? ("  " + frameElapsed + "s / " + frameSeconds + "s") : ""
+        return done + " / " + frames + clock
     }
 
     function applyPrompt(payload) {
@@ -64,6 +63,9 @@ Dialog {
         darkFrameDialog.resolutionText = String(data.resolution || "—")
         darkFrameDialog.temperatureText = String(data.temperature || "—")
         darkFrameDialog.frames = Number(data.frames || 10)
+        darkFrameDialog.done = Number(data.done || 0)
+        darkFrameDialog.frameElapsed = Number(data.elapsed_s || 0)
+        darkFrameDialog.frameSeconds = Number(data.frame_s || 0)
         darkFrameDialog.gainOk = data.gain_ok !== false
         darkFrameDialog.exposureOk = data.exposure_ok !== false
         darkFrameDialog.blockReason = String(data.block_reason || "")
@@ -135,14 +137,13 @@ Dialog {
             font.letterSpacing: Theme.tracking1
             Layout.fillWidth: true
         }
-        Text {
+        HudMeter {
             visible: darkFrameDialog.capturing
+            running: darkFrameDialog.capturing
+            progress: darkFrameDialog.darkProgress
             text: darkFrameDialog.progressLine
-            color: Theme.warning
-            wrapMode: Text.Wrap
-            font.pixelSize: Theme.fontSm
-            font.letterSpacing: Theme.tracking1
             Layout.fillWidth: true
+            Layout.preferredHeight: implicitHeight
         }
         Text {
             visible: !darkFrameDialog.capturing && darkFrameDialog.blockReason !== "" && !darkFrameDialog.canTake

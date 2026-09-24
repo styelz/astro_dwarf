@@ -80,6 +80,7 @@ from .domain import (
     device_name_model,
     firmware_binning,
     firmware_exposure_name,
+    firmware_stack_format,
     mosaic_stack_camera,
     resolved_frame_count,
 )
@@ -997,6 +998,8 @@ def sdk_call(operation: str, *args: Any) -> Any:
         "set_photo_exposure",
         "set_photo_gain",
         "set_auto_calibration",
+        "set_stack_format",
+        "set_auto_params",
         "set_burst_count",
         "set_burst_interval",
         "set_timelapse_interval",
@@ -2917,7 +2920,17 @@ def _dark_capture_settings(wide: bool) -> dict[str, Any]:
     }
 
 
-def _emit_dark_prompt(phase: str, token: int, code: int, settings: dict[str, Any], error: str = "") -> None:
+def _emit_dark_prompt(
+    phase: str,
+    token: int,
+    code: int,
+    settings: dict[str, Any],
+    error: str = "",
+    *,
+    done: int = 0,
+    elapsed_s: int = 0,
+    frame_s: int = 0,
+) -> None:
     gain = settings.get("gain")
     emit({
         "event": "dark_prompt",
@@ -2933,6 +2946,9 @@ def _emit_dark_prompt(phase: str, token: int, code: int, settings: dict[str, Any
         "resolution": dark_resolution_label(int(settings.get("bin_index") or 0)),
         "temperature": str(settings.get("temperature") or "—"),
         "frames": DARK_FRAME_COUNT,
+        "done": int(done),
+        "elapsed_s": int(elapsed_s),
+        "frame_s": int(frame_s),
         "gain_ok": bool(settings.get("gain_ok")),
         "exposure_ok": bool(settings.get("exposure_ok")),
         "block_reason": str(settings.get("block_reason") or ""),
@@ -3155,7 +3171,7 @@ def _release_engine_for_darks(name: str) -> None:
     log(f"{name}: telescope still busy; starting dark frames anyway", "warning")
 
 
-def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: int) -> str:
+def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: int, code: int = CODE_ASTRO_DARK_NOT_FOUND) -> str:
     """Return '' when darks finish, 'cancel', 'stopped', or an error to show.
 
     The command is fire-and-forget. The installed SDK never queues a reply
@@ -3198,6 +3214,8 @@ def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: in
     started = time.monotonic()
     seen = False
     state_seen = False
+    frame_s = max(1, int(round(float(seconds))))
+    reported = (-1, -1)
     while True:
         if _stop.is_set():
             _stop_dark_capture(wide)
@@ -3225,6 +3243,20 @@ def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: in
             and (now - last_progress) >= float(seconds) + _DARK_FRAME_QUIET_S
         ):
             return ""
+        elapsed_s = 0
+        if frames_seen:
+            try:
+                elapsed_s = int(float(snap.get("exposure_elapsed_s") or 0))
+            except (TypeError, ValueError):
+                elapsed_s = 0
+            elapsed_s = max(0, min(frame_s, elapsed_s))
+        stamp = (frames_seen, elapsed_s)
+        if stamp != reported:
+            reported = stamp
+            _emit_dark_prompt(
+                "capturing", token, code, settings,
+                done=frames_seen, elapsed_s=elapsed_s, frame_s=frame_s,
+            )
         # -5 is WS_DEVICE_NOT_ACTIVATED and also the SDK socket timeout.
         # A dark run that is already writing frames must not be cancelled
         # for it; the state notification is what says the set was saved.
@@ -3274,7 +3306,7 @@ def _handle_missing_darks(name: str, code: int, *, wide: bool) -> str:
             _close_dark_prompt(token)
             raise RuntimeError(f"{name} cancelled: matching dark frames were not taken")
         _emit_dark_prompt("capturing", token, code, settings)
-        result = _take_dark_frames(name, wide, settings, token)
+        result = _take_dark_frames(name, wide, settings, token, code)
         if result == "stopped":
             _close_dark_prompt(token)
             raise InterruptedError("Session stopped")
@@ -3816,6 +3848,7 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         ids = {"mercury": 1, "venus": 2, "mars": 3, "jupiter": 4, "saturn": 5, "uranus": 6, "neptune": 7, "moon": 8, "sun": 9}
         name = (target.get("solar_name") or target["name"]).lower()
         _run_session_op("GOTO solar target", "goto_solar", step, ids[name], name.title())
+    _apply_stack_format(session.get("stack_format"))
     exposure_name = firmware_exposure_name(camera["exposure_seconds"])
     log(f"Astro photo: exposure {exposure_name}s, gain {camera['gain']}, count {camera['frame_count']}", "notice")
     step("Set exposure", "set_exposure", exposure_name, model_id, camera["camera"])
@@ -4268,6 +4301,17 @@ def camera_param_unchanged(
             wanted = wanted.strip().lower() in {"1", "true", "yes", "on"}
         have = snapshot.get("auto_calibration")
         return isinstance(wanted, bool) and have is wanted
+    if operation == "set_stack_format":
+        wanted = firmware_stack_format(values[0] if values else None)
+        have = firmware_stack_format(snapshot.get("stack_format"))
+        return wanted is not None and wanted == have
+    if operation == "set_auto_params":
+        camera = _param_camera(values)
+        wanted = values[1] if len(values) > 1 else (values[0] if values else None)
+        if isinstance(wanted, str):
+            wanted = wanted.strip().lower() in {"1", "true", "yes", "on"}
+        key = "auto_parameters_wide" if camera == "wide" else "auto_parameters_tele"
+        return isinstance(wanted, bool) and snapshot.get(key) is wanted
     if operation == "set_burst_count":
         wanted = _param_int(values[0] if values else None)
         have = _param_int(snapshot.get("burst_count"))
@@ -5325,10 +5369,20 @@ def _set_stack_count(args: tuple[Any, ...] | list[Any]) -> bool:
     return True
 
 
-def _prepare_manual_stack(camera: str = "", count: Any = None) -> tuple[str, list[Any]]:
+def _apply_stack_format(value: Any) -> None:
+    """Write the saved subframe format. 2 is FITS and 3 is TIFF."""
+    fmt = firmware_stack_format(value)
+    if fmt is None:
+        return
+    if sdk_call("set_stack_format", fmt) is False:
+        raise RuntimeError("Could not set stack format")
+
+
+def _prepare_manual_stack(camera: str = "", count: Any = None, stack_format: Any = None) -> tuple[str, list[Any]]:
     """Enter astro mode and write the DSO stackCount used for a live stack."""
     if _ensure_astro_mode(enter_camera=False) is False:
         raise RuntimeError("Could not enter astro mode")
+    _apply_stack_format(stack_format)
     choice = str(camera or _device.get("camera") or "tele").strip().lower()
     _device["camera"] = choice
     defaults = capture_defaults_from_dict(_device.get("capture_defaults") or {})
@@ -5344,7 +5398,7 @@ def _prepare_manual_stack(camera: str = "", count: Any = None) -> tuple[str, lis
     return operation, args
 
 
-def _start_manual_stack(camera: str = "", count: Any = None) -> bool:
+def _start_manual_stack(camera: str = "", count: Any = None, stack_format: Any = None) -> bool:
     """Start live stacking without waiting for the run to finish."""
     if not _session_active.is_set():
         # stop_all leaves _stop set after the session is gone. A live stack
@@ -5355,7 +5409,7 @@ def _start_manual_stack(camera: str = "", count: Any = None) -> bool:
     snapshot = _tap.snapshot() if _tap is not None else {}
     if _capture_running(snapshot):
         raise RuntimeError("Stack is already running")
-    operation, args = _prepare_manual_stack(camera, count)
+    operation, args = _prepare_manual_stack(camera, count, stack_format)
     _start_capture("Stack", operation, args)
     return True
 
@@ -5447,6 +5501,7 @@ def _stack_mosaic(
     start_index: int = 1,
     join_current: bool = False,
     prompt_darks: bool = False,
+    stack_format: Any = None,
 ) -> bool:
     """GOTO each planned pane and stack it. Stoppable like a session."""
     global _session_phase, _stop_phase
@@ -5456,7 +5511,7 @@ def _stack_mosaic(
         raise RuntimeError("Mosaic has no panes")
     if str(camera or "").strip().lower() == "wide":
         log("Mosaic stack stays on the tele camera", "notice")
-    operation, args = _prepare_manual_stack(mosaic_stack_camera(camera).value)
+    operation, args = _prepare_manual_stack(mosaic_stack_camera(camera).value, stack_format=stack_format)
     _stop.clear()
     if prompt_darks:
         _offer_darks_before_alignment("Stack", wide=False)
@@ -5642,7 +5697,10 @@ def dispatch(message: dict[str, Any]) -> Any:
             _device["_claimed_ips"] = list(claimed)
         return connect()
     if command == "run_session":
-        return run_session(message["session"], prompt_darks=bool(message.get("prompt_darks")))
+        session = dict(message["session"] or {})
+        if message.get("stack_format") is not None:
+            session["stack_format"] = message.get("stack_format")
+        return run_session(session, prompt_darks=bool(message.get("prompt_darks")))
     if command == "stop_all":
         return stop_all()
     if command == "telemetry":
@@ -5720,6 +5778,7 @@ def dispatch(message: dict[str, Any]) -> Any:
         return _start_manual_stack(
             str(args[0]) if args else "",
             args[1] if len(args) > 1 else None,
+            args[2] if len(args) > 2 else None,
         )
     if command == "stack_mosaic":
         args = list(message.get("args") or [])
@@ -5737,17 +5796,34 @@ def dispatch(message: dict[str, Any]) -> Any:
             start_index=start_index,
             join_current=bool(message.get("join_current")),
             prompt_darks=bool(message.get("prompt_darks")),
+            stack_format=message.get("stack_format"),
         )
     if command == "read_camera":
         args = list(message.get("args") or [])
         mode_id = int(args[0]) if args else 1
-        result = serializable_state(sdk_call("read_camera", mode_id))
-        cleared = _clear_auto_params(result, mode_id)
-        if cleared:
-            result = serializable_state(sdk_call("read_camera", mode_id))
-            if isinstance(result, dict):
-                result["auto_params_cleared"] = cleared
-        return result
+        return serializable_state(sdk_call("read_camera", mode_id))
+    if command == "set_auto_params":
+        args = list(message.get("args") or [])
+        if camera_param_unchanged(
+            "set_auto_params",
+            args,
+            _tap.snapshot() if _tap is not None else {},
+            _device if isinstance(_device, dict) else {},
+        ):
+            return True
+        camera = _param_camera(args)
+        enabled = args[1] if len(args) > 1 else (args[0] if args else False)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+        mode_id = _param_int(args[2]) if len(args) > 2 else _shooting_int((_tap.snapshot() if _tap else {}).get("shooting_mode"))
+        tech = _AUTO_PARAM_TECH.get(int(mode_id or 0))
+        if tech is None or camera not in _AUTO_PARAM_CAMERA:
+            return False
+        ok = _set_auto_params(camera, tech, bool(enabled))
+        if ok and _tap is not None:
+            key = "auto_parameters_wide" if camera == "wide" else "auto_parameters_tele"
+            _tap.update({key: bool(enabled)}, force=True)
+        return ok
     if command == "set_camera":
         args = list(message.get("args") or [])
         choice = str(args[0] if args else "").strip().lower()

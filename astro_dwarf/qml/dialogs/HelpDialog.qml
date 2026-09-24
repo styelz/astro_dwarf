@@ -15,35 +15,35 @@ Dialog {
     onOpened: helpClose.forceActiveFocus()
     background: DialogFrame {}
 
-    readonly property int labelWidth: Theme.px(148)
+    readonly property int labelWidth: Theme.px(168)
     readonly property var sections: [
         {
             title: "LIVE VIEW",
             rows: [
-                { gesture: "DOUBLE-CLICK", detail: "Wide picture. Puts that spot on the tele camera." },
-                { gesture: "DOUBLE-CLICK", detail: "Tele picture. Full screen. F does the same. Esc leaves." },
-                { gesture: "HOVER", detail: "Shows the preview buttons. They fade out." },
-                { gesture: "DRAG", detail: "Moves the small camera. Hover it to swap or hide." },
-                { gesture: "RIGHT-CLICK", detail: "More actions on the preview." }
+                { gesture: "DOUBLE-CLICK WIDE", detail: "Centers the telephoto on that spot." },
+                { gesture: "DOUBLE-CLICK TELE", detail: "Full screen. F does the same. Esc leaves." },
+                { gesture: "HOVER", detail: "Preview buttons show, then hide when the pointer leaves." },
+                { gesture: "DRAG PIP", detail: "Moves the small view. Hover it to swap cameras or hide it." },
+                { gesture: "RIGHT-CLICK", detail: "Start or stop preview, swap views, full screen, or copy the stream." }
             ]
         },
         {
             title: "SKY",
             rows: [
-                { gesture: "RIGHT-CLICK", detail: "Go to a target, track it, or show the live view." },
-                { gesture: "DOUBLE-CLICK", detail: "Centres the map. The menu can also slew and track." },
-                { gesture: "CTRL + SCROLL", detail: "Fades the live view on the map." }
+                { gesture: "RIGHT-CLICK", detail: "Go to coordinates, show the live view, or track the target." },
+                { gesture: "DOUBLE-CLICK", detail: "Centers the map. The menu can also slew and start tracking." },
+                { gesture: "CTRL + SCROLL", detail: "Changes how bright the live view is on the map." }
             ]
         },
         {
             title: "EVERYWHERE ELSE",
             rows: [
-                { gesture: "DOUBLE-CLICK", detail: "A session. Opens the editor." },
-                { gesture: "RIGHT-CLICK", detail: "A session, device, photo, history row, or the log." },
-                { gesture: "DRAG SESSION", detail: "Another night, or a new start time." },
+                { gesture: "DOUBLE-CLICK", detail: "Opens that session in the editor." },
+                { gesture: "RIGHT-CLICK", detail: "Menu for a session, device, photo, history row, or the log." },
+                { gesture: "DRAG SESSION", detail: "Moves it to another night or a new start time." },
                 { gesture: "EMPTY DAY", detail: "Right-click to add a session." },
-                { gesture: "DRAG PANEL", detail: "Rearranges Control. Right-click resets it." },
-                { gesture: "SCHEDULER", detail: "Title bar. Runs the night on its own." }
+                { gesture: "DRAG PANEL", detail: "Rearranges Control. Right-click a panel to reset the layout." },
+                { gesture: "SCHEDULER", detail: "Title-bar switch. On, planned sessions run by themselves." }
             ]
         }
     ]
@@ -133,6 +133,7 @@ Dialog {
                                         font.pixelSize: Theme.fontSm
                                         font.bold: true
                                         font.letterSpacing: Theme.tracking1
+                                        wrapMode: Text.Wrap
                                         Layout.preferredWidth: helpDialog.labelWidth
                                         Layout.maximumWidth: helpDialog.labelWidth
                                         Layout.alignment: Qt.AlignLeft | Qt.AlignTop
