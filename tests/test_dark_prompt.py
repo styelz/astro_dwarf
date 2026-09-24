@@ -272,6 +272,37 @@ def test_library_match_uses_exposure_gain_and_temperature() -> None:
     _assert(worker.dark_library_status(frames, settings) == "missing", "raw gain is not the index")
 
 
+def test_cancel_does_not_block_the_next_manual_command() -> None:
+    previous = _snapshot()
+    worker._stop.clear()
+    worker._session_active.clear()
+    worker._dark_run_choice = "cancel"
+    worker._tap = None
+    worker._device = {"camera": "wide", "model": "Dwarf 3"}
+    try:
+        worker._offer_darks_before_manual_alignment("Stack")
+        choice = worker._dark_run_choice
+    finally:
+        _restore(previous)
+    _assert(choice is None, choice)
+
+
+def test_stop_dark_capture_sends_wide_and_plain_stops() -> None:
+    previous = _snapshot()
+    sent: list[int] = []
+
+    def send(_message, command, _module, timeout=None):
+        sent.append(int(command))
+        return True
+
+    worker.send_without_response = send
+    try:
+        worker._stop_dark_capture(True)
+    finally:
+        _restore(previous)
+    _assert(sent == [11026, 11008], sent)
+
+
 def test_remembered_continue_skips_the_next_pane() -> None:
     previous = _snapshot()
     continued: list[str] = []
@@ -331,6 +362,135 @@ def test_long_exposure_progress_counts_as_dark_frames() -> None:
         worker.DARK_FRAME_COUNT, worker._DARK_FRAME_QUIET_S, worker._DARK_START_TIMEOUT_S = saved
         _restore(previous)
     _assert(result == "", result)
+
+
+def test_dark_frame_clock_ticks_between_notifications() -> None:
+    """15288 arrives once per frame with exposured_time 0. The modal still counts."""
+    previous = _snapshot()
+    saved = (worker.DARK_FRAME_COUNT, worker._DARK_FRAME_QUIET_S, worker._DARK_START_TIMEOUT_S)
+    worker.DARK_FRAME_COUNT = 1
+    worker._DARK_FRAME_QUIET_S = 0.05
+    worker._DARK_START_TIMEOUT_S = 5.0
+    tap = _DarkTap()
+    tap.progress = 0.0
+    worker._device = {"model": "Dwarf 3"}
+    worker._tap = tap
+    elapsed: list[int] = []
+    real_emit = worker.emit
+
+    def snapshot() -> dict[str, object]:
+        return {
+            "dark_state": "idle",
+            "exposure_progress_at": tap.progress,
+            "exposure_elapsed_s": 0,
+        }
+
+    def emit(payload: dict[str, object]) -> None:
+        if payload.get("event") == "dark_prompt":
+            elapsed.append(int(payload.get("elapsed_s") or 0))
+
+    tap.snapshot = snapshot
+    worker.emit = emit
+
+    def send(_message, _command, _module, timeout=None):
+        def tick() -> None:
+            time.sleep(0.05)
+            tap.progress = time.monotonic()
+
+        threading.Thread(target=tick, daemon=True).start()
+        return True
+
+    settings = {
+        "gain_ok": True,
+        "exposure_ok": True,
+        "exp_index": 1,
+        "gain": 80,
+        "bin_index": 0,
+        "gain_index": 24,
+        "exposure": "2",
+        "wide": True,
+        "model": "Dwarf 3",
+    }
+    worker.send_without_response = send
+    try:
+        result = worker._take_dark_frames("Stack", True, settings, 1)
+    finally:
+        worker.emit = real_emit
+        worker.DARK_FRAME_COUNT, worker._DARK_FRAME_QUIET_S, worker._DARK_START_TIMEOUT_S = saved
+        _restore(previous)
+    _assert(result == "", result)
+    _assert(max(elapsed) >= 1, elapsed)
+
+
+def test_missing_reply_does_not_drop_the_prompt_code() -> None:
+    """A silent dark command must not replace the warning code with None.
+
+    Progress updates call int(code). response_after returns None until the
+    telescope answers, and that used to crash the session and leave Cancel dead.
+    """
+    previous = _snapshot()
+    saved = (
+        worker.DARK_FRAME_COUNT,
+        worker._DARK_FRAME_QUIET_S,
+        worker._DARK_REFUSAL_GRACE_S,
+        worker._DARK_START_TIMEOUT_S,
+    )
+    worker.DARK_FRAME_COUNT = 1
+    worker._DARK_FRAME_QUIET_S = 0.05
+    worker._DARK_REFUSAL_GRACE_S = 0.05
+    worker._DARK_START_TIMEOUT_S = 2.0
+    tap = _DarkTap()
+    tap.progress = 0.0
+    worker._device = {"model": "Dwarf 3"}
+    worker._tap = tap
+    kinds: list[str] = []
+    real_emit = worker.emit
+
+    def snapshot() -> dict[str, object]:
+        return {"dark_state": "idle", "exposure_progress_at": tap.progress, "exposure_elapsed_s": 0}
+
+    def emit(payload: dict[str, object]) -> None:
+        if payload.get("event") == "dark_prompt":
+            kinds.append(str(payload.get("kind")))
+
+    tap.snapshot = snapshot
+    worker.emit = emit
+
+    def send(_message, _command, _module, timeout=None):
+        def tick() -> None:
+            time.sleep(0.2)
+            tap.progress = time.monotonic()
+
+        threading.Thread(target=tick, daemon=True).start()
+        return True
+
+    settings = {
+        "gain_ok": True,
+        "exposure_ok": True,
+        "exp_index": 1,
+        "gain": 80,
+        "bin_index": 0,
+        "gain_index": 24,
+        "exposure": "0.05",
+        "wide": True,
+        "model": "Dwarf 3",
+    }
+    worker.send_without_response = send
+    try:
+        result = worker._take_dark_frames(
+            "Stack", True, settings, 1, worker.CODE_ASTRO_DARK_NOT_FOUND
+        )
+    finally:
+        worker.emit = real_emit
+        (
+            worker.DARK_FRAME_COUNT,
+            worker._DARK_FRAME_QUIET_S,
+            worker._DARK_REFUSAL_GRACE_S,
+            worker._DARK_START_TIMEOUT_S,
+        ) = saved
+        _restore(previous)
+    _assert(result == "", result)
+    _assert(kinds and all(kind == "missing" for kind in kinds), kinds)
 
 
 def test_dark_start_timeout_without_progress() -> None:
@@ -393,9 +553,13 @@ if __name__ == "__main__":
     test_take_darks_builds_the_firmware_request()
     test_device_not_activated_does_not_discard_finished_darks()
     test_long_exposure_progress_counts_as_dark_frames()
+    test_dark_frame_clock_ticks_between_notifications()
+    test_missing_reply_does_not_drop_the_prompt_code()
     test_dark_start_timeout_without_progress()
     test_long_exp_progress_is_stamped()
     test_library_match_uses_exposure_gain_and_temperature()
+    test_cancel_does_not_block_the_next_manual_command()
+    test_stop_dark_capture_sends_wide_and_plain_stops()
     test_remembered_continue_skips_the_next_pane()
     test_wide_dark_state_notify()
     print("ok")

@@ -2186,6 +2186,7 @@ CODE_ASTRO_NEED_GOTO_DSO = -11518
 CODE_ASTRO_NEED_EQ = -11528
 CODE_ASTRO_DARK_TEMP_MISMATCH = -11530
 CODE_ASTRO_DARK_GAIN_OUT_OF_RANGE = -11502
+CMD_ASTRO_STOP_CAPTURE_RAW_DARK = 11008
 CMD_ASTRO_START_CAPTURE_RAW_DARK_WITH_PARAM = 11021
 CMD_ASTRO_STOP_CAPTURE_RAW_DARK_WITH_PARAM = 11022
 CMD_ASTRO_START_CAPTURE_WIDE_RAW_DARK_WITH_PARAM = 11025
@@ -3001,23 +3002,70 @@ def _dark_cancel_requested(token: int) -> bool:
 
 
 def _stop_dark_capture(wide: bool) -> None:
+    """Tell the telescope to leave the dark exposure.
+
+    The with-param stop matches the command that started the run. The plain
+    tele stop is sent as well because a DWARF 3 wide run has kept exposing
+    after 11026 alone.
+    """
     try:
         from dwarf_python_api.proto import astro_pb2
-
-        factory = getattr(astro_pb2, "ReqStopCaptureDarkFrameWithParam", None)
-    except Exception:
-        factory = None
-    if factory is None:
-        return
-    command = (
-        CMD_ASTRO_STOP_CAPTURE_WIDE_RAW_DARK_WITH_PARAM
-        if wide
-        else CMD_ASTRO_STOP_CAPTURE_RAW_DARK_WITH_PARAM
-    )
-    try:
-        send_without_response(factory(), command, _MODULE_ASTRO)
     except Exception as exc:
-        log(f"Stop dark frames skipped: {exc}", "debug")
+        log(f"Stop dark frames skipped: {exc}", "warning")
+        return
+    commands: list[tuple[Any, int]] = []
+    param = getattr(astro_pb2, "ReqStopCaptureDarkFrameWithParam", None)
+    if param is not None:
+        commands.append((
+            param,
+            CMD_ASTRO_STOP_CAPTURE_WIDE_RAW_DARK_WITH_PARAM
+            if wide
+            else CMD_ASTRO_STOP_CAPTURE_RAW_DARK_WITH_PARAM,
+        ))
+    plain = getattr(astro_pb2, "ReqStopCaptureDarkFrame", None)
+    if plain is not None:
+        commands.append((plain, CMD_ASTRO_STOP_CAPTURE_RAW_DARK))
+    if not commands:
+        log("Stop dark frames skipped: no stop message in this SDK", "warning")
+        return
+    for factory, command in commands:
+        try:
+            sent = send_without_response(factory(), command, _MODULE_ASTRO)
+        except Exception as exc:
+            log(f"Stop dark frames skipped ({command}): {exc}", "warning")
+            continue
+        if sent:
+            log(f"Stop dark frames sent ({command})", "notice")
+        else:
+            log(f"Stop dark frames was not sent ({command})", "warning")
+
+
+def _wait_dark_capture_idle(wide: bool, frame_s: float) -> None:
+    """Stay on cancel until the open dark exposure has stopped notifying."""
+    if _tap is None:
+        return
+    snap = _tap.snapshot()
+    mark = float(snap.get("exposure_progress_at") or 0)
+    if not mark and str(snap.get("dark_state") or "") != "running":
+        return
+    deadline = time.monotonic() + min(20.0, max(3.0, float(frame_s) + 2.0))
+    while time.monotonic() < deadline:
+        if _stop.is_set():
+            return
+        snap = _tap.snapshot()
+        progress_at = float(snap.get("exposure_progress_at") or 0)
+        if progress_at > mark:
+            mark = progress_at
+            _stop_dark_capture(wide)
+        state = str(snap.get("dark_state") or "")
+        # 15288 is once per frame, so a couple of quiet seconds still means
+        # the shutter is open. Wait out this exposure unless state says it stopped.
+        if state in ("stopped", "idle") and mark and (time.monotonic() - mark) >= 2.0:
+            return
+        if mark and (time.monotonic() - mark) >= float(frame_s):
+            return
+        time.sleep(0.25)
+    log("Dark frames were still running after stop", "warning")
 
 
 def _tapped_dark_code(command: int, since: float) -> int | None:
@@ -3123,7 +3171,7 @@ def _offer_darks_before_alignment(name: str, *, wide: bool) -> None:
 
 def _offer_darks_before_manual_alignment(name: str) -> None:
     """HUD calibrate / track / polar. An unattended session does not ask."""
-    global _prompt_darks
+    global _prompt_darks, _dark_run_choice
     if _session_active.is_set():
         return
     # stop_all used to leave _stop set after the session was already gone.
@@ -3132,6 +3180,9 @@ def _offer_darks_before_manual_alignment(name: str) -> None:
     _stop.clear()
     if _dark_run_choice == "continue":
         return
+    # A cancelled stack must not fail the next calibrate, polar, or track.
+    if _dark_run_choice == "cancel":
+        _dark_run_choice = None
     saved = _prompt_darks
     _prompt_darks = True
     try:
@@ -3207,6 +3258,7 @@ def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: in
         return "stopped"
     if _dark_cancel_requested(token):
         _stop_dark_capture(wide)
+        _wait_dark_capture_idle(wide, exposure_seconds_from_text(settings.get("exposure")) or 15.0)
         return "cancel"
     seconds = exposure_seconds_from_text(settings.get("exposure")) or 30.0
     limit = max(90.0, float(seconds) * DARK_FRAME_COUNT + 120.0)
@@ -3225,6 +3277,7 @@ def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: in
             return "stopped"
         if _dark_cancel_requested(token):
             _stop_dark_capture(wide)
+            _wait_dark_capture_idle(wide, frame_s)
             return "cancel"
         snap = _tap.snapshot() if _tap is not None else {}
         state = str(snap.get("dark_state") or "")
@@ -3247,12 +3300,15 @@ def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: in
         ):
             return ""
         elapsed_s = 0
-        if frames_seen:
+        if frames_seen and last_progress > 0:
             try:
-                elapsed_s = int(float(snap.get("exposure_elapsed_s") or 0))
+                reported_elapsed = int(float(snap.get("exposure_elapsed_s") or 0))
             except (TypeError, ValueError):
-                elapsed_s = 0
-            elapsed_s = max(0, min(frame_s, elapsed_s))
+                reported_elapsed = 0
+            # 15288 arrives once per frame and exposured_time stays 0, so the
+            # open shutter is the time since that packet.
+            since_packet = int(now - last_progress) if now >= last_progress else 0
+            elapsed_s = max(0, min(frame_s, max(reported_elapsed, since_packet)))
         stamp = (frames_seen, elapsed_s)
         if stamp != reported:
             reported = stamp
@@ -3263,16 +3319,18 @@ def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: in
         # -5 is WS_DEVICE_NOT_ACTIVATED and also the SDK socket timeout.
         # A dark run that is already writing frames must not be cancelled
         # for it; the state notification is what says the set was saved.
+        # Keep this reply off `code`: that value is the warning shown in
+        # the prompt, and a missing reply is None.
         if not seen and elapsed >= _DARK_REFUSAL_GRACE_S and _tap is not None:
-            code = _tap.response_after(command, since)
-            if code not in (None, 0, -5):
+            reply = _tap.response_after(command, since)
+            if reply not in (None, 0, -5):
                 _stop_dark_capture(wide)
-                return f"Dark frames were refused: {_error_name(code)}"
+                return f"Dark frames were refused: {_error_name(reply)}"
         if not seen and elapsed >= _DARK_START_TIMEOUT_S:
             _stop_dark_capture(wide)
-            code = _tap.response_after(command, since) if _tap is not None else None
-            if code not in (None, 0):
-                return f"Dark frames were refused: {_error_name(code)}"
+            reply = _tap.response_after(command, since) if _tap is not None else None
+            if reply not in (None, 0):
+                return f"Dark frames were refused: {_error_name(reply)}"
             return "Dark frames did not start"
         if elapsed >= limit:
             _stop_dark_capture(wide)
@@ -3309,7 +3367,11 @@ def _handle_missing_darks(name: str, code: int, *, wide: bool) -> str:
             _close_dark_prompt(token)
             raise RuntimeError(f"{name} cancelled: matching dark frames were not taken")
         _emit_dark_prompt("capturing", token, code, settings)
-        result = _take_dark_frames(name, wide, settings, token, code)
+        try:
+            result = _take_dark_frames(name, wide, settings, token, code)
+        except Exception:
+            _close_dark_prompt(token)
+            raise
         if result == "stopped":
             _close_dark_prompt(token)
             raise InterruptedError("Session stopped")
@@ -3438,7 +3500,7 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
 
 
 def run_session(session: dict[str, Any], prompt_darks: bool = False) -> bool:
-    global _session_phase, _stop_phase
+    global _session_phase, _stop_phase, _dark_run_choice
     _begin_dark_prompt_run(prompt_darks)
     _stop.clear()
     _session_active.set()
@@ -3501,6 +3563,10 @@ def run_session(session: dict[str, Any], prompt_darks: bool = False) -> bool:
         phase = _session_phase
         _session_active.clear()
         _session_phase = None
+        if not completed and _dark_token:
+            _close_dark_prompt(_dark_token)
+        if not completed:
+            _dark_run_choice = None
         if leftover:
             _stop_phase = phase
             try:
