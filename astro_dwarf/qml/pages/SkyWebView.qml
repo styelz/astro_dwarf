@@ -336,6 +336,19 @@ Item {
             return true
         return false
     }
+    function handleHostTitle(title) {
+        const text = String(title || "")
+        const marker = "astro-dwarf-host:"
+        if (text.indexOf(marker) !== 0)
+            return
+        const parts = text.slice(marker.length).split("\t")
+        if (parts[0] !== "menu")
+            return
+        map.contextMenuRequested(Number(parts[1]) || 0, Number(parts[2]) || 0)
+        const token = JSON.stringify(text)
+        map.runJavaScript("(function(){var t=" + token
+            + ";if(document.title===t){var h=window.__astroDwarfHostTitle;document.title=h==null?\"\":String(h)}return\"\"})()")
+    }
     function pollContextMenu() {
         map.runJavaScript(backend.skyWebContextPollScript, result => {
             const text = String(result || "").trim()
@@ -640,6 +653,9 @@ Item {
         target: map.engineItem
         function onLoadState(state) {
             map.handleLoadState(state)
+        }
+        function onHostTitle(title) {
+            map.handleHostTitle(title)
         }
     }
 

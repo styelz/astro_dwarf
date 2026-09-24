@@ -246,7 +246,7 @@ Item {
                     break
                 span += 1
             }
-            layout[placed[i].item.id] = { column: column, columns: columns, lane: placed[i].lane, lanes: lanes, span: span }
+            layout[placed[i].item.id] = { column: column, columns: columns, lane: placed[i].lane, lanes: lanes, span: span, z: placed[i].lane + 1 }
         }
     }
     function layoutNight(items) {
@@ -443,27 +443,6 @@ Item {
         calendarPage.setSingleDay(value)
         viewMode = 1
         requestNowLineScroll()
-    }
-    function nightBarZ(item) {
-        if (!item)
-            return 1
-        if (item.is_grouped) {
-            const count = Math.max(1, Number(item.pane_count) || 1)
-            const pane = Number(item.pane_index)
-            const idx = (pane > 0 && pane < 1000000) ? pane : 1
-            return Math.max(1, Math.min(18, 1 + (count - idx)))
-        }
-        const items = calendarPage.nightSessions
-        let later = 0
-        const start = Number(item.start_epoch_ms)
-        const id = String(item.id || "")
-        for (let i = 0; i < items.length; i++) {
-            const other = items[i]
-            const otherStart = Number(other.start_epoch_ms)
-            if (otherStart > start || (otherStart === start && String(other.id || "") > id))
-                later += 1
-        }
-        return Math.max(1, Math.min(18, 1 + later))
     }
     function nightSessionAtScene(scene) {
         if (!nightSessionRepeater || !scene)
@@ -1395,7 +1374,7 @@ Item {
                                 }
                                 width: slot.width
                                 height: Math.max(Theme.px(26), calendarPage.sessionSpanSeconds(modelData) / 3600 * nightTimeline.hourHeight - Theme.s1)
-                                z: calendarPage.nightBarZ(modelData)
+                                z: (calendarPage.nightLayout && calendarPage.nightLayout[modelData.id] && calendarPage.nightLayout[modelData.id].z) || 1
                                 readonly property bool tight: height < Theme.px(44)
                                 readonly property bool narrow: width < Theme.px(210)
                                 radius: Theme.radius

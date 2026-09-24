@@ -41,7 +41,14 @@ HudMenu {
         skyMenu.clipboardDecDegrees = Number(coords.dec_degrees)
     }
 
-    onAboutToShow: skyMenu.refreshClipboard()
+    // Clipboard reads can stall this thread. Refresh after the menu is up
+    // so the right-click is not waiting on the system clipboard.
+    Connections {
+        target: skyMenu
+        function onOpened() {
+            skyMenu.refreshClipboard()
+        }
+    }
 
     HudMenuItem {
         objectName: "clipboardGotoMenuItem"

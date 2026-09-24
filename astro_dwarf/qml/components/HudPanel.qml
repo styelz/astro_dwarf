@@ -23,6 +23,7 @@ Item {
     property int swapHomeIndex: -1
     property var swapDefaultProps: null
     property string dropMode: ""
+    property bool columnStretched: false
     property bool moveStarted: false
     property bool hot: false          // set by callers for the "active" panel; hover also lights it
     readonly property bool dropTarget: dropMode === "swap"
@@ -150,7 +151,7 @@ Item {
                 Layout.preferredHeight: Math.max(heading.implicitHeight, Theme.px(14))
                 Accessible.role: Accessible.Button
                 Accessible.name: "Move " + (panel.moveLabel || heading.text || "panel")
-                Accessible.description: "Drag onto another panel to swap, or onto an edge to insert"
+                Accessible.description: "Drag onto a panel to swap, onto its top or bottom to insert, between columns to open a column, or to the top or bottom of the page to open a row"
                 property point pressPos: Qt.point(0, 0)
                 Row {
                     id: handleRow
@@ -210,7 +211,7 @@ Item {
                 }
                 HudToolTip {
                     visible: panel.movable && headerMove.containsMouse && !headerMove.pressed && !PanelSwap.active
-                    text: "Drag onto a panel to swap, onto a panel edge to insert, or onto a column edge to create a column. Right-click to reset the layout."
+                    text: "Drag onto a panel to swap, onto its top or bottom to insert, between columns to open a column, or to the top or bottom of the page to open a row. Right-click to reset the layout."
                 }
             }
             Row {
@@ -276,7 +277,7 @@ Item {
         property point pressPos: Qt.point(0, 0)
         Accessible.role: Accessible.Button
         Accessible.name: "Move " + (panel.moveLabel || "panel")
-        Accessible.description: "Drag onto another panel to swap, or onto an edge to insert"
+        Accessible.description: "Drag onto a panel to swap, onto its top or bottom to insert, between columns to open a column, or to the top or bottom of the page to open a row"
         Row {
             anchors.centerIn: parent
             spacing: Theme.px(3)
@@ -316,7 +317,7 @@ Item {
         }
         HudToolTip {
             visible: edgeHandle.visible && edgeMove.containsMouse && !edgeMove.pressed && !PanelSwap.active
-            text: "Drag onto a panel to swap, onto a panel edge to insert, or onto a column edge to create a column. Right-click to reset the layout."
+            text: "Drag onto a panel to swap, onto its top or bottom to insert, between columns to open a column, or to the top or bottom of the page to open a row. Right-click to reset the layout."
         }
     }
     Rectangle {

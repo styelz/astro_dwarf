@@ -26,7 +26,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .device_telemetry import CODE_STEP_MOTOR_NEED_RESET, TelemetryTap, install_sdk_logging, link_telemetry
+from .device_telemetry import (
+    CMD_ASTRO_GET_DARK_FRAME_LIST,
+    CMD_ASTRO_GET_WIDE_DARK_FRAME_LIST,
+    CODE_STEP_MOTOR_NEED_RESET,
+    TelemetryTap,
+    install_sdk_logging,
+    link_telemetry,
+)
 from .telemetry_view import (
     auto_parameter_cameras,
     exposure_seconds_from_text,
@@ -104,13 +111,12 @@ _STATE_REFRESH_SECONDS = 30.0
 _STATUS_POLL_SECONDS = 2.0
 _PHOTO_AF_SETTLE_S = 2.5
 _PHOTO_AF_TIMEOUT_S = 60.0
-_LINKAGE_AF_WATCH_S = 20.0
-_LINKAGE_AF_MOVE_STEPS = 3
+_LINKAGE_AF_WATCH_S = 8.0
+_LINKAGE_AF_POLL_S = 0.75
 _autofocus_started = 0.0
 _autofocus_last_move = 0.0
 _autofocus_last_pos: int | None = None
 _linkage_af_until = 0.0
-_linkage_af_baseline: int | None = None
 _MODEL_IDS = {"Dwarf II": "2", "Dwarf 3": "3", "Dwarf Mini": "5"}
 # Set once the steppers answer CODE_STEP_MOTOR_NEED_RESET: absolute position
 # reads keep failing until the mount is homed, so stop probing this session.
@@ -297,17 +303,13 @@ def _telemetry_loop() -> None:
             if status is not None:
                 tap.poll_client_status(status)
         snapshot = tap.snapshot()
-        _maybe_latch_linkage_autofocus(snapshot, now)
+        _maybe_poll_linkage_autofocus(now, snapshot)
         _maybe_finish_photo_autofocus(snapshot, now)
         # Command-triggered refreshes stamp state_snapshot_at too, so they push the periodic one out.
         snapshot_at = snapshot.get("state_snapshot_at")
         if isinstance(snapshot_at, (int, float)):
             last_refresh = max(last_refresh, now - max(0.0, time.time() - float(snapshot_at)))
-        refresh_s = (
-            _STATUS_POLL_SECONDS
-            if snapshot.get("autofocus_state") in ("running", "stopping")
-            else _STATE_REFRESH_SECONDS
-        )
+        refresh_s = _state_refresh_seconds(snapshot, now)
         if now - last_refresh >= refresh_s:
             last_refresh = now
             request_state_refresh()
@@ -762,55 +764,54 @@ def _clear_photo_autofocus(reason: str, *, warning: bool = False) -> None:
 
 
 def _reset_linkage_autofocus_watch() -> None:
-    global _linkage_af_until, _linkage_af_baseline
+    global _linkage_af_until
     _linkage_af_until = 0.0
-    _linkage_af_baseline = None
+
+
+def _linkage_autofocus_modes() -> set[int]:
+    """Photo and DSO. A wide tap can run tele focus in either."""
+    return {_PHOTO_SHOOTING_MODE, 2}
 
 
 def _arm_linkage_autofocus_watch() -> None:
-    """After a photo-mode wide tap, light AUTO FOCUS only if the tele motor moves.
+    """After a wide tap, read focus exclusive-state while the hunt can still be running.
 
-    Dual Lenses Locating often starts photo autofocus without a focus-state
-    notify. A still focus position leaves the pad dark.
+    Dual Lenses Locating starts tele autofocus without a focus-state notify.
+    The focus-position packet is the position after that hunt, so it must not
+    light AUTO FOCUS. Device state carries normal_auto_focus_state while the
+    motor is actually moving.
     """
-    global _linkage_af_until, _linkage_af_baseline
+    global _linkage_af_until
     snap = _tap.snapshot() if _tap is not None else {}
     try:
         mode = int(snap.get("shooting_mode"))
     except (TypeError, ValueError):
         mode = 0
-    if mode != _PHOTO_SHOOTING_MODE or snap.get("autofocus_state") in ("running", "stopping"):
+    if mode not in _linkage_autofocus_modes() or snap.get("autofocus_state") in ("running", "stopping"):
         _reset_linkage_autofocus_watch()
         return
     _linkage_af_until = time.monotonic() + _LINKAGE_AF_WATCH_S
-    _linkage_af_baseline = _focus_position()
+    request_state_refresh()
 
 
-def _maybe_latch_linkage_autofocus(snapshot: dict[str, Any], now: float) -> None:
-    """Latch the AUTO FOCUS pad once a wide-tap hunt actually moves focus."""
-    global _linkage_af_baseline
+def _state_refresh_seconds(snapshot: dict[str, Any], now: float) -> float:
+    if snapshot.get("autofocus_state") in ("running", "stopping"):
+        return _STATUS_POLL_SECONDS
+    if 0 < _linkage_af_until and now < _linkage_af_until:
+        return _LINKAGE_AF_POLL_S
+    return _STATE_REFRESH_SECONDS
+
+
+def _maybe_poll_linkage_autofocus(now: float, snapshot: dict[str, Any]) -> None:
+    """Stop the fast device-state poll once the hunt is visible or the window ends.
+
+    A running exclusive state already lights the pad. Do not invent a second
+    autofocus from the focus position that arrives when the hunt is over.
+    """
     if _linkage_af_until <= 0:
         return
-    if _autofocus_started or now >= _linkage_af_until:
+    if _autofocus_started or now >= _linkage_af_until or snapshot.get("autofocus_state") in ("running", "stopping"):
         _reset_linkage_autofocus_watch()
-        return
-    if snapshot.get("autofocus_state") in ("running", "stopping"):
-        _reset_linkage_autofocus_watch()
-        return
-    position = snapshot.get("focus_position")
-    try:
-        pos = int(position) if position is not None else None
-    except (TypeError, ValueError):
-        pos = None
-    if pos is None:
-        return
-    if _linkage_af_baseline is None:
-        _linkage_af_baseline = pos
-        return
-    if abs(pos - _linkage_af_baseline) < _LINKAGE_AF_MOVE_STEPS:
-        return
-    _reset_linkage_autofocus_watch()
-    _mark_photo_autofocus_running()
 
 
 def _maybe_finish_photo_autofocus(snapshot: dict[str, Any], now: float) -> None:
@@ -2185,6 +2186,20 @@ CMD_ASTRO_START_CAPTURE_WIDE_RAW_DARK_WITH_PARAM = 11025
 CMD_ASTRO_STOP_CAPTURE_WIDE_RAW_DARK_WITH_PARAM = 11026
 # DWARF 3 dark filename example is stack_10. Mini libraries accept more.
 DARK_FRAME_COUNT = 10
+# Firmware treats a stored dark as usable when the sensor is within this
+# many degrees of the temperature it was taken at.
+DARK_TEMP_MATCH_C = 8
+# A direct 11021/11025 reject is real only if the dark run never starts.
+# WS_DEVICE_NOT_ACTIVATED (-5) also collides with the SDK's own timeout code,
+# and the installed client never completes the dark command, so a late -5
+# must not erase a capture that already ran.
+_DARK_REFUSAL_GRACE_S = 3.0
+_DARK_START_TIMEOUT_S = 45.0
+# After the last long-exposure progress packet, wait one exposure plus this
+# pad before treating the set as saved. Packets can arrive at the start of
+# a frame, so the pad alone is not enough.
+_DARK_FRAME_QUIET_S = 4.0
+_DARK_LIBRARY_WAIT_S = 8.0
 # Tele darks: both manuals set 40 as the minimum. Firmware rejects
 # gain outside 30–150 with CODE_ASTRO_DARK_GAIN_OUT_OF_RANGE.
 _DARK_GAIN_MIN = 40
@@ -2724,7 +2739,8 @@ def dark_frame_steps(model: str) -> str:
         return (
             "Fit the ND filter and fully retract the lens cylinder. "
             "These 10 frames use this stack's exposure, gain, and resolution. "
-            "Keep the sensor within 8°C of the temperature you will shoot at."
+            "Keep the sensor within 8°C of the temperature you will shoot at. "
+            "Retracting the cylinder clears alignment, so do this before calibration and GOTO."
         )
     return (
         "Close the lens cover. These 10 frames use this stack's exposure, gain, and resolution, "
@@ -2955,8 +2971,136 @@ def _tapped_dark_code(command: int, since: float) -> int | None:
     return None
 
 
+def _sensor_celsius(value: Any) -> int | None:
+    text = str(value or "").replace("°C", "").replace("°", "").strip()
+    return _optional_int(text)
+
+
+def dark_library_status(frames: list[dict[str, Any]], settings: dict[str, Any]) -> str:
+    """'match', 'mismatch', or 'missing' for this stack's exposure, gain, and binning."""
+    exp_index = settings.get("exp_index")
+    gain = _optional_int(settings.get("gain"))
+    bin_index = int(settings.get("bin_index") or 0)
+    current = _sensor_celsius(settings.get("temperature"))
+    mismatch = False
+    for frame in frames:
+        if int(frame.get("exp_index") or -1) != exp_index:
+            continue
+        if _optional_int(frame.get("gain_index")) != gain:
+            continue
+        if int(frame.get("bin_index") or 0) != bin_index:
+            continue
+        stored = frame.get("temperature")
+        stored_c = stored if isinstance(stored, int) else _optional_int(stored)
+        if stored_c is None or current is None or abs(stored_c - current) <= DARK_TEMP_MATCH_C:
+            return "match"
+        mismatch = True
+    return "mismatch" if mismatch else "missing"
+
+
+def _query_dark_library(wide: bool) -> list[dict[str, Any]] | None:
+    """Stored darks for this lens, or None when the telescope does not answer."""
+    if _tap is None:
+        return None
+    try:
+        from dwarf_python_api.proto import astro_pb2
+    except Exception:
+        return None
+    command = CMD_ASTRO_GET_WIDE_DARK_FRAME_LIST if wide else CMD_ASTRO_GET_DARK_FRAME_LIST
+    since = time.monotonic()
+    if not send_without_response(astro_pb2.ReqGetDarkFrameList(), command, _MODULE_ASTRO):
+        return None
+    deadline = time.monotonic() + _DARK_LIBRARY_WAIT_S
+    while time.monotonic() < deadline:
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        status, frames = _tap.dark_library_after(command, since)
+        if status == "ready":
+            return frames
+        if status == "failed":
+            return None
+        time.sleep(0.1)
+    log("Dark-frame library did not answer; the stack will check again at capture", "debug")
+    return None
+
+
+def _offer_darks_before_alignment(name: str, *, wide: bool) -> None:
+    """Ask for missing darks before calibration or GOTO moves the telescope.
+
+    Taking DWARF 3 darks retracts the lens cylinder, which clears alignment.
+    A prompted run checks the library first and only opens the dialog when
+    this exposure, gain, and resolution are absent or too warm or cold.
+    """
+    if not _prompt_darks or _dark_run_choice == "continue":
+        return
+    settings = _dark_capture_settings(wide)
+    if not settings.get("gain_ok") or not settings.get("exposure_ok"):
+        return
+    frames = _query_dark_library(wide)
+    if frames is None:
+        return
+    status = dark_library_status(frames, settings)
+    if status == "match":
+        log(f"{name}: matching dark frames are already on the telescope", "notice")
+        return
+    code = CODE_ASTRO_DARK_TEMP_MISMATCH if status == "mismatch" else CODE_ASTRO_DARK_NOT_FOUND
+    _handle_missing_darks(name, code, wide=wide)
+
+
+def _offer_darks_before_manual_alignment(name: str) -> None:
+    """HUD calibrate / track / polar. An unattended session does not ask."""
+    global _prompt_darks
+    if _session_active.is_set() or _dark_run_choice == "continue":
+        return
+    saved = _prompt_darks
+    _prompt_darks = True
+    try:
+        wide = str(_device.get("camera") or "") == "wide"
+        _offer_darks_before_alignment(name, wide=wide)
+    finally:
+        _prompt_darks = saved
+
+
+def _release_engine_for_darks(name: str) -> None:
+    """Stop tracking so a dark run can be stored as a calibration set.
+
+    A stack that is already aligned is still tracking when the missing-dark
+    warning arrives. Dark frames written in that state show up on the camera
+    but are not the set the next stack looks up, so the prompt comes back.
+    """
+    snapshot = _tap.snapshot() if _tap is not None else {}
+    tracking = snapshot.get("tracking_state") == "running" or _goto_busy(snapshot)
+    capturing = _capture_running(snapshot)
+    if not tracking and not capturing:
+        return
+    log(f"{name}: stopping tracking so dark frames can be saved", "notice")
+    try:
+        sdk_call("stop_goto")
+    except Exception as exc:
+        log(f"Stop tracking before darks skipped: {exc}", "warning")
+    if capturing:
+        try:
+            sdk_call("stop_astro")
+        except Exception as exc:
+            log(f"Stop capture before darks skipped: {exc}", "debug")
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        snapshot = _tap.snapshot() if _tap is not None else {}
+        if snapshot.get("tracking_state") != "running" and not _goto_busy(snapshot) and not _capture_running(snapshot):
+            return
+        time.sleep(0.25)
+    log(f"{name}: telescope still busy; starting dark frames anyway", "warning")
+
+
 def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: int) -> str:
-    """Return '' when darks finish, 'cancel', 'stopped', or an error to show."""
+    """Return '' when darks finish, 'cancel', 'stopped', or an error to show.
+
+    The command is fire-and-forget. The installed SDK never queues a reply
+    for 11021/11025, and its 150 s wait uses code -5, the same number as
+    WS_DEVICE_NOT_ACTIVATED. Completion is the dark-state notification.
+    """
     if not settings.get("gain_ok") or not settings.get("exposure_ok"):
         return str(settings.get("block_reason") or "Darks cannot be taken for these settings")
     try:
@@ -2971,27 +3115,28 @@ def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: in
     since = time.monotonic()
     log(f"{name}: taking {DARK_FRAME_COUNT} dark frames", "notice")
     try:
-        result = _send_request("dark", message, command, _MODULE_ASTRO, f"{name} darks")
+        _release_engine_for_darks(name)
+        sent = send_without_response(message, command, _MODULE_ASTRO)
     except InterruptedError:
         _stop_dark_capture(wide)
         return "stopped"
+    if not sent:
+        return "Dark frames could not be sent"
     if _stop.is_set():
         _stop_dark_capture(wide)
         return "stopped"
     if _dark_cancel_requested(token):
         _stop_dark_capture(wide)
         return "cancel"
-    code = result if isinstance(result, int) and not isinstance(result, bool) else None
-    if result is not True and code != 0:
-        if code is None and _tap is not None:
-            code = _tap.response_after(command, since)
-        if code not in (None, 0):
-            return f"Dark frames were refused: {_error_name(code)}"
-        return "Dark frames were refused: no reply from the telescope"
     seconds = exposure_seconds_from_text(settings.get("exposure")) or 30.0
     limit = max(90.0, float(seconds) * DARK_FRAME_COUNT + 120.0)
+    opened = _tap.snapshot() if _tap is not None else {}
+    progress_mark = float(opened.get("exposure_progress_at") or 0)
+    last_progress = progress_mark
+    frames_seen = 0
     started = time.monotonic()
     seen = False
+    state_seen = False
     while True:
         if _stop.is_set():
             _stop_dark_capture(wide)
@@ -3001,13 +3146,37 @@ def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: in
             return "cancel"
         snap = _tap.snapshot() if _tap is not None else {}
         state = str(snap.get("dark_state") or "")
+        progress_at = float(snap.get("exposure_progress_at") or 0)
+        if progress_at > last_progress:
+            last_progress = progress_at
+            frames_seen += 1
+            seen = True
         if state == "running":
             seen = True
-        elif seen and state in ("stopped", "idle"):
+            state_seen = True
+        elif state_seen and state in ("stopped", "idle"):
             return ""
-        elapsed = time.monotonic() - started
-        if not seen and elapsed >= 45.0:
+        now = time.monotonic()
+        elapsed = now - started
+        if (
+            frames_seen >= DARK_FRAME_COUNT
+            and last_progress > progress_mark
+            and (now - last_progress) >= float(seconds) + _DARK_FRAME_QUIET_S
+        ):
+            return ""
+        # -5 is WS_DEVICE_NOT_ACTIVATED and also the SDK socket timeout.
+        # A dark run that is already writing frames must not be cancelled
+        # for it; the state notification is what says the set was saved.
+        if not seen and elapsed >= _DARK_REFUSAL_GRACE_S and _tap is not None:
+            code = _tap.response_after(command, since)
+            if code not in (None, 0, -5):
+                _stop_dark_capture(wide)
+                return f"Dark frames were refused: {_error_name(code)}"
+        if not seen and elapsed >= _DARK_START_TIMEOUT_S:
             _stop_dark_capture(wide)
+            code = _tap.response_after(command, since) if _tap is not None else None
+            if code not in (None, 0):
+                return f"Dark frames were refused: {_error_name(code)}"
             return "Dark frames did not start"
         if elapsed >= limit:
             _stop_dark_capture(wide)
@@ -3527,6 +3696,16 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         step("Entering solar mode", "shooting_mode", 8 if solar_name == "sun" else 9 if solar_name == "moon" else 10, 2)
     else:
         step("Entering astro mode", "astro_mode")
+    # Darks retract the DWARF 3 lens cylinder and clear alignment. Ask while
+    # the mount is still free, using the stack's exposure and gain rather
+    # than the short calibration exposure applied further down.
+    _remember_stack_settings(camera)
+    if _prompt_darks:
+        step("Checking dark frames")
+        _offer_darks_before_alignment(
+            "Stack",
+            wide=str(camera.get("camera") or "") == "wide",
+        )
     _wait_seconds(workflow.get("wait_before_seconds", 0), "Waiting before workflow", step)
     # Dwarf 3 calibration plate-solves from the polar-home pose. Skipping this
     # after a power-on or leftover stop_motors fails with CALIBRATION_FAILED.
@@ -4939,6 +5118,7 @@ def _start_sky_track(ra_hours: float, dec_degrees: float, target_name: str = "")
         raise RuntimeError("Sky map target is missing RA/Dec")
     name = str(target_name or "").strip() or "Sky map target"
     log(f"TRACK from sky map → RA {ra:.4f}h Dec {dec:+.3f}° ({name})")
+    _offer_darks_before_manual_alignment("Stack")
     _start_goto_for_tracking(ra, dec, name)
     return {
         "ok": True,
@@ -4950,6 +5130,7 @@ def _start_sky_track(ra_hours: float, dec_degrees: float, target_name: str = "")
 
 def _start_tracking(target_name: str = "") -> dict[str, Any]:
     """GOTO the current pointing with tracking enabled (goto_only=False)."""
+    _offer_darks_before_manual_alignment("Stack")
     if _ensure_astro_mode(enter_camera=False) is False:
         raise RuntimeError("Could not enter astro mode")
     snapshot = _tap.snapshot() if _tap is not None else {}
@@ -5209,6 +5390,8 @@ def _stack_mosaic(
         log("Mosaic stack stays on the tele camera", "notice")
     operation, args = _prepare_manual_stack(mosaic_stack_camera(camera).value)
     _stop.clear()
+    if prompt_darks:
+        _offer_darks_before_alignment("Stack", wide=False)
     _session_active.set()
     _session_phase = None
     v3_model = _device.get("model") in ("Dwarf 3", "Dwarf Mini")
@@ -5448,6 +5631,7 @@ def dispatch(message: dict[str, Any]) -> Any:
             since,
         )
     if command == "polar_position":
+        _offer_darks_before_manual_alignment("Stack")
         return polar_position()
     if command == "stop_polar_position":
         return stop_polar_position()
@@ -5521,6 +5705,8 @@ def dispatch(message: dict[str, Any]) -> Any:
         # can sit on the SDK's 150 s reply wait. Reopen only on TELE_CLOSED.
         if _ensure_astro_mode(enter_camera=False) is False:
             return False
+        if command in {"calibrate", "polar"}:
+            _offer_darks_before_manual_alignment("Stack")
     if command == "astro_mode":
         result = _ensure_astro_mode()
         if result is not False:

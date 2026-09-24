@@ -40,25 +40,4 @@ chmod +x AstroDwarf-*-linux-x86_64.AppImage
 
 Set each telescope’s IP, model, and location in Settings. Start the scheduler from Control when you are ready to run the night.
 
-## Run from source
-
-Needs [Python 3.11+](https://www.python.org/downloads/) and Git.
-
-```text
-git clone https://github.com/styelz/astro_dwarf.git
-cd astro_dwarf
-./start.sh          # macOS / Linux
-.\start.bat         # Windows
-```
-
-The first run creates a local environment and installs what it needs. Dwarf 3 and Mini live view also need `ffmpeg` on your PATH when you run from source (the installers already include it).
-
-## Credits
-
-Astro Dwarf is an unofficial third-party tool. It is not affiliated with, endorsed by, or supported by [DwarfLab](https://dwarflab.com/) or [Stellarium Labs](https://stellarium-labs.com/).
-
-Sky targeting can use [Stellarium](https://stellarium.org/) desktop Remote Control, and the SKY page loads [Stellarium Web](https://stellarium-web.org/). Observing lists can be imported from a [Telescopius](https://telescopius.com/) CSV.
-
-This project is licensed under the [MIT License](LICENSE).
-
-Telescope commands come from [`dwarf_python_api`](https://github.com/stevejcl/dwarf_python_api) by [JC L. (`stevejcl`)](https://github.com/stevejcl).
+Astro Dwarf is an unofficial third-party tool. It is not affiliated with, endorsed by, or supported by [DwarfLab](https://dwarflab.com/) or [Stellarium Labs](https://stellarium-labs.com/). Licensed under the [MIT License](LICENSE).

@@ -63,6 +63,51 @@ def _missing_packages() -> list[str]:
     return missing
 
 
+def rewrite_latin1_sources(root: Path) -> list[Path]:
+    """Save SDK sources that are not UTF-8 as UTF-8.
+
+    dwarf_python_api on multi_V3 ships a French comment in Latin-1.
+    Python 3 only accepts UTF-8 source, so that file cannot be imported
+    until it is rewritten. Valid UTF-8 files are left unchanged.
+    """
+    if not root.is_dir():
+        return []
+    rewritten: list[Path] = []
+    for path in root.rglob("*.py"):
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        try:
+            data.decode("utf-8")
+            continue
+        except UnicodeDecodeError:
+            pass
+        try:
+            path.write_bytes(data.decode("latin-1").encode("utf-8"))
+        except OSError:
+            continue
+        cache = path.parent / "__pycache__"
+        if cache.is_dir():
+            for stale in cache.glob(f"{path.stem}*.pyc"):
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+        rewritten.append(path)
+    return rewritten
+
+
+def _repair_sdk_source_encoding() -> None:
+    try:
+        from importlib.metadata import distribution
+
+        root = Path(distribution("dwarf_python_api").locate_file("dwarf_python_api"))
+    except Exception:
+        return
+    rewrite_latin1_sources(root)
+
+
 def _smoke_ok() -> bool:
     from contextlib import redirect_stderr, redirect_stdout
     from io import StringIO
@@ -94,6 +139,7 @@ def main() -> int:
     if missing:
         print("Need " + ", ".join(missing))
         return 1
+    _repair_sdk_source_encoding()
     if not _smoke_ok():
         print("Installed packages are incomplete or cannot be imported")
         return 1

@@ -16,9 +16,8 @@
       </div>
       <nav>
         <a href="#screens">Screens</a>
-        <a href="https://github.com/styelz/astro_dwarf">GitHub</a>
-        <a href="https://github.com/styelz/astro_dwarf/releases/latest">Releases</a>
-        <a href="https://github.com/styelz/astro_dwarf#run-from-source">Source</a>
+        <a href="#install">Install</a>
+        <a href="https://github.com/styelz/astro_dwarf/releases/latest">Download</a>
       </nav>
     </header>
 
@@ -46,33 +45,21 @@
     </figure>
 
     <div class="downloads">
-      <a class="btn" href="https://github.com/styelz/astro_dwarf/releases/latest">Download installers</a>
-      <a class="btn ghost" href="https://github.com/styelz/astro_dwarf">Repository</a>
+      <a class="btn" href="https://github.com/styelz/astro_dwarf/releases/latest">Download</a>
     </div>
 
-    <section>
-      <h2>Installers</h2>
+    <section id="install">
+      <h2>Install</h2>
       <ul class="notes">
-        <li><strong>Windows x64:</strong> <code>AstroDwarf-Setup-&lt;version&gt;-win64.exe</code>. Per-user install; no admin. SmartScreen may warn: More info → Run anyway. Portable zip also available.</li>
-        <li><strong>macOS Apple Silicon:</strong> open the <code>.dmg</code>, drag to Applications, then right-click Open the first time (unsigned / Gatekeeper).</li>
-        <li><strong>Linux x64:</strong> AppImage, <code>.deb</code>, <code>.rpm</code>, or Arch <code>.pkg.tar.zst</code>.</li>
+        <li><strong>Windows:</strong> run <code>AstroDwarf-Setup-&lt;version&gt;-win64.exe</code>. No admin password is required. If SmartScreen warns, choose More info → Run anyway. For a copy that does not need installing, unzip the portable zip and run <code>AstroDwarf.exe</code>.</li>
+        <li><strong>Mac (Apple Silicon):</strong> open the <code>.dmg</code>, drag the app to Applications, then right-click it and choose Open the first time.</li>
+        <li><strong>Linux:</strong> use the <code>.AppImage</code>, or the package for your system (<code>.deb</code>, <code>.rpm</code>, or <code>.pkg.tar.zst</code>).</li>
       </ul>
-      <p class="dim">Unsigned builds. Pushing a new version on main replaces the previous release set.</p>
-    </section>
-
-    <section>
-      <h2>Run from source</h2>
-      <p class="dim">Python 3.11+ and Git. The scheduler stays stopped until you start it from Control. Dwarf 3 and Mini live view needs ffmpeg on PATH (installers already include it).</p>
-      <pre>git clone https://github.com/styelz/astro_dwarf.git
-cd astro_dwarf
-./start.sh          # macOS / Linux
-.\start.bat         # Windows</pre>
+      <p class="dim">Set each telescope’s IP, model, and location in Settings. Start the scheduler from Control when you are ready to run the night.</p>
     </section>
 
     <footer>
-      <p>Unofficial third-party tool. Not affiliated with, endorsed by, or supported by <a href="https://dwarflab.com/">DwarfLab</a> or <a href="https://stellarium-labs.com/">Stellarium Labs</a>.</p>
-      <p>SKY loads <a href="https://stellarium-web.org/">Stellarium Web</a>. Desktop targeting uses Stellarium Remote Control. Lists can be imported from a Telescopius CSV. MIT License.</p>
-      <p>Telescope commands come from <a href="https://github.com/stevejcl/dwarf_python_api">dwarf_python_api</a> by JC L. (<a href="https://github.com/stevejcl">stevejcl</a>).</p>
+      <p>Unofficial third-party tool. Not affiliated with, endorsed by, or supported by <a href="https://dwarflab.com/">DwarfLab</a> or <a href="https://stellarium-labs.com/">Stellarium Labs</a>. MIT License.</p>
     </footer>
   </div>
   <script src="slideshow.js"></script>

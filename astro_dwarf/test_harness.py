@@ -1086,6 +1086,20 @@ class TestHarness:
             if method == "POST" and route == "/window/maximize":
                 maximize_window(self.window)
                 return {"action": "maximize"}
+            if method == "POST" and route == "/window/resize":
+                show = getattr(self.window, "showNormal", None)
+                if callable(show):
+                    show()
+                width = int(payload.get("width") or _property(self.window, "minimumWidth", 1040) or 1040)
+                height = int(payload.get("height") or _property(self.window, "minimumHeight", 620) or 620)
+                resize = getattr(self.window, "resize", None)
+                if not callable(resize):
+                    raise RuntimeError("window does not support resize")
+                resize(width, height)
+                return {
+                    "width": int(_property(self.window, "width", width) or width),
+                    "height": int(_property(self.window, "height", height) or height),
+                }
             if method == "POST" and route == "/device/action":
                 operation = str(payload.get("operation") or payload.get("name") or "")
                 label = str(payload.get("label") or operation)

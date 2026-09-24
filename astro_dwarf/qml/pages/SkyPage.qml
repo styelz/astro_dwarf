@@ -208,7 +208,6 @@ Item {
         if (now - skyPage.lastSkyMenuAt < 250)
             return
         skyPage.lastSkyMenuAt = now
-        skyMenu.refreshClipboard()
         if (x === undefined || y === undefined) {
             skyMenu.popup()
             return

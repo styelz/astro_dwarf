@@ -84,9 +84,15 @@ CMD_ASTRO_START_CAPTURE_RAW_LIVE_STACKING = 11005
 CMD_ASTRO_START_WIDE_CAPTURE_LIVE_STACKING = 11016
 CMD_ASTRO_START_TELE_MOSAIC = 11031
 CMD_ASTRO_CONTINUE_SHOOTING = 11050
+CMD_ASTRO_START_CAPTURE_RAW_DARK_WITH_PARAM = 11021
+CMD_ASTRO_START_CAPTURE_WIDE_RAW_DARK_WITH_PARAM = 11025
+CMD_ASTRO_GET_DARK_FRAME_LIST = 11023
+CMD_ASTRO_GET_WIDE_DARK_FRAME_LIST = 11027
 # Commands whose reply code the worker needs: long-running operations whose
 # reply only arrives once the operation ends, and capture starts whose reply
 # carries firmware warnings (missing darks, engine busy) the SDK only logs.
+# Dark capture is included because the installed SDK has no handler for 11021
+# or 11025, so connect_socket never sees that reply.
 _TRACKED_RESPONSES = {
     CMD_ASTRO_START_CALIBRATION,
     CMD_ASTRO_START_GOTO_DSO,
@@ -98,6 +104,12 @@ _TRACKED_RESPONSES = {
     CMD_ASTRO_START_WIDE_CAPTURE_LIVE_STACKING,
     CMD_ASTRO_START_TELE_MOSAIC,
     CMD_ASTRO_CONTINUE_SHOOTING,
+    CMD_ASTRO_START_CAPTURE_RAW_DARK_WITH_PARAM,
+    CMD_ASTRO_START_CAPTURE_WIDE_RAW_DARK_WITH_PARAM,
+}
+_DARK_LIBRARY_CMDS = {
+    CMD_ASTRO_GET_DARK_FRAME_LIST,
+    CMD_ASTRO_GET_WIDE_DARK_FRAME_LIST,
 }
 
 OPERATION_STATES = {0: "idle", 1: "running", 2: "stopping", 3: "stopped"}
@@ -465,6 +477,8 @@ class TelemetryTap:
         self._status_signature: dict[str, Any] = {}
         self._astro = None
         self._responses: dict[int, tuple[int, float]] = {}
+        # cmd -> (status, frames, monotonic). status is "ready" or "failed".
+        self._dark_libraries: dict[int, tuple[str, list[dict[str, Any]], float]] = {}
         # After a new session starts, leftover stacking packets / SDK cache
         # counts from the previous run must not keep the HUD on e.g. 104/120.
         self._hold_stale_capture = False
@@ -568,6 +582,7 @@ class TelemetryTap:
             self._pending.clear()
             self._status_signature.clear()
             self._responses.clear()
+            self._dark_libraries.clear()
             self._hold_stale_capture = False
             self._accept_sdk_capture_counts = True
             self._stale_capture_peak = 0
@@ -671,6 +686,14 @@ class TelemetryTap:
         if item is None or item[1] < since:
             return None
         return item[0]
+
+    def dark_library_after(self, cmd: int, since: float) -> tuple[str, list[dict[str, Any]]]:
+        """Return ('pending'|'failed'|'ready', frames) for a dark-library reply."""
+        with self._lock:
+            item = self._dark_libraries.get(cmd)
+        if item is None or item[2] < since:
+            return "pending", []
+        return item[0], list(item[1])
 
     def _queue_mode_exposure_fields(self) -> None:
         from .telemetry_view import apply_mode_exposure_fields
@@ -819,7 +842,9 @@ class TelemetryTap:
 
     def on_packet(self, cmd: int, kind: int, data: bytes) -> None:
         """Decode one incoming packet into telemetry changes (never raises)."""
-        if kind in _RESPONSE_TYPES and cmd in _TRACKED_RESPONSES:
+        if kind in _RESPONSE_TYPES and cmd in _DARK_LIBRARY_CMDS:
+            self._record_dark_library(cmd, data)
+        elif kind in _RESPONSE_TYPES and cmd in _TRACKED_RESPONSES:
             self._record_response(cmd, data)
         try:
             changes = self._decode(cmd, kind, data)
@@ -834,6 +859,35 @@ class TelemetryTap:
                 CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING,
                 CMD_NOTIFY_POWER_OFF,
             ) or cmd in _PHOTO_FUNCTION_FORCE)
+
+    def _record_dark_library(self, cmd: int, data: bytes) -> None:
+        status = "failed"
+        frames: list[dict[str, Any]] = []
+        try:
+            if self._astro is None:
+                return
+            message = self._astro.ResGetDarkFrameInfoList()
+            message.ParseFromString(data)
+            if int(message.code) == 0:
+                status = "ready"
+                for item in message.results:
+                    temperature = None
+                    try:
+                        if item.HasField("temperature"):
+                            temperature = int(item.temperature)
+                    except (AttributeError, TypeError, ValueError):
+                        temperature = None
+                    frames.append({
+                        "exp_index": int(item.exp_index),
+                        "gain_index": int(item.gain_index),
+                        "bin_index": int(item.bin_index),
+                        "temperature": temperature,
+                    })
+        except Exception:
+            status = "failed"
+            frames = []
+        with self._lock:
+            self._dark_libraries[cmd] = (status, frames, time.monotonic())
 
     def _record_response(self, cmd: int, data: bytes) -> None:
         try:
@@ -1108,6 +1162,9 @@ class TelemetryTap:
             return {
                 "exposure_total_s": float(message.total_time),
                 "exposure_elapsed_s": float(message.exposured_time),
+                # DWARF 3 dark runs notify this once per frame and never send
+                # 15206/15207. The stamp lets the dark waiter count those frames.
+                "exposure_progress_at": time.monotonic(),
             }
         if cmd == CMD_NOTIFY_GENERAL_INT_PARAM:
             message = self._parse("GeneralIntParam", data)

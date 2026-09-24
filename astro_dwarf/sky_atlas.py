@@ -1456,6 +1456,12 @@ ATLAS_BOOT_JS = r"""
         box.dismissAt = 0;
         box.menu = {x: ev.clientX, y: ev.clientY, at: Date.now()};
         box.menuLast = box.menu;
+        try {
+          var current = String(document.title || "");
+          if (current.indexOf("astro-dwarf-host:") !== 0)
+            window.__astroDwarfHostTitle = current;
+          document.title = "astro-dwarf-host:menu\t" + Number(ev.clientX) + "\t" + Number(ev.clientY) + "\t" + Date.now();
+        } catch (err) {}
         return false;
       }, true);
       document.addEventListener("click", function(ev) {

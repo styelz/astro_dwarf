@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 from dwarf_python_api.proto import notify_pb2
 
 from astro_dwarf.device_telemetry import (
+    CMD_NOTIFY_LONG_EXP_PROGRESS,
     CMD_NOTIFY_STATE_CAPTURE_WIDE_RAW_DARK,
     TYPE_NOTIFICATION,
     TelemetryTap,
@@ -29,18 +30,21 @@ def _assert(condition: bool, message: object) -> None:
 class _DarkTap:
     def __init__(self) -> None:
         self.phase = "idle"
+        self.code: int | None = None
 
     def snapshot(self) -> dict[str, object]:
         return {"dark_state": self.phase, "cmos_tele_c": 12}
 
-    def response_after(self, _command: int, _since: float) -> None:
-        return None
+    def response_after(self, _command: int, _since: float) -> int | None:
+        return self.code
 
 
 def _restore(previous: dict[str, object]) -> None:
     worker._tap = previous["tap"]
     worker._device = previous["device"]
     worker._send_request = previous["send"]
+    worker.send_without_response = previous["fire"]
+    worker._stop_dark_capture = previous["stop_dark"]
     worker._continue_shooting = previous["continue"]
     worker._stop.clear()
     worker._begin_dark_prompt_run(False)
@@ -53,6 +57,8 @@ def _snapshot() -> dict[str, object]:
         "tap": worker._tap,
         "device": worker._device,
         "send": worker._send_request,
+        "fire": worker.send_without_response,
+        "stop_dark": worker._stop_dark_capture,
         "continue": worker._continue_shooting,
     }
 
@@ -62,6 +68,7 @@ def test_model_steps_follow_each_manual() -> None:
     mini = worker.dark_frame_steps("Dwarf Mini")
     dwarf2 = worker.dark_frame_steps("Dwarf II")
     _assert("ND filter" in dwarf3 and "retract the lens cylinder" in dwarf3, dwarf3)
+    _assert("before calibration" in dwarf3, dwarf3)
     _assert("dark shutter" in mini and "ND filter" not in mini, mini)
     _assert("lens cover" in dwarf2 and "ND filter" not in dwarf2 and "dark shutter" not in dwarf2, dwarf2)
     _assert(
@@ -173,7 +180,7 @@ def test_take_darks_builds_the_firmware_request() -> None:
     tele_index = worker.dark_exposure_index("15", "3", False)
     wide_index = worker.dark_exposure_index("15", "3", True)
 
-    def send(_operation, message, command, _module, _label):
+    def send(message, command, _module, timeout=None):
         sent.append((
             int(command),
             int(message.exp_index),
@@ -189,9 +196,9 @@ def test_take_darks_builds_the_firmware_request() -> None:
             tap.phase = "stopped"
 
         threading.Thread(target=finish, daemon=True).start()
-        return 0
+        return True
 
-    worker._send_request = send
+    worker.send_without_response = send
     try:
         tele = worker._take_dark_frames("Stack", False, worker._dark_capture_settings(False), 1)
         worker._tap = _DarkTap()
@@ -202,6 +209,57 @@ def test_take_darks_builds_the_firmware_request() -> None:
     _assert(wide == "", wide)
     _assert(sent[0] == (11021, tele_index, 60, 0, 10), sent[0])
     _assert(sent[1] == (11025, wide_index, 60, 0, 10), sent[1])
+
+
+def test_device_not_activated_does_not_discard_finished_darks() -> None:
+    previous = _snapshot()
+    stopped: list[bool] = []
+    worker._device = {"model": "Dwarf 3"}
+    worker._stack_exposure_name = "15"
+    worker._stack_gain = 50
+    worker._stack_bin_index = 0
+    tap = _DarkTap()
+    tap.code = -5
+    worker._tap = tap
+
+    def send(_message, _command, _module, timeout=None):
+        tap.phase = "running"
+
+        def finish() -> None:
+            time.sleep(0.05)
+            tap.phase = "stopped"
+
+        threading.Thread(target=finish, daemon=True).start()
+        return True
+
+    worker.send_without_response = send
+    worker._stop_dark_capture = lambda _wide: stopped.append(True)
+    try:
+        result = worker._take_dark_frames("Stack", False, worker._dark_capture_settings(False), 1)
+    finally:
+        _restore(previous)
+    _assert(result == "", result)
+    _assert(stopped == [], stopped)
+
+
+def test_library_match_uses_exposure_gain_and_temperature() -> None:
+    settings = {
+        "exp_index": 156,
+        "gain": 50,
+        "bin_index": 0,
+        "temperature": "27°C",
+    }
+    frames = [{
+        "exp_index": 156,
+        "gain_index": 50,
+        "bin_index": 0,
+        "temperature": 30,
+    }]
+    _assert(worker.dark_library_status(frames, settings) == "match", "within 8°C")
+    frames[0]["temperature"] = 40
+    _assert(worker.dark_library_status(frames, settings) == "mismatch", "outside 8°C")
+    frames[0]["gain_index"] = 60
+    _assert(worker.dark_library_status(frames, settings) == "missing", "different gain")
 
 
 def test_remembered_continue_skips_the_next_pane() -> None:
@@ -218,6 +276,87 @@ def test_remembered_continue_skips_the_next_pane() -> None:
     _assert(outcome == "started", outcome)
     _assert(worker._dark_token == before, "a remembered continue must not open the modal")
     _assert(continued == ["Stack pane 2"], continued)
+
+
+def test_long_exposure_progress_counts_as_dark_frames() -> None:
+    """DWARF 3 sends 15288 once per dark frame and never sends dark_state."""
+    previous = _snapshot()
+    saved = (worker.DARK_FRAME_COUNT, worker._DARK_FRAME_QUIET_S, worker._DARK_START_TIMEOUT_S)
+    worker.DARK_FRAME_COUNT = 2
+    worker._DARK_FRAME_QUIET_S = 0.05
+    worker._DARK_START_TIMEOUT_S = 0.4
+    tap = _DarkTap()
+    tap.progress = 0.0
+    worker._device = {"model": "Dwarf 3"}
+    worker._tap = tap
+
+    def snapshot() -> dict[str, object]:
+        return {"dark_state": "idle", "exposure_progress_at": tap.progress}
+
+    tap.snapshot = snapshot
+
+    def send(_message, _command, _module, timeout=None):
+        def tick() -> None:
+            time.sleep(0.05)
+            tap.progress = time.monotonic()
+            time.sleep(0.3)
+            tap.progress = time.monotonic()
+
+        threading.Thread(target=tick, daemon=True).start()
+        return True
+
+    settings = {
+        "gain_ok": True,
+        "exposure_ok": True,
+        "exp_index": 1,
+        "gain": 50,
+        "bin_index": 0,
+        "exposure": "0.05",
+    }
+    worker.send_without_response = send
+    try:
+        result = worker._take_dark_frames("Stack", False, settings, 1)
+    finally:
+        worker.DARK_FRAME_COUNT, worker._DARK_FRAME_QUIET_S, worker._DARK_START_TIMEOUT_S = saved
+        _restore(previous)
+    _assert(result == "", result)
+
+
+def test_dark_start_timeout_without_progress() -> None:
+    previous = _snapshot()
+    saved = worker._DARK_START_TIMEOUT_S
+    worker._DARK_START_TIMEOUT_S = 0.2
+    worker._device = {"model": "Dwarf 3"}
+    worker._tap = _DarkTap()
+    worker.send_without_response = lambda *_args, **_kwargs: True
+    worker._stop_dark_capture = lambda _wide: None
+    try:
+        result = worker._take_dark_frames(
+            "Stack",
+            False,
+            {"gain_ok": True, "exposure_ok": True, "exp_index": 1, "gain": 50, "bin_index": 0, "exposure": "15"},
+            1,
+        )
+    finally:
+        worker._DARK_START_TIMEOUT_S = saved
+        _restore(previous)
+    _assert(result == "Dark frames did not start", result)
+
+
+def test_long_exp_progress_is_stamped() -> None:
+    tap = TelemetryTap(lambda _payload: None, flush_interval=0)
+    tap._notify = notify_pb2
+    tap._base = object()
+    note = notify_pb2.LongExpPhotoProgress()
+    note.total_time = 15
+    note.exposured_time = 1
+    changes = tap._decode(
+        CMD_NOTIFY_LONG_EXP_PROGRESS,
+        TYPE_NOTIFICATION,
+        note.SerializeToString(),
+    )
+    _assert(changes.get("exposure_elapsed_s") == 1.0, changes)
+    _assert(float(changes.get("exposure_progress_at") or 0) > 0, changes)
 
 
 def test_wide_dark_state_notify() -> None:
@@ -241,6 +380,11 @@ if __name__ == "__main__":
     test_prompt_waits_to_continue()
     test_prompt_cancel_does_not_continue()
     test_take_darks_builds_the_firmware_request()
+    test_device_not_activated_does_not_discard_finished_darks()
+    test_long_exposure_progress_counts_as_dark_frames()
+    test_dark_start_timeout_without_progress()
+    test_long_exp_progress_is_stamped()
+    test_library_match_uses_exposure_gain_and_temperature()
     test_remembered_continue_skips_the_next_pane()
     test_wide_dark_state_notify()
     print("ok")

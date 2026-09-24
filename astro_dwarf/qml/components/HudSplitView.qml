@@ -20,7 +20,10 @@ SplitView {
     property string settingsKey: ""
     property bool autoRestore: true
     readonly property bool controlLayoutSplit: splitView.settingsKey === "controlColumns"
+        || splitView.settingsKey === "controlRows"
         || PanelSwap.columnKeys.indexOf(splitView.settingsKey) >= 0
+        || PanelSwap.rowKeys.indexOf(splitView.settingsKey) >= 0
+        || splitView.settingsKey.indexOf("Col") > 0
     property var lockedRatios: []
     property int handleDragCount: 0
     property bool applyingLocks: false

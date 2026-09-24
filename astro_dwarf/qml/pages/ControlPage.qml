@@ -97,8 +97,25 @@ Item {
         }
     }
     property bool layoutReady: false
+    Component {
+        id: extraColumnShell
+        HudSplitView {
+            orientation: Qt.Vertical
+            autoRestore: false
+        }
+    }
+    Component {
+        id: extraRowShell
+        HudSplitView {
+            orientation: Qt.Horizontal
+            autoRestore: false
+        }
+    }
     Component.onCompleted: {
         PanelSwap.host = controlPage
+        PanelSwap.columnFactory = extraColumnShell
+        PanelSwap.rowFactory = extraRowShell
+        PanelSwap.registerSplit(controlRows)
         PanelSwap.registerSplit(controlColumns)
         PanelSwap.registerSplit(controlLeft)
         PanelSwap.registerSplit(controlCenter)
@@ -113,12 +130,20 @@ Item {
         if (controlPage.layoutReady && !controlPage.visible)
             PanelSwap.persist()
     }
+    HudSplitView {
+        id: controlRows
+        settingsKey: "controlRows"
+        autoRestore: false
+        anchors.fill: parent
+        orientation: Qt.Vertical
+
         HudSplitView {
             id: controlColumns
             settingsKey: "controlColumns"
             autoRestore: false
-            anchors.fill: parent
             orientation: Qt.Horizontal
+            SplitView.fillHeight: true
+            SplitView.minimumHeight: Theme.px(160)
 
         HudSplitView {
             id: controlLeft
@@ -1229,10 +1254,20 @@ Item {
                     function swapViews() {
                         if (!pipAvailable)
                             return
+                        if (feedFullscreen) {
+                            feedFullscreenCamera = feedFullscreenCamera === "wide" ? "tele" : "wide"
+                            mainWide = feedFullscreenCamera === "wide"
+                            return
+                        }
                         mainWide = !mainWide
                     }
                     property bool feedFullscreen: false
                     property string feedFullscreenCamera: "tele"
+                    // The live view covers this window, then the window covers the monitor.
+                    // Readout, badges, action buttons, and PiP follow this parent.
+                    readonly property Item previewChromeParent: feedFullscreen ? feedFullscreenLayer : previewHost
+                    readonly property bool chromeWide: feedFullscreen ? feedFullscreenCamera === "wide" : displayWide
+                    readonly property bool pipWide: feedFullscreen ? feedFullscreenCamera !== "wide" : !displayWide
                     function streamPlaying(camera) {
                         return camera === "wide" ? !!backend.previewWidePlaying : !!backend.previewTelePlaying
                     }
@@ -1264,10 +1299,21 @@ Item {
                         if (feedFullscreen)
                             return
                         feedFullscreen = true
+                        root.enterVideoFullscreen()
                         previewHost.revealControls()
                     }
                     function exitFeedFullscreen() {
+                        if (feedFullscreen)
+                            root.exitVideoFullscreen()
                         feedFullscreen = false
+                        if (previewMenu.opened)
+                            previewMenu.close()
+                    }
+                    function openPreviewMenu(at, x, y) {
+                        if (feedFullscreen && at && x !== undefined && y !== undefined)
+                            previewMenu.popup(at, x, y)
+                        else
+                            previewMenu.popup()
                     }
                     function toggleFeedFullscreen(camera) {
                         if (feedFullscreen)
@@ -1481,10 +1527,12 @@ Item {
 
                     HoverHandler {
                         id: previewHover
-                        enabled: backend.previewPlaying
+                        enabled: backend.previewPlaying && !previewHost.feedFullscreen
                         acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                         onPointChanged: previewHost.noteChromePointer(previewHover.point.position.x, previewHover.point.position.y)
                         onHoveredChanged: {
+                            if (previewHost.feedFullscreen)
+                                return
                             if (hovered) {
                                 previewHost.rememberChromePointer(previewHover.point.position.x, previewHover.point.position.y)
                                 previewHost.revealControls()
@@ -1500,7 +1548,7 @@ Item {
                     }
                     TapHandler {
                         // touch: single tap toggles the controls (mouse users hover instead)
-                        enabled: backend.previewPlaying
+                        enabled: backend.previewPlaying && !previewHost.feedFullscreen
                         acceptedDevices: PointerDevice.TouchScreen
                         gesturePolicy: TapHandler.ReleaseWithinBounds
                         onSingleTapped: previewHost.toggleControls()
@@ -1567,6 +1615,7 @@ Item {
                     Item {
                         id: pipBox
                         z: 3
+                        parent: previewHost.previewChromeParent
                         clip: true
                         visible: previewHost.pipPlaying
                         width: Math.round(Math.max(Theme.px(168), Math.min(parent.width * 0.32, parent.height * 0.38, Theme.px(300))))
@@ -1577,6 +1626,14 @@ Item {
                         anchors.bottom: parent.bottom
                         anchors.rightMargin: Theme.px(14)
                         anchors.bottomMargin: Theme.px(46)
+                        function dock() {
+                            floating = false
+                            anchors.right = parent ? parent.right : undefined
+                            anchors.bottom = parent ? parent.bottom : undefined
+                            anchors.rightMargin = Theme.px(14)
+                            anchors.bottomMargin = Theme.px(46)
+                        }
+                        onParentChanged: if (parent) dock()
                         function beginFloat() {
                             if (floating)
                                 return
@@ -1612,9 +1669,9 @@ Item {
                             id: pipPane
                             anchors.fill: parent
                             anchors.margins: Theme.px(1)
-                            playing: !previewHost.feedFullscreen && previewHost.pipPlaying
-                            wideView: !previewHost.displayWide
-                            camera: previewHost.liveCamera(!previewHost.displayWide)
+                            playing: previewHost.pipPlaying
+                            wideView: previewHost.pipWide
+                            camera: previewHost.liveCamera(wideView)
                             centerEnabled: playing && root.motionEnabled && !backend.centerTapBusy
                             inputEnabled: false
                             swallowClicks: true
@@ -1637,15 +1694,19 @@ Item {
                             anchors.fill: parent
                             drag.target: pipBox
                             drag.minimumX: 8
-                            drag.maximumX: Math.max(Theme.s2, previewHost.width - pipBox.width - Theme.s2)
+                            drag.maximumX: Math.max(Theme.s2, (pipBox.parent ? pipBox.parent.width : 0) - pipBox.width - Theme.s2)
                             drag.minimumY: 8
-                            drag.maximumY: Math.max(Theme.s2, previewHost.height - pipBox.height - Theme.s2)
+                            drag.maximumY: Math.max(Theme.s2, (pipBox.parent ? pipBox.parent.height : 0) - pipBox.height - Theme.s2)
                             onPressed: pipBox.beginFloat()
                             onDoubleClicked: (mouse) => {
-                                if (!pipPane.wideView && backend.previewTelePlaying)
-                                    previewHost.toggleFeedFullscreen("tele")
-                                else
-                                    pipPane.centerOn(mouse.x, mouse.y)
+                                if (!pipPane.wideView && backend.previewTelePlaying) {
+                                    if (previewHost.feedFullscreen)
+                                        previewHost.swapViews()
+                                    else
+                                        previewHost.toggleFeedFullscreen("tele")
+                                    return
+                                }
+                                pipPane.centerOn(mouse.x, mouse.y)
                             }
                         }
                         Rectangle {
@@ -1755,7 +1816,9 @@ Item {
                     }
                     Rectangle {
                         // readout strip
+                        id: readoutBar
                         z: 7
+                        parent: previewHost.previewChromeParent
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
@@ -1769,7 +1832,7 @@ Item {
                         RowLayout {
                             id: readoutStrip
                             readonly property var t: root.scopeTelemetry
-                            readonly property bool wide: previewHost.displayWide
+                            readonly property bool wide: previewHost.chromeWide
                             readonly property string exposure: {
                                 const value = wide ? t.wide_exposure_text : t.exposure_text
                                 return root.scopeOnline && value && value !== "—" ? String(value) : liveExposure.text
@@ -2015,6 +2078,7 @@ Item {
                     Item {
                         id: stackWaitOverlay
                         z: 5
+                        parent: previewHost.previewChromeParent
                         anchors.fill: parent
                         visible: previewHost.awaitingFirstStack && !previewHost.mosaicActive
                         Rectangle {
@@ -2069,6 +2133,7 @@ Item {
                     Item {
                         id: stopOverlay
                         z: 6
+                        parent: previewHost.previewChromeParent
                         anchors.fill: parent
                         visible: root.scopeStopping
                         Rectangle {
@@ -2121,7 +2186,9 @@ Item {
                         }
                     }
                     Row {
+                        id: previewBadges
                         z: 7
+                        parent: previewHost.previewChromeParent
                         anchors.left: parent.left
                         anchors.top: parent.top
                         anchors.margins: Theme.px(14)
@@ -2161,7 +2228,7 @@ Item {
                             Text {
                                 id: mainCamLabel
                                 anchors.centerIn: parent
-                                text: previewHost.displayWide ? "WIDE" : (backend.previewResult || backend.previewStacking ? "STACK" : "TELE")
+                                text: previewHost.chromeWide ? "WIDE" : (backend.previewResult || backend.previewStacking ? "STACK" : "TELE")
                                 color: Theme.accent
                                 font.pixelSize: Theme.fontPx(11)
                                 font.bold: true
@@ -2256,6 +2323,7 @@ Item {
                     Row {
                         id: previewActions
                         z: 7
+                        parent: previewHost.previewChromeParent
                         anchors.right: parent.right
                         anchors.top: parent.top
                         anchors.margins: Theme.px(14)
@@ -2304,6 +2372,14 @@ Item {
                             busyText: backend.previewResult ? "DISMISSING…" : "STOPPING…"
                             onHoveredChanged: previewHost.holdControls(hovered)
                             onClicked: previewHost.stopPreview()
+                        }
+                        HudButton {
+                            objectName: "exitFeedFullscreen"
+                            visible: previewHost.feedFullscreen
+                            text: "EXIT FULL SCREEN"
+                            tooltip: "Leave full screen\nF, Escape, or double-click the tele stream"
+                            onHoveredChanged: previewHost.holdControls(hovered)
+                            onClicked: previewHost.exitFeedFullscreen()
                         }
                     }
                     Rectangle {
@@ -2361,7 +2437,7 @@ Item {
                     TapHandler {
                         acceptedButtons: Qt.RightButton
                         grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
-                        onTapped: previewMenu.popup()
+                        onTapped: previewHost.openPreviewMenu()
                     }
                     HudMenu {
                         id: previewMenu
@@ -2456,9 +2532,11 @@ Item {
                         LiveViewPane {
                             anchors.fill: parent
                             playing: previewHost.feedFullscreen
-                            wideView: previewHost.feedFullscreenCamera === "wide"
-                            camera: wideView ? "wide" : "tele"
-                            inputEnabled: false
+                            wideView: previewHost.chromeWide
+                            camera: previewHost.liveCamera(wideView)
+                            centerEnabled: playing && root.motionEnabled && !backend.previewResult && !backend.centerTapBusy
+                            feedDoubleClick: !wideView && playing && backend.previewTelePlaying
+                            onFeedDoubleClicked: previewHost.exitFeedFullscreen()
                             showFootprint: wideView
                             chromeShown: previewHost.chromeShown
                             fovH: previewHost.teleFovH
@@ -2467,6 +2545,7 @@ Item {
                             footprintNy: previewHost.teleMatchNy
                             footprintNw: previewHost.teleMatchNw
                             footprintNh: previewHost.teleMatchNh
+                            onCenterRequested: (nx, ny, diag) => backend.centerOnTap(backend.selectedDeviceId, nx, ny, diag)
                         }
                         HoverHandler {
                             id: feedFullscreenHover
@@ -2485,79 +2564,17 @@ Item {
                                 previewHost.hideControls()
                             }
                         }
-                        MouseArea {
-                            anchors.fill: parent
-                            acceptedButtons: Qt.LeftButton | Qt.RightButton
-                            onPressed: (mouse) => {
-                                if (mouse.button !== Qt.RightButton)
-                                    return
-                                previewMenu.popup()
-                                mouse.accepted = true
-                            }
-                            onDoubleClicked: previewHost.exitFeedFullscreen()
+                        TapHandler {
+                            enabled: feedFullscreenLayer.visible
+                            acceptedDevices: PointerDevice.TouchScreen
+                            gesturePolicy: TapHandler.ReleaseWithinBounds
+                            onSingleTapped: previewHost.toggleControls()
                         }
-                        Row {
-                            z: 2
-                            anchors.left: parent.left
-                            anchors.top: parent.top
-                            anchors.margins: Theme.px(14)
-                            spacing: Theme.s2
-                            opacity: previewHost.chromeShown ? 1 : 0.62
-                            Behavior on opacity { NumberAnimation { duration: Theme.slow } }
-                            Rectangle {
-                                width: feedFullscreenCamLabel.implicitWidth + Theme.s4
-                                height: Theme.px(28)
-                                color: Theme.panelFill
-                                border.color: Theme.outline
-                                Text {
-                                    id: feedFullscreenCamLabel
-                                    anchors.centerIn: parent
-                                    text: previewHost.feedFullscreenCamera === "wide" ? "WIDE" : "TELE"
-                                    color: Theme.accent
-                                    font.pixelSize: Theme.fontPx(11)
-                                    font.bold: true
-                                    font.letterSpacing: 1
-                                }
-                            }
-                            Rectangle {
-                                width: feedFullscreenLiveLabel.implicitWidth + Theme.s4
-                                height: Theme.px(28)
-                                color: Theme.panelFill
-                                border.color: Theme.success
-                                Text {
-                                    id: feedFullscreenLiveLabel
-                                    anchors.centerIn: parent
-                                    text: "LIVE"
-                                    color: Theme.textPrimary
-                                    font.pixelSize: Theme.fontPx(11)
-                                    font.bold: true
-                                    font.letterSpacing: 1
-                                }
-                            }
-                        }
-                        HudButton {
-                            z: 2
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.margins: Theme.px(14)
-                            text: "EXIT FULL SCREEN"
-                            opacity: previewHost.chromeShown ? 1 : 0
-                            visible: opacity > 0
-                            tooltip: "Leave full screen\nF, Escape, or double-click the stream"
-                            onHoveredChanged: previewHost.holdControls(hovered)
-                            onClicked: previewHost.exitFeedFullscreen()
-                        }
-                        Text {
-                            z: 2
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            anchors.bottom: parent.bottom
-                            anchors.bottomMargin: Theme.px(18)
-                            text: "F  ·  ESC  ·  DOUBLE-CLICK TO EXIT"
-                            color: Theme.textSecondary
-                            font.pixelSize: Theme.fontSm
-                            font.letterSpacing: Theme.tracking1
-                            opacity: previewHost.chromeShown ? 0.9 : 0
-                            Behavior on opacity { NumberAnimation { duration: Theme.normal } }
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            enabled: feedFullscreenLayer.visible
+                            grabPermissions: PointerHandler.CanTakeOverFromAnything | PointerHandler.ApprovesTakeOverByAnything
+                            onTapped: (eventPoint) => previewHost.openPreviewMenu(feedFullscreenLayer, eventPoint.position.x, eventPoint.position.y)
                         }
                     }
                 }
@@ -3893,16 +3910,28 @@ Item {
                 }
             }
         }
+        }
     }
     Rectangle {
         id: columnDockMark
         z: 3000
         enabled: false
         width: Theme.px(3)
-        x: controlColumns.x + PanelSwap.columnDockX - width / 2
-        y: controlColumns.y
-        height: controlColumns.height
+        x: PanelSwap.columnDockX - width / 2
+        y: PanelSwap.columnDockY
+        height: PanelSwap.columnDockH
         visible: PanelSwap.active && PanelSwap.dropMode === "column"
+        color: Theme.accent
+    }
+    Rectangle {
+        id: rowDockMark
+        z: 3000
+        enabled: false
+        height: Theme.px(3)
+        x: controlRows.x
+        y: controlRows.y + PanelSwap.rowDockY - height / 2
+        width: controlRows.width
+        visible: PanelSwap.active && PanelSwap.dropMode === "row"
         color: Theme.accent
     }
     Rectangle {

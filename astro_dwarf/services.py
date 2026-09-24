@@ -1839,6 +1839,14 @@ SKY_WEB_FOV_JS = r"""
       ctl.trackAt = Date.now();
     }, true);
   }
+  function signalHostMenu(x, y) {
+    try {
+      var current = String(document.title || "");
+      if (current.indexOf("astro-dwarf-host:") !== 0)
+        window.__astroDwarfHostTitle = current;
+      document.title = "astro-dwarf-host:menu\t" + Number(x) + "\t" + Number(y) + "\t" + Date.now();
+    } catch (err) {}
+  }
   function bindContextMenu(ctl) {
     if (!ctl || ctl.ctxBound) return;
     ctl.ctxBound = true;
@@ -1846,10 +1854,13 @@ SKY_WEB_FOV_JS = r"""
       if (!onSky(e.target)) return;
       e.preventDefault();
       e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === "function")
+        e.stopImmediatePropagation();
       ctl.menuAt = Date.now();
       ctl.dismissAt = 0;
       ctl.menuX = e.clientX;
       ctl.menuY = e.clientY;
+      signalHostMenu(e.clientX, e.clientY);
     }, true);
   }
   function bindLiveOpacityWheel(ctl) {

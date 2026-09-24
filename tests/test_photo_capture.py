@@ -283,7 +283,7 @@ def test_tap_stamps_record_start_clock() -> None:
     _assert(later.get("record_started_at") == snap.get("record_started_at"), later)
 
 
-def test_wide_tap_autofocus_lights_only_when_focus_moves() -> None:
+def test_wide_tap_autofocus_follows_firmware_state_not_focus_position() -> None:
     import time
 
     from astro_dwarf import device_worker
@@ -307,26 +307,33 @@ def test_wide_tap_autofocus_lights_only_when_focus_moves() -> None:
         device_worker._tap = photo
         device_worker._arm_linkage_autofocus_watch()
         now = time.monotonic()
-        device_worker._maybe_latch_linkage_autofocus(
-            {"focus_position": 1001, "autofocus_state": "idle"}, now
-        )
-        _assert(photo.data.get("autofocus_state") != "running", "one step is not a hunt")
-        device_worker._maybe_latch_linkage_autofocus(
-            {"focus_position": 1020, "autofocus_state": "idle"}, now
-        )
-        _assert(photo.data.get("autofocus_state") == "running", photo.data)
-        activity, _detail = derive_activity(photo.snapshot())
+        _assert(device_worker._linkage_af_until > now, "photo tap polls focus state")
+        _assert(device_worker._state_refresh_seconds(photo.snapshot(), now) == device_worker._LINKAGE_AF_POLL_S, "fast poll")
+        device_worker._maybe_poll_linkage_autofocus(now, {"focus_position": 1400, "autofocus_state": "idle"})
+        _assert(photo.data.get("autofocus_state") == "idle", photo.data)
+        _assert(not photo._hold_photo_autofocus, "a finished position must not hold the pad")
+        _assert(device_worker._linkage_af_until > now, "position jump does not end the watch")
+
+        running = {"focus_position": 1400, "autofocus_state": "running"}
+        device_worker._maybe_poll_linkage_autofocus(now, running)
+        _assert(device_worker._linkage_af_until == 0.0, "firmware running owns the pad")
+        activity, _detail = derive_activity(running)
         _assert(activity == "autofocus", activity)
 
-        device_worker._reset_linkage_autofocus_watch()
         device_worker._reset_photo_autofocus_watch()
         dso = Tap({"shooting_mode": 2, "focus_position": 1000, "autofocus_state": "idle"})
         device_worker._tap = dso
         device_worker._arm_linkage_autofocus_watch()
-        device_worker._maybe_latch_linkage_autofocus(
-            {"focus_position": 1200, "autofocus_state": "idle"}, time.monotonic()
+        _assert(device_worker._linkage_af_until > time.monotonic(), "dso tap also polls")
+        device_worker._maybe_poll_linkage_autofocus(
+            time.monotonic(), {"focus_position": 1200, "autofocus_state": "idle"}
         )
         _assert(dso.data.get("autofocus_state") == "idle", dso.data)
+
+        video = Tap({"shooting_mode": 0, "focus_position": 1000, "autofocus_state": "idle"})
+        device_worker._tap = video
+        device_worker._arm_linkage_autofocus_watch()
+        _assert(device_worker._linkage_af_until == 0.0, "video tap does not watch focus")
     finally:
         device_worker._reset_linkage_autofocus_watch()
         device_worker._reset_photo_autofocus_watch()
@@ -348,7 +355,7 @@ def main() -> None:
     test_camera_param_skips_matching_timelapse_duration()
     test_cancel_prime_clears_stills_and_flags_burst_reset()
     test_burst_start_packet_is_empty()
-    test_wide_tap_autofocus_lights_only_when_focus_moves()
+    test_wide_tap_autofocus_follows_firmware_state_not_focus_position()
     print("test_photo_capture: ok")
 
 

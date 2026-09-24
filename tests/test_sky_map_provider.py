@@ -153,11 +153,13 @@ def test_atlas_target_tooltip_stays_above_location_box() -> None:
 def test_map_left_click_dismisses_context_menu() -> None:
     web = sky_web_fov_script({})
     _assert("ctl.dismissAt = Date.now()" in web, "stellarium left click")
+    _assert("astro-dwarf-host:menu" in web, "stellarium pushes the right-click")
     _assert("ev.button !== 0" in web, "stellarium ignores the opening right-click")
     _assert("ctl.dismissAt = 0" in web, "stellarium right-click clears a stale dismiss")
     _assert('return "dismiss"' in SKY_WEB_DISMISS_POLL_JS and "ctl.dismissAt = 0" in SKY_WEB_DISMISS_POLL_JS, "stellarium poll")
     atlas = sky_atlas_boot_script()
     _assert("box.dismissAt = Date.now()" in atlas, "aladin left click")
+    _assert("astro-dwarf-host:menu" in atlas, "aladin pushes the right-click")
     _assert("ev.button !== 0" in atlas, "aladin ignores the opening right-click")
     _assert("box.dismissAt = 0" in atlas, "aladin right-click clears a stale dismiss")
     poll = sky_atlas_dismiss_poll_script()

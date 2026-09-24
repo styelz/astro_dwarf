@@ -132,8 +132,18 @@ def configure_qml_import_path() -> None:
 
 
 def data_root() -> Path:
-    """Return a writable data directory for the current execution mode."""
+    """Return a writable data directory for the current execution mode.
+
+    Source checkouts honor ``ASTRO_DWARF_DATA`` so a scale test can load a
+    temp library without touching the live ``data/`` folder. Frozen builds
+    ignore that variable and keep the per-user app data directory.
+    """
     if not is_frozen():
+        override = str(os.environ.get("ASTRO_DWARF_DATA") or "").strip()
+        if override:
+            path = Path(override).expanduser()
+            path.mkdir(parents=True, exist_ok=True)
+            return path
         return Path(__file__).resolve().parent.parent / "data"
 
     location = QStandardPaths.writableLocation(

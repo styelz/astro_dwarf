@@ -6,6 +6,7 @@ Item {
     anchors.fill: parent
     property bool shown: true
     signal loadState(string state)
+    signal hostTitle(string title)
 
     function runJavaScript(script, callback) {
         if (typeof view.runJavaScript !== "function")
@@ -20,6 +21,7 @@ Item {
         id: view
         anchors.fill: parent
         url: backend.stellariumWebUrl
+        onTitleChanged: root.hostTitle(view.title)
 
         onLoadingChanged: function(loadRequest) {
             if (!loadRequest || loadRequest.status === undefined)

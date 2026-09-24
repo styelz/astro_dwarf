@@ -7,6 +7,7 @@ Item {
     signal loadState(string state)
     property bool shown: true
     property int abortCount: 0
+    signal hostTitle(string title)
 
     function runJavaScript(script, callback) {
         view.runJavaScript(script, callback)
@@ -16,6 +17,7 @@ Item {
         id: view
         anchors.fill: parent
         url: backend.skyAtlasUrl
+        onTitleChanged: root.hostTitle(view.title)
         profile: atlasProfile
         settings.webGLEnabled: true
         settings.localStorageEnabled: true

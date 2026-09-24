@@ -73,6 +73,24 @@ ApplicationWindow {
             root.showMaximized()
     }
 
+    // Live-feed full screen covers the monitor. This is the size to return to.
+    property int videoFullscreenRestore: Window.Windowed
+    function enterVideoFullscreen() {
+        if (root.visibility === Window.FullScreen)
+            return
+        root.videoFullscreenRestore = root.visibility === Window.Maximized ? Window.Maximized : Window.Windowed
+        root.showFullScreen()
+    }
+    function exitVideoFullscreen() {
+        if (root.visibility !== Window.FullScreen)
+            return
+        // Leave fullscreen before re-applying maximized. Requesting maximized
+        // while the fullscreen state is still set keeps both.
+        root.showNormal()
+        if (root.videoFullscreenRestore === Window.Maximized)
+            root.showMaximized()
+    }
+
     readonly property var scopeTelemetry: (backend.selectedDevice && backend.selectedDevice.telemetry) || ({})
     readonly property string scopeActivityDetail: String((backend.selectedDevice && backend.selectedDevice.activity_detail) || "")
     readonly property bool scopeActivityFromDevice: !!(backend.selectedDevice && backend.selectedDevice.activity_from_device)
@@ -91,6 +109,7 @@ ApplicationWindow {
         || scheduleTemplateDialog.visible
         || duplicateSessionDialog.visible
         || sessionDialog.visible
+        || helpDialog.visible
     property bool macKeyboardReady: false
     property real joySpeed: 1
     readonly property real joyMin: 0.004
@@ -890,6 +909,15 @@ ApplicationWindow {
                         onDoubleClicked: root.toggleMaximized()
                     }
                 }
+                HudButton {
+                    objectName: "titleHelp"
+                    text: "HELP"
+                    busyMs: 0
+                    tooltip: "Quick help"
+                    accessibleDescription: "Open a short guide to gestures, right-click menus, and pages"
+                    Accessible.name: "Quick help"
+                    onClicked: helpDialog.open()
+                }
                 RowLayout {
                     spacing: titleBar.compact ? Theme.px(6) : Theme.px(10)
                     Repeater {
@@ -1616,6 +1644,7 @@ ApplicationWindow {
     }
 
     LocationDialog { id: locationDialog }
+    HelpDialog { id: helpDialog }
     SettingsLeaveDialog { id: settingsLeaveDialog }
     ConfirmDialog {
         id: confirmDialog

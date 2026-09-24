@@ -48,5 +48,15 @@ def test_linux_webengine_suppresses_native_context_menu() -> None:
         text = (QML / "pages" / name).read_text(encoding="utf-8")
         assert "onContextMenuRequested" in text, name
         assert "request.accepted = true" in text, name
+        assert "signal hostTitle" in text, name
+        assert "onTitleChanged" in text, name
+    for name in ("SkyWebNativeItem.qml", "SkyAtlasNativeItem.qml"):
+        text = (QML / "pages" / name).read_text(encoding="utf-8")
+        assert "signal hostTitle" in text, name
+        assert "onTitleChanged" in text, name
+    for name in ("SkyWebView.qml", "SkyAtlasView.qml"):
+        text = (QML / "pages" / name).read_text(encoding="utf-8")
+        assert "astro-dwarf-host:" in text, name
+        assert "onHostTitle" in text, name
     menu = (QML / "components" / "SkyContextMenu.qml").read_text(encoding="utf-8")
     assert 'Qt.platform.os === "linux" ? Popup.Item : Popup.Window' in menu
