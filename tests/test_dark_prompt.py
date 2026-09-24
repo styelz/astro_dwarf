@@ -375,7 +375,7 @@ def test_dark_frame_clock_ticks_between_notifications() -> None:
     tap.progress = 0.0
     worker._device = {"model": "Dwarf 3"}
     worker._tap = tap
-    elapsed: list[int] = []
+    elapsed: list[tuple[int, int]] = []
     real_emit = worker.emit
 
     def snapshot() -> dict[str, object]:
@@ -387,7 +387,7 @@ def test_dark_frame_clock_ticks_between_notifications() -> None:
 
     def emit(payload: dict[str, object]) -> None:
         if payload.get("event") == "dark_prompt":
-            elapsed.append(int(payload.get("elapsed_s") or 0))
+            elapsed.append((int(payload.get("done") or 0), int(payload.get("elapsed_s") or 0)))
 
     tap.snapshot = snapshot
     worker.emit = emit
@@ -419,7 +419,8 @@ def test_dark_frame_clock_ticks_between_notifications() -> None:
         worker.DARK_FRAME_COUNT, worker._DARK_FRAME_QUIET_S, worker._DARK_START_TIMEOUT_S = saved
         _restore(previous)
     _assert(result == "", result)
-    _assert(max(elapsed) >= 1, elapsed)
+    running = [seconds for done, seconds in elapsed if done >= 1]
+    _assert(running and min(running) >= 1 and max(running) == 2, elapsed)
 
 
 def test_missing_reply_does_not_drop_the_prompt_code() -> None:

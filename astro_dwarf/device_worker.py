@@ -724,8 +724,14 @@ def _center_wide_view(nx: float, ny: float) -> dict[str, Any]:
 
 _FOCUS_FAR = 0
 _FOCUS_NEAR = 1
-_FOCUS_CONTINUOUS_THRESHOLD = 32
-_FOCUS_STEP_TIMEOUT = 1.5
+_FOCUS_STEP_TIMEOUT = 2.5
+# One manual command moves one step. A larger jump is a stale packet.
+_FOCUS_STEP_MAX = 1
+# CMD 15002 keeps running after 15003. Two logged stops (a 600 target that
+# landed on 527, and a 527→600 slew that ran on to 681) both coasted ~80 steps.
+_FOCUS_COAST = 80
+# Below this, the coast is longer than the move, so single steps are faster.
+_FOCUS_SLEW_MIN = 56
 
 
 def _focus_position() -> int | None:
@@ -846,36 +852,130 @@ def _focus_advanced(direction: int, previous: int, position: int) -> bool:
     return position < previous if direction == _FOCUS_NEAR else position > previous
 
 
-def _nudge_focus(direction: int) -> bool:
-    """One telephoto step. Completes when telemetry advances in that direction."""
+def _focus_past(direction: int, target: int, position: int) -> bool:
+    """True when a reading has gone beyond the target in the latched direction."""
+    return position < target if direction == _FOCUS_NEAR else position > target
+
+
+def _focus_one_step(
+    direction: int,
+    step_from: int,
+    deadline: float,
+    *,
+    max_advance: int | None = None,
+) -> int | None:
+    """One acknowledged step. None means the command was not sent.
+
+    Readings that go backward, or jump by more than one step when a limit is
+    set, are ignored. The motor direction is not changed to chase them.
+    """
     from dwarf_python_api.proto import focus_pb2
 
-    direction = _FOCUS_NEAR if int(direction) else _FOCUS_FAR
-    current = _focus_position()
-    if current is None:
-        raise RuntimeError("Focus position is unknown. Wait for telemetry, then try again.")
     message = focus_pb2.ReqManualSingleStepFocus()
     message.direction = direction
     if send_without_response(message, 15001, 8) is False:
-        return False
-    step_from = current
-    deadline = time.monotonic() + _FOCUS_STEP_TIMEOUT
-    while time.monotonic() < deadline:
+        return None
+    step_deadline = min(deadline, time.monotonic() + _FOCUS_STEP_TIMEOUT)
+    while time.monotonic() < step_deadline:
         if _stop.is_set():
             raise InterruptedError("Focus move stopped")
         time.sleep(0.05)
         position = _focus_position()
-        if position is None:
+        if position is None or not _focus_advanced(direction, step_from, position):
             continue
-        if _focus_advanced(direction, step_from, position):
-            return True
+        if max_advance is not None and abs(position - step_from) > max_advance:
+            continue
+        return position
     raise RuntimeError("Focus motor did not move")
 
 
-def _set_focus_position(target: int) -> bool:
-    """Move the focus motor to an absolute step count reported by telemetry."""
+def _nudge_focus(direction: int) -> bool:
+    """One telephoto step. Completes when telemetry advances in that direction."""
+    direction = _FOCUS_NEAR if int(direction) else _FOCUS_FAR
+    current = _focus_position()
+    if current is None:
+        raise RuntimeError("Focus position is unknown. Wait for telemetry, then try again.")
+    moved = _focus_one_step(direction, current, time.monotonic() + _FOCUS_STEP_TIMEOUT)
+    if moved is None:
+        return False
+    return True
+
+
+def _focus_remaining(direction: int, target: int, position: int) -> int:
+    return position - target if direction == _FOCUS_NEAR else target - position
+
+
+def _focus_pulse(direction: int, hold_s: float) -> bool:
+    """Run continuous focus for a short hold, then stop.
+
+    A held 15002 on this motor reaches about 100 steps per second and keeps
+    going after 15003. The hold is what limits the burst. False means the
+    start command was not sent.
+    """
     from dwarf_python_api.proto import focus_pb2
 
+    message = focus_pb2.ReqManualContinuFocus()
+    message.direction = direction
+    if send_without_response(message, 15002, 8) is False:
+        return False
+    try:
+        time.sleep(max(0.05, float(hold_s)))
+    finally:
+        send_without_response(focus_pb2.ReqStopManualContinuFocus(), 15003, 8)
+    return True
+
+
+def _wait_focus_settled(fallback: int, deadline: float) -> int:
+    """Read until the step count stops changing, so the coast is included."""
+    last = _focus_position()
+    if last is None:
+        last = fallback
+    stable = time.monotonic()
+    limit = min(deadline, time.monotonic() + 1.5)
+    while time.monotonic() < limit:
+        if _stop.is_set():
+            raise InterruptedError("Focus move stopped")
+        time.sleep(0.05)
+        position = _focus_position()
+        if position is None or position == last:
+            if time.monotonic() - stable >= 1.5:
+                return last
+            continue
+        last = position
+        stable = time.monotonic()
+    return last
+
+
+def _focus_trim(target: int, current: int, deadline: float) -> int | None:
+    """Single-step a settled remainder. None means a step command was not sent."""
+    misses = 0
+    while current != target:
+        if _stop.is_set():
+            raise InterruptedError("Focus move stopped")
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Focus stopped at {current}, wanted {target}")
+        direction = _FOCUS_NEAR if target < current else _FOCUS_FAR
+        try:
+            moved = _focus_one_step(direction, current, deadline, max_advance=_FOCUS_STEP_MAX)
+        except RuntimeError:
+            misses += 1
+            if misses > 8:
+                raise RuntimeError(f"Focus stopped at {current}, wanted {target}") from None
+            continue
+        if moved is None:
+            return None
+        misses = 0
+        current = moved
+    return current
+
+
+def _set_focus_position(target: int) -> bool:
+    """Move the telephoto focus motor to a step count.
+
+    There is no absolute focus command. CMD 15002 runs until 15003. On this
+    telescope a short hold moves a long way and then coasts, so a large gap
+    gets one brief burst and CMD 15001 walks the remainder.
+    """
     target = int(target)
     current = _focus_position()
     if current is None:
@@ -884,64 +984,19 @@ def _set_focus_position(target: int) -> bool:
         return True
 
     direction = _FOCUS_NEAR if target < current else _FOCUS_FAR
-
-    def passed(position: int) -> bool:
-        return position <= target if direction == _FOCUS_NEAR else position >= target
-
-    def advanced(previous: int, position: int) -> bool:
-        return _focus_advanced(direction, previous, position)
-
-    deadline = time.monotonic() + 45.0
-    while current != target:
-        if _stop.is_set():
-            raise InterruptedError("Focus move stopped")
-        if time.monotonic() >= deadline:
-            raise RuntimeError("Focus move timed out")
-        if passed(current):
-            return True
-        if abs(current - target) > _FOCUS_CONTINUOUS_THRESHOLD:
-            message = focus_pb2.ReqManualContinuFocus()
-            message.direction = direction
-            if send_without_response(message, 15002, 8) is False:
-                return False
-            burst_from = current
-            burst_started = time.monotonic()
-            try:
-                while time.monotonic() < deadline:
-                    if _stop.is_set():
-                        raise InterruptedError("Focus move stopped")
-                    time.sleep(0.05)
-                    position = _focus_position()
-                    if position is None:
-                        continue
-                    current = position
-                    if passed(current) or abs(current - target) <= _FOCUS_CONTINUOUS_THRESHOLD:
-                        break
-                    if current == burst_from and time.monotonic() - burst_started > 2.5:
-                        raise RuntimeError("Focus motor did not move")
-                else:
-                    raise RuntimeError("Focus move timed out")
-            finally:
-                send_without_response(focus_pb2.ReqStopManualContinuFocus(), 15003, 8)
-            updated = _focus_position()
-            current = current if updated is None else updated
-            continue
-        message = focus_pb2.ReqManualSingleStepFocus()
-        message.direction = direction
-        if send_without_response(message, 15001, 8) is False:
+    gap = abs(target - current)
+    deadline = time.monotonic() + min(180.0, max(45.0, gap * 0.35 + 8.0))
+    log(f"Focus {current} → {target}", "info")
+    if gap > _FOCUS_SLEW_MIN:
+        if not _focus_pulse(direction, 0.15):
             return False
-        step_from = current
-        step_deadline = min(deadline, time.monotonic() + _FOCUS_STEP_TIMEOUT)
-        while time.monotonic() < step_deadline:
-            time.sleep(0.05)
-            position = _focus_position()
-            if position is not None and advanced(step_from, position):
-                break
-        else:
-            raise RuntimeError("Focus motor did not move")
-        current = position
-        if passed(current):
-            break
+        current = _wait_focus_settled(current, deadline)
+    if current != target:
+        trimmed = _focus_trim(target, current, deadline)
+        if trimmed is None:
+            return False
+        current = trimmed
+    log(f"Focus at {current}", "info")
     return True
 
 
@@ -3306,15 +3361,17 @@ def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: in
             except (TypeError, ValueError):
                 reported_elapsed = 0
             # 15288 arrives once per frame and exposured_time stays 0, so the
-            # open shutter is the time since that packet.
+            # open shutter is the time since that packet. Show the second now
+            # in progress, 1 through frame_s, rather than the completed seconds.
             since_packet = int(now - last_progress) if now >= last_progress else 0
-            elapsed_s = max(0, min(frame_s, max(reported_elapsed, since_packet)))
+            clock = min(frame_s, since_packet + 1)
+            elapsed_s = max(0, min(frame_s, max(reported_elapsed, clock)))
         stamp = (frames_seen, elapsed_s)
         if stamp != reported:
             reported = stamp
             _emit_dark_prompt(
                 "capturing", token, code, settings,
-                done=frames_seen, elapsed_s=elapsed_s, frame_s=frame_s,
+                done=min(frames_seen, DARK_FRAME_COUNT), elapsed_s=elapsed_s, frame_s=frame_s,
             )
         # -5 is WS_DEVICE_NOT_ACTIVATED and also the SDK socket timeout.
         # A dark run that is already writing frames must not be cancelled
