@@ -93,6 +93,7 @@ from .domain import (
     next_device_color,
     normalize_device_color,
     parse_mosaic_pa,
+    history_detail_fields,
     history_record_for_run,
     history_record_for_manual_stack,
     history_records_for_live_mosaic,
@@ -2917,6 +2918,7 @@ class AppBackend(QObject):
             ))
             data["duration_text"] = data.get("actual_text") or data.get("planned_text") or ""
             data["subtitle"] = data.get("summary") or str(record.outcome or "")
+            data.update(history_detail_fields(record, session))
             if group_id and (pane_like or (session is not None and session.mosaic.group_id)):
                 data["group_key"] = f"{group_id}|{record.device_id}|{data['date']}"
                 data["is_grouped"] = True

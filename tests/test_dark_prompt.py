@@ -84,6 +84,8 @@ def test_tele_gain_limits() -> None:
     _assert(not worker.dark_gain_allowed(151, wide=False), "151 is above the tele maximum")
     _assert(worker.dark_gain_allowed(10, wide=True), "wide darks keep the stack gain")
     _assert(not worker.dark_gain_allowed(None, wide=True), "missing gain cannot be sent")
+    _assert(worker.dark_gain_index(60, "3", False) == 18, "tele gain 60 is table index 18")
+    _assert(worker.dark_gain_index(60, "3", True) == 18, "wide gain 60 is table index 18")
     _assert(worker.dark_exposure_index("15", "3", False) is not None, "15s is in the tele table")
     _assert(worker.dark_exposure_index("", "3", False) is None, "blank exposure is unknown")
 
@@ -207,8 +209,8 @@ def test_take_darks_builds_the_firmware_request() -> None:
         _restore(previous)
     _assert(tele == "", tele)
     _assert(wide == "", wide)
-    _assert(sent[0] == (11021, tele_index, 60, 0, 10), sent[0])
-    _assert(sent[1] == (11025, wide_index, 60, 0, 10), sent[1])
+    _assert(sent[0] == (11021, tele_index, 18, 0, 10), sent[0])
+    _assert(sent[1] == (11025, wide_index, 18, 0, 10), sent[1])
 
 
 def test_device_not_activated_does_not_discard_finished_darks() -> None:
@@ -243,23 +245,31 @@ def test_device_not_activated_does_not_discard_finished_darks() -> None:
 
 
 def test_library_match_uses_exposure_gain_and_temperature() -> None:
+    # Live DWARF 3 library: gain 60 is stored as index 18, name "60".
     settings = {
         "exp_index": 156,
-        "gain": 50,
+        "gain": 60,
+        "gain_index": 18,
         "bin_index": 0,
-        "temperature": "27°C",
+        "temperature": "35°C",
     }
     frames = [{
         "exp_index": 156,
-        "gain_index": 50,
+        "gain_index": 18,
+        "gain_name": "60",
         "bin_index": 0,
-        "temperature": 30,
+        "temperature": 28,
     }]
-    _assert(worker.dark_library_status(frames, settings) == "match", "within 8°C")
-    frames[0]["temperature"] = 40
+    _assert(worker.dark_library_status(frames, settings) == "match", "gain name 60, within 8°C")
+    frames[0]["temperature"] = 50
     _assert(worker.dark_library_status(frames, settings) == "mismatch", "outside 8°C")
+    frames[0]["gain_name"] = "80"
+    _assert(worker.dark_library_status(frames, settings) == "missing", "different gain name")
+    frames[0]["gain_name"] = ""
+    frames[0]["temperature"] = 28
+    _assert(worker.dark_library_status(frames, settings) == "match", "table index 18")
     frames[0]["gain_index"] = 60
-    _assert(worker.dark_library_status(frames, settings) == "missing", "different gain")
+    _assert(worker.dark_library_status(frames, settings) == "missing", "raw gain is not the index")
 
 
 def test_remembered_continue_skips_the_next_pane() -> None:
@@ -311,6 +321,7 @@ def test_long_exposure_progress_counts_as_dark_frames() -> None:
         "exp_index": 1,
         "gain": 50,
         "bin_index": 0,
+        "gain_index": 15,
         "exposure": "0.05",
     }
     worker.send_without_response = send
@@ -334,7 +345,7 @@ def test_dark_start_timeout_without_progress() -> None:
         result = worker._take_dark_frames(
             "Stack",
             False,
-            {"gain_ok": True, "exposure_ok": True, "exp_index": 1, "gain": 50, "bin_index": 0, "exposure": "15"},
+            {"gain_ok": True, "exposure_ok": True, "exp_index": 1, "gain": 50, "gain_index": 15, "bin_index": 0, "exposure": "15"},
             1,
         )
     finally:

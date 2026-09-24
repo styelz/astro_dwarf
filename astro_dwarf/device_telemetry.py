@@ -881,6 +881,9 @@ class TelemetryTap:
                         "exp_index": int(item.exp_index),
                         "gain_index": int(item.gain_index),
                         "bin_index": int(item.bin_index),
+                        "exp_name": str(item.exp_name or ""),
+                        "gain_name": str(item.gain_name or ""),
+                        "bin_name": str(item.bin_name or ""),
                         "temperature": temperature,
                     })
         except Exception:

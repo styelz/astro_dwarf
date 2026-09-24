@@ -1567,6 +1567,9 @@ class HistoryRecord:
     workflow: dict[str, Any] = field(default_factory=dict)
     hardware: dict[str, float] = field(default_factory=dict)
     step_seconds: dict[str, float] = field(default_factory=dict)
+    camera_settings: dict[str, Any] = field(default_factory=dict)
+    target_snapshot: dict[str, Any] = field(default_factory=dict)
+    mosaic_settings: dict[str, Any] = field(default_factory=dict)
 
 
 def to_dict(value: Any) -> dict[str, Any]:
@@ -1782,9 +1785,52 @@ def _float_map(data: Any) -> dict[str, float]:
     return result
 
 
+def _plain_dict(data: Any) -> dict[str, Any]:
+    return dict(data) if isinstance(data, dict) else {}
+
+
+def history_camera_snapshot(camera: CameraSettings) -> dict[str, Any]:
+    lens = camera.camera.value if isinstance(camera.camera, Camera) else str(camera.camera or Camera.TELE)
+    return {
+        "camera": lens,
+        "exposure_seconds": float(camera.exposure_seconds),
+        "gain": int(camera.gain),
+        "binning": int(camera.binning or 1),
+        "ir_filter": normalize_ir_filter(camera.ir_filter),
+        "frame_count": int(camera.frame_count or 0),
+    }
+
+
+def history_target_snapshot(target: Target) -> dict[str, Any]:
+    kind = target.kind.value if isinstance(target.kind, TargetKind) else str(target.kind or "")
+    return {
+        "kind": kind,
+        "ra_hours": target.ra_hours,
+        "dec_degrees": target.dec_degrees,
+        "solar_name": str(target.solar_name or ""),
+    }
+
+
+def history_mosaic_snapshot(mosaic: Mosaic) -> dict[str, Any]:
+    return {
+        "rows": int(mosaic.rows),
+        "columns": int(mosaic.columns),
+        "rotation_degrees": float(mosaic.rotation_degrees),
+        "horizontal_scale": int(mosaic.horizontal_scale),
+        "vertical_scale": int(mosaic.vertical_scale),
+        "grid_rows": int(mosaic.grid_rows),
+        "grid_columns": int(mosaic.grid_columns),
+        "row": int(mosaic.row),
+        "column": int(mosaic.column),
+    }
+
+
 def history_from_dict(data: dict[str, Any]) -> HistoryRecord:
     data = dict(data)
-    data["workflow"] = dict(data.get("workflow") or {})
+    data["workflow"] = _plain_dict(data.get("workflow"))
+    data["camera_settings"] = _plain_dict(data.get("camera_settings"))
+    data["target_snapshot"] = _plain_dict(data.get("target_snapshot"))
+    data["mosaic_settings"] = _plain_dict(data.get("mosaic_settings"))
     data["hardware"] = _float_map(data.get("hardware"))
     data["step_seconds"] = _float_map(data.get("step_seconds"))
     try:
@@ -1824,12 +1870,143 @@ def history_record_for_run(
         mosaic_panes=int(session.mosaic.panes),
         mosaic_group_id=str(session.mosaic.group_id or ""),
         workflow=asdict(session.workflow),
+        camera_settings=history_camera_snapshot(session.camera),
+        target_snapshot=history_target_snapshot(session.target),
+        mosaic_settings=history_mosaic_snapshot(session.mosaic),
         hardware={
             key: float(getattr(hardware, key))
             for key in HardwareProfile.__dataclass_fields__
         } if hardware is not None else {},
         step_seconds={key: round(float(value), 1) for key, value in dict(step_seconds or {}).items()},
     )
+
+
+def _optional_number(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _history_workflow_text(workflow: dict[str, Any]) -> str:
+    steps: list[str] = []
+    if workflow.get("calibrate") or workflow.get("polar_align"):
+        steps.append("POS")
+    if workflow.get("calibrate"):
+        steps.append("CAL")
+    if workflow.get("autofocus"):
+        steps.append("AF")
+    elif workflow.get("infinite_focus"):
+        steps.append("INF")
+    if workflow.get("polar_align"):
+        steps.append("POLAR")
+    if workflow.get("goto"):
+        steps.append("GOTO")
+    wait_before = _optional_number(workflow.get("wait_before_seconds")) or 0
+    wait_after = _optional_number(workflow.get("wait_after_seconds")) or 0
+    if wait_before > 0:
+        steps.append(f"WAIT {wait_before:g}s")
+    if wait_after > 0:
+        steps.append(f"SETTLE {wait_after:g}s")
+    return " · ".join(steps) if steps else "Capture only"
+
+
+def _history_mosaic_text(settings: dict[str, Any], panes: int) -> str:
+    try:
+        rows = int(settings.get("rows") or 1)
+        columns = int(settings.get("columns") or 1)
+        grid_rows = int(settings.get("grid_rows") or 0)
+        grid_columns = int(settings.get("grid_columns") or 0)
+        row = int(settings.get("row") or 0)
+        column = int(settings.get("column") or 0)
+        h_scale = int(settings.get("horizontal_scale") or 150)
+        v_scale = int(settings.get("vertical_scale") or 150)
+    except (TypeError, ValueError):
+        rows, columns, grid_rows, grid_columns = 1, 1, 0, 0
+        row, column, h_scale, v_scale = 0, 0, 150, 150
+    rotation = _optional_number(settings.get("rotation_degrees")) or 0
+    if grid_rows >= 1 and grid_columns >= 1:
+        text = f"{grid_rows}×{grid_columns}"
+        if row >= 1 and column >= 1:
+            text += f" · R{row} C{column}"
+        return text
+    if rows > 1 or columns > 1 or panes > 1:
+        text = f"{rows}×{columns}" if rows > 1 or columns > 1 else f"{max(1, panes)} panes"
+        if h_scale != 150 or v_scale != 150:
+            text += f" · {h_scale}%×{v_scale}%"
+        if rotation:
+            text += f" · {rotation:g}°"
+        return text
+    return "Single pane"
+
+
+def _history_coords_text(target: dict[str, Any]) -> str:
+    ra = _optional_number(target.get("ra_hours"))
+    dec = _optional_number(target.get("dec_degrees"))
+    if ra is not None and dec is not None:
+        ra = ((ra % 24.0) + 24.0) % 24.0
+        dec = max(-90.0, min(90.0, dec))
+        return f"RA {ra:.3f}h  DEC {dec:+.3f}°"
+    kind = str(target.get("kind") or "").lower()
+    solar = str(target.get("solar_name") or "").strip()
+    if kind == TargetKind.SOLAR.value and solar:
+        return solar
+    return ""
+
+
+def history_detail_fields(record: HistoryRecord, session: Session | None = None) -> dict[str, str]:
+    """Capture setup shown in the history row. Prefer the snapshot taken at run time."""
+    camera = dict(record.camera_settings or {})
+    target = dict(record.target_snapshot or {})
+    mosaic = dict(record.mosaic_settings or {})
+    workflow = dict(record.workflow or {})
+    if session is not None:
+        if not camera:
+            camera = history_camera_snapshot(session.camera)
+        if not target:
+            target = history_target_snapshot(session.target)
+        if not mosaic:
+            mosaic = history_mosaic_snapshot(session.mosaic)
+        if not workflow:
+            workflow = asdict(session.workflow)
+    ir = normalize_ir_filter(camera.get("ir_filter"))
+    gain = camera.get("gain")
+    try:
+        gain_text = f"G{int(gain)}" if gain is not None and gain != "" else ""
+    except (TypeError, ValueError):
+        gain_text = ""
+    lens = str(camera.get("camera") or "").strip().lower()
+    if lens == Camera.WIDE.value:
+        lens_text = "WIDE"
+    elif lens == Camera.TELE.value:
+        lens_text = "TELE"
+    else:
+        lens_text = ""
+    try:
+        binning = int(camera.get("binning") or 0)
+    except (TypeError, ValueError):
+        binning = 0
+    if binning >= 2:
+        bin_text = "2K"
+    elif binning == 1:
+        bin_text = "4K"
+    else:
+        bin_text = ""
+    camera_bits = [bit for bit in (lens_text, bin_text) if bit]
+    exposure = _optional_number(camera.get("exposure_seconds"))
+    if exposure is None:
+        exposure = _optional_number(record.exposure_seconds)
+    return {
+        "filter_text": ir,
+        "gain_text": gain_text,
+        "camera_text": " · ".join(camera_bits),
+        "exposure_text": f"{exposure:g}s" if exposure is not None else "",
+        "workflow_text": _history_workflow_text(workflow) if workflow else "",
+        "mosaic_text": _history_mosaic_text(mosaic, int(record.mosaic_panes or 1)),
+        "coords_text": _history_coords_text(target),
+    }
 
 
 def iso_duration_seconds(started: str | None, ended: str | None) -> float:

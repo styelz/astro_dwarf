@@ -137,7 +137,7 @@ Item {
             if (historyPage.outcomeFilter === 2 && item.ok)
                 continue
             if (q) {
-                const hay = [item.date, item.target_name, item.device_name, item.outcome, item.summary, item.notes].join(" ").toLowerCase()
+                const hay = [item.date, item.target_name, item.device_name, item.outcome, item.summary, item.notes, item.filter_text, item.gain_text, item.camera_text, item.workflow_text, item.mosaic_text, item.coords_text].join(" ").toLowerCase()
                 if (hay.indexOf(q) < 0)
                     continue
             }
@@ -754,6 +754,20 @@ Item {
                                         Text { text: String(historyRow.modelData.captured_frames || 0) + " captured"; color: historyRow.modelData.ok ? Theme.success : Theme.textPrimary; font.pixelSize: Theme.fontMd; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
                                         Text { text: historyRow.modelData.planned_text; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
                                         Text { text: historyRow.modelData.actual_text; color: historyRow.deltaTone; font.pixelSize: Theme.fontMd; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "FILTER"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "GAIN"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "CAMERA"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "EXPOSURE"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: historyRow.modelData.filter_text || "—"; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: historyRow.modelData.gain_text || "—"; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: historyRow.modelData.camera_text || "—"; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: historyRow.modelData.exposure_text || "—"; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "MOSAIC"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "WORKFLOW"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: "TARGET"; color: Theme.textSecondary; font.pixelSize: Theme.fontXs; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.columnSpan: 2 }
+                                        Text { text: historyRow.modelData.mosaic_text || "—"; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: historyRow.modelData.workflow_text || "—"; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+                                        Text { text: historyRow.modelData.coords_text || "—"; color: Theme.textPrimary; font.pixelSize: Theme.fontMd; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.columnSpan: 2 }
                                     }
                                     Text {
                                         Layout.fillWidth: true

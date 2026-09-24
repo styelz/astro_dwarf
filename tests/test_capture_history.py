@@ -8,14 +8,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from astro_dwarf.domain import (
+    Camera,
     CameraSettings,
     Mosaic,
     Session,
     Target,
+    Workflow,
     capture_history_owner,
+    history_detail_fields,
+    history_from_dict,
     history_record_for_manual_stack,
     history_record_for_run,
     history_records_for_live_mosaic,
+    to_dict,
 )
 
 
@@ -168,12 +173,76 @@ def test_scheduled_history_record_stays_stacked_only() -> None:
     _assert(record.frame_count == 40, record.frame_count)
 
 
+def test_history_detail_keeps_filter_gain_and_target() -> None:
+    session = Session(
+        name="Toliman",
+        target=Target(name="Toliman", ra_hours=14.74, dec_degrees=-61.16),
+        device_id="dev-1",
+        scheduled_start="2026-09-19T14:00:00+00:00",
+        camera=CameraSettings(
+            camera=Camera.TELE,
+            exposure_seconds=15,
+            gain=80,
+            frame_count=20,
+            binning=2,
+            ir_filter="Astro",
+        ),
+        workflow=Workflow(calibrate=True, autofocus=True, goto=True, wait_after_seconds=0),
+        mosaic=Mosaic(rows=2, columns=2, horizontal_scale=180, vertical_scale=150),
+        outcome="Completed",
+    )
+    record = history_record_for_run(session, actual_duration_seconds=600, captured_frame_count=20)
+    restored = history_from_dict(to_dict(record))
+    fields = history_detail_fields(restored, None)
+    _assert(fields["filter_text"] == "Astro Filter", fields["filter_text"])
+    _assert(fields["gain_text"] == "G80", fields["gain_text"])
+    _assert(fields["camera_text"] == "TELE · 2K", fields["camera_text"])
+    _assert(fields["exposure_text"] == "15s", fields["exposure_text"])
+    _assert("AF" in fields["workflow_text"], fields["workflow_text"])
+    _assert("180%" in fields["mosaic_text"], fields["mosaic_text"])
+    _assert("14.740" in fields["coords_text"], fields["coords_text"])
+    _assert("-61.160" in fields["coords_text"], fields["coords_text"])
+
+
+def test_history_detail_falls_back_to_session() -> None:
+    session = Session(
+        name="Orion",
+        target=Target(name="Orion", ra_hours=5.59, dec_degrees=-5.39),
+        device_id="dev-1",
+        scheduled_start="2026-09-19T14:00:00+00:00",
+        camera=CameraSettings(ir_filter="Duo-Band", gain=60, exposure_seconds=30),
+        outcome="Completed",
+    )
+    record = history_from_dict(
+        {
+            "session_id": session.id,
+            "device_id": "dev-1",
+            "target_name": "Orion",
+            "scheduled_start": session.scheduled_start,
+            "actual_started_at": None,
+            "actual_ended_at": None,
+            "planned_duration_seconds": 10,
+            "actual_duration_seconds": 9,
+            "frame_count": 4,
+            "outcome": "Completed",
+            "exposure_seconds": 30,
+        }
+    )
+    fields = history_detail_fields(record, session)
+    _assert(fields["filter_text"] == "Duo-Band Filter", fields["filter_text"])
+    _assert(fields["gain_text"] == "G60", fields["gain_text"])
+    _assert(fields["exposure_text"] == "30s", fields["exposure_text"])
+    _assert("5.590" in fields["coords_text"], fields["coords_text"])
+
+
 def main() -> int:
     test_capture_history_owner_avoids_double_write()
     test_manual_stack_history_uses_stacked_frames()
     test_live_mosaic_history_keeps_completed_and_stopped_panes()
     test_live_mosaic_history_keeps_completed_panes_on_failure()
     test_scheduled_history_record_stays_stacked_only()
+    test_history_detail_keeps_filter_gain_and_target()
+    test_history_detail_falls_back_to_session()
     print("capture history tests ok")
     return 0
 

@@ -2691,6 +2691,43 @@ def dark_gain_allowed(gain: Any, *, wide: bool) -> bool:
     return _DARK_GAIN_MIN <= value <= _DARK_GAIN_MAX
 
 
+def dark_gain_index(gain: Any, model_id: str, wide: bool) -> int | None:
+    """Gain-table index for a displayed gain. Unknown gains stay unknown.
+
+    The dark library stores this index (gain 60 is 18 on DWARF 3) and puts
+    the displayed value in gain_name. Sending the displayed gain as the
+    index makes the next stack miss the set it just took.
+    """
+    value = _optional_int(gain)
+    if value is None:
+        return None
+    name = str(value)
+    try:
+        if wide:
+            from dwarf_python_api.lib import data_wide_utils as tables
+
+            if model_id in ("3", "5"):
+                table = tables.allowed_wide_gainsD3
+            else:
+                table = tables.allowed_wide_gains
+        else:
+            from dwarf_python_api.lib import data_utils as tables
+
+            if model_id in ("3", "5"):
+                table = tables.allowed_gainsD3
+            else:
+                table = tables.allowed_gains
+    except Exception:
+        return None
+    for option in getattr(table, "values", []) or []:
+        if str(option.get("name")) == name:
+            try:
+                return int(option["index"])
+            except (KeyError, TypeError, ValueError):
+                return None
+    return None
+
+
 def dark_exposure_index(name: str, model_id: str, wide: bool) -> int | None:
     """Exposure-table index for the live name. Unknown names stay unknown."""
     text = str(name or "").strip()
@@ -2862,13 +2899,15 @@ def _dark_capture_settings(wide: bool) -> dict[str, Any]:
     model_id = _MODEL_IDS.get(model, "2")
     gain_value = _optional_int(gain)
     exp_index = dark_exposure_index(str(exposure or ""), model_id, wide)
+    gain_index = dark_gain_index(gain_value, model_id, wide)
     exposure_ok = exp_index is not None
-    gain_ok = dark_gain_allowed(gain_value, wide=wide)
+    gain_ok = dark_gain_allowed(gain_value, wide=wide) and gain_index is not None
     return {
         "wide": wide,
         "model": model or "Dwarf II",
         "exposure": str(exposure or ""),
         "gain": gain_value,
+        "gain_index": gain_index,
         "exp_index": exp_index,
         "bin_index": int(_stack_bin_index),
         "temperature": _format_sensor_temp(temp),
@@ -2976,17 +3015,33 @@ def _sensor_celsius(value: Any) -> int | None:
     return _optional_int(text)
 
 
+def _dark_gain_matches(frame: dict[str, Any], settings: dict[str, Any]) -> bool:
+    """True when this library row is the stack's gain.
+
+    Firmware publishes the displayed gain in gain_name and the table index
+    in gain_index. A row with no name still matches that table index.
+    """
+    gain = _optional_int(settings.get("gain"))
+    if gain is None:
+        return False
+    name = str(frame.get("gain_name") or "").strip()
+    if name:
+        return name == str(gain)
+    stored = _optional_int(frame.get("gain_index"))
+    table_index = _optional_int(settings.get("gain_index"))
+    return stored is not None and table_index is not None and stored == table_index
+
+
 def dark_library_status(frames: list[dict[str, Any]], settings: dict[str, Any]) -> str:
     """'match', 'mismatch', or 'missing' for this stack's exposure, gain, and binning."""
     exp_index = settings.get("exp_index")
-    gain = _optional_int(settings.get("gain"))
     bin_index = int(settings.get("bin_index") or 0)
     current = _sensor_celsius(settings.get("temperature"))
     mismatch = False
     for frame in frames:
         if int(frame.get("exp_index") or -1) != exp_index:
             continue
-        if _optional_int(frame.get("gain_index")) != gain:
+        if not _dark_gain_matches(frame, settings):
             continue
         if int(frame.get("bin_index") or 0) != bin_index:
             continue
@@ -3050,7 +3105,13 @@ def _offer_darks_before_alignment(name: str, *, wide: bool) -> None:
 def _offer_darks_before_manual_alignment(name: str) -> None:
     """HUD calibrate / track / polar. An unattended session does not ask."""
     global _prompt_darks
-    if _session_active.is_set() or _dark_run_choice == "continue":
+    if _session_active.is_set():
+        return
+    # stop_all used to leave _stop set after the session was already gone.
+    # The dark-library check treats that latch as "Session stopped", so
+    # calibrate, polar, polar pos, and track never reach the telescope.
+    _stop.clear()
+    if _dark_run_choice == "continue":
         return
     saved = _prompt_darks
     _prompt_darks = True
@@ -3106,7 +3167,7 @@ def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: in
     try:
         message = build_dark_capture_message(
             int(settings["exp_index"]),
-            int(settings["gain"]),
+            int(settings["gain_index"]),
             int(settings["bin_index"]),
         )
     except Exception as exc:
@@ -3959,35 +4020,42 @@ def stop_all(*, include_motors: bool = True) -> bool:
     """Send the stop commands. Runs on the command thread after the interrupted step unwinds."""
     global _stop_phase
     _stop.set()
-    operations = _stop_targets(include_motors=include_motors)
-    _stop_phase = None
-    if not _connected.is_set() or (_tap is not None and _tap.snapshot().get("power_off")):
-        log("Stop skipped; telescope is not connected", "debug")
-        report_status("stop", "Telescope is not connected")
-        return True
-    report_status("stop", "Sending stop commands")
-    started = time.monotonic()
-    for operation in operations:
+    try:
+        operations = _stop_targets(include_motors=include_motors)
+        _stop_phase = None
+        if not _connected.is_set() or (_tap is not None and _tap.snapshot().get("power_off")):
+            log("Stop skipped; telescope is not connected", "debug")
+            report_status("stop", "Telescope is not connected")
+            return True
+        report_status("stop", "Sending stop commands")
+        started = time.monotonic()
+        for operation in operations:
+            remaining = _STOP_ALL_BUDGET_S - (time.monotonic() - started)
+            if remaining <= 0.25:
+                log("Stop timed out; skipping remaining commands", "warning")
+                break
+            label = _stop_step_label(operation)
+            report_status("stop", label)
+            log(f"{label}…")
+            try:
+                _sdk_call_bounded(operation, min(_STOP_COMMAND_TIMEOUT, remaining))
+            except Exception as exc:
+                log(f"{label} skipped: {exc}", "warning")
         remaining = _STOP_ALL_BUDGET_S - (time.monotonic() - started)
-        if remaining <= 0.25:
-            log("Stop timed out; skipping remaining commands", "warning")
-            break
-        label = _stop_step_label(operation)
-        report_status("stop", label)
-        log(f"{label}…")
-        try:
-            _sdk_call_bounded(operation, min(_STOP_COMMAND_TIMEOUT, remaining))
-        except Exception as exc:
-            log(f"{label} skipped: {exc}", "warning")
-    remaining = _STOP_ALL_BUDGET_S - (time.monotonic() - started)
-    if remaining > 0.25:
-        _wait_for_stop_idle(max_seconds=remaining)
-    elif _tap is not None and _activity_still_running(_tap.snapshot()):
-        log("Telescope is still busy after stop commands", "warning")
-    report_status("stop", "Stop complete")
-    if _connected.is_set():
-        request_state_refresh()
-    return True
+        if remaining > 0.25:
+            _wait_for_stop_idle(max_seconds=remaining)
+        elif _tap is not None and _activity_still_running(_tap.snapshot()):
+            log("Telescope is still busy after stop commands", "warning")
+        report_status("stop", "Stop complete")
+        if _connected.is_set():
+            request_state_refresh()
+        return True
+    finally:
+        # Leftover cleanup and a finished Stop run after the session is gone.
+        # Leaving the latch set makes the next calibrate, polar, or polar pos
+        # fail with "Session stopped" before the telescope sees the command.
+        if not _session_active.is_set():
+            _stop.clear()
 
 
 _REFRESH_AFTER = {
@@ -5071,8 +5139,8 @@ def _wait_goto_accepted(since: float) -> None:
 def _start_goto_for_tracking(ra: float, dec: float, name: str) -> None:
     """Send a tracking GOTO, and retry once if a stuck STOPPING still owns the engine."""
     if not _session_active.is_set():
-        # stop_all leaves _stop set after the session is gone. Live TRACK is
-        # not a session; that latch must not abort the FUNCTION_BUSY retry.
+        # Live TRACK is not a session. A stop latch from a finished session
+        # must not abort the FUNCTION_BUSY retry.
         _stop.clear()
     started = time.monotonic()
     if sdk_call("goto", ra, dec, name, False) is False:
