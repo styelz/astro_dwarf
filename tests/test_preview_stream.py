@@ -15,7 +15,9 @@ from astro_dwarf.qt_backend import (
     mosaic_finished_pane,
     mosaic_hold_pane,
     mosaic_live_still_camera,
+    mosaic_preview_empty,
     mosaic_preview_keep_live_sheet,
+    mosaic_preview_scale_text,
     mosaic_preview_should_open_wide,
     mosaic_frozen_takes_dropped_enhance,
     mosaic_goto_failed_result,
@@ -770,6 +772,16 @@ def test_mosaic_dismiss_drops_leftover_sheet_and_sky_stills() -> None:
     )
 
 
+def test_device_mosaic_hud_uses_scale_not_pane_count() -> None:
+    empty = mosaic_preview_empty()
+    _assert(empty["device"] is False, empty)
+    _assert(empty["scale_text"] == "", empty)
+    _assert(mosaic_preview_scale_text(None) == "", "custom mosaics have no field factor")
+    _assert(mosaic_preview_scale_text((2, 2, 180, 180)) == "1.8×1.8", "1.8W × 1.8H")
+    _assert(mosaic_preview_scale_text((2, 1, 150, 100)) == "1.5×1.0", "strip")
+    _assert(mosaic_preview_scale_text((1, 1, 100, 100)) == "", "1.0×1.0 is not a mosaic")
+
+
 def test_mosaic_preview_hides_after_capture_without_held_result() -> None:
     _assert(
         mosaic_preview_keep_live_sheet(live_phase="stacking", worker_running=True),
@@ -915,6 +927,7 @@ if __name__ == "__main__":
     test_sky_mosaic_urls_backfill_from_stored_stills()
     test_mosaic_result_keeps_contact_sheet_until_dismissed()
     test_mosaic_dismiss_drops_leftover_sheet_and_sky_stills()
+    test_device_mosaic_hud_uses_scale_not_pane_count()
     test_mosaic_preview_hides_after_capture_without_held_result()
     test_mosaic_frames_clear_resets_grid()
     test_restore_skips_unknown_auto_calibration()

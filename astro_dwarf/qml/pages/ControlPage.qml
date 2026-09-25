@@ -77,8 +77,28 @@ Item {
         return !!(mosaicPreview.active && phase && phase !== "failed")
     }
     readonly property bool mosaicGridArmed: !!(backend.mosaicGridActive && !mosaicRunning)
-    readonly property string mosaicGridText: backend.mosaicColumns + "×" + backend.mosaicRows
+    readonly property string mosaicScaleText: {
+        if (mosaicRunning && mosaicPreview.device) {
+            const ready = String(mosaicPreview.scale_text || "")
+            if (ready)
+                return ready
+            const h = Number(mosaicPreview.horizontal_scale || 0)
+            const v = Number(mosaicPreview.vertical_scale || 0)
+            if (h >= 110 || v >= 110)
+                return (h / 100).toFixed(1) + "×" + (v / 100).toFixed(1)
+        }
+        if (!mosaicRunning && backend.mosaicMode === "device") {
+            const h = Number(backend.deviceMosaicHorizontal)
+            const v = Number(backend.deviceMosaicVertical)
+            if (h >= 110 || v >= 110)
+                return (h / 100).toFixed(1) + "×" + (v / 100).toFixed(1)
+        }
+        return ""
+    }
+    readonly property string mosaicGridText: mosaicScaleText || (backend.mosaicColumns + "×" + backend.mosaicRows)
     readonly property string mosaicPaneText: {
+        if (mosaicScaleText)
+            return mosaicScaleText
         const pane = Number(mosaicPreview.current_index || 0)
         const total = Number(mosaicPreview.total || 0)
         if (pane >= 1 && total >= 1)
@@ -1414,12 +1434,11 @@ Item {
                     readonly property bool panoramaCanvas: panoramaFrame || panoramaShooting
                     readonly property bool mosaicActive: !!(backend.mosaicPreview && backend.mosaicPreview.active)
                     property bool showMosaicSheet: true
-                    // A device mosaic is one telescope-managed capture; show its plain
-                    // camera feed by default. Only the app's own multi-target mosaic
-                    // benefits from the gapped contact sheet.
+                    // A device mosaic is one telescope-managed capture; keep the live
+                    // camera. Only the app's own multi-target mosaic uses the contact sheet.
                     onMosaicActiveChanged: if (mosaicActive) showMosaicSheet = !mosaicPreview.device
-                    readonly property bool mosaicSheet: mosaicActive && showMosaicSheet
-                    readonly property bool paneView: mosaicActive && !showMosaicSheet
+                    readonly property bool mosaicSheet: mosaicActive && showMosaicSheet && !mosaicPreview.device
+                    readonly property bool paneView: mosaicActive && !showMosaicSheet && !mosaicPreview.device
                     readonly property bool idlePreviewArt: !backend.previewPlaying && !backend.previewStacking && !backend.previewResult && !previewHost.awaitingFirstStack && !previewHost.mosaicActive && !previewHost.panoramaCanvas
                     readonly property real teleFovH: {
                         const tele = Number(root.scopeTelemetry.tele_fov_h)
@@ -2633,7 +2652,7 @@ Item {
                         }
                         HudButton {
                             objectName: "mosaicViewToggle"
-                            visible: previewHost.mosaicActive
+                            visible: previewHost.mosaicActive && !mosaicPreview.device
                             text: previewHost.showMosaicSheet ? "PANE" : "MOSAIC"
                             tooltip: previewHost.showMosaicSheet
                                      ? "Show the current pane full frame"
@@ -3166,7 +3185,9 @@ Item {
                                     return settings
                                 }
                                 if (controlPage.mosaicGridArmed)
-                                    return controlPage.mosaicPaneText + " PANES"
+                                    return controlPage.mosaicScaleText
+                                           ? controlPage.mosaicPaneText
+                                           : controlPage.mosaicPaneText + " PANES"
                             }
                             if (photoPrimed || stackPrimed || capturePrimed)
                                 return "PRIMED"
@@ -3256,10 +3277,14 @@ Item {
                                                              : (modelData.start === "stack" && stackTracking && cameraPanel.stackSettingsText())
                                                                ? ("Current stack " + cameraPanel.stackSettingsText()
                                                                   + (controlPage.mosaicGridArmed || controlPage.mosaicRunning
-                                                                     ? (" mosaic " + controlPage.mosaicGridText + " panes")
+                                                                     ? (controlPage.mosaicScaleText
+                                                                        ? (" device mosaic " + controlPage.mosaicScaleText)
+                                                                        : (" mosaic " + controlPage.mosaicGridText + " panes"))
                                                                      : ""))
                                                                : (modelData.start === "stack" && (controlPage.mosaicGridArmed || controlPage.mosaicRunning))
-                                                                 ? ("Mosaic stack " + controlPage.mosaicGridText + " panes")
+                                                                 ? (controlPage.mosaicScaleText
+                                                                    ? ("Device mosaic " + controlPage.mosaicScaleText)
+                                                                    : ("Mosaic stack " + controlPage.mosaicGridText + " panes"))
                                                                  : stackPrimed ? "Sidereal tracking is running and stack settings match the telescope. Stop tracking from TRACK, or press STACK to start capture."
                                                                                : (modelData.start === "calibrate" && !!t.tracking_active && !activeForState)
                                                                                  ? "Stop tracking before calibrating"

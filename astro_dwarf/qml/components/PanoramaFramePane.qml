@@ -78,20 +78,23 @@ Item {
     readonly property int tileTotal: Math.max(0, Number(telemetry.panorama_total || 0))
     readonly property int tileIndex: tileTotal > 0 ? Math.min(tileTotal - 1, tileDone) : 0
 
+    // Same factoring as domain.panorama_shot_grid: tele FOV on the painted
+    // canvas, not a 1:1 split of normalized x/y (that overlay is too wide).
     function tileGrid() {
         const total = tileTotal
-        const fw = Math.abs(showX2 - showX1)
-        const fh = Math.abs(showY2 - showY1)
-        if (total < 2 || fw < 0.001 || fh < 0.001)
+        if (total < 2 || fitW < 2 || fitH < 2)
             return {cols: 1, rows: 1}
-        const aspect = fw / fh
+        const teleH = Number(telemetry.tele_fov_h || 0)
+        const teleV = Number(telemetry.tele_fov_v || 0)
+        const teleAspect = (teleH > 0.5 && teleV > 0.3) ? teleH / teleV : 2.95 / 1.66
+        const target = (fitW / fitH) / teleAspect
         let cols = 1
         let err = 1e9
         for (let c = 1; c <= total; ++c) {
             if (total % c !== 0)
                 continue
             const rows = total / c
-            const delta = Math.abs(c / rows - aspect)
+            const delta = Math.abs(c / rows - target)
             if (delta < err) {
                 err = delta
                 cols = c
@@ -137,6 +140,7 @@ Item {
             return
         noteScanAspect(image)
         frontScan = image
+        lumaProbe.schedule()
     }
 
     function holdBox(x1, y1, x2, y2) {
@@ -169,6 +173,17 @@ Item {
         return Qt.point(
             fitX + ((nx - limitLeft) / spanX) * fitW,
             fitY + ((ny - limitTop) / spanY) * fitH
+        )
+    }
+
+    function scanPainted(image) {
+        if (!image || image.paintedWidth < 2 || image.paintedHeight < 2)
+            return Qt.rect(0, 0, 0, 0)
+        return Qt.rect(
+            image.x + (image.width - image.paintedWidth) / 2,
+            image.y + (image.height - image.paintedHeight) / 2,
+            image.paintedWidth,
+            image.paintedHeight
         )
     }
 
@@ -375,21 +390,123 @@ Item {
         readonly property real tileTop: Math.min(pane.showY1, pane.showY2)
         readonly property real spanW: Math.abs(pane.showX2 - pane.showX1)
         readonly property real spanH: Math.abs(pane.showY2 - pane.showY1)
-        readonly property int col: pane.tileIndex % grid.cols
-        readonly property int row: Math.floor(pane.tileIndex / grid.cols)
-        readonly property point origin: pane.unitToPx(
-            tileLeft + col * spanW / grid.cols,
-            tileTop + row * spanH / grid.rows)
-        readonly property point far: pane.unitToPx(
-            tileLeft + (col + 1) * spanW / grid.cols,
-            tileTop + (row + 1) * spanH / grid.rows)
+        readonly property int row: Math.floor(pane.tileIndex / Math.max(1, grid.cols))
+        readonly property int col: {
+            const cols = Math.max(1, grid.cols)
+            const c = pane.tileIndex % cols
+            return (row % 2) ? (cols - 1 - c) : c
+        }
+        readonly property real shotNx: tileLeft + (col + 0.5) * spanW / grid.cols
+        readonly property real shotNy: tileTop + (row + 0.5) * spanH / grid.rows
+        readonly property real shotNw: spanW / grid.cols
+        readonly property real shotNh: spanH / grid.rows
+        readonly property point origin: pane.unitToPx(shotNx - shotNw / 2, shotNy - shotNh / 2)
+        readonly property point far: pane.unitToPx(shotNx + shotNw / 2, shotNy + shotNh / 2)
+        readonly property color strokeDark: Theme.hsl(0, 0.25, 0.08)
+        readonly property color strokeLight: Theme.hsl(0, 0.12, 0.94)
+        property bool overLight: false
+        property bool strokeReady: false
         x: origin.x
         y: origin.y
-        width: Math.max(2, far.x - origin.x)
-        height: Math.max(2, far.y - origin.y)
-        color: Theme.accentSoft
-        border.color: Theme.accent
+        width: Math.max(1, far.x - origin.x)
+        height: Math.max(1, far.y - origin.y)
+        color: "transparent"
+        border.color: strokeReady ? (overLight ? strokeDark : strokeLight) : Theme.accent
         border.width: 1
+        antialiasing: false
+        onVisibleChanged: lumaProbe.schedule()
+        onXChanged: lumaProbe.schedule()
+        onYChanged: lumaProbe.schedule()
+        onWidthChanged: lumaProbe.schedule()
+        onHeightChanged: lumaProbe.schedule()
+    }
+
+    Canvas {
+        id: lumaProbe
+        x: -64
+        y: -64
+        width: 32
+        height: 18
+        opacity: 0
+        renderTarget: Canvas.Image
+        contextType: "2d"
+        property bool scheduled: false
+        property bool sampled: false
+
+        function schedule() {
+            if (scheduled || !tileBox.visible)
+                return
+            scheduled = true
+            Qt.callLater(kick)
+        }
+
+        function kick() {
+            scheduled = false
+            if (tileBox.visible)
+                requestPaint()
+        }
+
+        onPaint: {
+            sampled = false
+            const img = pane.frontScan
+            const ctx = getContext("2d")
+            if (!ctx)
+                return
+            ctx.reset()
+            if (!img || img.status !== Image.Ready || img.implicitWidth < 2 || img.implicitHeight < 2)
+                return
+            const painted = pane.scanPainted(img)
+            if (painted.width < 2 || painted.height < 2)
+                return
+            const sx = (tileBox.x - painted.x) / painted.width * img.implicitWidth
+            const sy = (tileBox.y - painted.y) / painted.height * img.implicitHeight
+            const sw = tileBox.width / painted.width * img.implicitWidth
+            const sh = tileBox.height / painted.height * img.implicitHeight
+            if (!(sw > 1 && sh > 1))
+                return
+            try {
+                ctx.drawImage(img, sx, sy, sw, sh, 0, 0, width, height)
+            } catch (err) {
+                try {
+                    ctx.drawImage(img.source, sx, sy, sw, sh, 0, 0, width, height)
+                } catch (err2) {
+                    return
+                }
+            }
+            sampled = true
+        }
+
+        onPainted: {
+            if (!sampled) {
+                tileBox.strokeReady = false
+                return
+            }
+            const ctx = getContext("2d")
+            const pix = ctx ? ctx.getImageData(0, 0, width, height) : null
+            const data = pix && pix.data
+            if (!data || data.length < 16) {
+                tileBox.strokeReady = false
+                return
+            }
+            let sum = 0
+            let n = 0
+            for (let i = 0; i < data.length; i += 4) {
+                if (data[i + 3] < 16)
+                    continue
+                sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]
+                n++
+            }
+            if (n < 4) {
+                tileBox.strokeReady = false
+                return
+            }
+            const luma = sum / n / 255
+            if (luma > 0.55)
+                tileBox.overLight = true
+            else if (luma < 0.45)
+                tileBox.overLight = false
+            tileBox.strokeReady = true
+        }
     }
 
     Text {

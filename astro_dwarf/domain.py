@@ -1124,6 +1124,91 @@ def camera_fov(model: DeviceModel | str | None = None, camera: Camera | str | No
     return table[lens]
 
 
+def panorama_shot_grid(
+    total: int,
+    view_aspect: float,
+    tele_fov_h: float = 2.95,
+    tele_fov_v: float = 1.66,
+) -> tuple[int, int]:
+    """Cols×rows for the tele FOV rectangle on the panorama canvas.
+
+    Firmware progress is only ``completed``/``total``. The scan is painted
+    at the canvas aspect (often ~32:9); normalized x/y are not square
+    pixels. Factor ``total`` so each cell matches tele H×V on that
+    painted rectangle — not a 1:1 split of the 0–1 box, which makes the
+    overlay too wide and walks the canvas too fast.
+    """
+    total = int(total or 0)
+    if total < 2:
+        return (1, 1)
+    tele_h = float(tele_fov_h or 0)
+    tele_v = float(tele_fov_v or 0)
+    tele_aspect = tele_h / tele_v if tele_h > 0.5 and tele_v > 0.3 else 2.95 / 1.66
+    view = float(view_aspect or 0)
+    if view < 0.2:
+        view = 16 / 9
+    target = view / tele_aspect
+    best_cols = 1
+    best_err = 1e9
+    for cols in range(1, total + 1):
+        if total % cols:
+            continue
+        rows = total // cols
+        err = abs(cols / rows - target)
+        if err < best_err:
+            best_err = err
+            best_cols = cols
+    return (best_cols, total // best_cols)
+
+
+def panorama_shot_cell(index: int, cols: int) -> tuple[int, int]:
+    """Row-major snake: even rows left→right, odd rows right→left."""
+    cols = max(1, int(cols or 1))
+    index = max(0, int(index or 0))
+    row = index // cols
+    col = index % cols
+    if row % 2:
+        col = cols - 1 - col
+    return (col, row)
+
+
+def panorama_tele_overlay(
+    az: float,
+    alt: float,
+    az_min: float,
+    az_max: float,
+    alt_min: float,
+    alt_max: float,
+    tele_fov_h: float = 2.95,
+    tele_fov_v: float = 1.66,
+) -> dict[str, float] | None:
+    """Tele FOV box on the panorama canvas from mechanical az/alt.
+
+    ``nx``/``ny`` are the centre in 0–1 canvas space (y down, image top is
+    higher altitude). ``nw``/``nh`` are the tele field as a fraction of the
+    sampled az/alt span. None until that span is larger than the tele FOV.
+    """
+    try:
+        az_span = float(az_max) - float(az_min)
+        alt_span = float(alt_max) - float(alt_min)
+        tele_h = float(tele_fov_h)
+        tele_v = float(tele_fov_v)
+        az_c = float(az)
+        alt_c = float(alt)
+    except (TypeError, ValueError):
+        return None
+    if tele_h < 0.5 or tele_v < 0.3:
+        tele_h, tele_v = 2.95, 1.66
+    if az_span < tele_h * 1.5 or alt_span < tele_v * 1.5:
+        return None
+    return {
+        "nx": (az_c - float(az_min)) / az_span,
+        "ny": (float(alt_max) - alt_c) / alt_span,
+        "nw": tele_h / az_span,
+        "nh": tele_v / alt_span,
+    }
+
+
 def camera_fov_plausible(
     fov_h: float,
     fov_v: float,

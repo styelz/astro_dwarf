@@ -20,6 +20,7 @@ from astro_dwarf.device_telemetry import (
     TYPE_NOTIFICATION,
     TelemetryTap,
 )
+from astro_dwarf.domain import panorama_shot_cell, panorama_shot_grid, panorama_tele_overlay
 from astro_dwarf.telemetry_view import derive_activity
 
 
@@ -134,10 +135,56 @@ def test_panorama_scan_cache_survives_reconnect() -> None:
                 os.environ["ASTRO_DWARF_DATA"] = previous_override
 
 
+def test_panorama_shot_grid_uses_painted_canvas_aspect() -> None:
+    # 1800-shot full pano on the ~32:9 scan, DWARF 3 tele 2.95°×1.66°.
+    cols, rows = panorama_shot_grid(1800, 32 / 9, 2.95, 1.66)
+    _assert((cols, rows) == (60, 30), (cols, rows))
+    # A 1:1 canvas would use fewer columns; that is the too-wide overlay.
+    square_cols, square_rows = panorama_shot_grid(1800, 1.0, 2.95, 1.66)
+    _assert((square_cols, square_rows) == (30, 60), (square_cols, square_rows))
+    _assert(cols > square_cols, "tele FOV cells must be narrower on a wide canvas")
+    _assert(panorama_shot_grid(1, 32 / 9) == (1, 1), panorama_shot_grid(1, 32 / 9))
+
+
+def test_panorama_shot_cell_snakes() -> None:
+    # 4×2: row 0 LTR, row 1 RTL so the next shot drops and reverses.
+    _assert(panorama_shot_cell(0, 4) == (0, 0), panorama_shot_cell(0, 4))
+    _assert(panorama_shot_cell(3, 4) == (3, 0), panorama_shot_cell(3, 4))
+    _assert(panorama_shot_cell(4, 4) == (3, 1), panorama_shot_cell(4, 4))
+    _assert(panorama_shot_cell(7, 4) == (0, 1), panorama_shot_cell(7, 4))
+    _assert(panorama_shot_cell(8, 4) == (0, 2), panorama_shot_cell(8, 4))
+
+
+def test_panorama_tele_overlay_from_motor_span() -> None:
+    box = panorama_tele_overlay(20, 30, 0, 80, 10, 50, 2.95, 1.66)
+    _assert(box is not None, box)
+    _assert(abs(box["nx"] - 20 / 80) < 1e-6, box)
+    _assert(abs(box["ny"] - (50 - 30) / 40) < 1e-6, box)
+    _assert(abs(box["nw"] - 2.95 / 80) < 1e-6, box)
+    _assert(abs(box["nh"] - 1.66 / 40) < 1e-6, box)
+    _assert(panorama_tele_overlay(0, 0, 0, 1, 0, 1, 2.95, 1.66) is None, "span smaller than tele FOV")
+
+
+def test_panorama_pointing_tracks_motor_and_unwraps_az() -> None:
+    tap = _tap()
+    tap.update({"panorama_state": "running", "motor_pos_1": 350.0, "motor_pos_2": 40.0}, force=True)
+    tap.update({"motor_pos_1": 10.0, "motor_pos_2": 20.0}, force=True)
+    snap = tap.snapshot()
+    _assert(snap.get("panorama_has_pointing") is True, snap)
+    _assert(abs(float(snap["panorama_az"]) - 370.0) < 1e-6, snap)
+    _assert(abs(float(snap["panorama_az_min"]) - 350.0) < 1e-6, snap)
+    _assert(abs(float(snap["panorama_az_max"]) - 370.0) < 1e-6, snap)
+    _assert(abs(float(snap["panorama_alt_max"]) - 40.0) < 1e-6, snap)
+    _assert(abs(float(snap["panorama_alt_min"]) - 20.0) < 1e-6, snap)
+
+
 if __name__ == "__main__":
     test_panorama_progress_and_state()
     test_framing_rect_and_webp()
     test_running_grid_wins_over_framing()
     test_panorama_scan_cache_survives_reconnect()
+    test_panorama_shot_grid_uses_painted_canvas_aspect()
+    test_panorama_shot_cell_snakes()
+    test_panorama_tele_overlay_from_motor_span()
+    test_panorama_pointing_tracks_motor_and_unwraps_az()
     print("ok")
-

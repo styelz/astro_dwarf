@@ -1295,6 +1295,21 @@ def mosaic_group_sessions(sessions, device_id: str, group_id: str):
     ]
 
 
+def mosaic_preview_scale_text(layout: tuple[int, int, int, int] | None) -> str:
+    """Framed field for a device mosaic, e.g. 1.8×1.8. Empty for a custom pane grid."""
+    if not layout:
+        return ""
+    try:
+        _columns, _rows, horizontal, vertical = layout
+        horizontal = int(horizontal)
+        vertical = int(vertical)
+    except (TypeError, ValueError):
+        return ""
+    if horizontal <= 100 and vertical <= 100:
+        return ""
+    return f"{horizontal / 100:.1f}×{vertical / 100:.1f}"
+
+
 def mosaic_preview_empty() -> dict[str, Any]:
     return {
         "active": False,
@@ -1311,6 +1326,7 @@ def mosaic_preview_empty() -> dict[str, Any]:
         "device": False,
         "horizontal_scale": 100,
         "vertical_scale": 100,
+        "scale_text": "",
     }
 
 
@@ -4581,10 +4597,18 @@ class AppBackend(QObject):
         self, session: Session | None, live: dict[str, Any] | None
     ) -> tuple[int, int, int, int] | None:
         """Firmware mosaic for one session. A custom pane group stays host-side."""
-        members = list((live or {}).get("members") or [])
-        if len(members) > 1:
-            return None
+        members = [
+            item
+            for item in list((live or {}).get("members") or [])
+            if isinstance(item, Session)
+        ]
+        if session is None:
+            session = members[0] if len(members) == 1 else None
         if session is None or session.mosaic.imported_plan:
+            return None
+        # Custom mosaics are imported pane groups. A firmware session stays a
+        # device mosaic even if live progress listed more than one member.
+        if any(item.mosaic.imported_plan for item in members):
             return None
         return session.mosaic.firmware_layout()
 
@@ -5129,6 +5153,9 @@ class AppBackend(QObject):
                 if not session.mosaic.imported_plan and session.mosaic.panes > 1:
                     phase = "stacking"
             layout = self._running_device_mosaic_layout(current_session if isinstance(current_session, Session) else None, live)
+            scale_text = mosaic_preview_scale_text(layout)
+            if not scale_text and isinstance(current_session, Session) and not current_session.mosaic.imported_plan:
+                scale_text = str(current_session.mosaic.scale_text or "")
             return {
                 "active": self._mosaic_keep_live_sheet()
                 or mosaic_result_holds_sheet(
@@ -5151,6 +5178,7 @@ class AppBackend(QObject):
                 "device": layout is not None,
                 "horizontal_scale": int(layout[2]) if layout is not None else 100,
                 "vertical_scale": int(layout[3]) if layout is not None else 100,
+                "scale_text": scale_text,
             }
         except Exception:
             if not getattr(self, "_mosaic_preview_error", False):

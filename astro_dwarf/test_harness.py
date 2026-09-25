@@ -1116,13 +1116,22 @@ class TestHarness:
                     "height": int(_property(self.window, "height", height) or height),
                 }
             if method == "POST" and route == "/panorama/frame":
-                self.backend.updatePanoramaFrame(
-                    float(payload.get("x1", 0)),
-                    float(payload.get("y1", 0)),
-                    float(payload.get("x2", 1)),
-                    float(payload.get("y2", 1)),
-                )
-                return {"ok": True}
+                x1 = float(payload.get("x1", 0))
+                y1 = float(payload.get("y1", 0))
+                x2 = float(payload.get("x2", 1))
+                y2 = float(payload.get("y2", 1))
+                pane = find_named(self.window, "panoramaFrame")
+                if pane is not None:
+                    try:
+                        invoke_qml(pane, "holdBox", x1, y1, x2, y2)
+                    except Exception:
+                        pass
+                    setter = getattr(pane, "setProperty", None)
+                    if callable(setter):
+                        setter("userEnlarged", True)
+                        setter("seeded", True)
+                self.backend.updatePanoramaFrame(x1, y1, x2, y2)
+                return {"ok": True, "x1": x1, "y1": y1, "x2": x2, "y2": y2}
             if method == "POST" and route == "/device/action":
                 operation = str(payload.get("operation") or payload.get("name") or "")
                 label = str(payload.get("label") or operation)

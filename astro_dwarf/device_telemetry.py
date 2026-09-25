@@ -626,6 +626,8 @@ class TelemetryTap:
         # A restarted app has no live rect/thumbnail notify to replay, so a
         # shoot already in progress needs the last one reloaded from disk.
         self._panorama_cache_loaded = False
+        self._pano_az_raw: float | None = None
+        self._pano_az_unwrapped: float | None = None
 
     # ------------------------------------------------------------------ setup
     def install(self, websockets_utils: Any) -> bool:
@@ -721,6 +723,8 @@ class TelemetryTap:
             self._goto_stop_owned = False
             self._goto_stopping_since = 0.0
             self._panorama_cache_loaded = False
+            self._pano_az_raw = None
+            self._pano_az_unwrapped = None
             self._cancel_goto_unwind_locked()
 
     def accept_power_off(self) -> None:
@@ -885,6 +889,9 @@ class TelemetryTap:
         changes = dict(changes)
         now = time.monotonic()
         with self._lock:
+            pointing = self._panorama_pointing_changes_locked(changes)
+            if pointing:
+                changes.update(pointing)
             if "goto_state" in changes:
                 previous_state = str(self._pending.get("goto_state") or self._state.get("goto_state") or "")
                 changes, self._goto_stop_owned, self._goto_stopping_since = settle_goto_changes(
@@ -1002,6 +1009,81 @@ class TelemetryTap:
             "panorama_scan_rev": self._panorama_scan_rev,
             "panorama_framing_state": "running",
         }
+
+    def _panorama_pointing_changes_locked(self, changes: dict[str, Any]) -> dict[str, Any]:
+        """Map CMD 14011 az/alt onto the framing canvas while pano is active."""
+        new_framing = str(changes.get("panorama_framing_state") or "")
+        if new_framing == "running" and changes.get("panorama_has_rect") is False:
+            self._pano_az_raw = None
+            self._pano_az_unwrapped = None
+            for key in (
+                "panorama_az",
+                "panorama_alt",
+                "panorama_az_min",
+                "panorama_az_max",
+                "panorama_alt_min",
+                "panorama_alt_max",
+            ):
+                self._pending.pop(key, None)
+                self._state.pop(key, None)
+            return {"panorama_has_pointing": False}
+        framing = str(
+            changes.get("panorama_framing_state")
+            or self._pending.get("panorama_framing_state")
+            or self._state.get("panorama_framing_state")
+            or ""
+        )
+        shooting = str(
+            changes.get("panorama_state")
+            or self._pending.get("panorama_state")
+            or self._state.get("panorama_state")
+            or ""
+        )
+        if shooting != "running" and framing != "running":
+            return {}
+        if "motor_pos_1" not in changes and "motor_pos_2" not in changes:
+            return {}
+
+        def _held(key: str) -> Any:
+            if key in changes:
+                return changes[key]
+            if key in self._pending:
+                return self._pending[key]
+            return self._state.get(key)
+
+        try:
+            az_f = float(_held("motor_pos_1"))
+            alt_f = float(_held("motor_pos_2"))
+        except (TypeError, ValueError):
+            return {}
+        if self._pano_az_raw is None or self._pano_az_unwrapped is None:
+            self._pano_az_raw = az_f
+            self._pano_az_unwrapped = az_f
+        else:
+            delta = (az_f - self._pano_az_raw + 180.0) % 360.0 - 180.0
+            self._pano_az_unwrapped += delta
+            self._pano_az_raw = az_f
+        unwrapped = float(self._pano_az_unwrapped)
+        extra: dict[str, Any] = {
+            "panorama_az": unwrapped,
+            "panorama_alt": alt_f,
+            "panorama_has_pointing": True,
+        }
+
+        def _expand(key: str, value: float, lo: bool) -> None:
+            prev = self._pending.get(key, self._state.get(key))
+            try:
+                held = float(prev)
+            except (TypeError, ValueError):
+                extra[key] = value
+                return
+            extra[key] = min(held, value) if lo else max(held, value)
+
+        _expand("panorama_az_min", unwrapped, True)
+        _expand("panorama_az_max", unwrapped, False)
+        _expand("panorama_alt_min", alt_f, True)
+        _expand("panorama_alt_max", alt_f, False)
+        return extra
 
     def _panorama_cache_path(self) -> Path | None:
         """Stable per-device file, unlike the per-connection temp scan dir."""
