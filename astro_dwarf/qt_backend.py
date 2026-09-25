@@ -117,6 +117,7 @@ from .services import (
     SKY_WEB_BOOT_JS,
     SKY_WEB_HARVEST_JS,
     StellariumClient,
+    device_mosaic_capture_panes,
     device_mosaic_footprints,
     device_mosaic_template,
     firmware_mosaic_overlap,
@@ -544,7 +545,6 @@ _ACTIVITY_START = {
     "calibrate": "calibrate",
     "autofocus": "autofocus",
     "infinity": "infinity",
-    "track": "goto",
     "sky_track": "goto",
     "stack": "imaging",
     "polar_position": "polar_position",
@@ -721,7 +721,7 @@ _ACTION_DETAILS = {
     "calibrate": "Device will plate-solve and report progress",
     "autofocus": "Watch the focus position in VITALS",
     "polar_position": "Homes and slews the mount to the polar-alignment pose",
-    "track": "Firmware will plate-solve this pointing and start sidereal tracking",
+    "track": "Locks onto the star in the center of the tele view",
     "sky_track": "Telescope will slew to the sky-map target, plate-solve, and start sidereal tracking",
     "stack": "Live stacking uses the current exposure, gain and count",
     "reboot": "The connection will drop for ~60 s",
@@ -809,6 +809,11 @@ def tracking_blocks_action(operation: str, *, tracking: bool) -> str:
     if tracking and str(operation or "") == "calibrate":
         return "Stop tracking before calibrating"
     return ""
+
+
+def _object_track_label(name: str) -> bool:
+    """True for the local label of a click-to-track, which has no catalog position."""
+    return str(name or "").strip().lower() in {"live tap", "live view"}
 
 
 def command_required_shooting_mode(operation: str) -> int | None:
@@ -1305,6 +1310,9 @@ def mosaic_preview_empty() -> dict[str, Any]:
         "ra_hours": None,
         "dec_degrees": None,
         "completed": [],
+        "device": False,
+        "horizontal_scale": 100,
+        "vertical_scale": 100,
     }
 
 
@@ -1837,6 +1845,7 @@ class AppBackend(QObject):
         self._alerts = AlertEngine()
         self._last_toast: tuple[str, str, float] = ("", "", 0.0)
         self._device_lights: dict[str, bool] = {}
+        self._panorama_frame_rect: dict[str, tuple[float, float, float, float]] = {}
         self._device_indicators: dict[str, bool] = {}
         self._control_dirty: set[str] = set()
         self._control_restoring: set[str] = set()
@@ -2431,7 +2440,12 @@ class AppBackend(QObject):
             or previous.get("tracking_state") != current.get("tracking_state")
         ):
             name = str(current.get("capture_target") or current.get("tracking_target") or "").strip()
-            if current.get("tracking_state") == "running" and name:
+            if (
+                current.get("tracking_kind") != "object"
+                and current.get("tracking_state") == "running"
+                and name
+                and not _object_track_label(name)
+            ):
                 self._schedule_catalog_resolve(device_id, name)
         self._refresh_tracked_catalog(device_id)
         if device_id == self._selected_device_id and (
@@ -4287,6 +4301,10 @@ class AppBackend(QObject):
         if device_id == self._selected_device_id and (not tracking or not name):
             self._clear_preview_coords()
             return
+        if telemetry.get("tracking_kind") == "object" or _object_track_label(name):
+            if device_id == self._selected_device_id:
+                self._clear_preview_coords()
+            return
         if tracking and name:
             self._schedule_catalog_resolve(device_id, name)
 
@@ -4560,6 +4578,17 @@ class AppBackend(QObject):
             index = max(1, min(session.mosaic.panes, int(self._mosaic_firmware_pane or 1)))
         group = session.mosaic.group_id or f"session:{session.id}"
         return columns, rows, index, group
+
+    def _running_device_mosaic_layout(
+        self, session: Session | None, live: dict[str, Any] | None
+    ) -> tuple[int, int, int, int] | None:
+        """Firmware mosaic for one session. A custom pane group stays host-side."""
+        members = list((live or {}).get("members") or [])
+        if len(members) > 1:
+            return None
+        if session is None or session.mosaic.imported_plan:
+            return None
+        return session.mosaic.firmware_layout()
 
     def _mosaic_is_active(self, session: Session | None, members: list[Session]) -> bool:
         if session is not None:
@@ -5101,6 +5130,7 @@ class AppBackend(QObject):
             if not phase and isinstance(session, Session) and session.status == SessionStatus.RUNNING:
                 if not session.mosaic.imported_plan and session.mosaic.panes > 1:
                     phase = "stacking"
+            layout = self._running_device_mosaic_layout(current_session if isinstance(current_session, Session) else None, live)
             return {
                 "active": self._mosaic_keep_live_sheet()
                 or mosaic_result_holds_sheet(
@@ -5120,6 +5150,9 @@ class AppBackend(QObject):
                 "ra_hours": getattr(target, "ra_hours", None) if target is not None else None,
                 "dec_degrees": getattr(target, "dec_degrees", None) if target is not None else None,
                 "completed": sorted(images),
+                "device": layout is not None,
+                "horizontal_scale": int(layout[2]) if layout is not None else 100,
+                "vertical_scale": int(layout[3]) if layout is not None else 100,
             }
         except Exception:
             if not getattr(self, "_mosaic_preview_error", False):
@@ -5443,6 +5476,32 @@ class AppBackend(QObject):
             payload["target_ra_hours"] = float(target.ra_hours)
             payload["target_dec_degrees"] = float(target.dec_degrees)
         if mosaic_active:
+            layout = self._running_device_mosaic_layout(session, {"members": members})
+            if (
+                layout is not None
+                and session is not None
+                and session.target.ra_hours is not None
+                and session.target.dec_degrees is not None
+            ):
+                columns_d, rows_d, horizontal, vertical = layout
+                payload["columns"] = columns_d
+                payload["rows"] = rows_d
+                payload["overlap"] = 0.0
+                payload["live_pane"] = live_pane
+                framed_h = fov_h * horizontal / 100.0
+                framed_v = fov_v * vertical / 100.0
+                payload["label"] = f"{camera.upper()} {framed_h:.2f}° × {framed_v:.2f}°  PA {pa:.0f}°"
+                payload["panes"] = device_mosaic_capture_panes(
+                    session.target,
+                    horizontal,
+                    vertical,
+                    fov_h,
+                    fov_v,
+                    south_up=south_up,
+                    position_angle=payload["position_angle"],
+                )
+                payload["mode"] = "panes"
+                return payload
             payload["columns"] = mosaic_columns
             payload["rows"] = mosaic_rows
             payload["live_pane"] = live_pane
@@ -5460,15 +5519,18 @@ class AppBackend(QObject):
                 try:
                     layout = session.mosaic.firmware_layout()
                     if layout is not None:
-                        payload["columns"] = 1
-                        payload["rows"] = 1
+                        _columns_d, _rows_d, horizontal, vertical = layout
+                        payload["columns"] = layout[0]
+                        payload["rows"] = layout[1]
                         payload["overlap"] = 0.0
-                        payload["fov_h"] = fov_h * layout[2] / 100.0
-                        payload["fov_v"] = fov_v * layout[3] / 100.0
-                        payload["panes"] = device_mosaic_footprints(
+                        payload["live_pane"] = live_pane
+                        framed_h = fov_h * horizontal / 100.0
+                        framed_v = fov_v * vertical / 100.0
+                        payload["label"] = f"{camera.upper()} {framed_h:.2f}° × {framed_v:.2f}°  PA {pa:.0f}°"
+                        payload["panes"] = device_mosaic_capture_panes(
                             session.target,
-                            layout[2],
-                            layout[3],
+                            horizontal,
+                            vertical,
                             fov_h,
                             fov_v,
                             south_up=south_up,
@@ -8565,6 +8627,7 @@ class AppBackend(QObject):
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
             return
+        self._panorama_frame_rect[device_id] = (float(x1), float(y1), float(x2), float(y2))
         worker.send("panorama_frame_update", {"args": [float(x1), float(y1), float(x2), float(y2)]})
 
     @Slot(str, str)
@@ -8573,7 +8636,7 @@ class AppBackend(QObject):
         if not worker or not worker.connected:
             return
         device = self._device_by_id(device_id)
-        if operation in {"track", "sky_track"} and (not device or not device.location_configured):
+        if operation == "sky_track" and (not device or not device.location_configured):
             message = "Set an observing location in Settings before starting tracking"
             self.add_log("warning", message, device_id)
             self._toast("Tracking needs an observing location", "warning", message)
@@ -8677,7 +8740,10 @@ class AppBackend(QObject):
                 if operation == "astro_mode":
                     self._apply_shooting_mode_camera(device_id)
             elif ok and operation == "stop_goto":
-                self._on_telemetry(device_id, {"tracking_state": "idle", "goto_state": "idle"})
+                self._on_telemetry(
+                    device_id,
+                    {"tracking_state": "idle", "tracking_kind": "", "tracking_target": "", "goto_state": "idle"},
+                )
             if ok and operation in {"lights_on", "lights_off"}:
                 self._device_lights[device_id] = operation == "lights_on"
                 self._notify_devices()
@@ -8692,15 +8758,28 @@ class AppBackend(QObject):
                         fallback = str(payload["args"][-1] or "")
                     self._remember_track_target(result, fallback)
                 elif operation == "track":
-                    fallback = ""
+                    name = "Live view"
                     if isinstance(payload.get("args"), list) and payload["args"]:
-                        fallback = str(payload["args"][-1] or "")
-                    self._schedule_catalog_resolve(device_id, fallback)
+                        name = str(payload["args"][-1] or "").strip() or name
+                    self._on_telemetry(
+                        device_id,
+                        {
+                            "tracking_state": "running",
+                            "tracking_kind": "object",
+                            "tracking_target": name,
+                            "goto_state": "idle",
+                        },
+                    )
                 self.add_log("success", f"{label} acknowledged", device_id)
                 self._toast(label, "success", _ACTION_DETAILS.get(operation, ""))
             else:
-                self.add_log("error", f"{label} failed: {result}", device_id)
-                if operation in {"track", "sky_track"} and tracking_needs_calibration(result):
+                needs_calibration = operation in {"track", "sky_track"} and tracking_needs_calibration(result)
+                self.add_log(
+                    "warning" if needs_calibration else "error",
+                    f"{label} failed: {result}",
+                    device_id,
+                )
+                if needs_calibration:
                     self._toast(
                         TRACKING_NEEDS_CALIBRATION_TOAST,
                         "warning",
@@ -8724,7 +8803,7 @@ class AppBackend(QObject):
             name = ""
             if session.get("device_id") == device_id:
                 name = str(session.get("target_name") or "")
-            payload = {"args": [name or "Live tap"]}
+            payload = {"args": [name or "Live view"]}
         elif operation == "sky_track":
             sky = self._sky_target
             if sky is None or sky.ra_hours is None or sky.dec_degrees is None:
@@ -8794,6 +8873,10 @@ class AppBackend(QObject):
             camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
             worker_operation = "wide_photo" if str(camera).lower() == "wide" else "photo"
             self._sync_worker_camera(device_id, str(camera))
+        if operation == "panorama_shoot":
+            framed = self._panorama_frame_rect.get(device_id)
+            if framed:
+                payload = {"args": list(framed)}
         worker.send(worker_operation, payload, callback=self._with_pending(device_id, operation, done))
         if dropping:
             self._drop_device_link(device_id)

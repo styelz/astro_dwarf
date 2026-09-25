@@ -1344,6 +1344,18 @@ Item {
                     }
                     property bool mainWide: String((backend.selectedDevice && backend.selectedDevice.camera) || "tele") === "wide"
                     property bool pipEnabled: true
+                    property bool pipRestoreAfterPano: false
+                    onPanoramaCanvasChanged: {
+                        if (panoramaCanvas) {
+                            if (pipEnabled) {
+                                pipRestoreAfterPano = true
+                                pipEnabled = false
+                            }
+                        } else if (pipRestoreAfterPano) {
+                            pipEnabled = true
+                            pipRestoreAfterPano = false
+                        }
+                    }
                     readonly property bool pipAvailable: backend.previewTelePlaying && backend.previewWidePlaying
                         && !backend.previewStacking
                         && !(backend.mosaicPreview && backend.mosaicPreview.active)
@@ -1372,6 +1384,7 @@ Item {
                     readonly property bool pipPlaying: pipAvailable && pipEnabled
                     readonly property bool panoramaFrame: root.scopeActivity === "panorama_frame"
                         || String(root.scopeTelemetry.panorama_framing_state || "") === "running"
+                    readonly property bool panoramaCanvas: panoramaFrame || root.scopeActivity === "panorama"
                     readonly property bool mosaicActive: !!(backend.mosaicPreview && backend.mosaicPreview.active)
                     property bool showMosaicSheet: true
                     onMosaicActiveChanged: if (mosaicActive) showMosaicSheet = true
@@ -1746,10 +1759,10 @@ Item {
                     }
 
                     PanoramaFramePane {
-                        id: panoramaFrame
+                        id: panoramaFramePane
                         objectName: "panoramaFrame"
                         anchors.fill: parent
-                        visible: previewHost.panoramaFrame && !previewHost.mosaicSheet
+                        visible: previewHost.panoramaCanvas && !previewHost.mosaicSheet
                         active: visible && !previewHost.feedFullscreen
                         widePlaying: backend.previewWidePlaying
                     }
@@ -1757,8 +1770,8 @@ Item {
                         id: liveFrame
                         objectName: "livePane"
                         anchors.fill: parent
-                        visible: !previewHost.mosaicSheet && !previewHost.panoramaFrame
-                        playing: !previewHost.feedFullscreen && (previewHost.paneView || (previewHost.mainPlaying && !previewHost.mosaicSheet))
+                        visible: !previewHost.mosaicSheet && !previewHost.panoramaCanvas
+                        playing: !previewHost.panoramaCanvas && !previewHost.feedFullscreen && (previewHost.paneView || (previewHost.mainPlaying && !previewHost.mosaicSheet))
                         wideView: previewHost.paneView ? false : previewHost.displayWide
                         camera: previewHost.paneView ? "tele" : previewHost.liveCamera(previewHost.displayWide)
                         centerEnabled: playing && root.motionEnabled && !backend.previewResult && !backend.centerTapBusy
@@ -2390,7 +2403,8 @@ Item {
                         Rectangle {
                             id: previewBadge
                             readonly property bool stopping: root.scopeStopping
-                            width: stopping ? Theme.px(118) : (backend.previewResult ? Theme.px(96) : (backend.previewHeld && !backend.previewPlaying ? Theme.px(108) : Theme.px(96)))
+                            readonly property bool panoramaShooting: root.scopeActivity === "panorama"
+                            width: stopping || panoramaShooting ? Theme.px(118) : (backend.previewResult ? Theme.px(96) : (backend.previewHeld && !backend.previewPlaying ? Theme.px(108) : Theme.px(96)))
                             height: Theme.px(28)
                             color: Theme.panelFill
                             border.color: stopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.success : (backend.previewHeld ? Theme.warning : Theme.outline)))
@@ -2408,11 +2422,11 @@ Item {
                                         NumberAnimation { from: 0.3; to: 1; duration: 600 }
                                     }
                                 }
-                                Text { text: previewBadge.stopping ? "STOPPING" : (backend.previewResult ? "RESULT" : (backend.previewPlaying ? (backend.previewStacking ? "STACK" : "LIVE") : (backend.previewHeld ? "PAUSED" : (backend.previewActive ? "STARTING" : "STANDBY")))); color: Theme.textPrimary; font.pixelSize: Theme.fontPx(11); font.bold: true }
+                                Text { text: previewBadge.stopping ? "STOPPING" : (previewBadge.panoramaShooting ? "SHOOTING" : (backend.previewResult ? "RESULT" : (backend.previewPlaying ? (backend.previewStacking ? "STACK" : "LIVE") : (backend.previewHeld ? "PAUSED" : (backend.previewActive ? "STARTING" : "STANDBY"))))); color: Theme.textPrimary; font.pixelSize: Theme.fontPx(11); font.bold: true }
                             }
                         }
                         Rectangle {
-                            visible: backend.previewPlaying || backend.previewResult
+                            visible: backend.previewPlaying || backend.previewResult || previewBadge.panoramaShooting
                             width: mainCamLabel.implicitWidth + Theme.s4
                             height: Theme.px(28)
                             color: Theme.panelFill
@@ -2420,7 +2434,7 @@ Item {
                             Text {
                                 id: mainCamLabel
                                 anchors.centerIn: parent
-                                text: previewHost.chromeWide ? "WIDE" : (backend.previewResult || backend.previewStacking ? "STACK" : "TELE")
+                                text: previewBadge.panoramaShooting ? "PANO" : (previewHost.chromeWide ? "WIDE" : (backend.previewResult || backend.previewStacking ? "STACK" : "TELE"))
                                 color: Theme.accent
                                 font.pixelSize: Theme.fontPx(11)
                                 font.bold: true
@@ -2555,7 +2569,7 @@ Item {
                         HudButton {
                             objectName: "mosaicStitch"
                             visible: backend.stitchStatus === "done" || backend.stitchStatus === "working" || backend.stitchStatus === "failed"
-                                     || (previewHost.mosaicActive && !controlPage.mosaicRunning && (mosaicPreview.completed || []).length >= 2)
+                                     || (previewHost.mosaicActive && !mosaicPreview.device && !controlPage.mosaicRunning && (mosaicPreview.completed || []).length >= 2)
                             text: backend.stitchStatus === "done" ? "SHEET" : "STITCH"
                             busyText: "STITCHING…"
                             tooltip: backend.stitchStatus === "done"
@@ -2574,7 +2588,9 @@ Item {
                             text: previewHost.showMosaicSheet ? "PANE" : "MOSAIC"
                             tooltip: previewHost.showMosaicSheet
                                      ? "Show the current pane full frame"
-                                     : "Show the mosaic contact sheet"
+                                     : (mosaicPreview.device
+                                        ? "Show the full mosaic as the telescope builds it"
+                                        : "Show the mosaic contact sheet")
                             buttonColor: Theme.fillActive
                             foregroundColor: Theme.accent
                             onHoveredChanged: previewHost.holdControls(hovered)
@@ -3076,12 +3092,10 @@ Item {
                                 return t.tracking_target ? "SLEWING · " + t.tracking_target : "SLEWING · STOP"
                             if (trackingPad && trackingNow)
                                 return t.tracking_target ? "TRACKING · " + t.tracking_target : "TRACKING · STOP"
-                            if (trackingPad && !backend.selectedDevice.location_configured)
-                                return "SET LOCATION FIRST"
                             if (trackingPad && backend.previewPlaying)
-                                return previewHost.displayWide ? "DOUBLE-CLICK TARGET FIRST" : "USE WIDE VIEW FIRST"
+                                return "CENTRE THE OBJECT"
                             if (trackingPad)
-                                return "CALIBRATE · CENTRE · TRACK"
+                                return "TAP THE STAR · TRACK"
                             if (modelData.state === "imaging" && activeForState) {
                                 if (controlPage.mosaicRunning)
                                     return t.capture_text

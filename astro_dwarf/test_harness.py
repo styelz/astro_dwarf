@@ -795,6 +795,21 @@ class TestHarness:
                 "activity": str(device.get("activity") or ""),
                 "status": str(device.get("status") or ""),
                 "ready": ready,
+                "panorama": {
+                    "activity": str(device.get("activity") or ""),
+                    "state": str((device.get("telemetry") or {}).get("panorama_state") or ""),
+                    "framing": str((device.get("telemetry") or {}).get("panorama_framing_state") or ""),
+                    "completed": (device.get("telemetry") or {}).get("panorama_completed"),
+                    "total": (device.get("telemetry") or {}).get("panorama_total"),
+                    "x1": (device.get("telemetry") or {}).get("panorama_x1"),
+                    "y1": (device.get("telemetry") or {}).get("panorama_y1"),
+                    "x2": (device.get("telemetry") or {}).get("panorama_x2"),
+                    "y2": (device.get("telemetry") or {}).get("panorama_y2"),
+                    "fov_h": (device.get("telemetry") or {}).get("panorama_rect_fov_h"),
+                    "fov_v": (device.get("telemetry") or {}).get("panorama_rect_fov_v"),
+                    "error": (device.get("telemetry") or {}).get("panorama_rect_error"),
+                    "mode": (device.get("telemetry") or {}).get("shooting_mode"),
+                },
             },
             "can": {
                 "power_down": can_power,
@@ -1100,6 +1115,14 @@ class TestHarness:
                     "width": int(_property(self.window, "width", width) or width),
                     "height": int(_property(self.window, "height", height) or height),
                 }
+            if method == "POST" and route == "/panorama/frame":
+                self.backend.updatePanoramaFrame(
+                    float(payload.get("x1", 0)),
+                    float(payload.get("y1", 0)),
+                    float(payload.get("x2", 1)),
+                    float(payload.get("y2", 1)),
+                )
+                return {"ok": True}
             if method == "POST" and route == "/device/action":
                 operation = str(payload.get("operation") or payload.get("name") or "")
                 label = str(payload.get("label") or operation)

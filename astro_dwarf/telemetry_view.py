@@ -517,12 +517,39 @@ def exposure_seconds_from_text(value: Any) -> float | None:
     return _as_float(seconds)
 
 
+def _live_stack_camera(raw: dict[str, Any]) -> tuple[str, str, str]:
+    """Prefix, exposure key, and gain key for the camera that is stacking."""
+    wide = str(raw.get("capture_camera") or "") == "wide"
+    prefix = "wide_" if wide else ""
+    return prefix, f"capture_{prefix}exposure_text", f"capture_{prefix}gain"
+
+
+def apply_live_stack_camera(view: dict[str, Any], raw: dict[str, Any] | None = None) -> None:
+    """Show the shutter and gain the stack is using, not the last PHOTO table.
+
+    ``apply_mode_exposure_fields`` keeps PHOTO 1/30 and gain 128 on the HUD
+    keys while a DSO stack is open. The progress packet is the live pair.
+    """
+    source = raw if raw is not None else view
+    capturing = bool(source.get("capture_active") or source.get("capture_state") == "running")
+    if not capturing:
+        return
+    prefix, exposure_key, gain_key = _live_stack_camera(source)
+    exposure = source.get(exposure_key)
+    if exposure not in (None, "", "—"):
+        view[f"{prefix}exposure_text"] = exposure
+    gain = source.get(gain_key)
+    if gain not in (None, "", "—"):
+        view[f"{prefix}gain"] = gain
+
+
 def _configured_exposure_seconds(raw: dict[str, Any]) -> float:
     camera = str(raw.get("capture_camera") or "")
+    _prefix, exposure_key, _gain_key = _live_stack_camera(raw)
     texts = (
-        (raw.get("wide_exposure_text"), raw.get("exposure_text"))
+        (raw.get(exposure_key), raw.get("wide_exposure_text"), raw.get("exposure_text"))
         if camera == "wide"
-        else (raw.get("exposure_text"), raw.get("wide_exposure_text"))
+        else (raw.get(exposure_key), raw.get("exposure_text"), raw.get("wide_exposure_text"))
     )
     for text in texts:
         seconds = exposure_seconds_from_text(text)
@@ -567,12 +594,19 @@ def stacked_capture_count(raw: dict[str, Any]) -> int:
 
 
 def tracking_needs_calibration(result: Any) -> bool:
-    """True when a TRACK/GOTO failure is the uncalibrated-mount reject."""
+    """True when a TRACK/GOTO failure is the uncalibrated-mount reject.
+
+    Firmware names that reject ``CODE_ASTRO_NEED_CALIBRATION`` (-11511).
+    A sky-map slew that never starts often returns ``CODE_ASTRO_GOTO_FAILED``
+    (-11505) instead.
+    """
     text = str(result or "").lower()
     return (
         "need_calibration" in text
         or "needs calibration" in text
+        or "goto_failed" in text
         or "-11511" in text
+        or "-11505" in text
         or "run calibrate" in text
     )
 
@@ -702,8 +736,9 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     tech = _as_int(raw.get("shooting_tech"))
     view["shooting_tech"] = tech if tech else 0
     view["photo_primed"] = bool(raw.get("photo_primed")) and _as_int(mode) == 1 and tech in {None, 1}
-    view["exposure_text"] = raw.get("exposure_text") or "—"
-    gain = raw.get("gain")
+    apply_live_stack_camera(view, raw)
+    view["exposure_text"] = view.get("exposure_text") or raw.get("exposure_text") or "—"
+    gain = view.get("gain", raw.get("gain"))
     view["gain_text"] = str(int(gain)) if gain is not None else "—"
     view["tele_resolution"] = raw.get("tele_resolution") or ""
     view["tele_fov"] = raw.get("tele_fov") or ""
@@ -846,7 +881,8 @@ class AlertEngine:
                 detail = "Target centred; tracking engaged" if tracking else "Target centred"
                 add("success", f"GOTO complete{suffix}", detail)
         if changed("goto_error") and current.get("goto_error") == "need_calibration":
-            add("warning", TRACKING_NEEDS_CALIBRATION_TOAST, TRACKING_NEEDS_CALIBRATION_DETAIL)
+            # The sky-track / TRACK command result already toasts this warning.
+            add("warning", TRACKING_NEEDS_CALIBRATION_TOAST, TRACKING_NEEDS_CALIBRATION_DETAIL, toast=False)
         elif changed("goto_error") and current.get("goto_error"):
             add("error", "GOTO failed", "The telescope rejected the slew")
         # Calibration. Firmware notifies idle both when the solve finishes and

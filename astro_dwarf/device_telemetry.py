@@ -33,6 +33,7 @@ CMD_NOTIFY_PROGRASS_CAPTURE_RAW_LIVE_STACKING = 15209
 CMD_NOTIFY_STATE_ASTRO_CALIBRATION = 15210
 CMD_NOTIFY_STATE_ASTRO_GOTO = 15211
 CMD_NOTIFY_STATE_ASTRO_TRACKING = 15212
+CMD_NOTIFY_NORMAL_TRACK_STATE = 15284
 CMD_NOTIFY_TELE_FUNCTION_STATE = 15215
 CMD_NOTIFY_WIDE_FUNCTION_STATE = 15216
 CMD_NOTIFY_RGB_STATE = 15221
@@ -93,6 +94,7 @@ _RESPONSE_TYPES = (1, 3)  # WsPacket.type: 0 request, 1 reply, 2 notification, 3
 CMD_ASTRO_START_CALIBRATION = 11000
 CMD_ASTRO_START_GOTO_DSO = 11002
 CMD_ASTRO_START_GOTO_SOLAR_SYSTEM = 11003
+CODE_ASTRO_GOTO_FAILED = -11505
 CODE_ASTRO_NEED_CALIBRATION = -11511
 # Plate-solving retry during an in-progress GOTO/calibration.
 CODE_ASTRO_PLATE_SOLVING_FAILED = -11500
@@ -382,6 +384,53 @@ def _exposure_name(index: Any, model_id: str) -> str:
     return str(index)
 
 
+def _wide_exposure_name(index: Any, model_id: str) -> str:
+    try:
+        from dwarf_python_api.lib.data_wide_utils import get_wide_exposure_name_by_index
+
+        name = get_wide_exposure_name_by_index(int(index), model_id)
+        if name:
+            return str(name)
+    except Exception:
+        pass
+    return _exposure_name(index, model_id)
+
+
+def _gain_from_index(index: Any, model_id: str, *, wide: bool) -> int | None:
+    """Displayed gain for a stacking ``gain_index``. Unknown indexes stay unset."""
+    try:
+        if wide:
+            from dwarf_python_api.lib.data_wide_utils import get_wide_gain_name_by_index
+
+            name = get_wide_gain_name_by_index(int(index), model_id)
+        else:
+            from dwarf_python_api.lib.data_utils import get_gain_name_by_index
+
+            name = get_gain_name_by_index(int(index), model_id)
+    except Exception:
+        return None
+    if name in (None, "", "Auto"):
+        return None
+    try:
+        return int(name)
+    except (TypeError, ValueError):
+        return None
+
+
+def _message_fields(message: Any) -> set[str]:
+    """Fields the firmware actually sent. Proto3 zeros are omitted defaults."""
+    listed = getattr(message, "ListFields", None)
+    if callable(listed):
+        try:
+            return {field.name for field, _value in listed()}
+        except Exception:
+            return set()
+    names = getattr(message, "__dict__", None)
+    if isinstance(names, dict):
+        return set(names)
+    return set()
+
+
 def _photo_function_idle_changes(snapshot: dict[str, Any]) -> dict[str, Any]:
     changes: dict[str, Any] = {}
     for key in _PHOTO_FUNCTION_KEYS:
@@ -412,7 +461,43 @@ def _photo_function_state_changes(key: str, state: str) -> dict[str, Any]:
     return changes
 
 
-def _stacking_progress_changes(message: Any, mosaic: bool = False) -> dict[str, Any]:
+def _stack_camera_changes(message: Any, model_id: str, *, wide: bool) -> dict[str, Any]:
+    """Exposure and gain the running stack is actually using.
+
+    Progress packets carry ``exp_index`` and ``gain_index``. The camera-param
+    table can still show the last PHOTO values (1/30, gain 128) while the
+    shutter is a DSO exposure.
+    """
+    present = _message_fields(message)
+    if "camera_type" in present:
+        try:
+            wide = int(message.camera_type) == 1
+        except (TypeError, ValueError):
+            pass
+    prefix = "wide_" if wide else ""
+    changes: dict[str, Any] = {}
+    if wide:
+        changes["capture_camera"] = "wide"
+    if "exp_index" in present:
+        name = _wide_exposure_name(message.exp_index, model_id) if wide else _exposure_name(message.exp_index, model_id)
+        if name and name not in {"Auto", "None"}:
+            changes[f"capture_{prefix}exposure_text"] = name
+            changes[f"astro_{prefix}exposure_text"] = name
+    if "gain_index" in present:
+        gain = _gain_from_index(message.gain_index, model_id, wide=wide)
+        if gain is not None:
+            changes[f"capture_{prefix}gain"] = gain
+            changes[f"astro_{prefix}gain"] = gain
+    return changes
+
+
+def _stacking_progress_changes(
+    message: Any,
+    mosaic: bool = False,
+    *,
+    model_id: str = "3",
+    wide: bool = False,
+) -> dict[str, Any]:
     """Honor firmware ``update_type`` so a stacked-only packet cannot zero current.
 
     The SDK cache does the same: 0 = current, 1 = stacked, 2 = both.
@@ -479,6 +564,7 @@ def _stacking_progress_changes(message: Any, mosaic: bool = False) -> dict[str, 
                 changes["capture_stacked_s"] = int(message.stacked_time)
         except Exception:
             pass
+    changes.update(_stack_camera_changes(message, model_id, wide=wide))
     return changes
 
 
@@ -694,13 +780,18 @@ class TelemetryTap:
         with self._lock:
             self._hold_stale_capture = False
 
-    def _fresh_stacking_progress(self, message: Any, mosaic: bool = False) -> dict[str, Any]:
+    def _fresh_stacking_progress(self, message: Any, mosaic: bool = False, wide: bool = False) -> dict[str, Any]:
         with self._lock:
             hold = self._hold_stale_capture
             stale_peak = self._stale_capture_peak
         if hold:
             return {}
-        changes = _stacking_progress_changes(message, mosaic=mosaic)
+        changes = _stacking_progress_changes(
+            message,
+            mosaic=mosaic,
+            model_id=self._model_id,
+            wide=wide,
+        )
         new_count = self._capture_count_peak(changes)
         if stale_peak > 1 and new_count >= stale_peak:
             # Leftover packets from the previous stack; wait for a fresh 0/0.
@@ -845,7 +936,7 @@ class TelemetryTap:
         message = self._parse("PanoFramingRectUpdateNotify", data)
         if message is None:
             return {}
-        return {
+        changes = {
             "panorama_has_rect": True,
             "panorama_framing_state": "running",
             "panorama_x1": float(message.norm_x_tl),
@@ -860,6 +951,18 @@ class TelemetryTap:
             "panorama_rect_fov_v": float(message.rect_ver_fov),
             "panorama_rect_error": int(message.error_code),
         }
+        from .device_worker import log
+
+        log(
+            "Panorama rect "
+            f"{changes['panorama_x1']:.3f},{changes['panorama_y1']:.3f} "
+            f"{changes['panorama_x2']:.3f},{changes['panorama_y2']:.3f} "
+            f"limits {changes['panorama_limit_left']:.3f},{changes['panorama_limit_top']:.3f} "
+            f"{changes['panorama_limit_right']:.3f},{changes['panorama_limit_bottom']:.3f} "
+            f"fov {changes['panorama_rect_fov_h']:.2f}x{changes['panorama_rect_fov_v']:.2f} "
+            f"err {changes['panorama_rect_error']}"
+        )
+        return changes
 
     def _store_panorama_scan(self, data: bytes) -> dict[str, Any]:
         message = self._parse("PanoFramingThumbnailUpdateNotify", data)
@@ -871,12 +974,14 @@ class TelemetryTap:
         if self._panorama_scan_dir is None:
             self._panorama_scan_dir = Path(tempfile.mkdtemp(prefix="astro-pano-"))
         self._panorama_scan_rev += 1
+        # A new file per update. The view keeps the previous picture until this
+        # one has loaded, so the file it is showing is not replaced underneath it.
         path = self._panorama_scan_dir / f"scan-{self._panorama_scan_rev}.webp"
         path.write_bytes(blob)
-        previous = self._panorama_scan_dir / f"scan-{self._panorama_scan_rev - 1}.webp"
-        if previous.is_file():
+        stale = self._panorama_scan_dir / f"scan-{self._panorama_scan_rev - 3}.webp"
+        if stale.is_file():
             try:
-                previous.unlink()
+                stale.unlink()
             except OSError:
                 pass
         return {
@@ -991,7 +1096,13 @@ class TelemetryTap:
             # never starts goto_state=running, so the HUD pad stays latched
             # unless this reply is published.
             if code not in (0, CODE_ASTRO_PLATE_SOLVING_FAILED):
-                error = "need_calibration" if code == CODE_ASTRO_NEED_CALIBRATION else "failed"
+                # -11511 is the named reject. Uncalibrated sky GOTO often
+                # comes back as -11505 before the slew ever starts.
+                error = (
+                    "need_calibration"
+                    if code in (CODE_ASTRO_NEED_CALIBRATION, CODE_ASTRO_GOTO_FAILED)
+                    else "failed"
+                )
                 self.update({"goto_state": "idle", "goto_error": error}, force=True)
             elif code == 0:
                 self.update({"goto_error": ""}, force=True)
@@ -1149,7 +1260,30 @@ class TelemetryTap:
                 # taking over means the GOTO slew/solve has finished, even when
                 # the firmware never sent a final GOTO idle/stopped notification.
                 changes["goto_state"] = "idle"
+                changes["tracking_kind"] = "sidereal"
+            elif changes.get("tracking_state"):
+                if self.snapshot().get("tracking_kind") == "object":
+                    # DSO mode keeps reporting sidereal tracking as idle. That
+                    # packet must not drop an object-track latch.
+                    changes.pop("tracking_state", None)
+                    changes.pop("tracking_target", None)
+                else:
+                    changes["tracking_kind"] = ""
             return changes
+        if cmd == CMD_NOTIFY_NORMAL_TRACK_STATE:
+            message = self._parse("NormalTrackState", data)
+            if message is None:
+                return {}
+            state = OPERATION_STATES.get(int(message.state), "idle")
+            running = state == "running"
+            if not running and self.snapshot().get("tracking_kind") == "object":
+                return {}
+            return {
+                "tracking_state": "running" if running else "idle",
+                "tracking_kind": "object" if running else "",
+                "tracking_target": "Live view" if running else "",
+                "goto_state": "idle",
+            }
         if cmd == CMD_NOTIFY_STATE_ASTRO_CALIBRATION:
             message = self._parse("AstroCalibrationState", data)
             state = ASTRO_STATES.get(int(message.state), str(message.state))
@@ -1189,7 +1323,10 @@ class TelemetryTap:
             return changes
         if cmd in (CMD_NOTIFY_PROGRASS_CAPTURE_RAW_LIVE_STACKING, CMD_NOTIFY_PROGRASS_WIDE_CAPTURE_RAW_LIVE_STACKING):
             message = self._parse("ProgressCaptureRawLiveStacking", data)
-            return self._fresh_stacking_progress(message)
+            return self._fresh_stacking_progress(
+                message,
+                wide=cmd == CMD_NOTIFY_PROGRASS_WIDE_CAPTURE_RAW_LIVE_STACKING,
+            )
         if cmd == CMD_NOTIFY_PROGRESS_CAPTURE_MOSAIC:
             message = self._parse("ProgressCaptureMosaic", data)
             return self._fresh_stacking_progress(message, mosaic=True)
@@ -1219,6 +1356,9 @@ class TelemetryTap:
                 return {}
             completed = int(message.completed_count)
             total = int(message.total_count)
+            from .device_worker import log
+
+            log(f"Panorama progress {completed}/{total}")
             changes = {"panorama_state": "running", "panorama_completed": completed}
             if total:
                 changes["panorama_total"] = total
@@ -1239,7 +1379,7 @@ class TelemetryTap:
             raw_state = int(message.state)
             state = OPERATION_STATES.get(raw_state, "running" if raw_state else "idle")
             changes = {"panorama_framing_state": state}
-            if state in ("idle", "stopped"):
+            if state in ("idle", "stopped") and str(self._state.get("panorama_state") or "") != "running":
                 changes["panorama_has_rect"] = False
             return changes
         if cmd == CMD_NOTIFY_PANO_FRAMING_RECT:
@@ -1451,11 +1591,31 @@ class TelemetryTap:
                 changes["goto_state"] = ASTRO_STATES.get(int(exclusive.astro_goto_state.state), "idle")
                 changes["goto_target"] = str(exclusive.astro_goto_state.target_name or "")
             elif which == "astro_tracking_state":
-                changes["tracking_state"] = OPERATION_STATES.get(int(exclusive.astro_tracking_state.state), "idle")
-                changes["tracking_target"] = str(exclusive.astro_tracking_state.target_name or "")
-                # Exclusive state: tracking owns the motors, so no GOTO or calibration is running.
+                state = OPERATION_STATES.get(int(exclusive.astro_tracking_state.state), "idle")
+                # Exclusive state: a live sidereal track owns the motors.
                 changes["goto_state"] = "idle"
                 changes["calibration_state"] = "idle"
+                if state == "running":
+                    changes["tracking_state"] = state
+                    changes["tracking_target"] = str(exclusive.astro_tracking_state.target_name or "")
+                    changes["tracking_kind"] = "sidereal"
+                elif self.snapshot().get("tracking_kind") != "object":
+                    changes["tracking_state"] = state
+                    changes["tracking_target"] = str(exclusive.astro_tracking_state.target_name or "")
+                    changes["tracking_kind"] = ""
+            elif which == "normal_track_state":
+                state = OPERATION_STATES.get(int(exclusive.normal_track_state.state), "idle")
+                running = state == "running"
+                changes["goto_state"] = "idle"
+                changes["calibration_state"] = "idle"
+                if running:
+                    changes["tracking_state"] = "running"
+                    changes["tracking_kind"] = "object"
+                    changes["tracking_target"] = "Live view"
+                elif self.snapshot().get("tracking_kind") != "object":
+                    changes["tracking_state"] = "idle"
+                    changes["tracking_kind"] = ""
+                    changes["tracking_target"] = ""
             elif which == "eq_state":
                 changes["eq_state"] = OPERATION_STATES.get(int(exclusive.eq_state.state), "idle")
             elif which is None:

@@ -20,8 +20,10 @@ from astro_dwarf.domain import (
 )
 from astro_dwarf.services import (
     SKY_WEB_FOV_JS,
+    device_mosaic_capture_panes,
     device_mosaic_footprints,
     device_mosaic_pa,
+    device_mosaic_pane_norm,
     device_mosaic_template,
     generate_mosaic_plan,
     mosaic_camera_up_is_south,
@@ -351,6 +353,26 @@ def test_device_mosaic_template_is_one_session() -> None:
     _assert(single.scale_text == "", "a single frame has no device mosaic size")
 
 
+def test_device_session_tiles_the_full_mosaic() -> None:
+    target = Target(name="Eq", kind=TargetKind.EQUATORIAL, ra_hours=5.0, dec_degrees=0.0)
+    panes = device_mosaic_capture_panes(target, 150, 150, 2.0, 1.0, position_angle=0)
+    _assert(len(panes) == 4, panes)
+    ras = [float(item["ra_hours"]) for item in panes]
+    decs = [float(item["dec_degrees"]) for item in panes]
+    width = (max(ras) - min(ras)) * 15.0 + 2.0
+    height = (max(decs) - min(decs)) + 1.0
+    _close(width, 3.0, 2)
+    _close(height, 1.5, 2)
+    left = device_mosaic_pane_norm(1, 2, 2, 150, 150, position_angle=0)
+    right = device_mosaic_pane_norm(2, 2, 2, 150, 150, position_angle=0)
+    _close(left[2], 2.0 / 3.0, 4)
+    _close(left[3], 2.0 / 3.0, 4)
+    _assert(abs(left[0] - right[0]) > 0.2, (left, right))
+    strip = device_mosaic_pane_norm(1, 2, 1, 150, 100, position_angle=0)
+    _close(strip[2], 2.0 / 3.0, 4)
+    _close(strip[3], 1.0, 4)
+
+
 if __name__ == "__main__":
     test_pane_one_is_west_and_north_at_pa0()
     test_templates_keep_overlay_pane_coordinates()
@@ -367,4 +389,5 @@ if __name__ == "__main__":
     test_device_scale_is_one_or_two_panes()
     test_device_frame_grows_as_one_rectangle()
     test_device_mosaic_template_is_one_session()
+    test_device_session_tiles_the_full_mosaic()
     print("ok")

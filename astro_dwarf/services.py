@@ -3829,6 +3829,45 @@ def mosaic_sheet_row(
     return (row_count - 1) - raw
 
 
+def device_mosaic_pane_norm(
+    index: int,
+    columns: int,
+    rows: int,
+    horizontal_scale: Any,
+    vertical_scale: Any,
+    *,
+    south_up: bool = False,
+    position_angle: Any = None,
+    zenith_camera: bool = False,
+) -> tuple[float, float, float, float]:
+    """Pane rectangle inside the full device mosaic, as fractions of that frame.
+
+    Scale 150 is 1.50× one tele view, so each pane covers two-thirds of that
+    axis and the two panes overlap. The live view paints the camera there
+    while the telescope builds the mosaic.
+    """
+    cols = max(1, int(columns or 1))
+    row_count = max(1, int(rows or 1))
+    horizontal = clamp_firmware_mosaic_scale(horizontal_scale)
+    vertical = clamp_firmware_mosaic_scale(vertical_scale)
+    pane_w = min(1.0, 100.0 / horizontal) if cols > 1 else 1.0
+    pane_h = min(1.0, 100.0 / vertical) if row_count > 1 else 1.0
+    col = mosaic_sheet_column(
+        index, cols, south_up=south_up, position_angle=position_angle, zenith_camera=zenith_camera
+    )
+    row = mosaic_sheet_row(
+        index,
+        cols,
+        row_count,
+        south_up=south_up,
+        position_angle=position_angle,
+        zenith_camera=zenith_camera,
+    )
+    x = 0.0 if cols <= 1 else col * (1.0 - pane_w) / (cols - 1)
+    y = 0.0 if row_count <= 1 else row * (1.0 - pane_h) / (row_count - 1)
+    return x, y, pane_w, pane_h
+
+
 def mosaic_chart_tilt(south_up: bool, position_angle: Any = None) -> float:
     """Screen-grid rotation after numbering is laid out for the matching chart.
 
@@ -4608,6 +4647,45 @@ def device_mosaic_footprints(
         0.0,
         south_up=south_up,
         position_angle=position_angle,
+    )
+
+
+def device_mosaic_capture_panes(
+    target: Target,
+    horizontal_scale: Any,
+    vertical_scale: Any,
+    fov_h: float,
+    fov_v: float,
+    south_up: bool = False,
+    position_angle: Any = None,
+) -> list[dict[str, Any]]:
+    """Tele fields the telescope shoots inside one device mosaic.
+
+    Planning draws one stretched rectangle. While the session runs, the live
+    camera belongs in the pane being captured so the full mosaic fills in.
+    """
+    columns, rows, horizontal, vertical = device_mosaic_from_scales(horizontal_scale, vertical_scale)
+    if columns * rows <= 1:
+        return device_mosaic_footprints(
+            target,
+            horizontal,
+            vertical,
+            fov_h,
+            fov_v,
+            south_up=south_up,
+            position_angle=position_angle,
+        )
+    return mosaic_pane_footprints(
+        target,
+        columns,
+        rows,
+        fov_h,
+        fov_v,
+        0.0,
+        south_up=south_up,
+        position_angle=position_angle,
+        overlap_h=firmware_mosaic_overlap(horizontal),
+        overlap_v=firmware_mosaic_overlap(vertical),
     )
 
 

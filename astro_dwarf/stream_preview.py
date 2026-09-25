@@ -13,7 +13,12 @@ from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPen
 from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
 
 from .runtime import PROCESS_CREATION_FLAGS, ffmpeg_mjpeg_command, ffmpeg_path, kill_pid_tree
-from .services import mosaic_camera_up_is_south, mosaic_sheet_column, mosaic_sheet_row
+from .services import (
+    device_mosaic_pane_norm,
+    mosaic_camera_up_is_south,
+    mosaic_sheet_column,
+    mosaic_sheet_row,
+)
 
 _live_frames: LiveFrames | None = None
 _mosaic_frames: MosaicFrames | None = None
@@ -495,6 +500,9 @@ class MosaicLiveItem(QQuickPaintedItem):
     positionAngleChanged = Signal()
     zenithCameraChanged = Signal()
     fontPixelSizeChanged = Signal()
+    composedChanged = Signal()
+    horizontalScaleChanged = Signal()
+    verticalScaleChanged = Signal()
 
     def __init__(self, parent: Optional[QQuickItem] = None):
         super().__init__(parent)
@@ -511,6 +519,9 @@ class MosaicLiveItem(QQuickPaintedItem):
         self._position_angle = 0.0
         self._zenith_camera = False
         self._font_pixel_size = 11
+        self._composed = False
+        self._horizontal_scale = 100
+        self._vertical_scale = 100
         self._held_pane = 0
         self._held_image = QImage()
         self._await_live_frame = False
@@ -668,6 +679,51 @@ class MosaicLiveItem(QQuickPaintedItem):
 
     fontPixelSize = Property(int, getFontPixelSize, setFontPixelSize, notify=fontPixelSizeChanged)
 
+    def getComposed(self) -> bool:
+        return self._composed
+
+    def setComposed(self, value: bool) -> None:
+        on = bool(value)
+        if on == self._composed:
+            return
+        self._composed = on
+        self.composedChanged.emit()
+        self.update()
+
+    composed = Property(bool, getComposed, setComposed, notify=composedChanged)
+
+    def getHorizontalScale(self) -> int:
+        return self._horizontal_scale
+
+    def setHorizontalScale(self, value: int) -> None:
+        try:
+            scale = int(value or 100)
+        except (TypeError, ValueError):
+            scale = 100
+        if scale == self._horizontal_scale:
+            return
+        self._horizontal_scale = scale
+        self.horizontalScaleChanged.emit()
+        self.update()
+
+    horizontalScale = Property(int, getHorizontalScale, setHorizontalScale, notify=horizontalScaleChanged)
+
+    def getVerticalScale(self) -> int:
+        return self._vertical_scale
+
+    def setVerticalScale(self, value: int) -> None:
+        try:
+            scale = int(value or 100)
+        except (TypeError, ValueError):
+            scale = 100
+        if scale == self._vertical_scale:
+            return
+        self._vertical_scale = scale
+        self.verticalScaleChanged.emit()
+        self.update()
+
+    verticalScale = Property(int, getVerticalScale, setVerticalScale, notify=verticalScaleChanged)
+
     def _capture_hold(self) -> None:
         """Keep the last painted live frame after stacking takes the stream."""
         if self._live_pane < 1:
@@ -747,6 +803,137 @@ class MosaicLiveItem(QQuickPaintedItem):
             draw_h,
         )
 
+    def _cover_in(self, image: QImage, cell: QRectF) -> QRectF | None:
+        if image.isNull() or cell.width() <= 0 or cell.height() <= 0:
+            return None
+        image_w = float(image.width())
+        image_h = float(image.height())
+        if image_w <= 0 or image_h <= 0:
+            return None
+        scale = max(cell.width() / image_w, cell.height() / image_h)
+        draw_w = image_w * scale
+        draw_h = image_h * scale
+        return QRectF(
+            cell.x() + (cell.width() - draw_w) / 2.0,
+            cell.y() + (cell.height() - draw_h) / 2.0,
+            draw_w,
+            draw_h,
+        )
+
+    def _pane_image_aspect(self, images: dict, live_image: QImage) -> float:
+        for image in (live_image, *images.values()):
+            if image is not None and not image.isNull() and image.height() > 0:
+                return float(image.width()) / float(image.height())
+        return 2.95 / 1.66
+
+    def _composed_canvas(self, aspect: float) -> QRectF | None:
+        width = float(self.width())
+        height = float(self.height())
+        if width <= 2 or height <= 2 or aspect <= 0:
+            return None
+        if width / height > aspect:
+            draw_h = height
+            draw_w = height * aspect
+        else:
+            draw_w = width
+            draw_h = width / aspect
+        return QRectF((width - draw_w) / 2.0, (height - draw_h) / 2.0, draw_w, draw_h)
+
+    def _composed_cell(self, canvas: QRectF, columns: int, rows: int, index: int) -> QRectF | None:
+        x, y, pane_w, pane_h = device_mosaic_pane_norm(
+            index,
+            columns,
+            rows,
+            self._horizontal_scale,
+            self._vertical_scale,
+            south_up=self._south_up,
+            position_angle=self._position_angle,
+            zenith_camera=self._zenith_camera,
+        )
+        if pane_w <= 0 or pane_h <= 0:
+            return None
+        return QRectF(
+            canvas.x() + x * canvas.width(),
+            canvas.y() + y * canvas.height(),
+            pane_w * canvas.width(),
+            pane_h * canvas.height(),
+        )
+
+    def _draw_pane_image(self, painter: QPainter, image: QImage, cell: QRectF, *, cover: bool) -> None:
+        fitted = self._cover_in(image, cell) if cover else self._fit_in(image, cell)
+        if fitted is None:
+            return
+        painter.save()
+        painter.setClipRect(cell)
+        painter.drawImage(fitted, image)
+        painter.restore()
+
+    def _paint_composed(
+        self,
+        painter: QPainter,
+        columns: int,
+        rows: int,
+        current: int,
+        images: dict,
+        live_image: QImage,
+    ) -> None:
+        aspect = self._pane_image_aspect(images, live_image)
+        horizontal = max(100, int(self._horizontal_scale or 100)) / 100.0
+        vertical = max(100, int(self._vertical_scale or 100)) / 100.0
+        canvas = self._composed_canvas(aspect * horizontal / vertical)
+        if canvas is None:
+            return
+        painter.fillRect(canvas, QColor(0, 0, 0, 180))
+        flip = (
+            False
+            if self._zenith_camera
+            else mosaic_camera_up_is_south(self._south_up, self._position_angle)
+        )
+        count = columns * rows
+        highlight = self._live_pane if self._live_pane >= 1 else (
+            self._held_pane if self._held_pane >= 1 else current
+        )
+        order = [index for index in range(1, count + 1) if index != self._live_pane]
+        if self._live_pane >= 1:
+            order.append(self._live_pane)
+        for index in order:
+            cell = self._composed_cell(canvas, columns, rows, index)
+            if cell is None:
+                continue
+            image = images.get(index) or QImage()
+            cover = False
+            if (
+                index == self._live_pane
+                and self._live_active
+                and not self._await_live_frame
+                and mosaic_live_overlay_ready(live_image, self._stale_live_key)
+            ):
+                image = live_image
+                cover = True
+            elif image.isNull() and index == self._held_pane and not self._held_image.isNull():
+                image = self._held_image
+                cover = True
+            elif not image.isNull():
+                cover = True
+            if flip and not image.isNull():
+                image = image.flipped(Qt.Orientation.Horizontal | Qt.Orientation.Vertical)
+            if image.isNull():
+                painter.setPen(self._accent)
+                painter.drawText(cell.toRect(), Qt.AlignmentFlag.AlignCenter, str(index))
+            else:
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, not cover)
+                self._draw_pane_image(painter, image, cell, cover=cover)
+            border = QPen(self._accent)
+            border.setWidth(2 if index == highlight else 1)
+            painter.setPen(border)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(cell.adjusted(0.5, 0.5, -0.5, -0.5))
+        frame = QPen(self._accent)
+        frame.setWidth(2)
+        painter.setPen(frame)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(canvas.adjusted(0.5, 0.5, -0.5, -0.5))
+
     def paint(self, painter: QPainter) -> None:
         if not self._playing:
             return
@@ -763,6 +950,9 @@ class MosaicLiveItem(QQuickPaintedItem):
         font.setPixelSize(max(1, int(self._font_pixel_size or 11)))
         font.setBold(True)
         painter.setFont(font)
+        if self._composed and (columns > 1 or rows > 1):
+            self._paint_composed(painter, columns, rows, current, images, live_image)
+            return
         flip = (
             False
             if self._zenith_camera

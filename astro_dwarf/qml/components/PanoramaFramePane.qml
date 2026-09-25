@@ -16,7 +16,25 @@ Item {
     readonly property real limitBottom: Number(telemetry.panorama_limit_bottom || 1)
     readonly property real spanX: Math.max(0.05, limitRight - limitLeft)
     readonly property real spanY: Math.max(0.05, limitBottom - limitTop)
-    readonly property real canvasAspect: spanX / spanY
+    readonly property real boxNormW: Math.max(0.02, Math.abs(boxX2 - boxX1))
+    readonly property real boxNormH: Math.max(0.02, Math.abs(boxY2 - boxY1))
+    // Wide frame is about 16:9. Size the canvas so that normalized box
+    // lands on screen at the wide camera's aspect, instead of treating
+    // normalized X and Y as square pixels (that squashes the scan into a
+    // strip and letterboxes the live frame).
+    readonly property real wideAspect: {
+        const wh = Number(telemetry.wide_fov_h || 0)
+        const wv = Number(telemetry.wide_fov_v || 0)
+        if (wh > 1 && wv > 1)
+            return wh / wv
+        const rh = Number(telemetry.panorama_rect_fov_h || 0)
+        const rv = Number(telemetry.panorama_rect_fov_v || 0)
+        if (rh > 1 && rv > 1 && wideSized)
+            return rh / rv
+        return 16 / 9
+    }
+    property real lockedAspect: 0
+    readonly property real canvasAspect: lockedAspect > 0.2 ? lockedAspect : 32 / 9
     readonly property real fitW: width > 0 && height > 0
         ? (width / height > canvasAspect ? height * canvasAspect : width)
         : 0
@@ -37,18 +55,115 @@ Item {
         return Math.abs(h - wh) / wh < 0.2 && Math.abs(v - wv) / wv < 0.2
     }
     property bool userEnlarged: false
+    property bool seeded: false
+    property bool holding: false
+    property real heldX1: 0
+    property real heldY1: 0
+    property real heldX2: 0
+    property real heldY2: 0
+    property int shownScanRev: -1
+    property Item frontScan: null
     property bool dragging: false
     property real dragX1: 0
     property real dragY1: 0
     property real dragX2: 0
     property real dragY2: 0
 
-    readonly property real showX1: dragging ? dragX1 : boxX1
-    readonly property real showY1: dragging ? dragY1 : boxY1
-    readonly property real showX2: dragging ? dragX2 : boxX2
-    readonly property real showY2: dragging ? dragY2 : boxY2
+    readonly property real showX1: dragging ? dragX1 : (holding ? heldX1 : boxX1)
+    readonly property real showY1: dragging ? dragY1 : (holding ? heldY1 : boxY1)
+    readonly property real showX2: dragging ? dragX2 : (holding ? heldX2 : boxX2)
+    readonly property real showY2: dragging ? dragY2 : (holding ? heldY2 : boxY2)
+    readonly property bool shooting: String(telemetry.panorama_state || "") === "running"
+    readonly property int tileDone: Math.max(0, Number(telemetry.panorama_completed || 0))
+    readonly property int tileTotal: Math.max(0, Number(telemetry.panorama_total || 0))
+    readonly property int tileIndex: tileTotal > 0 ? Math.min(tileTotal - 1, tileDone) : 0
 
-    onActiveChanged: if (!active) userEnlarged = false
+    function tileGrid() {
+        const total = tileTotal
+        const fw = Math.abs(showX2 - showX1)
+        const fh = Math.abs(showY2 - showY1)
+        if (total < 2 || fw < 0.001 || fh < 0.001)
+            return {cols: 1, rows: 1}
+        const aspect = fw / fh
+        let cols = 1
+        let err = 1e9
+        for (let c = 1; c <= total; ++c) {
+            if (total % c !== 0)
+                continue
+            const rows = total / c
+            const delta = Math.abs(c / rows - aspect)
+            if (delta < err) {
+                err = delta
+                cols = c
+            }
+        }
+        return {cols: cols, rows: total / cols}
+    }
+
+    onActiveChanged: {
+        if (!active) {
+            userEnlarged = false
+            seeded = false
+            holding = false
+            shownScanRev = -1
+            lockedAspect = 0
+            scanA.source = ""
+            scanB.source = ""
+            frontScan = scanA
+        }
+    }
+    onHasRectChanged: seedFrame()
+    onTelemetryChanged: reloadScan()
+
+    function noteScanAspect(image) {
+        if (lockedAspect > 0.2 || image.status !== Image.Ready)
+            return
+        if (image.implicitWidth > 0 && image.implicitHeight > 0)
+            lockedAspect = image.implicitWidth / image.implicitHeight
+    }
+
+    function reloadScan() {
+        const url = String(telemetry.panorama_scan_url || "")
+        const rev = Number(telemetry.panorama_scan_rev || 0)
+        if (!url || rev === shownScanRev)
+            return
+        shownScanRev = rev
+        const incoming = frontScan === scanA ? scanB : scanA
+        incoming.source = url
+    }
+
+    function promoteScan(image) {
+        if (image.status !== Image.Ready || String(image.source) === "")
+            return
+        noteScanAspect(image)
+        frontScan = image
+    }
+
+    function holdBox(x1, y1, x2, y2) {
+        heldX1 = x1
+        heldY1 = y1
+        heldX2 = x2
+        heldY2 = y2
+        holding = true
+    }
+
+    // The telescope opens framing on the full reachable area. Start at half
+    // that width and keep the box there while the quick scan updates the rect.
+    function seedFrame() {
+        if (!active || !hasRect || seeded || dragging || userEnlarged)
+            return
+        seeded = true
+        const w = spanX * 0.5
+        const h = Math.min(spanY, spanY * w / spanX * canvasAspect / wideAspect)
+        const cx = (limitLeft + limitRight) / 2
+        const cy = (limitTop + limitBottom) / 2
+        const x1 = cx - w / 2
+        const y1 = cy - h / 2
+        const x2 = cx + w / 2
+        const y2 = cy + h / 2
+        holdBox(x1, y1, x2, y2)
+        backend.updatePanoramaFrame(x1, y1, x2, y2)
+    }
 
     function unitToPx(nx, ny) {
         return Qt.point(
@@ -81,6 +196,7 @@ Item {
         if ((x2 - x1) < 0.02 || (y2 - y1) < 0.02)
             return
         userEnlarged = true
+        holdBox(x1, y1, x2, y2)
         backend.updatePanoramaFrame(x1, y1, x2, y2)
     }
 
@@ -91,15 +207,28 @@ Item {
     }
 
     Image {
+        id: scanA
         x: pane.fitX
         y: pane.fitY
         width: pane.fitW
         height: pane.fitH
-        visible: pane.active && String(pane.telemetry.panorama_scan_url || "") !== ""
-        source: pane.telemetry.panorama_scan_url || ""
-        fillMode: Image.Stretch
+        visible: pane.active && pane.frontScan === scanA
+        fillMode: Image.PreserveAspectFit
         cache: false
         asynchronous: true
+        onStatusChanged: pane.promoteScan(scanA)
+    }
+    Image {
+        id: scanB
+        x: pane.fitX
+        y: pane.fitY
+        width: pane.fitW
+        height: pane.fitH
+        visible: pane.active && pane.frontScan === scanB
+        fillMode: Image.PreserveAspectFit
+        cache: false
+        asynchronous: true
+        onStatusChanged: pane.promoteScan(scanB)
     }
 
     Rectangle {
@@ -115,7 +244,7 @@ Item {
 
         Text {
             anchors.centerIn: parent
-            visible: !pane.hasRect
+            visible: !pane.hasRect && !pane.holding && !pane.shooting
             text: "WAITING FOR FRAME"
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSm
@@ -125,24 +254,13 @@ Item {
 
     Item {
         id: box
-        visible: pane.active && pane.hasRect && pane.fitW > 0
+        visible: pane.active && pane.fitW > 0 && (pane.hasRect || pane.holding)
         readonly property point origin: pane.unitToPx(Math.min(pane.showX1, pane.showX2), Math.min(pane.showY1, pane.showY2))
         readonly property point far: pane.unitToPx(Math.max(pane.showX1, pane.showX2), Math.max(pane.showY1, pane.showY2))
         x: origin.x
         y: origin.y
         width: Math.max(Theme.px(28), far.x - origin.x)
         height: Math.max(Theme.px(28), far.y - origin.y)
-
-        LiveViewPane {
-            anchors.fill: parent
-            visible: pane.wideSized && pane.widePlaying
-            playing: pane.widePlaying && pane.wideSized && pane.active
-            wideView: true
-            camera: "wide"
-            inputEnabled: false
-            showFootprint: false
-            chromeShown: false
-        }
 
         Rectangle {
             anchors.fill: parent
@@ -153,7 +271,7 @@ Item {
 
         MouseArea {
             anchors.fill: parent
-            enabled: pane.hasRect && !pane.dragging
+            enabled: pane.hasRect && !pane.shooting
             cursorShape: Qt.SizeAllCursor
             preventStealing: true
             property real startX: 0
@@ -163,13 +281,14 @@ Item {
             property real originX2: 0
             property real originY2: 0
             onPressed: (mouse) => {
+                const local = mapToItem(pane, mouse.x, mouse.y)
                 pane.dragging = true
-                startX = mouse.x
-                startY = mouse.y
-                originX1 = pane.boxX1
-                originY1 = pane.boxY1
-                originX2 = pane.boxX2
-                originY2 = pane.boxY2
+                startX = local.x
+                startY = local.y
+                originX1 = pane.showX1
+                originY1 = pane.showY1
+                originX2 = pane.showX2
+                originY2 = pane.showY2
                 pane.dragX1 = originX1
                 pane.dragY1 = originY1
                 pane.dragX2 = originX2
@@ -178,8 +297,9 @@ Item {
             onPositionChanged: (mouse) => {
                 if (!pane.dragging)
                     return
-                const du = ((mouse.x - startX) / Math.max(1, pane.fitW)) * pane.spanX
-                const dv = ((mouse.y - startY) / Math.max(1, pane.fitH)) * pane.spanY
+                const local = mapToItem(pane, mouse.x, mouse.y)
+                const du = ((local.x - startX) / Math.max(1, pane.fitW)) * pane.spanX
+                const dv = ((local.y - startY) / Math.max(1, pane.fitH)) * pane.spanY
                 const w = originX2 - originX1
                 const h = originY2 - originY1
                 let x1 = originX1 + du
@@ -216,16 +336,23 @@ Item {
                 MouseArea {
                     anchors.fill: parent
                     anchors.margins: -Theme.px(6)
+                    enabled: !pane.shooting
                     cursorShape: Qt.SizeFDiagCursor
                     preventStealing: true
-                    onPressed: pane.dragging = true
+                    onPressed: {
+                        pane.dragX1 = pane.showX1
+                        pane.dragY1 = pane.showY1
+                        pane.dragX2 = pane.showX2
+                        pane.dragY2 = pane.showY2
+                        pane.dragging = true
+                    }
                     onPositionChanged: (mouse) => {
                         const local = mapToItem(pane, mouse.x, mouse.y)
                         const unit = pane.clampUnit(pane.pxToUnit(local.x, local.y).x, pane.pxToUnit(local.x, local.y).y)
-                        pane.dragX1 = modelData.ax ? pane.boxX1 : unit.x
-                        pane.dragY1 = modelData.ay ? pane.boxY1 : unit.y
-                        pane.dragX2 = modelData.ax ? unit.x : pane.boxX2
-                        pane.dragY2 = modelData.ay ? unit.y : pane.boxY2
+                        pane.dragX1 = modelData.ax ? pane.showX1 : unit.x
+                        pane.dragY1 = modelData.ay ? pane.showY1 : unit.y
+                        pane.dragX2 = modelData.ax ? unit.x : pane.showX2
+                        pane.dragY2 = modelData.ay ? unit.y : pane.showY2
                     }
                     onReleased: {
                         pane.commitBox()
@@ -235,6 +362,32 @@ Item {
                 }
             }
         }
+    }
+
+    Rectangle {
+        id: tileBox
+        z: 5
+        visible: pane.active && pane.shooting && pane.tileTotal > 1 && pane.fitW > 0
+        readonly property var grid: pane.tileGrid()
+        readonly property real tileLeft: Math.min(pane.showX1, pane.showX2)
+        readonly property real tileTop: Math.min(pane.showY1, pane.showY2)
+        readonly property real spanW: Math.abs(pane.showX2 - pane.showX1)
+        readonly property real spanH: Math.abs(pane.showY2 - pane.showY1)
+        readonly property int col: pane.tileIndex % grid.cols
+        readonly property int row: Math.floor(pane.tileIndex / grid.cols)
+        readonly property point origin: pane.unitToPx(
+            tileLeft + col * spanW / grid.cols,
+            tileTop + row * spanH / grid.rows)
+        readonly property point far: pane.unitToPx(
+            tileLeft + (col + 1) * spanW / grid.cols,
+            tileTop + (row + 1) * spanH / grid.rows)
+        x: origin.x
+        y: origin.y
+        width: Math.max(2, far.x - origin.x)
+        height: Math.max(2, far.y - origin.y)
+        color: Theme.accentSoft
+        border.color: Theme.accent
+        border.width: 2
     }
 
     Text {

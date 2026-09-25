@@ -134,6 +134,10 @@ _motors_unhomed = False
 # Dual Lenses Locating (cmd 14009) always works in wide-camera 1920x1080 pixels.
 _LINKAGE_W = 1920
 _LINKAGE_H = 1080
+# Object track (module 7). 14800 starts a box on the current frame; 14801 stops it.
+_MODULE_TRACK = 7
+CMD_TRACK_START_TRACK = 14800
+CMD_TRACK_STOP_TRACK = 14801
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -1144,6 +1148,18 @@ def sdk_call(operation: str, *args: Any) -> Any:
         # img_to_take plus both cameras' stackCount. A matching local cache
         # must not skip this; wide stays at 999 until it is written.
         return _set_stack_count(args)
+    if operation == "stop_goto":
+        snapshot = _tap.snapshot() if _tap is not None else {}
+        if snapshot.get("tracking_kind") == "object":
+            from dwarf_python_api.proto import track_pb2
+
+            ok = send_without_response(track_pb2.ReqStopTrack(), CMD_TRACK_STOP_TRACK, _MODULE_TRACK)
+            if ok and _tap is not None:
+                _tap.update(
+                    {"tracking_state": "idle", "tracking_kind": "", "tracking_target": ""},
+                    force=True,
+                )
+            return ok
     if operation in ("stop_goto", "stop_astro", "stop_wide"):
         from dwarf_python_api.proto import astro_pb2
 
@@ -1302,7 +1318,9 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
     )
 
     module_id = 10
-    if operation == "panorama_frame_update":
+    if operation == "panorama_frame_update" or (
+        operation == "panorama_shoot" and len(args) >= 4
+    ):
         if len(args) < 4:
             raise RuntimeError("Panorama framing needs four normalized corners")
         message = panorama_pb2.ReqUpdatePanoramaFramingRect()
@@ -1310,7 +1328,14 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
         message.norm_y_tl = float(args[1])
         message.norm_x_br = float(args[2])
         message.norm_y_br = float(args[3])
-        return send_without_response(message, CMD_PANORAMA_UPDATE_FRAMING_RECT, module_id)
+        log(
+            "Panorama frame "
+            f"{message.norm_x_tl:.3f},{message.norm_y_tl:.3f} "
+            f"{message.norm_x_br:.3f},{message.norm_y_br:.3f}"
+        )
+        updated = send_without_response(message, CMD_PANORAMA_UPDATE_FRAMING_RECT, module_id)
+        if operation != "panorama_shoot":
+            return updated
     messages = {
         "panorama_frame_start": (panorama_pb2.ReqStartPanoramaFraming, CMD_PANORAMA_START_FRAMING),
         "panorama_frame_reset": (panorama_pb2.ReqResetPanoramaFraming, CMD_PANORAMA_RESET_FRAMING),
@@ -1324,6 +1349,8 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
         _tap.update({"panorama_framing_state": "running", "panorama_has_rect": False, "panorama_error": ""}, force=True)
     if ok and operation == "panorama_shoot" and _tap is not None:
         _tap.update({"panorama_state": "running", "panorama_framing_state": "idle"}, force=True)
+    if ok and operation == "panorama_stop" and _tap is not None:
+        _tap.update({"panorama_state": "idle", "panorama_framing_state": "idle"}, force=True)
     return ok
 
 
@@ -5450,7 +5477,7 @@ def _goto_accept_error(code: int) -> str | None:
     """User-facing reason a live TRACK/GOTO start was rejected, or None if accepted."""
     if code in (0, -11500):
         return None
-    if code == CODE_ASTRO_NEED_CALIBRATION:
+    if code in (CODE_ASTRO_NEED_CALIBRATION, CODE_ASTRO_GOTO_FAILED):
         return (
             "Telescope needs calibration. Run CALIBRATE and wait for it to complete, "
             "then try TRACK again"
@@ -5545,38 +5572,72 @@ def _start_sky_track(ra_hours: float, dec_degrees: float, target_name: str = "")
     }
 
 
+def object_track_box(
+    width: Any = None,
+    height: Any = None,
+    *,
+    wide: bool = False,
+) -> tuple[int, int, int, int, int]:
+    """Box around the center of the camera the user is looking through.
+
+    x, y are the top-left of the box in that camera's pixels. cam_id 0 is tele
+    and 1 is wide.
+    """
+    try:
+        frame_w = int(width)
+    except (TypeError, ValueError):
+        frame_w = 0
+    try:
+        frame_h = int(height)
+    except (TypeError, ValueError):
+        frame_h = 0
+    if frame_w < 2:
+        frame_w = _LINKAGE_W
+    if frame_h < 2:
+        frame_h = _LINKAGE_H
+    box = max(64, min(frame_w, frame_h) // 10)
+    box = min(box, frame_w, frame_h)
+    left = max(0, (frame_w - box) // 2)
+    top = max(0, (frame_h - box) // 2)
+    return left, top, box, box, 1 if wide else 0
+
+
 def _start_tracking(target_name: str = "") -> dict[str, Any]:
-    """GOTO the current pointing with tracking enabled (goto_only=False)."""
-    _offer_darks_before_manual_alignment("Stack")
+    """Lock object tracking on the star already in the tele center."""
     if _ensure_astro_mode(enter_camera=False) is False:
         raise RuntimeError("Could not enter astro mode")
     snapshot = _tap.snapshot() if _tap is not None else {}
     if snapshot.get("tracking_state") == "running":
         log("Already tracking", "notice")
-        return {"ok": True, "already": True}
-    latitude, longitude = _site_coordinates()
-    if abs(latitude) < 1e-9 and abs(longitude) < 1e-9:
-        raise RuntimeError("Set your observing site before starting tracking")
-    az = _motor_position(1)
-    alt = _motor_position(2) if az is not None else None
-    if az is None or alt is None:
-        raise RuntimeError(
-            "Mount position is unavailable. Run CALIBRATE and wait for it to complete, "
-            "then double-click the target on the wide live view and press TRACK"
+        return {"ok": True, "already": True, "kind": snapshot.get("tracking_kind") or "object"}
+    from dwarf_python_api.proto import track_pb2
+
+    wide = str(_device.get("camera") or "") == "wide"
+    frame_w = snapshot.get("wide_width") if wide else snapshot.get("tele_width")
+    frame_h = snapshot.get("wide_height") if wide else snapshot.get("tele_height")
+    x, y, box_w, box_h, cam_id = object_track_box(frame_w, frame_h, wide=wide)
+    message = track_pb2.ReqStartTrack()
+    message.x = int(x)
+    message.y = int(y)
+    message.w = int(box_w)
+    message.h = int(box_h)
+    message.cam_id = int(cam_id)
+    name = str(target_name or "").strip() or "Live view"
+    camera = "wide" if wide else "tele"
+    log(f"Object track box on the {camera} center ({x}, {y}, {box_w}×{box_h}) ({name})")
+    if send_without_response(message, CMD_TRACK_START_TRACK, _MODULE_TRACK) is False:
+        raise RuntimeError("Object tracking failed to start")
+    if _tap is not None:
+        _tap.update(
+            {
+                "tracking_state": "running",
+                "tracking_kind": "object",
+                "tracking_target": name,
+                "goto_state": "idle",
+            },
+            force=True,
         )
-    ra_hours, dec_degrees = _altaz_to_radec(az, alt, latitude, longitude)
-    name = str(target_name or "").strip() or "Live tap"
-    log(
-        f"TRACK from pointing az={az:.2f}° alt={alt:.2f}° → "
-        f"RA {ra_hours:.4f}h Dec {dec_degrees:+.3f}° ({name})"
-    )
-    _start_goto_for_tracking(ra_hours, dec_degrees, name)
-    return {
-        "ok": True,
-        "ra_hours": ra_hours,
-        "dec_degrees": dec_degrees,
-        "name": name,
-    }
+    return {"ok": True, "kind": "object", "name": name, "x": x, "y": y, "cam_id": cam_id}
 
 
 def _set_feature_frame_count(count: int) -> bool:

@@ -202,6 +202,41 @@ def test_progress_packet_marks_zero_zero_seen() -> None:
     _assert(changes["capture_active"] is True, "progress packet arms capture")
 
 
+def test_progress_packet_publishes_stack_exposure_and_gain() -> None:
+    message = SimpleNamespace(
+        total_count=20,
+        target_name="Lambda Centauri",
+        current_count=6,
+        stacked_count=6,
+        update_type=2,
+        exp_index=156,
+        gain_index=18,
+    )
+    changes = _stacking_progress_changes(message, model_id="3")
+    _assert(changes.get("capture_exposure_text") == "15", changes)
+    _assert(changes.get("astro_exposure_text") == "15", changes)
+    _assert(changes.get("capture_gain") == 60, changes)
+    _assert(changes.get("astro_gain") == 60, changes)
+
+
+def test_hud_follows_stack_exposure_not_photo_table() -> None:
+    view = _view({
+        "capture_active": True,
+        "capture_state": "running",
+        "shooting_mode": 1,
+        "exposure_text": "1/30",
+        "gain": 128,
+        "capture_exposure_text": "15",
+        "capture_gain": 60,
+        "capture_current": 6,
+        "capture_stacked": 6,
+        "capture_total": 20,
+    })
+    _assert(view["exposure_text"] == "15", view["exposure_text"])
+    _assert(view["gain"] == 60, view["gain"])
+    _assert(view["gain_text"] == "60", view["gain_text"])
+
+
 def test_mosaic_progress_uses_fov_id() -> None:
     message = SimpleNamespace(
         total_count=50,
@@ -235,6 +270,8 @@ def main() -> int:
     test_stack_counter_falls_back_to_taken()
     test_taken_ahead_does_not_bump_capture_text()
     test_progress_packet_marks_zero_zero_seen()
+    test_progress_packet_publishes_stack_exposure_and_gain()
+    test_hud_follows_stack_exposure_not_photo_table()
     test_mosaic_progress_uses_fov_id()
     print("exposure running tests ok")
     return 0
