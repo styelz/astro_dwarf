@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,8 +28,8 @@ def _assert(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def _tap() -> TelemetryTap:
-    tap = TelemetryTap(lambda _payload: None, flush_interval=0)
+def _tap(device_id: str = "") -> TelemetryTap:
+    tap = TelemetryTap(lambda _payload: None, flush_interval=0, device_id=device_id)
     tap._notify = notify_pb2
     tap._base = object()
     return tap
@@ -94,3 +96,48 @@ def test_running_grid_wins_over_framing() -> None:
         "panorama_framing_state": "running",
     })
     _assert(activity == ("panorama", "1/4"), activity)
+
+
+def test_panorama_scan_cache_survives_reconnect() -> None:
+    previous_override = os.environ.get("ASTRO_DWARF_DATA")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["ASTRO_DWARF_DATA"] = tmp
+        try:
+            tap = _tap(device_id="dev-1")
+            thumb = notify_pb2.PanoFramingThumbnailUpdateNotify()
+            thumb.webp_data = b"RIFF-first"
+            tap.update(tap._decode(CMD_NOTIFY_PANO_FRAMING_THUMBNAIL, TYPE_NOTIFICATION, thumb.SerializeToString()), force=True)
+
+            tap.persist_panorama_scan()
+            cache_path = Path(tmp) / "panorama-cache" / "dev-1.webp"
+            _assert(cache_path.is_file(), "persist_panorama_scan did not write the cache file")
+            _assert(cache_path.read_bytes() == b"RIFF-first", cache_path.read_bytes())
+
+            # A reconnect (or app restart) creates a brand-new tap with no in-memory state.
+            reconnected = _tap(device_id="dev-1")
+            reconnected.load_cached_panorama_scan()
+            snapshot = reconnected.snapshot()
+            _assert(snapshot.get("panorama_scan_path") == str(cache_path), snapshot)
+            _assert(snapshot.get("panorama_scan_rev") == 1, snapshot)
+
+            # Loading twice on the same connection must not re-trigger.
+            reconnected.update({"panorama_scan_rev": 5}, force=True)
+            reconnected.load_cached_panorama_scan()
+            _assert(reconnected.snapshot().get("panorama_scan_rev") == 5, reconnected.snapshot())
+
+            reconnected.clear_panorama_scan_cache()
+            _assert(not cache_path.is_file(), "clear_panorama_scan_cache left the file behind")
+        finally:
+            if previous_override is None:
+                os.environ.pop("ASTRO_DWARF_DATA", None)
+            else:
+                os.environ["ASTRO_DWARF_DATA"] = previous_override
+
+
+if __name__ == "__main__":
+    test_panorama_progress_and_state()
+    test_framing_rect_and_webp()
+    test_running_grid_wins_over_framing()
+    test_panorama_scan_cache_survives_reconnect()
+    print("ok")
+

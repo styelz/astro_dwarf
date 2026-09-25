@@ -2,8 +2,8 @@ from astro_dwarf.qt_display import configure_qt_display
 
 configure_qt_display()
 
-from app import main
+from astro_dwarf.splash import launch
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(launch())

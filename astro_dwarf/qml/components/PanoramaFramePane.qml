@@ -264,6 +264,7 @@ Item {
 
         Rectangle {
             anchors.fill: parent
+            visible: !pane.shooting
             color: "transparent"
             border.color: Theme.accent
             border.width: 2
@@ -331,6 +332,7 @@ Item {
                 height: Theme.px(14)
                 x: modelData.ax ? parent.width - width : 0
                 y: modelData.ay ? parent.height - height : 0
+                visible: !pane.shooting
                 color: Theme.accent
                 Accessible.name: "Resize panorama " + modelData.corner
                 MouseArea {
@@ -387,7 +389,7 @@ Item {
         height: Math.max(2, far.y - origin.y)
         color: Theme.accentSoft
         border.color: Theme.accent
-        border.width: 2
+        border.width: 1
     }
 
     Text {

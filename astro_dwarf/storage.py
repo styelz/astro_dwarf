@@ -13,7 +13,6 @@ from .domain import (
     DEFAULT_STELLARIUM_URL,
     AppSettings,
     Device,
-    HistoryRecord,
     Session,
     SessionStatus,
     SessionTemplate,

@@ -17,6 +17,7 @@ Item {
     clip: true
 
     property string panelId: ""
+    visible: panel.panelId === "" || !PanelSwap.panelHidden(panel.panelId)
     property bool movable: panelId !== ""
     property string moveLabel: heading.text
     property string swapHome: ""

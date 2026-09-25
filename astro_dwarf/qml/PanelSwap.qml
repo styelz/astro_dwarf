@@ -40,11 +40,113 @@ QtObject {
         id: orderStore
         category: "panelLayout"
         property string panelOrderJson: ""
+        property string hiddenPanelsJson: ""
     }
 
     readonly property var builtinColumnKeys: ["controlLeft", "controlCenter", "controlRight"]
     property var columnKeys: ["controlLeft", "controlCenter", "controlRight"]
     property var rowKeys: []
+
+    // Fixed catalog of control-page panels, in on-screen order, so the
+    // show/hide menu lists every panel even while it is hidden.
+    readonly property var panelCatalog: [
+        { id: "status", label: "System Status" },
+        { id: "vitals", label: "Vitals" },
+        { id: "target", label: "Target" },
+        { id: "camera", label: "Camera" },
+        { id: "preview", label: "Live View" },
+        { id: "commands", label: "Commands" },
+        { id: "motion", label: "Motion" },
+        { id: "upcoming", label: "Up Next" },
+        { id: "log", label: "Live Log" }
+    ]
+    property var hiddenPanels: ({})
+
+    function panelHidden(panelId) {
+        return !!coord.hiddenPanels[panelId]
+    }
+
+    function visiblePanelCount() {
+        let count = 0
+        for (let i = 0; i < coord.panelCatalog.length; i++) {
+            if (!coord.panelHidden(coord.panelCatalog[i].id))
+                count += 1
+        }
+        return count
+    }
+
+    function setPanelHidden(panelId, hidden) {
+        if (!panelId || coord.panelHidden(panelId) === !!hidden)
+            return
+        // Never hide the last visible panel; there would be no header left
+        // to reopen this menu from.
+        if (hidden && coord.visiblePanelCount() <= 1)
+            return
+        const next = Object.assign({}, coord.hiddenPanels)
+        if (hidden)
+            next[panelId] = true
+        else
+            delete next[panelId]
+        coord.hiddenPanels = next
+        coord.persistVisibility()
+        coord.refreshPanelVisibility(panelId)
+        Qt.callLater(function() {
+            // syncColumns may expand a column/row that was collapsed while
+            // every panel in it was hidden; redo the intra-column fill pick
+            // now that its panels report accurate visibility again.
+            coord.syncColumns()
+            coord.refreshPanelVisibility(panelId)
+        })
+    }
+
+    function togglePanelHidden(panelId) {
+        coord.setPanelHidden(panelId, !coord.panelHidden(panelId))
+    }
+
+    function refreshPanelVisibility(panelId) {
+        const list = coord.panels
+        for (let i = 0; i < list.length; i++) {
+            const panel = list[i]
+            if (!panel || panel.panelId !== panelId)
+                continue
+            const split = coord.ancestorSplit(panel)
+            if (split && split.syncVisibility)
+                split.syncVisibility()
+        }
+    }
+
+    function refreshAllSplitFill() {
+        const done = []
+        const list = coord.panels
+        for (let i = 0; i < list.length; i++) {
+            const panel = list[i]
+            const split = panel ? coord.ancestorSplit(panel) : null
+            if (!split || done.indexOf(split) >= 0)
+                continue
+            done.push(split)
+            if (split.syncVisibility)
+                split.syncVisibility()
+        }
+    }
+
+    function restoreVisibility() {
+        const raw = String(orderStore.hiddenPanelsJson || "")
+        if (!raw)
+            return
+        try {
+            const parsed = JSON.parse(raw)
+            if (parsed && typeof parsed === "object")
+                coord.hiddenPanels = parsed
+        } catch (e) {
+            orderStore.hiddenPanelsJson = ""
+        }
+    }
+
+    function persistVisibility() {
+        orderStore.hiddenPanelsJson = JSON.stringify(coord.hiddenPanels)
+        if (typeof orderStore.sync === "function")
+            orderStore.sync()
+    }
 
     function ancestorWith(item, predicate) {
         for (let n = item; n; n = n.parent) {
@@ -289,6 +391,22 @@ QtObject {
         return coord.columnPanels(split, exclude).length === 0
     }
 
+    // Unlike columnIsEmpty, this counts a column with only hidden panels as
+    // blank too, so it can be collapsed for space without destroying it.
+    // Checks PanelSwap's own hiddenPanels map rather than item.visible:
+    // once the column itself collapses (goes invisible), a hidden ancestor
+    // makes every descendant read visible=false too, which would otherwise
+    // permanently lock the column collapsed even after unhiding a panel.
+    function columnIsBlank(split, exclude) {
+        const panels = coord.columnPanels(split, exclude)
+        for (let i = 0; i < panels.length; i++) {
+            const p = panels[i]
+            if (p && p.panelId && !coord.panelHidden(p.panelId))
+                return false
+        }
+        return true
+    }
+
     function columnIsCollapsed(split) {
         if (!split)
             return true
@@ -519,6 +637,10 @@ QtObject {
                     doomed.push(split)
                 else
                     coord.collapseColumn(split)
+            } else if (coord.columnIsBlank(split)) {
+                // Has panels, but every one is hidden: collapse the column so
+                // its neighbours reclaim the width, without destroying it.
+                coord.collapseColumn(split)
             } else {
                 if (coord.columnIsCollapsed(split))
                     coord.expandColumn(split)
@@ -746,6 +868,35 @@ QtObject {
             return false
         }
         return !coord.columnIsEmpty(split, exclude)
+    }
+
+    // Same shape as bandHasPanels, but a column or row only counts as having
+    // panels here if at least one of them is currently visible.
+    function bandHasVisiblePanels(split, exclude) {
+        if (!split)
+            return false
+        if (String(split.settingsKey || "") === "controlColumns") {
+            const keys = coord.columnKeys
+            for (let k = 0; k < keys.length; k++) {
+                const column = coord.splits[keys[k]]
+                if (column && !coord.columnIsBlank(column, exclude))
+                    return true
+            }
+            return false
+        }
+        if (coord.isExtraRow(split)) {
+            if (!coord.columnIsBlank(split, exclude))
+                return true
+            if (!split.itemAt)
+                return false
+            for (let i = 0; i < split.count; i++) {
+                const column = split.itemAt(i)
+                if (column && !column.panelId && !coord.columnIsBlank(column, exclude))
+                    return true
+            }
+            return false
+        }
+        return !coord.columnIsBlank(split, exclude)
     }
 
     function nextRowKey() {
@@ -1089,7 +1240,11 @@ QtObject {
                 continue
             if (!coord.bandHasPanels(split))
                 doomed.push(split)
-            else {
+            else if (!coord.bandHasVisiblePanels(split)) {
+                // Has panels, but every one is hidden: collapse the row so
+                // other rows reclaim the height, without destroying it.
+                coord.collapseBand(split)
+            } else {
                 if (!split.visible)
                     coord.expandBand(split)
                 split.visible = true
@@ -1100,7 +1255,7 @@ QtObject {
         for (let d = 0; d < doomed.length; d++)
             coord.destroyRow(doomed[d])
         const columns = coord.columnsSplit()
-        const columnsOccupied = columns && coord.bandHasPanels(columns)
+        const columnsOccupied = columns && coord.bandHasVisiblePanels(columns)
         if (columns) {
             if (columnsOccupied) {
                 if (!columns.visible || coord.finiteHint(columns.SplitView.maximumHeight) === 0)
@@ -1592,8 +1747,11 @@ QtObject {
         coord.destroyExtraRows()
         coord.applyColumnOrder(coord.builtinColumnKeys)
         coord.applyRowOrder(["controlColumns"])
+        coord.hiddenPanels = ({})
+        coord.persistVisibility()
         coord.syncColumns()
         coord.discardSavedLayout()
+        Qt.callLater(coord.refreshAllSplitFill)
         coord.persist()
         return true
     }
@@ -1618,10 +1776,12 @@ QtObject {
     }
 
     function restore() {
+        coord.restoreVisibility()
         const raw = String(orderStore.panelOrderJson || "")
         if (!raw) {
             coord.restoreSplitSizes()
             coord.syncColumns()
+            Qt.callLater(coord.refreshAllSplitFill)
             return false
         }
         let saved
@@ -1631,11 +1791,13 @@ QtObject {
             orderStore.panelOrderJson = ""
             coord.restoreSplitSizes()
             coord.syncColumns()
+            Qt.callLater(coord.refreshAllSplitFill)
             return false
         }
         if (!saved || typeof saved !== "object" || !coord.layoutComplete(saved)) {
             coord.restoreSplitSizes()
             coord.syncColumns()
+            Qt.callLater(coord.refreshAllSplitFill)
             return false
         }
         coord.ensureSavedColumns(saved)
@@ -1681,6 +1843,7 @@ QtObject {
             coord.applyRowColumnOrder(saved.rowColumns)
         coord.restoreSplitSizes()
         coord.syncColumns()
+        Qt.callLater(coord.refreshAllSplitFill)
         return true
     }
 }

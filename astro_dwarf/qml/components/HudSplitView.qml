@@ -123,6 +123,32 @@ SplitView {
             item.SplitView.fillWidth = true
     }
 
+    // SplitView only re-picks its own default "last visible child" fill item
+    // when children are added or removed, not when an existing child's
+    // `visible` toggles. Do that pick ourselves so hiding a panel gives its
+    // space to a sibling instead of leaving it blank.
+    function reassignFillForVisibility() {
+        let fillIndex = -1
+        let lastVisible = -1
+        for (let i = 0; i < splitView.count; i++) {
+            const it = splitView.itemAt(i)
+            if (!it || !it.visible)
+                continue
+            lastVisible = i
+            if (splitView.itemIsFill(it))
+                fillIndex = i
+        }
+        if (lastVisible < 0 || fillIndex >= 0)
+            return
+        splitView.clearFills()
+        splitView.setFillAt(lastVisible)
+    }
+
+    function syncVisibility() {
+        splitView.reassignFillForVisibility()
+        Qt.callLater(splitView.relock)
+    }
+
     function captureFillIndex() {
         for (let i = 0; i < splitView.count; i++) {
             if (splitView.itemIsFill(splitView.itemAt(i)))

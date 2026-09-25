@@ -35,7 +35,6 @@ from .device_telemetry import (
     clear_device_occupied,
     device_occupied,
     install_sdk_logging,
-    is_device_occupied_text,
     link_telemetry,
 )
 from .telemetry_view import (
@@ -557,9 +556,10 @@ def configure(device: dict[str, Any]) -> bool:
         _api = dwarf_utils
     install_sdk_logging(emit)
     global _tap
-    _tap = TelemetryTap(emit, _MODEL_IDS.get(str(device.get("model")), "3"))
+    _tap = TelemetryTap(emit, _MODEL_IDS.get(str(device.get("model")), "3"), device_id=str(device.get("id") or ""))
     if not _tap.install(websockets_utils):
         log("Telemetry tap unavailable; only SDK cache values will be shown", "warning")
+    _tap.load_cached_panorama_scan()
     threading.Thread(target=_telemetry_loop, name="telemetry", daemon=True).start()
     log(f"Worker ready for {device.get('name')} at {device.get('ip_address')}")
     return True
@@ -1349,8 +1349,12 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
         _tap.update({"panorama_framing_state": "running", "panorama_has_rect": False, "panorama_error": ""}, force=True)
     if ok and operation == "panorama_shoot" and _tap is not None:
         _tap.update({"panorama_state": "running", "panorama_framing_state": "idle"}, force=True)
+        # Grid capture sends no further framing thumbnails; keep a copy so a
+        # reconnect mid-shoot has the background back instead of a blank pane.
+        _tap.persist_panorama_scan()
     if ok and operation == "panorama_stop" and _tap is not None:
         _tap.update({"panorama_state": "idle", "panorama_framing_state": "idle"}, force=True)
+        _tap.clear_panorama_scan_cache()
     return ok
 
 

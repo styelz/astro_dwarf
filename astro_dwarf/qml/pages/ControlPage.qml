@@ -745,9 +745,13 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: Theme.s1
+                        // equalize widths regardless of label length, as TELE/WIDE happen to share
+                        readonly property real modeButtonWidth: Math.max(photoModeButton.implicitWidth, dsoModeButton.implicitWidth)
                         HudButton {
+                            id: photoModeButton
                             text: "PHOTO"
                             Layout.fillWidth: true
+                            Layout.preferredWidth: parent.modeButtonWidth
                             buttonColor: cameraPanel.photoMode ? Theme.fillChecked : Theme.surfaceHigh
                             foregroundColor: cameraPanel.photoMode ? Theme.accent : Theme.textPrimary
                             busy: root.scopePending === "photo_mode"
@@ -759,8 +763,10 @@ Item {
                             onClicked: if (!cameraPanel.photoMode) backend.deviceAction(backend.selectedDeviceId, "photo_mode")
                         }
                         HudButton {
+                            id: dsoModeButton
                             text: "DSO"
                             Layout.fillWidth: true
+                            Layout.preferredWidth: parent.modeButtonWidth
                             buttonColor: cameraPanel.dsoMode ? Theme.fillChecked : Theme.surfaceHigh
                             foregroundColor: cameraPanel.dsoMode ? Theme.accent : Theme.textPrimary
                             busy: root.scopePending === "astro_mode"
@@ -774,28 +780,39 @@ Item {
                     }
                 }
                 SettingGroup {
+                    id: lensGroup
                     title: "LENS"
                     columns: 1
-                    HudCombo {
-                        id: liveCamera
+                    readonly property string tooltipSuffix: "\nSKY FOV follows this lens (" + backend.skyFovText + "). Mosaic panes and MOSAIC STACK always use Tele."
+                    Component.onCompleted: {
+                        if (cameraPanel.miniBody && backend.selectedDevice.camera === "wide")
+                            backend.setLiveCamera(backend.selectedDeviceId, "tele")
+                    }
+                    RowLayout {
                         Layout.fillWidth: true
-                        enabled: !root.scopeOccupied && !root.scopeLinking
-                        accessibleName: "Live camera"
-                        tooltip: (cameraPanel.miniBody
-                            ? "Dwarf Mini has a single telephoto camera."
-                            : "Lens for capture and settings.\nSWAP only rearranges the live panes; it does not change this.\nWide is fixed-focus; focus controls apply to Tele only.")
-                            + "\nSKY FOV follows this lens (" + backend.skyFovText + "). Mosaic panes and MOSAIC STACK always use Tele."
-                        model: cameraPanel.miniBody ? ["Tele"] : ["Tele", "Wide"]
-                        function syncFromDevice() {
-                            if (cameraPanel.miniBody && backend.selectedDevice.camera === "wide")
-                                backend.setLiveCamera(backend.selectedDeviceId, "tele")
-                            currentIndex = backend.selectedDevice.camera === "wide" && !cameraPanel.miniBody ? 1 : 0
+                        spacing: Theme.s1
+                        HudButton {
+                            text: "TELE"
+                            Layout.fillWidth: true
+                            enabled: !root.scopeOccupied && !root.scopeLinking
+                            buttonColor: cameraPanel.teleSelected ? Theme.fillChecked : Theme.surfaceHigh
+                            foregroundColor: cameraPanel.teleSelected ? Theme.accent : Theme.textPrimary
+                            accessibleName: "Live camera: Tele"
+                            tooltip: "Telephoto lens for capture and settings.\nSWAP only rearranges the live panes; it does not change this."
+                                + lensGroup.tooltipSuffix
+                            onClicked: if (!cameraPanel.teleSelected) backend.setLiveCamera(backend.selectedDeviceId, "tele")
                         }
-                        Component.onCompleted: syncFromDevice()
-                        onActivated: backend.setLiveCamera(backend.selectedDeviceId, currentIndex === 1 ? "wide" : "tele")
-                        Connections {
-                            target: backend
-                            function onSelectedDeviceChanged() { liveCamera.syncFromDevice() }
+                        HudButton {
+                            text: "WIDE"
+                            Layout.fillWidth: true
+                            visible: !cameraPanel.miniBody
+                            enabled: !root.scopeOccupied && !root.scopeLinking
+                            buttonColor: !cameraPanel.teleSelected ? Theme.fillChecked : Theme.surfaceHigh
+                            foregroundColor: !cameraPanel.teleSelected ? Theme.accent : Theme.textPrimary
+                            accessibleName: "Live camera: Wide"
+                            tooltip: "Wide-angle lens for capture and settings.\nSWAP only rearranges the live panes; it does not change this.\nWide is fixed-focus; focus controls apply to Tele only."
+                                + lensGroup.tooltipSuffix
+                            onClicked: if (cameraPanel.teleSelected) backend.setLiveCamera(backend.selectedDeviceId, "wide")
                         }
                     }
                 }
@@ -1345,8 +1362,11 @@ Item {
                     property bool mainWide: String((backend.selectedDevice && backend.selectedDevice.camera) || "tele") === "wide"
                     property bool pipEnabled: true
                     property bool pipRestoreAfterPano: false
-                    onPanoramaCanvasChanged: {
-                        if (panoramaCanvas) {
+                    // The framing canvas already shows the scanned wide image full-frame,
+                    // so the PIP adds nothing there. Once shooting starts the PIP is the
+                    // only live feed with the tele footprint reticle, so keep it up.
+                    onPanoramaFrameChanged: {
+                        if (panoramaFrame) {
                             if (pipEnabled) {
                                 pipRestoreAfterPano = true
                                 pipEnabled = false
@@ -1355,6 +1375,10 @@ Item {
                             pipEnabled = true
                             pipRestoreAfterPano = false
                         }
+                    }
+                    onPanoramaShootingChanged: {
+                        if (panoramaShooting)
+                            mainWide = false
                     }
                     readonly property bool pipAvailable: backend.previewTelePlaying && backend.previewWidePlaying
                         && !backend.previewStacking
@@ -1384,13 +1408,19 @@ Item {
                     readonly property bool pipPlaying: pipAvailable && pipEnabled
                     readonly property bool panoramaFrame: root.scopeActivity === "panorama_frame"
                         || String(root.scopeTelemetry.panorama_framing_state || "") === "running"
-                    readonly property bool panoramaCanvas: panoramaFrame || root.scopeActivity === "panorama"
+                    // Raw-telemetry fallback so a reconnect mid-shoot (activity cleared, telemetry not yet re-derived) still shows the canvas.
+                    readonly property bool panoramaShooting: root.scopeActivity === "panorama"
+                        || String(root.scopeTelemetry.panorama_state || "") === "running"
+                    readonly property bool panoramaCanvas: panoramaFrame || panoramaShooting
                     readonly property bool mosaicActive: !!(backend.mosaicPreview && backend.mosaicPreview.active)
                     property bool showMosaicSheet: true
-                    onMosaicActiveChanged: if (mosaicActive) showMosaicSheet = true
+                    // A device mosaic is one telescope-managed capture; show its plain
+                    // camera feed by default. Only the app's own multi-target mosaic
+                    // benefits from the gapped contact sheet.
+                    onMosaicActiveChanged: if (mosaicActive) showMosaicSheet = !mosaicPreview.device
                     readonly property bool mosaicSheet: mosaicActive && showMosaicSheet
                     readonly property bool paneView: mosaicActive && !showMosaicSheet
-                    readonly property bool idlePreviewArt: !backend.previewPlaying && !backend.previewStacking && !backend.previewResult && !previewHost.awaitingFirstStack && !previewHost.mosaicActive
+                    readonly property bool idlePreviewArt: !backend.previewPlaying && !backend.previewStacking && !backend.previewResult && !previewHost.awaitingFirstStack && !previewHost.mosaicActive && !previewHost.panoramaCanvas
                     readonly property real teleFovH: {
                         const tele = Number(root.scopeTelemetry.tele_fov_h)
                         const wide = Number(root.scopeTelemetry.wide_fov_h)
@@ -1522,7 +1552,7 @@ Item {
                     }
                     readonly property bool previewFailed: root.previewFailed
                     readonly property bool previewStartEnabled: backend.selectedDevice.connected && !root.scopeLinking && !root.scopeStopping && (!backend.previewActive || backend.previewPlaying || previewFailed)
-                    readonly property bool startBriefVisible: root.previewStarting && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicActive
+                    readonly property bool startBriefVisible: root.previewStarting && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicActive && !previewHost.panoramaCanvas
                     readonly property bool startBriefCompact: height < Theme.px(280)
                     readonly property string actionLabel: {
                         if (!backend.previewActive || backend.previewPlaying)
@@ -1890,6 +1920,23 @@ Item {
                             footprintNh: previewHost.teleMatchNh
                             onCenterRequested: (nx, ny, diag) => backend.centerOnTap(backend.selectedDeviceId, nx, ny, diag)
                         }
+                        // Pano-shoot-only tele FOV box, separate from pipPane's own footprint (that one is for center-tap/other modes).
+                        Rectangle {
+                            id: panoTeleFov
+                            z: 2
+                            visible: previewHost.panoramaShooting && pipPane.wideView && pipPane.playing && pipPane.paintedWidth > 0
+                            readonly property real boxNx: previewHost.teleMatchNw > 0 ? previewHost.teleMatchNx : 0.5
+                            readonly property real boxNy: previewHost.teleMatchNh > 0 ? previewHost.teleMatchNy : 0.5
+                            readonly property real boxNw: previewHost.teleMatchNw > 0 ? previewHost.teleMatchNw : previewHost.teleFovH
+                            readonly property real boxNh: previewHost.teleMatchNh > 0 ? previewHost.teleMatchNh : previewHost.teleFovV
+                            width: pipPane.paintedWidth * boxNw
+                            height: pipPane.paintedHeight * boxNh
+                            x: pipPane.frameX + pipPane.paintedWidth * boxNx - width / 2
+                            y: pipPane.frameY + pipPane.paintedHeight * boxNy - height / 2
+                            color: "transparent"
+                            border.color: Theme.fov
+                            border.width: 1
+                        }
                         HoverHandler {
                             id: pipHover
                             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
@@ -1957,7 +2004,9 @@ Item {
                                 rightPadding: Theme.px(6)
                                 buttonColor: Theme.fillActive
                                 foregroundColor: Theme.accent
-                                tooltip: "Swap main and picture-in-picture cameras.\nDoes not change capture, focus, or command availability."
+                                tooltip: previewHost.panoramaShooting
+                                    ? "Swap the picture-in-picture between wide (with the tele FOV frame) and tele."
+                                    : "Swap main and picture-in-picture cameras.\nDoes not change capture, focus, or command availability."
                                 onClicked: previewHost.swapViews()
                             }
                             HudButton {
@@ -2139,7 +2188,7 @@ Item {
                         anchors.centerIn: parent
                         spacing: Theme.px(10)
                         width: Math.min(parent.width - Theme.px(48), 520)
-                        visible: backend.previewHeld && !backend.previewPlaying && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicActive
+                        visible: backend.previewHeld && !backend.previewPlaying && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicActive && !previewHost.panoramaCanvas
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
                             text: "LIVE VIEW PAUSED"
@@ -2171,7 +2220,7 @@ Item {
                         z: 5
                         anchors.centerIn: parent
                         spacing: Theme.s2
-                        visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.startBriefVisible && !previewHost.mosaicActive
+                        visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.startBriefVisible && !previewHost.mosaicActive && !previewHost.panoramaCanvas
                         Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: Theme.textPrimary; font.pixelSize: Theme.fontLg; font.letterSpacing: 3; font.bold: true }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -2285,7 +2334,7 @@ Item {
                         z: 5
                         parent: previewHost.previewChromeParent
                         anchors.fill: parent
-                        visible: previewHost.awaitingFirstStack && !previewHost.mosaicActive
+                        visible: previewHost.awaitingFirstStack && !previewHost.mosaicActive && !previewHost.panoramaCanvas
                         Rectangle {
                             anchors.fill: parent
                             color: Theme.scrim
@@ -2403,7 +2452,7 @@ Item {
                         Rectangle {
                             id: previewBadge
                             readonly property bool stopping: root.scopeStopping
-                            readonly property bool panoramaShooting: root.scopeActivity === "panorama"
+                            readonly property bool panoramaShooting: previewHost.panoramaShooting
                             width: stopping || panoramaShooting ? Theme.px(118) : (backend.previewResult ? Theme.px(96) : (backend.previewHeld && !backend.previewPlaying ? Theme.px(108) : Theme.px(96)))
                             height: Theme.px(28)
                             color: Theme.panelFill

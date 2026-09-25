@@ -94,7 +94,6 @@ from .domain import (
     shooting_mode_camera_steps,
     DEVICE_COLORS,
     default_device_name,
-    device_from_dict,
     is_first_device_setup,
     wb_preset_name,
     next_device_color,
@@ -108,7 +107,6 @@ from .domain import (
     normalized_sky_map_provider,
     normalized_stellarium_url,
     SKY_MAP_PROVIDER_STELLARIUM_WEB,
-    session_from_dict,
     to_dict,
 )
 from .services import (

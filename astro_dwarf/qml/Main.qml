@@ -678,9 +678,19 @@ ApplicationWindow {
         category: "controlLayout"
         property bool navBarOnTop: true
         property bool skyToolsEnabled: true
+        property string navButtonOrder: "[]"
         onSkyToolsEnabledChanged: {
             if (!layoutSettings.skyToolsEnabled && root.currentPage === root.skyPageIndex)
                 root.goToPage(0)
+        }
+    }
+
+    readonly property var navButtonOrderList: {
+        try {
+            const parsed = JSON.parse(layoutSettings.navButtonOrder)
+            return Array.isArray(parsed) ? parsed : []
+        } catch (e) {
+            return []
         }
     }
 
@@ -1253,10 +1263,12 @@ ApplicationWindow {
             currentIndex: root.currentPage
             skyToolsEnabled: layoutSettings.skyToolsEnabled
             barOnTop: true
+            order: root.navButtonOrderList
             attentionIndex: settingsPage.dirty ? root.settingsPageIndex : -1
             attentionDescription: "Unsaved settings"
             onPageRequested: index => root.goToPage(index)
             onPlacementRequested: onTop => layoutSettings.navBarOnTop = onTop
+            onOrderCommitted: order => layoutSettings.navButtonOrder = JSON.stringify(order)
         }
 
         StackLayout {
@@ -1282,10 +1294,12 @@ ApplicationWindow {
             currentIndex: root.currentPage
             skyToolsEnabled: layoutSettings.skyToolsEnabled
             barOnTop: false
+            order: root.navButtonOrderList
             attentionIndex: settingsPage.dirty ? root.settingsPageIndex : -1
             attentionDescription: "Unsaved settings"
             onPageRequested: index => root.goToPage(index)
             onPlacementRequested: onTop => layoutSettings.navBarOnTop = onTop
+            onOrderCommitted: order => layoutSettings.navButtonOrder = JSON.stringify(order)
         }
         }
 

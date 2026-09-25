@@ -280,6 +280,13 @@ def install_qt_message_filter() -> None:
 
 def configure_qt_display() -> None:
     """Keep the Linux window opening when the guest has no usable GPU."""
+    if sys.platform.startswith("win"):
+        # Harmless DirectWrite noise from Qt enumerating legacy OEM raster
+        # fonts (e.g. "8514oem"); unrelated to qt_fonts.py candidate lists.
+        rules = os.environ.get("QT_LOGGING_RULES", "")
+        if "qt.qpa.fonts" not in rules:
+            extra = "qt.qpa.fonts.warning=false"
+            os.environ["QT_LOGGING_RULES"] = f"{rules};{extra}" if rules else extra
     if sys.platform.startswith("linux"):
         _ensure_utf8_locale()
         isolate_bundled_fontconfig()

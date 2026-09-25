@@ -8,8 +8,10 @@ into structured, level-tagged events.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -578,9 +580,16 @@ def link_telemetry(snapshot: dict[str, Any] | None) -> dict[str, Any]:
 class TelemetryTap:
     """Collects device telemetry from raw packets, the SDK cache and state dumps."""
 
-    def __init__(self, emit: Callable[[dict[str, Any]], None], model_id: str = "3", flush_interval: float = 0.25):
+    def __init__(
+        self,
+        emit: Callable[[dict[str, Any]], None],
+        model_id: str = "3",
+        flush_interval: float = 0.25,
+        device_id: str = "",
+    ):
         self._emit = emit
         self._model_id = model_id
+        self._device_id = device_id
         self._flush_interval = flush_interval
         self._lock = threading.Lock()
         self._state: dict[str, Any] = {}
@@ -614,6 +623,9 @@ class TelemetryTap:
         self._goto_unwind_timer: threading.Timer | None = None
         self._panorama_scan_dir: Path | None = None
         self._panorama_scan_rev = 0
+        # A restarted app has no live rect/thumbnail notify to replay, so a
+        # shoot already in progress needs the last one reloaded from disk.
+        self._panorama_cache_loaded = False
 
     # ------------------------------------------------------------------ setup
     def install(self, websockets_utils: Any) -> bool:
@@ -708,6 +720,7 @@ class TelemetryTap:
             self._accept_power_off = False
             self._goto_stop_owned = False
             self._goto_stopping_since = 0.0
+            self._panorama_cache_loaded = False
             self._cancel_goto_unwind_locked()
 
     def accept_power_off(self) -> None:
@@ -989,6 +1002,55 @@ class TelemetryTap:
             "panorama_scan_rev": self._panorama_scan_rev,
             "panorama_framing_state": "running",
         }
+
+    def _panorama_cache_path(self) -> Path | None:
+        """Stable per-device file, unlike the per-connection temp scan dir."""
+        device_id = str(self._device_id or "").strip()
+        if not device_id:
+            return None
+        from .runtime import data_root
+
+        folder = data_root() / "panorama-cache"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder / f"{device_id}.webp"
+
+    def persist_panorama_scan(self) -> None:
+        """Copy the last framing thumbnail so a shoot can restore its background after a reconnect."""
+        cache_path = self._panorama_cache_path()
+        if cache_path is None:
+            return
+        with self._lock:
+            source = str(self._pending.get("panorama_scan_path") or self._state.get("panorama_scan_path") or "")
+        if not source or not Path(source).is_file():
+            return
+        try:
+            shutil.copyfile(source, cache_path)
+        except OSError:
+            pass
+
+    def clear_panorama_scan_cache(self) -> None:
+        cache_path = self._panorama_cache_path()
+        if cache_path is None:
+            return
+        try:
+            cache_path.unlink()
+        except OSError:
+            pass
+
+    def load_cached_panorama_scan(self) -> None:
+        """Restore the persisted background image once per connection, before any live notify arrives."""
+        with self._lock:
+            already_loaded = self._panorama_cache_loaded
+            self._panorama_cache_loaded = True
+        if already_loaded:
+            return
+        cache_path = self._panorama_cache_path()
+        if cache_path is None or not cache_path.is_file():
+            return
+        with self._lock:
+            self._panorama_scan_rev += 1
+            rev = self._panorama_scan_rev
+        self.update({"panorama_scan_path": str(cache_path), "panorama_scan_rev": rev}, force=True)
 
     def _parse(self, factory_name: str, data: bytes) -> Any:
         factory = getattr(self._notify, factory_name, None) if self._notify else None

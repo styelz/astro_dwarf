@@ -1,0 +1,95 @@
+---
+description: "Sky mosaic ICRS coordinates, camera PA, overlay labels, and clipboard GOTO. Use when changing footprints, pane numbers, PA, the Stellarium/Aladin overlay, or the mosaic contact sheet."
+applyTo: "astro_dwarf/services.py,astro_dwarf/sky_atlas.py,astro_dwarf/qml/pages/Sky*.qml,astro_dwarf/qml/components/Sky*.qml,astro_dwarf/qml/components/MosaicViewPane.qml,tests/test_mosaic*.py,tests/test_sky*.py,tests/test_coordinates.py"
+---
+
+# Sky mosaic astronomy
+
+Pane numbers, saved RA/Dec, and GOTO must be the same ICRS points. The sky view may be rotated; do not number from screen-top independently of those points.
+
+## Frames (do not mix)
+
+| Frame | Units | Use |
+|---|---|---|
+| ICRS | RA **hours**, Dec degrees | Overlay panes, templates, clipboard, firmware GOTO |
+| Camera | right/up degrees, PA east of north | Grid construction in `_offset_camera` / `mosaic_pane_footprints` |
+| Screen | pixels | Drawing only. Project ICRS; never assign index from row-at-top-of-window |
+| Stellarium VIEW / OBSERVED | engine vectors | Overlay `convertFrame` ICRF→VIEW; lookAt ICRF→OBSERVED then `stel.lookat` |
+| Aladin | `world2pix(raDeg, decDeg)` | RA in **degrees** (`hours * 15`). `zenithRotation` is parallactic view roll, **not** mosaic PA |
+
+Standard sky charts: **N-up has east on the left** (west on the right). S-up has east on the right.
+
+## Camera PA
+
+- PA is east of celestial north for **camera-up**.
+- **PA 0°**: camera-up = north, camera-right = **west**.
+- **PA 180°**: camera-up = south, camera-right = **east**.
+- Unset `device.mosaic_pa`: EQ uses `0°` if latitude ≥ 0, **`180°` if latitude < 0**. Stored `0` is explicit N-up for EQ even at a southern site. **Alt-az ignores stored PA** and uses the parallactic angle of the pointing (the locked target, or the view centre while panning), for a single frame and for a mosaic.
+- The rule is mount mode, not model. DWARF II, DWARF 3, and DWARF Mini only pan and nod. With the base level the frame stays horizontal, top toward the zenith. Mount mode is body status `1` EQ / `2` AZ. Until that packet arrives, all three follow alt-az, so a stored 0° cannot force N-up.
+- The frame inverts 180° only when mechanical altitude is past 90° (looking behind the body): `90° < pitch < 270°`. Published travel that can pass the zenith: DWARF II pitch 240° (120° either side of vertical) and azimuth 340°; DWARF Mini barrel 225° with unlimited yaw; DWARF 3 nod through 180° or more. Astronomical altitude stops at 90°, so a sky coordinate cannot describe that pose. Apply the flip only from a reported `mechanical_altitude`. Do not invent a motor id to fill it. CMD 14011 reads degrees (pointing uses id 1 azimuth, id 2 altitude) and is not the overlay path. Polar-pose actions are separate: 3 and Mini `5, 6, 9, 7`; II `5, 6, 2, 3`.
+- Model selects published FOV only. Tele and wide share the head, so switching lenses does not change camera-up. Live firmware `h_fov`/`v_fov` replaces the published pair when it is plausible and sizes the panes.
+- Stellarium and Aladin are **zenith-up**, not south-up charts. 1×1 live overlay = camera PA + view roll (`−q`). Mosaic screen-grid **fallback** still uses chart tilt (`PA − 180°` in the south). The ICRS overlay and control contact sheet follow zenith-up, so PA 180 pane 1 is bottom-left.
+- Do not put 1×1 on southern chart tilt. That makes the live JPEG match only when PA is stored as `q+180` (e.g. Atria ~295°), which then rotates mosaic ICRS 180° (1↔4).
+- A 1×1 live overlay that only matches after typing PA ≈ q (e.g. 120°) means stored mosaic_pa was still driving the box. Alt-az must use live parallactic.
+- Aladin zenith-up (parallactic) orients the **map**. It does not change EQ camera PA unless the user asked for alt-az/zenith-up mosaics.
+
+## Pane index (camera grid)
+
+Row-major. Row 1 = camera-up (`up = -row_offset * step_y`). Column 1 = camera-right (`right = -col_offset * step_x`).
+
+Pane spacing is `FOV × (1-overlap)` on every axis so overlapping dotted frames stay visible. Do not skip overlap on even grids.
+
+2×2 ICRS/camera grid. Stellarium, Aladin, and the control contact sheet are **zenith-up** (N-up when looking south: east left, south down). Do not lay the control sheet out as a south-up paper chart; that is 180° from the overlay (1↔4).
+
+```
+PA 0° N-up / zenith-up:      PA 180° on zenith-up (east left):
+  2 NE | 1 NW                  3 NE | 4 NW
+  4 SE | 3 SW                  1 SE | 2 SW
+```
+
+At PA 0, pane 1 is west and north of centre (top-right). At default southern PA 180, pane 1 is east and south of centre (bottom-left of the zenith-up view, top-right only of a paper S-up chart).
+
+Change the sign of `up` or `right` only when `mosaic_pane_footprints` places the pane centre on the wrong side of the mosaic centre. Confirm that with copy-pane goto: the view centre lands in a different numbered box than the footprint says. A screen label on the wrong pane, while the footprint centre is already correct, is a drawing bug. Flipping the sign in that case moves GOTO off the numbered box. The east=+right mapping was already wrong once (pane 1 drawn right, GOTO went left).
+
+## One footprint, three consumers
+
+`mosaic_pane_footprints` is the source. Overlay, cached preview panes, and `templates_from_mosaic_panes` must share those ICRS centres.
+
+- Draw numbers at projected **pane centres** (not densified-corner centroids, not screen-grid order).
+- Save templates from `_cached_sky_preview_panes` when it matches the on-screen mosaic. Do not recompute from a later Stellarium/catalog harvest (that ~0.2° LMC-style offset is not a row flip).
+- Clipboard **Go to** pans with `setView` / `skyWebCenterViewScript` / `skyAtlasViewPosScript`. Do not `queueSkyLock` / `applyCoordinateTarget` — that rebuilds the mosaic around the pane.
+- Screen-grid fallback for EQ and the celestial default uses `south_up` and PA (`col1OnRight = (pa>90 && pa<270) === south_up`) plus chart tilt. Do not invent `northIsDown` row flips on top of that.
+- Alt-az with `pa_source` `parallactic` is already zenith-up. That screen-grid fallback and the contact sheet keep pane 1 top-right, and the JPEGs are not flipped, even when the parallactic angle is near 180°. Do not run that path through the S-up chart formula.
+- Control contact sheet (`mosaic_sheet_column` / `mosaic_sheet_row`) matches the zenith-up overlay, not the S-up fallback. EQ / default PA 180: pane 1 bottom-left. Rotate stacked JPEGs 180° when EQ camera-up is south so tiles still meet at centre.
+
+Published FOV (`camera_fov`), H×V degrees. The 1×1 live box follows the selected camera. Mosaic pane spacing and stacking stay tele (`sky_map_camera` / `mosaic_stack_camera`).
+
+| Model | Tele | Wide |
+|---|---|---|
+| DWARF II | 3.20° × 1.80° | 43.58° × 24.51° |
+| DWARF 3 | 2.95° × 1.66° | 45.06° × 25.93° |
+| DWARF Mini | 2.14° × 1.20° | 45.06° × 25.93° |
+
+## Symptom → likely cause
+
+| What the operator sees | Usual cause | Do not “fix” by |
+|---|---|---|
+| 1↔2 and 3↔4 | E/W: `right` sign or `col1OnRight` vs chart | Flipping rows |
+| 1↔3 and 2↔4 | N/S: `up` sign, row 1 at screen top while north is not up, or N-up numbers on a south-up view | Negating Stellarium lookAt pitch (that jumps hemispheres, not one pane) |
+| 1↔4 and 2↔3 (top-right vs bottom-left) | 180°: contact sheet used S-up paper-chart layout vs zenith-up overlay, or southern site still on PA 0 | Screen-only relabel without changing footprints |
+| Copy pane N lands on overlay M | Overlay index ≠ template ICRS, or goto retargeted the mosaic | Changing only the contact sheet |
+| ~0.1–0.3° shift, no swap | Overlay centre vs catalog/lock target | Hemisphere PA |
+| 1×1 live JPEG matches only after setting PA ≈ q+180 (e.g. 295°) | 1×1 HUD used south-up chart tilt on a zenith-up view | Storing that PA (mosaic ICRS rotates 180°) |
+
+Lab check: copy pane 1 RA/Dec, **Go to clipboard**, confirm the view centre sits in the box still labelled 1. If MOSAIC PA is `0` at a southern site and 1 is NW (top-right of zenith-up) when you wanted SE, set PA to 180 and regenerate. Invert a grid axis when that goto shows the footprint centre itself is on the wrong side. Control sheet must match that overlay: PA 180 → 1 at bottom-left, not top-right.
+
+## Code
+
+- Grid/PA/Stellarium overlay JS: `astro_dwarf/services.py` (`_offset_camera`, `mosaic_pane_footprints`, `SKY_WEB_FOV_JS`, `lookAtIcrf`)
+- Aladin overlay: `astro_dwarf/sky_atlas.py`
+- Overlay payload + mosaic save: `qt_backend.py` `_sky_overlay_payload`, `generateStellariumMosaic`
+- Clipboard pan: `SkyPage.qml`, `SkyWebView.qml`, `SkyAtlasView.qml`
+- Contact sheet column: `mosaic_sheet_column` / `MosaicViewPane.qml`
+- Tests: `tests/test_mosaic_pane_centers.py`, `tests/test_mosaic_plan.py`
+
+Offline tests cannot see Stellarium/Aladin pixels. After an overlay change, say that a live SKY copy+goto on the lab map is still required.

@@ -17,13 +17,13 @@ QtObject {
     readonly property Settings store: Settings {
         id: appearanceStore
         category: "appearance"
-        property real hue: 0.521
-        property real brightness: 0
-        property string paletteJson: ""
+        property real hue: 0.506
+        property real brightness: -0.12
+        property string paletteJson: "{\"accent\":{\"hue\":0.181,\"brightness\":-0.39,\"sat\":0.23},\"fillActive\":{\"hue\":0,\"brightness\":-1,\"sat\":0.77},\"fillChecked\":{\"hue\":0.534,\"brightness\":-0.39},\"glowAccent\":{\"hue\":0.36,\"brightness\":-0.12},\"windowBase\":{\"sat\":0.51}}"
         property string savedThemesJson: "[]"
         property string themeNamesJson: "{}"
         property string deletedExampleThemesJson: "[]"
-        property string activeThemeId: "stock"
+        property string activeThemeId: "astro"
         property bool previewChromeHintSeen: false
         property bool enhanceImages: true
         property bool deepCleanImages: false
@@ -35,24 +35,24 @@ QtObject {
         property string fontSizePref: "default"
         property real zoom: 1
     }
-    property alias hue: appearanceStore.hue
+    property real hue: appearanceStore.hue
     // -1 … 1; 0 is the stock look. Negative gives deep, saturated tints; positive lifts them.
-    property alias brightness: appearanceStore.brightness
-    property alias paletteJson: appearanceStore.paletteJson
-    property alias savedThemesJson: appearanceStore.savedThemesJson
-    property alias themeNamesJson: appearanceStore.themeNamesJson
-    property alias deletedExampleThemesJson: appearanceStore.deletedExampleThemesJson
-    property alias activeThemeId: appearanceStore.activeThemeId
-    property alias previewChromeHintSeen: appearanceStore.previewChromeHintSeen
-    property alias enhanceImages: appearanceStore.enhanceImages
-    property alias deepCleanImages: appearanceStore.deepCleanImages
-    property alias enhanceDenoise: appearanceStore.enhanceDenoise
-    property alias enhanceSkyCrush: appearanceStore.enhanceSkyCrush
-    property alias hudBackground: appearanceStore.hudBackground
-    property alias hudBackgroundOpacity: appearanceStore.hudBackgroundOpacity
-    property alias uiScalePref: appearanceStore.uiScalePref
-    property alias fontSizePref: appearanceStore.fontSizePref
-    property alias zoom: appearanceStore.zoom
+    property real brightness: appearanceStore.brightness
+    property string paletteJson: appearanceStore.paletteJson
+    property string savedThemesJson: appearanceStore.savedThemesJson
+    property string themeNamesJson: appearanceStore.themeNamesJson
+    property string deletedExampleThemesJson: appearanceStore.deletedExampleThemesJson
+    property string activeThemeId: appearanceStore.activeThemeId
+    property bool previewChromeHintSeen: appearanceStore.previewChromeHintSeen
+    property bool enhanceImages: appearanceStore.enhanceImages
+    property bool deepCleanImages: appearanceStore.deepCleanImages
+    property real enhanceDenoise: appearanceStore.enhanceDenoise
+    property real enhanceSkyCrush: appearanceStore.enhanceSkyCrush
+    property bool hudBackground: appearanceStore.hudBackground
+    property real hudBackgroundOpacity: appearanceStore.hudBackgroundOpacity
+    property string uiScalePref: appearanceStore.uiScalePref
+    property string fontSizePref: appearanceStore.fontSizePref
+    property real zoom: appearanceStore.zoom
 
     // Main binds this to the window's Screen.height so Auto follows the monitor.
     property int screenHeight: 1080
@@ -189,6 +189,13 @@ QtObject {
     }
 
     readonly property var builtinThemes: [
+        { id: "astro", name: "ASTRO", hue: 0.506, brightness: -0.12, palette: ({
+            accent: { hue: 0.181, brightness: -0.39, sat: 0.23 },
+            fillActive: { hue: 0, brightness: -1, sat: 0.77 },
+            fillChecked: { hue: 0.534, brightness: -0.39 },
+            glowAccent: { hue: 0.36, brightness: -0.12 },
+            windowBase: { sat: 0.51 }
+        }) },
         { id: "stock", name: "Cyan", hue: 0.521, brightness: 0, palette: ({}) },
         { id: "ice", name: "Ice", hue: 0.55, brightness: 0.14, palette: ({}) },
         { id: "violet", name: "Violet", hue: 0.76, brightness: 0.02, palette: ({}) },
@@ -209,13 +216,6 @@ QtObject {
         }) },
         { id: "custom2", name: "CUSTOM 2", hue: 0.55, brightness: 0.14, palette: ({
             accent: { hue: 0.053, brightness: -0.42, sat: 0.13 }
-        }) },
-        { id: "custom3", name: "CUSTOM 3", hue: 0.506, brightness: -0.12, palette: ({
-            accent: { hue: 0.181, brightness: -0.39, sat: 0.23 },
-            fillActive: { hue: 0.065, brightness: -0.54, sat: 0.27 },
-            fillChecked: { hue: 0.534, brightness: -0.39 },
-            glowAccent: { hue: 0.36, brightness: -0.12 },
-            windowBase: { sat: 0.51 }
         }) }
     ]
 
@@ -224,8 +224,8 @@ QtObject {
     readonly property var promotedThemeIds: ({
         tmu1ajuuh1ow9: "custom1",
         tmu2hmuu46gnv: "custom2",
-        tmu54ynn0863o: "custom3",
-        custom4: "custom3"
+        tmu54ynn0863o: "astro",
+        custom4: "astro"
     })
 
     // offset/sat/light/weight reproduce the original cyan HUD at hue 0.521, brightness 0.
@@ -913,7 +913,7 @@ QtObject {
     }
 
     function isShippedCustomId(id) {
-        return id === "custom1" || id === "custom2" || id === "custom3"
+        return id === "custom1" || id === "custom2"
     }
 
     function isDeletedExample(id) {

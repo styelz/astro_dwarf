@@ -208,6 +208,42 @@ def _initialize_webview() -> None:
         pass
 
 
+def _signal_ready_on_first_frame(window) -> None:
+    """Tell astro_dwarf.splash the window is actually on screen.
+
+    The splash launcher watches stdout for this marker instead of waiting a
+    fixed delay. Print on the first swapped frame (real "visible" signal),
+    with a short timer fallback in case the render loop never emits it.
+    """
+    from .splash import READY_MARKER
+
+    state = {"sent": False}
+
+    def _emit() -> None:
+        if state["sent"]:
+            return
+        state["sent"] = True
+        try:
+            sys.stdout.write(READY_MARKER + "\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+    def _on_first_frame() -> None:
+        _emit()
+        try:
+            window.frameSwapped.disconnect(_on_first_frame)
+        except (RuntimeError, TypeError):
+            pass
+
+    try:
+        window.frameSwapped.connect(_on_first_frame)
+    except Exception:
+        _emit()
+        return
+    QTimer.singleShot(3000, _emit)
+
+
 def run() -> int:
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
     os.environ["QML_DISABLE_DISK_CACHE"] = "1"
@@ -251,6 +287,7 @@ def run() -> int:
         backend.shutdown()
         return 1
     window = engine.rootObjects()[0]
+    _signal_ready_on_first_frame(window)
     _apply_native_window_icon(window, icon)
     persist_scene = getattr(window, "setPersistentSceneGraph", None)
     persist_graphics = getattr(window, "setPersistentGraphics", None)
