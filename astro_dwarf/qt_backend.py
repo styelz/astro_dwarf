@@ -258,7 +258,7 @@ from .stream_preview import (
     set_mosaic_frames,
     stream_port,
 )
-from .device_telemetry import link_telemetry
+from .device_telemetry import is_device_occupied_text, link_telemetry
 from .telemetry_view import (
     AlertEngine,
     TRACKING_NEEDS_CALIBRATION_DETAIL,
@@ -548,6 +548,8 @@ _ACTIVITY_START = {
     "sky_track": "goto",
     "stack": "imaging",
     "polar_position": "polar_position",
+    "panorama_frame_start": "panorama_frame",
+    "panorama_shoot": "panorama",
 }
 # Session steps that should light a command pad. Astro autofocus has no
 # firmware state notify (calibrate / GOTO / EQ do), so the pad stays dark
@@ -575,6 +577,8 @@ _ACTIVITY_STOP = {
     "stop_autofocus": "autofocus",
     "stop_goto": "goto",
     "stop_astro": "imaging",
+    "panorama_frame_stop": "panorama_frame",
+    "panorama_stop": "panorama",
 }
 _ACTIVITY_CLEAR = {"stop_session", "reboot", "power_down", "go_live"}
 _PHOTO_ACTIVITY_STATES = {
@@ -706,6 +710,12 @@ _ACTION_LABELS = {
     "open_camera": "Tele camera opened",
     "open_wide_camera": "Wide camera opened",
     "set_preview_quality": "Tele preview encoder refreshed",
+    "panorama_frame_start": "Panorama framing started",
+    "panorama_frame_stop": "Panorama framing cancelled",
+    "panorama_frame_reset": "Panorama frame reset",
+    "panorama_frame_update": "Panorama frame updated",
+    "panorama_shoot": "Panorama started",
+    "panorama_stop": "Panorama stopped",
 }
 _ACTION_DETAILS = {
     "calibrate": "Device will plate-solve and report progress",
@@ -762,7 +772,18 @@ _STACKING_BLOCKED_ACTIONS = {
     "sky_track": "Stop the stack before changing tracking",
     "stop_goto": "Stop the stack before changing tracking",
 }
-_PHOTO_REQUIRED_ACTIONS = frozenset({"photo", "burst_start", "record_start", "timelapse_start"})
+_PHOTO_REQUIRED_ACTIONS = frozenset({
+    "photo",
+    "burst_start",
+    "record_start",
+    "timelapse_start",
+    "panorama_frame_start",
+    "panorama_frame_update",
+    "panorama_frame_reset",
+    "panorama_frame_stop",
+    "panorama_shoot",
+    "panorama_stop",
+})
 _DSO_REQUIRED_ACTIONS = frozenset({"calibrate", "polar", "track", "sky_track", "stack", "infinity"})
 _DSO_AUTO_SWITCH_ACTIONS = frozenset({"track", "sky_track"})
 
@@ -2226,6 +2247,11 @@ class AppBackend(QObject):
                 self._telemetry_updated.get(device.id) if connected else None,
                 now,
             )
+            scan_path = str(raw_view.get("panorama_scan_path") or "")
+            if scan_path and Path(scan_path).is_file():
+                telemetry["panorama_scan_url"] = QUrl.fromLocalFile(scan_path).toString()
+            else:
+                telemetry["panorama_scan_url"] = ""
             activity = self._hud_activity(device.id, telemetry.get("activity") or "")
             if not activity:
                 session_id = self._active_sessions.get(device.id)
@@ -2385,6 +2411,9 @@ class AppBackend(QObject):
             ):
                 self._device_activity.pop(device_id, None)
                 break
+        if data.get("panorama_error"):
+            self._toast("Panorama framing failed", "error", str(data.get("panorama_error")))
+            self._set_activity(device_id, "")
         if data.get("power_off"):
             self._drop_device_link(device_id)
             return
@@ -7699,6 +7728,15 @@ class AppBackend(QObject):
         if discovered:
             self._persist_discovered_ip(device_id, discovered)
         fail_text = self._connect_failure_text(result)
+        if not ok and is_device_occupied_text(fail_text):
+            self._toast(
+                "Another app is connected",
+                "warning",
+                "Disconnect it in the other app, then retry.",
+            )
+            self._disarm_scheduler_if_offline()
+            self._notify_devices()
+            return
         self.add_log("success" if ok else "error", "Connected" if ok else f"Connection failed: {fail_text}", device_id)
         if ok:
             device = self._device_by_id(device_id)
@@ -8514,6 +8552,20 @@ class AppBackend(QObject):
         self._on_telemetry(device_id, {"photo_primed": False})
         self.add_log("success", "Capture disarmed", device_id)
         self._toast("Capture disarmed", "success")
+
+    @Slot(float, float, float, float)
+    def updatePanoramaFrame(self, x1: float, y1: float, x2: float, y2: float) -> None:
+        """Send a resized framing box. Ignored until this session has a device rect."""
+        device_id = self._selected_device_id
+        telemetry = self._device_telemetry.get(device_id) or {}
+        if not telemetry.get("panorama_has_rect"):
+            return
+        if str(telemetry.get("panorama_framing_state") or "") != "running":
+            return
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            return
+        worker.send("panorama_frame_update", {"args": [float(x1), float(y1), float(x2), float(y2)]})
 
     @Slot(str, str)
     def deviceAction(self, device_id: str, operation: str) -> None:

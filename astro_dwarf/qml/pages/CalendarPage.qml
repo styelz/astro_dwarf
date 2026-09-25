@@ -419,11 +419,12 @@ Item {
     function timelineDate(minutes, deviceId) {
         return backend.nightTimelineIso(calendarPage.nightKey(), calendarPage.snapTimelineMinutes(minutes), deviceId || "")
     }
-    function applySessionDrop(sid, source, position) {
+    function applySessionDrop(sid, source, position, previewMinutes) {
         if (!sid || !position || !DragCoordinator.contentItem)
             return false
         if (calendarPage.viewMode === 1) {
-            const minutes = calendarPage.timelineMinutesFromPos(position)
+            const shown = Number(previewMinutes)
+            const minutes = shown >= 0 ? shown : calendarPage.timelineMinutesFromPos(position)
             if (minutes < 0)
                 return false
             backend.moveSessionStart(sid, calendarPage.timelineDate(minutes, source && source.device_id))
@@ -1198,10 +1199,18 @@ Item {
                             anchors.fill: parent
                             keys: ["session"]
                             onDropped: drop => {
+                                // Session drags land through DragCoordinator.completeDrag,
+                                // which keeps the preview minutes. This area only applies
+                                // a drop that is still live, so a cleared grab point cannot
+                                // write a later time after release.
+                                if (!DragCoordinator.active)
+                                    return
                                 const sid = DragCoordinator.dragSessionId(drop)
                                 if (!sid)
                                     return
-                                const minutes = calendarPage.timelineMinutesFromPos(DragCoordinator.pos)
+                                const minutes = DragCoordinator.previewMinutes >= 0
+                                    ? DragCoordinator.previewMinutes
+                                    : calendarPage.timelineMinutesFromPos(DragCoordinator.pos)
                                 if (minutes < 0)
                                     return
                                 backend.moveSessionStart(sid, calendarPage.timelineDate(minutes, DragCoordinator.data.device_id))

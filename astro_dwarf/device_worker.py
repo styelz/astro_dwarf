@@ -30,8 +30,12 @@ from .device_telemetry import (
     CMD_ASTRO_GET_DARK_FRAME_LIST,
     CMD_ASTRO_GET_WIDE_DARK_FRAME_LIST,
     CODE_STEP_MOTOR_NEED_RESET,
+    DEVICE_OCCUPIED_MESSAGE,
     TelemetryTap,
+    clear_device_occupied,
+    device_occupied,
     install_sdk_logging,
+    is_device_occupied_text,
     link_telemetry,
 )
 from .telemetry_view import (
@@ -1268,11 +1272,59 @@ def sdk_call(operation: str, *args: Any) -> Any:
             return send_without_response(focus_pb2.ReqStopAstroAutoFocus(), 15005, 8)
     if operation in {"set_timelapse_duration", "set_timelapse_interval"}:
         return _apply_timelapse_param(operation, args)
+    if operation in {
+        "panorama_frame_start",
+        "panorama_frame_update",
+        "panorama_frame_reset",
+        "panorama_frame_stop",
+        "panorama_shoot",
+        "panorama_stop",
+    }:
+        return _panorama_command(operation, args)
     function_name = FUNCTIONS.get(operation)
     function = getattr(_api, function_name, None) if function_name else None
     if function is None:
         raise NotImplementedError(f"Installed SDK does not provide '{operation}'")
     return _invoke_sdk(operation, function, *args)
+
+
+def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
+    """Panorama framing and grid capture. Command ids are not in the installed protocol enum."""
+    from dwarf_python_api.proto import panorama_pb2
+
+    from .device_telemetry import (
+        CMD_PANORAMA_RESET_FRAMING,
+        CMD_PANORAMA_START_FRAMING,
+        CMD_PANORAMA_STOP,
+        CMD_PANORAMA_STOP_FRAMING,
+        CMD_PANORAMA_STOP_FRAMING_AND_START_GRID,
+        CMD_PANORAMA_UPDATE_FRAMING_RECT,
+    )
+
+    module_id = 10
+    if operation == "panorama_frame_update":
+        if len(args) < 4:
+            raise RuntimeError("Panorama framing needs four normalized corners")
+        message = panorama_pb2.ReqUpdatePanoramaFramingRect()
+        message.norm_x_tl = float(args[0])
+        message.norm_y_tl = float(args[1])
+        message.norm_x_br = float(args[2])
+        message.norm_y_br = float(args[3])
+        return send_without_response(message, CMD_PANORAMA_UPDATE_FRAMING_RECT, module_id)
+    messages = {
+        "panorama_frame_start": (panorama_pb2.ReqStartPanoramaFraming, CMD_PANORAMA_START_FRAMING),
+        "panorama_frame_reset": (panorama_pb2.ReqResetPanoramaFraming, CMD_PANORAMA_RESET_FRAMING),
+        "panorama_frame_stop": (panorama_pb2.ReqStopPanoramaFraming, CMD_PANORAMA_STOP_FRAMING),
+        "panorama_shoot": (panorama_pb2.ReqStopPanoramaFramingAndStartGrid, CMD_PANORAMA_STOP_FRAMING_AND_START_GRID),
+        "panorama_stop": (panorama_pb2.ReqStopPanorama, CMD_PANORAMA_STOP),
+    }
+    factory, command = messages[operation]
+    ok = send_without_response(factory(), command, module_id)
+    if ok and operation == "panorama_frame_start" and _tap is not None:
+        _tap.update({"panorama_framing_state": "running", "panorama_has_rect": False, "panorama_error": ""}, force=True)
+    if ok and operation == "panorama_shoot" and _tap is not None:
+        _tap.update({"panorama_state": "running", "panorama_framing_state": "idle"}, force=True)
+    return ok
 
 
 def _scalar_log_arg(value: Any) -> str | None:
@@ -1902,10 +1954,19 @@ def _cancel_queued_connects() -> bool:
     return True
 
 
+def _raise_if_device_occupied() -> None:
+    if not device_occupied():
+        return
+    _safe_disconnect()
+    raise RuntimeError(DEVICE_OCCUPIED_MESSAGE)
+
+
 def _claim_host() -> None:
     """Ask firmware for master lock. V3 often ACKs with no payload."""
     try:
         if sdk_call("host_master") is False:
+            if device_occupied():
+                return
             log("MASTER LOCK: no response (expected on V3). Continuing.", "warning")
     except NotImplementedError as exc:
         log(str(exc), "warning")
@@ -1920,9 +1981,11 @@ def _handshake() -> dict[str, Any] | None:
         # Start this link clean so a later connect does not replay it.
         _tap.reset()
     _claim_host()
+    _raise_if_device_occupied()
     _check_connect_cancelled()
     if sdk_call("time") is False:
         _check_connect_cancelled()
+        _raise_if_device_occupied()
         return None
     for operation in ("timezone", "location", "device_state"):
         _check_connect_cancelled()
@@ -2021,12 +2084,14 @@ def connect() -> bool | dict[str, Any]:
     # call. A leftover session stop must not abort a fresh connect; a cancel
     # latched on _connect_cancel still wins after that clear.
     _connecting.set()
+    clear_device_occupied()
     try:
         _stop.clear()
         _check_connect_cancelled()
         return _connect()
     finally:
         _connecting.clear()
+        clear_device_occupied()
 
 
 def _connect() -> bool | dict[str, Any]:

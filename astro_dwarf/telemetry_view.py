@@ -603,6 +603,16 @@ def derive_activity(raw: dict[str, Any], now: float | None = None) -> tuple[str,
     if raw.get("dark_state") == "running":
         progress = raw.get("dark_progress")
         return "dark", f"{int(progress)}%" if progress is not None else "RUNNING"
+    if raw.get("panorama_state") == "running":
+        completed = _as_int(raw.get("panorama_completed"))
+        total = _as_int(raw.get("panorama_total"))
+        if completed is not None and total:
+            return "panorama", f"{completed}/{total}"
+        if total:
+            return "panorama", f"{total} TILES"
+        return "panorama", "RUNNING"
+    if raw.get("panorama_framing_state") == "running":
+        return "panorama_frame", "FRAMING"
     if raw.get("burst_state") == "running":
         completed = _as_int(raw.get("burst_completed"))
         total = _as_int(raw.get("burst_total")) or _as_int(raw.get("burst_count"))

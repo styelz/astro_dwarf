@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 import re
+import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 # Motor / notification command ids (dwarf_python_api/proto/protocol.proto).
@@ -60,7 +62,26 @@ CMD_NOTIFY_RECORD_STATE = 15275
 CMD_NOTIFY_TIMELAPSE_STATE = 15276
 CMD_NOTIFY_ASTRO_AUTO_FOCUS_STATE = 15278
 CMD_NOTIFY_ASTRO_AUTO_FOCUS_FAST_STATE = 15280
+CMD_NOTIFY_PANORAMA_STATE = 15277
 CMD_NOTIFY_BURST_PROGRESS = 15285
+CMD_NOTIFY_PANORAMA_PROGRESS = 15219
+CMD_NOTIFY_PANO_FRAMING_RECT = 15297
+CMD_NOTIFY_PANO_FRAMING_THUMBNAIL = 15298
+CMD_NOTIFY_PANO_FRAMING_STATE = 15299
+CMD_PANORAMA_STOP = 15501
+CMD_PANORAMA_START_FRAMING = 15509
+CMD_PANORAMA_STOP_FRAMING = 15510
+CMD_PANORAMA_RESET_FRAMING = 15511
+CMD_PANORAMA_UPDATE_FRAMING_RECT = 15512
+CMD_PANORAMA_STOP_FRAMING_AND_START_GRID = 15513
+_PANORAMA_COMMANDS = frozenset({
+    CMD_PANORAMA_STOP,
+    CMD_PANORAMA_START_FRAMING,
+    CMD_PANORAMA_STOP_FRAMING,
+    CMD_PANORAMA_RESET_FRAMING,
+    CMD_PANORAMA_UPDATE_FRAMING_RECT,
+    CMD_PANORAMA_STOP_FRAMING_AND_START_GRID,
+})
 CMD_NOTIFY_RECORD_TIME = 15286
 CMD_NOTIFY_TIMELAPSE_OUT_TIME = 15287
 CMD_NOTIFY_LONG_EXP_PROGRESS = 15288
@@ -505,6 +526,8 @@ class TelemetryTap:
         self._goto_stop_owned = False
         self._goto_stopping_since = 0.0
         self._goto_unwind_timer: threading.Timer | None = None
+        self._panorama_scan_dir: Path | None = None
+        self._panorama_scan_rev = 0
 
     # ------------------------------------------------------------------ setup
     def install(self, websockets_utils: Any) -> bool:
@@ -818,6 +841,50 @@ class TelemetryTap:
             return
         self.on_packet(cmd, kind, data)
 
+    def _decode_panorama_rect(self, data: bytes) -> dict[str, Any]:
+        message = self._parse("PanoFramingRectUpdateNotify", data)
+        if message is None:
+            return {}
+        return {
+            "panorama_has_rect": True,
+            "panorama_framing_state": "running",
+            "panorama_x1": float(message.norm_x_tl),
+            "panorama_y1": float(message.norm_y_tl),
+            "panorama_x2": float(message.norm_x_br),
+            "panorama_y2": float(message.norm_y_br),
+            "panorama_limit_left": float(message.norm_limit_x_left),
+            "panorama_limit_top": float(message.norm_limit_y_top),
+            "panorama_limit_right": float(message.norm_limit_x_right),
+            "panorama_limit_bottom": float(message.norm_limit_y_bottom),
+            "panorama_rect_fov_h": float(message.rect_hor_fov),
+            "panorama_rect_fov_v": float(message.rect_ver_fov),
+            "panorama_rect_error": int(message.error_code),
+        }
+
+    def _store_panorama_scan(self, data: bytes) -> dict[str, Any]:
+        message = self._parse("PanoFramingThumbnailUpdateNotify", data)
+        if message is None:
+            return {}
+        blob = bytes(message.webp_data or b"")
+        if not blob:
+            return {}
+        if self._panorama_scan_dir is None:
+            self._panorama_scan_dir = Path(tempfile.mkdtemp(prefix="astro-pano-"))
+        self._panorama_scan_rev += 1
+        path = self._panorama_scan_dir / f"scan-{self._panorama_scan_rev}.webp"
+        path.write_bytes(blob)
+        previous = self._panorama_scan_dir / f"scan-{self._panorama_scan_rev - 1}.webp"
+        if previous.is_file():
+            try:
+                previous.unlink()
+            except OSError:
+                pass
+        return {
+            "panorama_scan_path": str(path),
+            "panorama_scan_rev": self._panorama_scan_rev,
+            "panorama_framing_state": "running",
+        }
+
     def _parse(self, factory_name: str, data: bytes) -> Any:
         factory = getattr(self._notify, factory_name, None) if self._notify else None
         if factory is None:
@@ -852,7 +919,7 @@ class TelemetryTap:
         """Decode one incoming packet into telemetry changes (never raises)."""
         if kind in _RESPONSE_TYPES and cmd in _DARK_LIBRARY_CMDS:
             self._record_dark_library(cmd, data)
-        elif kind in _RESPONSE_TYPES and cmd in _TRACKED_RESPONSES:
+        elif kind in _RESPONSE_TYPES and (cmd in _TRACKED_RESPONSES or cmd in _PANORAMA_COMMANDS):
             self._record_response(cmd, data)
         try:
             changes = self._decode(cmd, kind, data)
@@ -866,6 +933,11 @@ class TelemetryTap:
                 CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING,
                 CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING,
                 CMD_NOTIFY_POWER_OFF,
+                CMD_NOTIFY_PANORAMA_PROGRESS,
+                CMD_NOTIFY_PANORAMA_STATE,
+                CMD_NOTIFY_PANO_FRAMING_RECT,
+                CMD_NOTIFY_PANO_FRAMING_THUMBNAIL,
+                CMD_NOTIFY_PANO_FRAMING_STATE,
             ) or cmd in _PHOTO_FUNCTION_FORCE)
 
     def _record_dark_library(self, cmd: int, data: bytes) -> None:
@@ -945,6 +1017,14 @@ class TelemetryTap:
                     pass
             if changes:
                 self.update(changes, force=True)
+        if cmd in _PANORAMA_COMMANDS and code not in (0,):
+            self.update({
+                "panorama_error": str(code),
+                "panorama_framing_state": "idle",
+                "panorama_has_rect": False,
+            }, force=True)
+        elif cmd in _PANORAMA_COMMANDS and code == 0:
+            self.update({"panorama_error": ""}, force=True)
         if cmd == CMD_FOCUS_START_ASTRO_AUTO_FOCUS:
             # Astro AF replies when the run ends. Photo AF (15000) ACKs up
             # front, so its pad is released from motor settle / timeout.
@@ -1133,6 +1213,39 @@ class TelemetryTap:
             if message is None:
                 return {}
             return {"record_seconds": int(message.record_time), "record_state": "running"}
+        if cmd == CMD_NOTIFY_PANORAMA_PROGRESS:
+            message = self._parse("PanoramaProgress", data)
+            if message is None:
+                return {}
+            completed = int(message.completed_count)
+            total = int(message.total_count)
+            changes = {"panorama_state": "running", "panorama_completed": completed}
+            if total:
+                changes["panorama_total"] = total
+            return changes
+        if cmd == CMD_NOTIFY_PANORAMA_STATE:
+            message = self._parse("PanoramaState", data)
+            if message is None:
+                return {}
+            state = OPERATION_STATES.get(int(message.state), str(message.state))
+            changes = {"panorama_state": state}
+            if state != "running":
+                changes["panorama_completed"] = 0
+            return changes
+        if cmd == CMD_NOTIFY_PANO_FRAMING_STATE:
+            message = self._parse("PanoFramingStateNotify", data)
+            if message is None:
+                return {}
+            raw_state = int(message.state)
+            state = OPERATION_STATES.get(raw_state, "running" if raw_state else "idle")
+            changes = {"panorama_framing_state": state}
+            if state in ("idle", "stopped"):
+                changes["panorama_has_rect"] = False
+            return changes
+        if cmd == CMD_NOTIFY_PANO_FRAMING_RECT:
+            return self._decode_panorama_rect(data)
+        if cmd == CMD_NOTIFY_PANO_FRAMING_THUMBNAIL:
+            return self._store_panorama_scan(data)
         if cmd in _BURST_PROGRESS_COMMANDS:
             message = self._parse("BurstProgress", data)
             if message is None:
@@ -1292,6 +1405,13 @@ class TelemetryTap:
                     if not (hold and state == "running"):
                         changes["capture_state"] = state
                         changes["capture_active"] = state == "running"
+                    if state == "running":
+                        changes.update(_photo_function_idle_changes(self.snapshot()))
+                elif which == "panorama_state":
+                    state = OPERATION_STATES.get(int(exclusive.panorama_state.state), "idle")
+                    changes["panorama_state"] = state
+                    if state != "running":
+                        changes["panorama_completed"] = 0
                     if state == "running":
                         changes.update(_photo_function_idle_changes(self.snapshot()))
                 elif which in _PHOTO_FUNCTION_KEYS:
@@ -1573,6 +1693,52 @@ def is_chatter(text: str) -> bool:
     return bool(_SET_OK_RE.match(lowered))
 
 
+# Close code 4409 is the telescope refusing a second client. The SDK logs it
+# as an error, then the dead socket produces more errors. One warning is enough.
+DEVICE_OCCUPIED_MESSAGE = (
+    "Another client (likely the official Dwarflab app) is already connected to this device. "
+    "Disconnect it there first, then retry."
+)
+_OCCUPIED_SYMPTOMS = (
+    "websocket connection is not open",
+    "error websocket disconnected",
+    "dwarf device not connected",
+    "client not started",
+    "error no websocket",
+)
+_device_occupied = False
+_device_occupied_logged = False
+
+
+def is_device_occupied_text(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return "device_occupied" in lowered or "close code 4409" in lowered or lowered == DEVICE_OCCUPIED_MESSAGE.lower()
+
+
+def clear_device_occupied() -> None:
+    global _device_occupied, _device_occupied_logged
+    _device_occupied = False
+    _device_occupied_logged = False
+
+
+def device_occupied() -> bool:
+    return _device_occupied
+
+
+def classify_sdk_log(text: str, level: str) -> tuple[str, str] | None:
+    """Adjust an SDK log line. None drops it from the HUD log."""
+    global _device_occupied, _device_occupied_logged
+    if is_device_occupied_text(text):
+        _device_occupied = True
+        if _device_occupied_logged:
+            return None
+        _device_occupied_logged = True
+        return "warning", DEVICE_OCCUPIED_MESSAGE
+    if _device_occupied and any(symptom in text.lower() for symptom in _OCCUPIED_SYMPTOMS):
+        return None
+    return level, text
+
+
 def level_name(levelno: int) -> str:
     if levelno >= logging.ERROR:
         return "error"
@@ -1606,6 +1772,10 @@ class SdkLogHandler(logging.Handler):
             level = "debug"
         elif level in ("sdk", "debug") and is_noise(text):
             return
+        classified = classify_sdk_log(text, level)
+        if classified is None:
+            return
+        level, text = classified
         try:
             self._emit({"event": "log", "level": level, "message": text, "source": "sdk"})
         except Exception:

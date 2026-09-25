@@ -1370,6 +1370,8 @@ Item {
                     }
                     readonly property bool stackEnhanceAvailable: backend.previewStacking || backend.previewResult || previewHost.awaitingFirstStack
                     readonly property bool pipPlaying: pipAvailable && pipEnabled
+                    readonly property bool panoramaFrame: root.scopeActivity === "panorama_frame"
+                        || String(root.scopeTelemetry.panorama_framing_state || "") === "running"
                     readonly property bool mosaicActive: !!(backend.mosaicPreview && backend.mosaicPreview.active)
                     property bool showMosaicSheet: true
                     onMosaicActiveChanged: if (mosaicActive) showMosaicSheet = true
@@ -1743,11 +1745,19 @@ Item {
                         function onPreviewWidePlayingChanged() { previewHost.leaveFullscreenIfStreamGone() }
                     }
 
+                    PanoramaFramePane {
+                        id: panoramaFrame
+                        objectName: "panoramaFrame"
+                        anchors.fill: parent
+                        visible: previewHost.panoramaFrame && !previewHost.mosaicSheet
+                        active: visible && !previewHost.feedFullscreen
+                        widePlaying: backend.previewWidePlaying
+                    }
                     LiveViewPane {
                         id: liveFrame
                         objectName: "livePane"
                         anchors.fill: parent
-                        visible: !previewHost.mosaicSheet
+                        visible: !previewHost.mosaicSheet && !previewHost.panoramaFrame
                         playing: !previewHost.feedFullscreen && (previewHost.paneView || (previewHost.mainPlaying && !previewHost.mosaicSheet))
                         wideView: previewHost.paneView ? false : previewHost.displayWide
                         camera: previewHost.paneView ? "tele" : previewHost.liveCamera(previewHost.displayWide)
@@ -2510,9 +2520,38 @@ Item {
                         anchors.top: parent.top
                         anchors.margins: Theme.px(14)
                         spacing: Theme.s2
-                        opacity: previewHost.mosaicActive || backend.stitchStatus !== "" || ((backend.previewActive || backend.previewResult) && previewHost.chromeShown) ? 1 : 0
+                        opacity: previewHost.panoramaFrame || previewHost.mosaicActive || backend.stitchStatus !== "" || ((backend.previewActive || backend.previewResult) && previewHost.chromeShown) ? 1 : 0
                         visible: opacity > 0
                         Behavior on opacity { NumberAnimation { duration: Theme.normal } }
+                        HudButton {
+                            objectName: "panoramaShoot"
+                            visible: previewHost.panoramaFrame
+                            text: "SHOOT"
+                            tooltip: "Start the telephoto panorama from this frame"
+                            enabled: root.commandEnabled("panorama_shoot")
+                            buttonColor: Theme.fillActive
+                            foregroundColor: Theme.accent
+                            onHoveredChanged: previewHost.holdControls(hovered)
+                            onClicked: root.requestDeviceAction("panorama_shoot", "PANO")
+                        }
+                        HudButton {
+                            objectName: "panoramaReset"
+                            visible: previewHost.panoramaFrame
+                            text: "RESET"
+                            tooltip: "Restore the wide-camera frame"
+                            enabled: root.commandEnabled("panorama_frame_reset")
+                            onHoveredChanged: previewHost.holdControls(hovered)
+                            onClicked: root.requestDeviceAction("panorama_frame_reset", "PANO")
+                        }
+                        HudButton {
+                            objectName: "panoramaCancel"
+                            visible: previewHost.panoramaFrame
+                            text: "CANCEL"
+                            tooltip: "Leave panorama framing without shooting"
+                            enabled: root.commandEnabled("panorama_frame_stop")
+                            onHoveredChanged: previewHost.holdControls(hovered)
+                            onClicked: root.requestDeviceAction("panorama_frame_stop", "PANO")
+                        }
                         HudButton {
                             objectName: "mosaicStitch"
                             visible: backend.stitchStatus === "done" || backend.stitchStatus === "working" || backend.stitchStatus === "failed"
@@ -2868,15 +2907,20 @@ Item {
                         readonly property bool trackingNow: trackingPad && !!t.tracking_active
                         readonly property bool slewingNow: trackingPad && root.scopeActivity === "goto"
                         readonly property bool stopping: effectiveOperation !== modelData.start
+                        readonly property bool panoramaPad: modelData.start === "stack" && cameraPanel.photoMode
                         readonly property bool cameraAllowed: stopping || modelData.camera !== "tele" || cameraPanel.teleSelected
                         readonly property bool modeAllowed: {
+                            if (panoramaPad)
+                                return true
                             if (stopping || !modelData.mode)
                                 return true
                             if (modelData.mode === "both")
                                 return cameraPanel.photoMode || cameraPanel.dsoMode
                             return modelData.mode === "photo" ? cameraPanel.photoMode : cameraPanel.dsoMode
                         }
-                        readonly property bool activeForState: modelData.state === "lights"
+                        readonly property bool activeForState: panoramaPad
+                            ? (root.scopeActivity === "panorama" || root.scopeActivity === "panorama_frame")
+                            : modelData.state === "lights"
                             ? !!backend.selectedDevice.lights_on
                             : modelData.state === "indicator"
                                 ? !!backend.selectedDevice.indicator_on
@@ -2885,7 +2929,16 @@ Item {
                                     : modelData.start === "stack"
                                         ? root.scopeStacking
                                         : modelData.state !== "" && root.scopeActivity === modelData.state
-                        readonly property string effectiveOperation: activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
+                        readonly property string effectiveOperation: {
+                            if (panoramaPad) {
+                                if (root.scopeActivity === "panorama")
+                                    return "panorama_stop"
+                                if (root.scopeActivity === "panorama_frame")
+                                    return "panorama_frame_stop"
+                                return "panorama_frame_start"
+                            }
+                            return activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
+                        }
                         readonly property bool photoPrimed: modelData.start === "photo" && root.scopeOnline && !!t.photo_primed && cameraPanel.photoMode
                         readonly property int shootingTech: Number(t.shooting_tech || 0)
                         readonly property bool capturePrimed: {
@@ -2927,8 +2980,8 @@ Item {
                             backend.clockText
                             if (!activeForState || !timedCapture)
                                 return 0
-                            if (modelData.state === "burst")
-                                return Number(t.burst_completed || 0)
+                            if (modelData.state === "burst" || (panoramaPad && root.scopeActivity === "panorama"))
+                                return panoramaPad ? Number(t.panorama_completed || 0) : Number(t.burst_completed || 0)
                             const local = captureStartedMs ? Math.floor((Date.now() - captureStartedMs) / 1000) : 0
                             if (modelData.state === "record")
                                 return Math.max(Number(t.record_seconds || 0), local)
@@ -2953,6 +3006,13 @@ Item {
                                 else if (outS > 0 && outS + 2 < elapsed)
                                     text += " · OUT " + Util.clockLabel(outS)
                                 return text
+                            }
+                            if (panoramaPad && root.scopeActivity === "panorama") {
+                                const done = Number(t.panorama_completed || 0)
+                                const total = Number(t.panorama_total || 0)
+                                if (done || total)
+                                    return (done || 0) + "/" + (total || "?")
+                                return ""
                             }
                             if (modelData.state === "burst") {
                                 const done = Number(t.burst_completed || 0)
@@ -2984,6 +3044,8 @@ Item {
                         readonly property bool canStopNow: primeMode && root.commandEnabled("cancel_prime")
                         property bool awaitingPrimeCancel: false
                         readonly property string padLabel: {
+                            if (panoramaPad)
+                                return "PANO"
                             if (modelData.start === "stack" && (controlPage.mosaicGridArmed || controlPage.mosaicRunning))
                                 return "MOSAIC STACK"
                             if (!trackingPad)
@@ -2997,6 +3059,13 @@ Item {
                         readonly property bool firmwareSettling: Util.commandTransitionLocked(modelData.start, "", t)
                             || (modelData.stop !== "" && Util.commandTransitionLocked(modelData.stop, "", t))
                         function deviceDetail() {
+                            if (panoramaPad) {
+                                if (root.scopeActivity === "panorama")
+                                    return liveClockText ? "PANO · " + liveClockText : "SHOOTING · STOP"
+                                if (root.scopeActivity === "panorama_frame")
+                                    return t.panorama_has_rect ? "FRAME · SHOOT ON PREVIEW" : "FRAME"
+                                return "CAPTURE"
+                            }
                             if (firmwareSettling && (activeForState || root.scopeActivity === "" || root.scopeActivity === modelData.state || (trackingPad && root.scopeActivity === "goto")))
                                 return "STOPPING"
                             if (trackingPad && root.scopeStacking)
@@ -3110,7 +3179,9 @@ Item {
                         canStop: canStopNow
                         stopTooltip: activeForState ? "Stop and cancel prime" : "Cancel primed capture"
                         destructive: !!modelData.destructive
-                        stopsOnClick: pad.enabled && modelData.stop !== "" && effectiveOperation === modelData.stop
+                        stopsOnClick: panoramaPad
+                            ? (pad.enabled && (effectiveOperation === "panorama_frame_stop" || effectiveOperation === "panorama_stop"))
+                            : (pad.enabled && modelData.stop !== "" && effectiveOperation === modelData.stop)
                         enabled: cameraAllowed && modeAllowed && root.commandEnabled(effectiveOperation)
                         Accessible.description: trackingPad && root.scopeStacking
                                                            ? "Tracking is required while stacking; press STACK to end the capture"
@@ -3156,7 +3227,8 @@ Item {
                                     pad.awaitingPrimeCancel = false
                                     return
                                 }
-                                if (operation === pad.modelData.start || (pad.modelData.stop !== "" && operation === pad.modelData.stop))
+                                if (operation === pad.modelData.start || (pad.modelData.stop !== "" && operation === pad.modelData.stop)
+                                        || (pad.panoramaPad && (operation === "panorama_frame_start" || operation === "panorama_frame_stop" || operation === "panorama_shoot" || operation === "panorama_stop")))
                                     pad.showFlash(ok ? "success" : "error")
                             }
                         }

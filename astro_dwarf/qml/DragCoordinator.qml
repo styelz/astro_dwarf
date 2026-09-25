@@ -131,12 +131,15 @@ QtObject {
         const target = coord.listDropTarget(position)
         const sid = source && source.id ? String(source.id) : ""
         const timeline = coord.timeline
+        // end() clears the grab point. Keep the minutes the preview already
+        // showed, or the drop lands lower by however far down the block was grabbed.
+        const previewMinutes = coord.previewMinutes
         coord.cancelDrag()
         Qt.callLater(function() {
             if (target)
                 coord.reorderFromInsert(target.list, target.index, source, target.observingDate)
             else if (sid && timeline && timeline.applySessionDrop)
-                timeline.applySessionDrop(sid, source, position)
+                timeline.applySessionDrop(sid, source, position, previewMinutes)
         })
     }
 }

@@ -177,6 +177,8 @@ QtObject {
         case "imaging": return "STACKING"
         case "record": return "RECORDING"
         case "burst": return "BURST"
+        case "panorama": return "PANORAMA"
+        case "panorama_frame": return "FRAMING"
         case "timelapse": return "TIMELAPSE"
         case "poweroff": return "POWER OFF"
         case "": return ""
@@ -194,6 +196,8 @@ QtObject {
             burst_stop: "burst_start",
             record_stop: "record_start",
             timelapse_stop: "timelapse_start",
+            panorama_frame_stop: "panorama_frame_start",
+            panorama_stop: "panorama_shoot",
             stop_calibrate: "calibrate",
             stop_polar: "polar",
             stop_astro: "stack",
@@ -234,7 +238,11 @@ QtObject {
             record_start: "record_state",
             record_stop: "record_state",
             timelapse_start: "timelapse_state",
-            timelapse_stop: "timelapse_state"
+            timelapse_stop: "timelapse_state",
+            panorama_frame_start: "panorama_framing_state",
+            panorama_frame_stop: "panorama_framing_state",
+            panorama_shoot: "panorama_state",
+            panorama_stop: "panorama_state"
         }[operation] || ""
         if (stateKey && String(t[stateKey] || "") === "stopping")
             return true

@@ -174,6 +174,7 @@ Dialog {
             HudTimeField {
                 id: startTime
                 objectName: "duplicate-start"
+                deviceId: duplicateDialog.deviceId
                 Layout.fillWidth: true
                 onAccepted: duplicateDialog.confirm()
             }

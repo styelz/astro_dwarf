@@ -134,6 +134,8 @@ Dialog {
             spacing: Theme.s2
             HudTimeField {
                 id: startTime
+                objectName: "schedule-start"
+                deviceId: scheduleDialog.deviceId
                 Layout.fillWidth: true
                 onAccepted: scheduleDialog.confirm()
             }

@@ -241,6 +241,8 @@ ApplicationWindow {
         case "imaging":
         case "record":
         case "burst":
+        case "panorama":
+        case "panorama_frame":
         case "timelapse": return Theme.danger
         case "poweroff": return Theme.danger
         case "": return root.scopeImaging ? Theme.danger : Theme.success
@@ -272,7 +274,11 @@ ApplicationWindow {
             polar_position: "stop_polar_position",
             goto: "stop_goto",
             imaging: "stop_astro",
-            stack: "stop_astro"
+            stack: "stop_astro",
+            panorama: "panorama_stop",
+            panorama_frame: "panorama_frame_stop",
+            panorama_shoot: "panorama_stop",
+            panorama_frame_start: "panorama_frame_stop"
         }
         if (op === "cancel_prime")
             return true
@@ -290,6 +296,13 @@ ApplicationWindow {
         }
         if (op === "calibrate" && !!root.scopeTelemetry.tracking_active)
             return false
+        const panoramaBusy = activity === "panorama" || activity === "panorama_frame"
+            || String(root.scopeTelemetry.panorama_state || "") === "running"
+            || String(root.scopeTelemetry.panorama_framing_state || "") === "running"
+        if ((op === "photo_mode" || op === "astro_mode") && panoramaBusy)
+            return false
+        if (activity === "panorama_frame" && (op === "panorama_shoot" || op === "panorama_frame_reset"))
+            return !!root.scopeTelemetry.panorama_has_rect
         return !root.scopeOccupied
     }
 
