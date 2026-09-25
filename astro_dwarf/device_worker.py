@@ -86,6 +86,7 @@ from .domain import (
     device_supports_wide,
     firmware_binning,
     firmware_exposure_name,
+    solar_system_target_id,
     firmware_stack_format,
     mosaic_stack_camera,
     resolved_frame_count,
@@ -4145,9 +4146,11 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         goto_name = session_name if " pane " in session_name.lower() else str(target.get("name") or "")
         _run_session_op("GOTO target", "goto", step, target["ra_hours"], target["dec_degrees"], goto_name, False)
     elif workflow.get("goto") and target.get("kind") == "solar":
-        ids = {"mercury": 1, "venus": 2, "mars": 3, "jupiter": 4, "saturn": 5, "uranus": 6, "neptune": 7, "moon": 8, "sun": 9}
-        name = (target.get("solar_name") or target["name"]).lower()
-        _run_session_op("GOTO solar target", "goto_solar", step, ids[name], name.title())
+        name = str(target.get("solar_name") or target.get("name") or "").strip()
+        index = solar_system_target_id(name)
+        if index is None:
+            raise RuntimeError(f"Unknown solar system target '{name}'")
+        _run_session_op("GOTO solar target", "goto_solar", step, index, name.title())
     _apply_stack_format(session.get("stack_format"))
     exposure_name = firmware_exposure_name(camera["exposure_seconds"])
     log(f"Astro photo: exposure {exposure_name}s, gain {camera['gain']}, count {camera['frame_count']}", "notice")

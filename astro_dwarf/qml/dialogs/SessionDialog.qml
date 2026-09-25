@@ -36,6 +36,7 @@ Dialog {
     readonly property bool uniqueVisible: !bulkMode
     readonly property bool mosaicVisible: !bulkMode
     readonly property bool equatorialTarget: targetType.currentIndex === 0
+    readonly property bool solarKind: targetType.currentIndex === 1
     readonly property string copiedCoordinates: Util.formatCoordinates(ra.text, dec.text)
     readonly property var focusedMosaic: {
         const item = templateMembers[paneIndex]
@@ -355,12 +356,28 @@ Dialog {
         hFactor.value = Math.max(10, Math.min(18, Math.round(h / 10)))
         vFactor.value = Math.max(10, Math.min(18, Math.round(v / 10)))
     }
+    function currentTargetName() {
+        if (sessionDialog.solarKind)
+            return solarName.currentText
+        return targetName.text
+    }
+    function selectSolarName(name) {
+        const wanted = String(name || "").trim().toLowerCase()
+        for (let i = 0; i < solarName.count; i++) {
+            if (String(solarName.textAt(i)).toLowerCase() === wanted) {
+                solarName.currentIndex = i
+                return
+            }
+        }
+        solarName.currentIndex = solarName.count ? 0 : -1
+    }
     function loadPaneCoordinates(data) {
         sessionName.text = data.pane_name || data.name || ""
         const target = data.target || {}
         targetName.text = target.name || data.target_name || ""
         const kind = target.kind || "equatorial"
         targetType.currentIndex = Math.max(0, ["equatorial", "solar", "none"].indexOf(kind))
+        sessionDialog.selectSolarName(target.solar_name || targetName.text)
         ra.text = target.ra_hours != null && target.ra_hours !== "" ? target.ra_hours : ""
         dec.text = target.dec_degrees != null && target.dec_degrees !== "" ? target.dec_degrees : ""
         sessionDialog.loadMosaicFields(data)
@@ -373,11 +390,13 @@ Dialog {
         current.id = editingId || current.id
         current.pane_name = sessionName.text
         current.name = sessionName.text
+        const targetLabel = sessionDialog.currentTargetName()
         current.target = {
-            name: targetName.text,
+            name: targetLabel,
             kind: targetType.currentText,
             ra_hours: ra.text,
-            dec_degrees: dec.text
+            dec_degrees: dec.text,
+            solar_name: sessionDialog.solarKind ? targetLabel : ""
         }
         members[paneIndex] = current
         templateMembers = members
@@ -435,11 +454,13 @@ Dialog {
 
     function fillForm(data) {
         sessionName.text = data.pane_name || data.name || ""
-        targetName.text = (data.target && data.target.name) ? data.target.name : (data.target_name || "")
-        const kind = data.target ? data.target.kind : "equatorial"
+        const target = data.target || {}
+        targetName.text = target.name ? target.name : (data.target_name || "")
+        const kind = target.kind || "equatorial"
         targetType.currentIndex = Math.max(0, ["equatorial", "solar", "none"].indexOf(kind))
-        ra.text = data.target && data.target.ra_hours != null ? data.target.ra_hours : ""
-        dec.text = data.target && data.target.dec_degrees != null ? data.target.dec_degrees : ""
+        sessionDialog.selectSolarName(target.solar_name || targetName.text)
+        ra.text = target.ra_hours != null ? target.ra_hours : ""
+        dec.text = target.dec_degrees != null ? target.dec_degrees : ""
         exposure.text = data.camera.exposure_seconds
         gain.text = data.camera.gain
         frames.text = data.camera.frame_count
@@ -472,7 +493,7 @@ Dialog {
     function formPayload() {
         return {
             id: sessionDialog.editingId, anchor_id: sessionDialog.editingAnchorId || sessionDialog.editingId,
-            name: sessionName.text, target: targetName.text,
+            name: sessionName.text, target: sessionDialog.currentTargetName(),
             target_kind: targetType.currentText, ra: ra.text, dec: dec.text,
             scheduled_start: startTime.text, device_id: sessionDialog.editingDeviceId || backend.selectedDeviceId,
             camera: camera.currentIndex === 1 ? "wide" : "tele", exposure: Number(exposure.text),
@@ -546,6 +567,7 @@ Dialog {
         sessionName.text = ""
         targetName.text = ""
         targetType.currentIndex = 0
+        solarName.currentIndex = solarName.count ? 0 : -1
         ra.text = ""
         dec.text = ""
         const mins = (minutes === undefined || minutes === null || minutes === "" || Number(minutes) < 0)
@@ -761,14 +783,41 @@ Dialog {
             FieldLabel { text: "SESSION NAME"; visible: sessionDialog.uniqueVisible }
             HudField { id: sessionName; objectName: "session-name"; accessibleName: "Session name"; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible }
             FieldLabel { text: "TARGET TYPE"; visible: sessionDialog.uniqueVisible }
-            HudCombo { id: targetType; objectName: "session-target-type"; accessibleName: "Target type"; model: ["equatorial", "solar", "none"]; Layout.fillWidth: true; visible: sessionDialog.uniqueVisible }
-            HudField {
-                id: targetName
-                objectName: "session-target-name"
-                accessibleName: "Target name"
-                placeholderText: targetType.currentIndex === 1 ? "Sun, moon, planet…" : "Target name"
+            HudCombo {
+                id: targetType
+                objectName: "session-target-type"
+                accessibleName: "Target type"
+                model: ["equatorial", "solar", "none"]
                 Layout.fillWidth: true
                 visible: sessionDialog.uniqueVisible
+                onActivated: {
+                    if (sessionDialog.solarKind)
+                        sessionDialog.selectSolarName(targetName.text)
+                    else if (!String(targetName.text).trim())
+                        targetName.text = solarName.currentText
+                }
+            }
+            Item {
+                visible: sessionDialog.uniqueVisible
+                Layout.fillWidth: true
+                implicitWidth: Theme.px(160)
+                implicitHeight: Theme.controlHeight
+                HudField {
+                    id: targetName
+                    objectName: "session-target-name"
+                    accessibleName: "Target name"
+                    placeholderText: "Target name"
+                    anchors.fill: parent
+                    visible: !sessionDialog.solarKind
+                }
+                HudCombo {
+                    id: solarName
+                    objectName: "session-solar-target"
+                    accessibleName: "Solar system target"
+                    model: backend.solarSystemTargets
+                    anchors.fill: parent
+                    visible: sessionDialog.solarKind
+                }
             }
             FieldLabel { text: "RA / DEC"; visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget }
             ColumnLayout {

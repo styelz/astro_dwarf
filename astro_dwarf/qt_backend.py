@@ -99,6 +99,7 @@ from .domain import (
     next_device_color,
     normalize_device_color,
     parse_mosaic_pa,
+    solar_system_targets,
     history_detail_fields,
     history_record_for_run,
     history_record_for_manual_stack,
@@ -2678,6 +2679,10 @@ class AppBackend(QObject):
     @Property("QVariantList", constant=True)
     def timezones(self) -> list[dict[str, Any]]:
         return list(timezone_locations())
+
+    @Property("QVariantList", constant=True)
+    def solarSystemTargets(self) -> list[str]:
+        return solar_system_targets()
 
     @Property("QVariant", constant=True)
     def suggestedLocation(self) -> dict[str, Any]:

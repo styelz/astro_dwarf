@@ -1300,6 +1300,52 @@ class TargetKind(StrEnum):
     NONE = "none"
 
 
+# Firmware SolarSystemTarget names/ids. Unknown (0) is not a GOTO target.
+_SOLAR_SYSTEM_TARGET_FALLBACK = (
+    (1, "Mercury"),
+    (2, "Venus"),
+    (3, "Mars"),
+    (4, "Jupiter"),
+    (5, "Saturn"),
+    (6, "Uranus"),
+    (7, "Neptune"),
+    (8, "Moon"),
+    (9, "Sun"),
+)
+
+
+def _solar_system_target_items() -> list[tuple[int, str]]:
+    try:
+        from dwarf_python_api.proto import protocol_pb2
+
+        items = [
+            (int(value), str(name))
+            for name, value in protocol_pb2.SolarSystemTarget.items()
+            if int(value) > 0 and str(name).lower() != "unknown"
+        ]
+        items.sort()
+        if items:
+            return items
+    except Exception:
+        pass
+    return list(_SOLAR_SYSTEM_TARGET_FALLBACK)
+
+
+def solar_system_targets() -> list[str]:
+    """GOTO solar-system object names from the device API, excluding Unknown."""
+    return [name for _, name in _solar_system_target_items()]
+
+
+def solar_system_target_id(name: Any) -> int | None:
+    wanted = str(name or "").strip().lower()
+    if not wanted:
+        return None
+    for value, label in _solar_system_target_items():
+        if label.lower() == wanted:
+            return value
+    return None
+
+
 class SessionStatus(StrEnum):
     PLANNED = "planned"
     RUNNING = "running"
