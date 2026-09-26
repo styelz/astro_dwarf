@@ -2,6 +2,7 @@ pragma Singleton
 import QtQuick
 import QtQuick.Controls
 import QtCore
+import Qt.labs.settings
 
 // Control-page panel drag. Drop on a panel body to swap slots; drop on the
 // top or bottom edge to insert beside it. Drop on a column seam or the outer

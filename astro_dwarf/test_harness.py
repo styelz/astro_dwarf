@@ -1129,7 +1129,6 @@ class TestHarness:
                     setter = getattr(pane, "setProperty", None)
                     if callable(setter):
                         setter("userEnlarged", True)
-                        setter("seeded", True)
                 self.backend.updatePanoramaFrame(x1, y1, x2, y2)
                 return {"ok": True, "x1": x1, "y1": y1, "x2": x2, "y2": y2}
             if method == "POST" and route == "/device/action":

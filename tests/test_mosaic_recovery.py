@@ -80,6 +80,7 @@ def test_live_mosaic_resume_plan() -> None:
     _assert(live_mosaic_resume_plan("complete", 4, 4, False) is None, "last pane already done")
     _assert(live_mosaic_resume_plan("complete", 2, 4, False) == (3, False), "completed pane advances")
     _assert(live_mosaic_resume_plan("goto", 3, 4, False) == (3, False), "resume the slew")
+    _assert(live_mosaic_resume_plan("changing", 2, 4, True) == (2, False), "do not join leftover capture while changing panes")
     _assert(live_mosaic_resume_plan("recovered", 1, 4, False) == (1, False), "unknown phase starts current")
     _assert(live_mosaic_resume_plan("stacking", 4, 4, True) == (4, True), "join last pane")
 

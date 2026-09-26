@@ -20,7 +20,19 @@ from astro_dwarf.device_telemetry import (
     TYPE_NOTIFICATION,
     TelemetryTap,
 )
-from astro_dwarf.domain import panorama_shot_cell, panorama_shot_grid, panorama_tele_overlay
+from astro_dwarf.domain import (
+    panorama_canvas_stamp_norm,
+    panorama_fov_grid,
+    panorama_leave_index,
+    panorama_rect_matches,
+    panorama_shot_cell,
+    panorama_shot_cell_norm,
+    panorama_shot_cell_px,
+    panorama_shot_grid,
+    panorama_shoot_needs_rect_update,
+    panorama_stamp_live_ready,
+    panorama_tele_overlay,
+)
 from astro_dwarf.telemetry_view import derive_activity
 
 
@@ -52,6 +64,7 @@ def test_panorama_progress_and_state() -> None:
     changes = tap._decode(CMD_NOTIFY_PANORAMA_STATE, TYPE_NOTIFICATION, idle.SerializeToString())
     _assert(changes.get("panorama_state") == "idle", changes)
     _assert(changes.get("panorama_completed") == 0, changes)
+    _assert(changes.get("panorama_total") == 0, changes)
 
 
 def test_framing_rect_and_webp() -> None:
@@ -155,6 +168,45 @@ def test_panorama_shot_cell_snakes() -> None:
     _assert(panorama_shot_cell(8, 4) == (0, 2), panorama_shot_cell(8, 4))
 
 
+def test_panorama_stamp_live_skips_whole_canvas() -> None:
+    _assert(not panorama_stamp_live_ready(1, 1), "1×1 is the scan, not a tele cell")
+    _assert(not panorama_stamp_live_ready(1, 1, 0), "SHOOT before panorama_total is still 1×1")
+    _assert(panorama_stamp_live_ready(4, 2, 8), "a real grid may show live tele")
+    _assert(panorama_stamp_live_ready(60, 30, 1800), "a wide pano grid may show live tele")
+
+
+def test_panorama_leave_index_is_the_cell_being_left() -> None:
+    _assert(panorama_leave_index(None, 0) is None, panorama_leave_index(None, 0))
+    _assert(panorama_leave_index(0, 0) is None, panorama_leave_index(0, 0))
+    _assert(panorama_leave_index(0, 1) == 0, panorama_leave_index(0, 1))
+    _assert(panorama_leave_index(11, 0) == 11, "progress reset still freezes the last cell")
+
+
+def test_panorama_shot_cell_matches_tracker_box() -> None:
+    cell = panorama_shot_cell_norm(0, 4, 2, 0.0, 0.0, 1.0, 1.0)
+    _assert(cell is not None, cell)
+    _assert(abs(cell["nw"] - 0.25) < 1e-6, cell)
+    _assert(abs(cell["nh"] - 0.5) < 1e-6, cell)
+    _assert(abs(cell["nx"] - 0.125) < 1e-6, cell)
+    _assert(abs(cell["ny"] - 0.25) < 1e-6, cell)
+    # Odd row snakes: index 4 is col 3 of row 1.
+    reverse = panorama_shot_cell_norm(4, 4, 2, 0.0, 0.0, 1.0, 1.0)
+    _assert(reverse is not None, reverse)
+    _assert(abs(reverse["col"] - 3) < 1e-6, reverse)
+    _assert(abs(reverse["row"] - 1) < 1e-6, reverse)
+    rect = panorama_shot_cell_px(
+        0, 4, 2,
+        x1=0.0, y1=0.0, x2=1.0, y2=1.0,
+        limit_left=0.0, limit_top=0.0, span_x=1.0, span_y=1.0,
+        fit_x=0.0, fit_y=0.0, fit_w=320.0, fit_h=90.0,
+    )
+    _assert(rect is not None, rect)
+    _assert(abs(rect[0] - 0.0) < 1e-6, rect)
+    _assert(abs(rect[1] - 0.0) < 1e-6, rect)
+    _assert(abs(rect[2] - 80.0) < 1e-6, rect)
+    _assert(abs(rect[3] - 45.0) < 1e-6, rect)
+
+
 def test_panorama_tele_overlay_from_motor_span() -> None:
     box = panorama_tele_overlay(20, 30, 0, 80, 10, 50, 2.95, 1.66)
     _assert(box is not None, box)
@@ -163,6 +215,28 @@ def test_panorama_tele_overlay_from_motor_span() -> None:
     _assert(abs(box["nw"] - 2.95 / 80) < 1e-6, box)
     _assert(abs(box["nh"] - 1.66 / 40) < 1e-6, box)
     _assert(panorama_tele_overlay(0, 0, 0, 1, 0, 1, 2.95, 1.66) is None, "span smaller than tele FOV")
+
+
+def test_panorama_stamp_size_is_full_canvas_cell() -> None:
+    stamp = panorama_canvas_stamp_norm(1.0, 1.0, 32 / 9, 2.95, 1.66)
+    _assert(stamp is not None, stamp)
+    _assert(abs(stamp["nw"] - 1 / 60) < 1e-9, stamp)
+    _assert(abs(stamp["nh"] - 1 / 30) < 1e-9, stamp)
+    crop_cols, crop_row_count = panorama_fov_grid(0.25, 0.5, stamp["nw"], stamp["nh"])
+    full_cols, full_row_count = panorama_fov_grid(1.0, 1.0, stamp["nw"], stamp["nh"])
+    _assert((crop_cols, crop_row_count) == (15, 15), (crop_cols, crop_row_count))
+    _assert((full_cols, full_row_count) == (60, 30), (full_cols, full_row_count))
+    _assert(abs(crop_cols * stamp["nw"] - 0.25) < 1e-9, stamp)
+    _assert(abs(full_cols * stamp["nw"] - 1.0) < 1e-9, stamp)
+
+
+def test_panorama_shoot_skips_redundant_rect_update() -> None:
+    box = (0.2, 0.3, 0.5, 0.7)
+    _assert(panorama_rect_matches(box, (0.20, 0.30, 0.50, 0.70)), box)
+    _assert(panorama_rect_matches((0.0, 0.0, 1.0, 1.0), (0.0, 0.0, 1.0, 1.0)), "zero origin is a real corner")
+    _assert(not panorama_shoot_needs_rect_update(box, box), "already framed")
+    _assert(panorama_shoot_needs_rect_update(None, box), "seed never reached the device")
+    _assert(panorama_shoot_needs_rect_update((0.0, 0.0, 1.0, 1.0), box), "full canvas is not the yellow box")
 
 
 def test_panorama_pointing_tracks_motor_and_unwraps_az() -> None:
@@ -185,6 +259,11 @@ if __name__ == "__main__":
     test_panorama_scan_cache_survives_reconnect()
     test_panorama_shot_grid_uses_painted_canvas_aspect()
     test_panorama_shot_cell_snakes()
+    test_panorama_stamp_live_skips_whole_canvas()
+    test_panorama_leave_index_is_the_cell_being_left()
+    test_panorama_shot_cell_matches_tracker_box()
     test_panorama_tele_overlay_from_motor_span()
+    test_panorama_stamp_size_is_full_canvas_cell()
+    test_panorama_shoot_skips_redundant_rect_update()
     test_panorama_pointing_tracks_motor_and_unwraps_az()
     print("ok")

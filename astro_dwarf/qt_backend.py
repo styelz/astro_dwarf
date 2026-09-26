@@ -86,6 +86,7 @@ from .domain import (
     clamp_cutoff_hour,
     control_exposure_field,
     control_gain_field,
+    control_mode_values_landed,
     control_settings_from_telemetry,
     control_settings_patch,
     control_settings_to_telemetry,
@@ -251,9 +252,15 @@ from .stream_preview import (
     LiveFrames,
     MosaicFrames,
     StreamPlayer,
+    clear_mosaic_pane_cache,
     live_frame_data_url,
+    load_mosaic_pane_cache,
+    mosaic_cache_current,
+    mosaic_cache_has_panes,
     port_is_open,
+    preview_should_ingest_frame,
     preview_window_is_live,
+    save_mosaic_pane_cache,
     set_live_frames,
     set_mosaic_frames,
     stream_port,
@@ -267,6 +274,7 @@ from .telemetry_view import (
     derive_activity,
     apply_mode_exposure_fields,
     exposure_seconds_from_text,
+    eq_pose_steps,
     format_telemetry,
     photo_capture_seconds,
     stacked_capture_count,
@@ -980,6 +988,56 @@ def mosaic_result_holds_sheet(
     return mosaic and (preview_result or held)
 
 
+def mosaic_disconnected_sheet_should_hold(
+    *,
+    keep_live: bool,
+    phase: str,
+    columns: int,
+    rows: int,
+    has_images: bool,
+    connected: bool,
+    disconnecting: bool,
+) -> bool:
+    """Keep cached pane stills on the sheet when the link or the app drops.
+
+    A failed mosaic still clears. A connected finish uses the normal result
+    hold. Disconnect and a cold restart are the cases that used to leave the
+    grid blank.
+    """
+    if keep_live or not has_images:
+        return False
+    if str(phase or "").strip().lower() == "failed":
+        return False
+    try:
+        mosaic = int(columns or 1) > 1 or int(rows or 1) > 1
+    except (TypeError, ValueError):
+        return False
+    if not mosaic:
+        return False
+    return bool(disconnecting or not connected)
+
+
+def mosaic_sheet_survives_preview_stop(
+    *,
+    mosaic_running: bool,
+    disconnecting: bool,
+    connected: bool,
+    shutting_down: bool,
+    has_sheet: bool,
+) -> bool:
+    """Keep cached pane stills when preview stops because the link or the app is going away.
+
+    Stop live view while connected still dismisses a finished sheet. A mosaic
+    that is running, a disconnect, or shutdown must leave the cached panes in
+    place so they can be shown again.
+    """
+    if mosaic_running:
+        return True
+    if not has_sheet:
+        return False
+    return bool(shutting_down or disconnecting or not connected)
+
+
 def mosaic_preview_keep_live_sheet(
     *,
     live_phase: str = "",
@@ -1263,6 +1321,8 @@ def mosaic_progress_phase(step: str) -> str:
         or "will not plate-solve" in lowered
     ):
         return "failed"
+    if lowered.startswith("changing mosaic pane") or lowered.startswith("changing to pane"):
+        return "changing"
     if "plate-solving" in lowered or "slewing" in lowered:
         return "goto"
     if lowered.startswith("settling after"):
@@ -1311,6 +1371,48 @@ def mosaic_preview_scale_text(layout: tuple[int, int, int, int] | None) -> str:
     return f"{horizontal / 100:.1f}×{vertical / 100:.1f}"
 
 
+def held_sheet_device_layout(mosaic: Mosaic | None) -> tuple[int, int, int, int] | None:
+    """Device-mosaic field for a sheet whose session is no longer the live one.
+
+    Custom plans stay host-side. The telescope has already stitched a device mosaic.
+    """
+    if mosaic is None:
+        return None
+    return mosaic.firmware_layout()
+
+
+def finished_device_mosaic_uses_live_feed(*, device: bool, active: bool, phase: str) -> bool:
+    """True when a device mosaic has finished and the live feed shows its stitch.
+
+    While a phase is set the telescope is still shooting panes, so the mosaic
+    view stays. Custom mosaics are not stitched on the telescope.
+    """
+    if not device or not active:
+        return False
+    return not str(phase or "").strip()
+
+
+def mosaic_stitch_button_visible(
+    *,
+    device: bool,
+    active: bool,
+    running: bool,
+    completed: int,
+    stitch_status: str,
+) -> bool:
+    """STITCH is for a finished custom mosaic. A device mosaic is already stitched."""
+    if device:
+        return False
+    status = str(stitch_status or "")
+    if status in {"done", "working", "failed"}:
+        return True
+    try:
+        panes = int(completed or 0)
+    except (TypeError, ValueError):
+        panes = 0
+    return bool(active and not running and panes >= 2)
+
+
 def mosaic_preview_empty() -> dict[str, Any]:
     return {
         "active": False,
@@ -1325,6 +1427,7 @@ def mosaic_preview_empty() -> dict[str, Any]:
         "dec_degrees": None,
         "completed": [],
         "device": False,
+        "live_feed": False,
         "horizontal_scale": 100,
         "vertical_scale": 100,
         "scale_text": "",
@@ -1405,6 +1508,91 @@ def mosaic_stack_reset_seen(stacked: int, taken: int, previous_seen: bool = Fals
         return max(int(stacked or 0), int(taken or 0)) <= 1
     except (TypeError, ValueError):
         return False
+
+
+def device_mosaic_join_pane(
+    *,
+    reported: int = 0,
+    tracked: int = 1,
+    cached: int = 0,
+    stacked: int = 0,
+    panes: int = 1,
+) -> int:
+    """Pane to follow when this process finds a device mosaic already stacking.
+
+    Firmware ``mosaic_index`` wins. Without it, a counter already past the
+    first frame and a cached pane ahead of the in-memory default means the
+    app restarted on that pane. The count will not fall through 1, so the
+    copy would otherwise stay on pane 1 while the label shows the real pane.
+    """
+    try:
+        total = max(1, int(panes or 1))
+    except (TypeError, ValueError):
+        total = 1
+
+    def clamp(value: object) -> int:
+        try:
+            pane = int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+        if pane < 1:
+            return 0
+        return min(total, pane)
+
+    reported_pane = clamp(reported)
+    if reported_pane >= 1:
+        return reported_pane
+    tracked_pane = clamp(tracked) or 1
+    cached_pane = clamp(cached)
+    try:
+        count = int(stacked or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count > 1 and cached_pane > tracked_pane:
+        return cached_pane
+    return tracked_pane
+
+
+def device_mosaic_join_accepts_frames(*, stacked: int = 0, joined: int = 0) -> bool:
+    """True when a pane found already stacking should take live frames now.
+
+    A later move onto the next pane still waits for the counter to fall.
+    The caller asks only once, before it locks onto this mosaic.
+    """
+    try:
+        count = int(stacked or 0)
+        pane = int(joined or 0)
+    except (TypeError, ValueError):
+        return False
+    return pane >= 1 and count > 1
+
+
+def mosaic_retarget_keeps_joined_frames(
+    *,
+    stacked: int,
+    next_pane: int,
+    previous_stream: int,
+    seen_reset: bool,
+    join_locked: bool,
+) -> bool:
+    """Keep frame acceptance when preview first lands on a pane joined mid-stack.
+
+    Moving off a pane that already accepted frames still waits for the counter
+    to fall. That is what stops pane N's leftover JPEG filling pane N+1.
+    """
+    if not join_locked:
+        return False
+    try:
+        count = int(stacked or 0)
+        previous = int(previous_stream or 0)
+        nxt = int(next_pane or 0)
+    except (TypeError, ValueError):
+        return False
+    if nxt < 1 or count <= 1:
+        return False
+    if seen_reset and previous >= 1 and previous != nxt:
+        return False
+    return previous < 1 or previous == nxt
 
 
 def mosaic_accept_live_frame(
@@ -1850,6 +2038,7 @@ class AppBackend(QObject):
         self._skip_manual_history: set[str] = set()
         self._command_panel_sessions: set[str] = set()
         self._session_timing: dict[str, dict[str, Any]] = {}
+        self._firmware_mosaic_phase: dict[str, str] = {}
         self._hold_session_capture: set[str] = set()
         self._pending_session_finish: dict[str, tuple[str, bool, Any]] = {}
         self.historyChanged.connect(self.durationSuggestionChanged)
@@ -1865,6 +2054,9 @@ class AppBackend(QObject):
         self._control_dirty: set[str] = set()
         self._control_restoring: set[str] = set()
         self._control_restore_pending: set[str] = set()
+        self._control_applying: set[str] = set()
+        self._control_apply_token: dict[str, int] = {}
+        self._control_apply_retried: set[str] = set()
         self._keep_auto_parameters: set[str] = set()
         self._control_persist_timer = QTimer(self)
         self._control_persist_timer.setSingleShot(True)
@@ -1967,6 +2159,8 @@ class AppBackend(QObject):
         set_live_frames(self.live_images)
         self.mosaic_frames = MosaicFrames(self)
         set_mosaic_frames(self.mosaic_frames)
+        self._mosaic_cache_at: dict[int, float] = {}
+        self._mosaic_cache_loaded: tuple[str, str] | None = None
         self._mosaic_pane_urls: dict[str, str] = {}
         self._raw_mosaic_panes: dict[int, QImage] = {}
         self._mosaic_enhance_token: dict[int, int] = {}
@@ -1974,6 +2168,9 @@ class AppBackend(QObject):
         self._mosaic_firmware_stacked = 0
         self._mosaic_stream_pane = 0
         self._mosaic_seen_stack_reset = False
+        self._mosaic_join_locked = False
+        self._mosaic_join_seen_capture = None
+        self._mosaic_join_waited = False
         self._mosaic_track_since = 0.0
         self._mosaic_holding_last = False
         self._mosaic_hold_until = 0.0
@@ -3794,7 +3991,9 @@ class AppBackend(QObject):
                     True,
                     str(live.get("group") or ""),
                 )
+                self._restore_cached_mosaic_panes(device_id, str(live.get("group") or ""))
                 self.mosaicPreviewChanged.emit()
+        self._restore_cached_device_mosaic_sheet()
         if recovered:
             self.add_log("warning", f"Recovered {recovered} interrupted mosaic(s)")
 
@@ -4617,6 +4816,17 @@ class AppBackend(QObject):
             return None
         return session.mosaic.firmware_layout()
 
+    def _held_device_mosaic_layout(self) -> tuple[int, int, int, int] | None:
+        """A finished device mosaic keeps its field after the session leaves the HUD."""
+        group = str(self.mosaic_frames.group() or "")
+        if not group.startswith("session:"):
+            return None
+        found = self.store.sessions.get(group.split(":", 1)[1])
+        owner = str(self._selected_device_id or "")
+        if found is None or found.device_id != owner:
+            return None
+        return held_sheet_device_layout(found.mosaic)
+
     def _mosaic_is_active(self, session: Session | None, members: list[Session]) -> bool:
         if session is not None:
             group = session.mosaic.group_id or ""
@@ -4686,6 +4896,34 @@ class AppBackend(QObject):
         if mosaic_stack_reset_seen(stacked, taken, self._mosaic_seen_stack_reset):
             self._mosaic_seen_stack_reset = True
 
+    def _assign_mosaic_stream_pane(self, next_pane: int, device_id: str = "") -> None:
+        """Point the HTTP still at a pane without dropping a mid-stack join."""
+        try:
+            nxt = int(next_pane or 0)
+        except (TypeError, ValueError):
+            nxt = 0
+        if nxt < 1:
+            if not self._mosaic_join_locked:
+                self._mosaic_seen_stack_reset = False
+                self._mosaic_stream_pane = 0
+            return
+        previous = int(self._mosaic_stream_pane or 0)
+        if nxt == previous:
+            return
+        seen = bool(self._mosaic_seen_stack_reset)
+        self._mosaic_seen_stack_reset = False
+        self._note_mosaic_stack_reset(device_id)
+        stacked, _taken = self._mosaic_capture_counts(device_id)
+        if not self._mosaic_seen_stack_reset and mosaic_retarget_keeps_joined_frames(
+            stacked=stacked,
+            next_pane=nxt,
+            previous_stream=previous,
+            seen_reset=seen,
+            join_locked=bool(self._mosaic_join_locked),
+        ):
+            self._mosaic_seen_stack_reset = True
+        self._mosaic_stream_pane = nxt
+
     def _mosaic_live_frame_belongs(self, pane: int, device_id: str = "") -> bool:
         stacked, taken = self._mosaic_capture_counts(device_id)
         return mosaic_accept_live_frame(
@@ -4700,9 +4938,12 @@ class AppBackend(QObject):
         owner = str(device_id or self._selected_device_id or "")
         live = self._live_mosaic.get(owner) or {}
         stacked, taken = self._mosaic_capture_counts(owner)
+        phase = str(live.get("phase") or "")
+        if not phase:
+            phase = str(self._firmware_mosaic_phase.get(owner, "") or "")
         return mosaic_should_copy_live_still(
             camera=mosaic_live_still_camera(),
-            phase=str(live.get("phase") or ""),
+            phase=phase,
             pane=pane,
             stream_pane=self._mosaic_stream_pane,
             capturing=self._telemetry_capturing(owner),
@@ -4786,6 +5027,7 @@ class AppBackend(QObject):
             return False
         existed = index in self.mosaic_frames.indexes()
         self.mosaic_frames.put(index, frame)
+        self._persist_mosaic_pane_image(index, frame)
         if not existed:
             self.mosaicPreviewChanged.emit()
         return True
@@ -4824,11 +5066,7 @@ class AppBackend(QObject):
         self._mosaic_hold_urls = None
         self._set_preview_stack_mode(True)
         self._retarget_preview_streams(tele_url, wide_url)
-        next_stream = self._current_mosaic_live_pane(device_id) or pane
-        if next_stream != self._mosaic_stream_pane:
-            self._mosaic_seen_stack_reset = False
-            self._note_mosaic_stack_reset(device_id)
-        self._mosaic_stream_pane = next_stream
+        self._assign_mosaic_stream_pane(self._current_mosaic_live_pane(device_id) or pane, device_id)
         if self._mosaic_keep_live_sheet(device_id):
             self.mosaicPreviewChanged.emit()
 
@@ -4901,6 +5139,13 @@ class AppBackend(QObject):
             missing = pane not in self._raw_mosaic_panes or self._raw_mosaic_panes[pane].isNull()
             if not frozen:
                 self._raw_mosaic_panes[pane] = image.copy()
+                # The enhanced still replaces this later. Until then the pane
+                # the operator is looking at has to be on disk, or a restart
+                # and a disconnect both come back blank.
+                if self.mosaic_frames.peek(pane).isNull():
+                    self.mosaic_frames.put(pane, image)
+                    self.mosaicPreviewChanged.emit()
+                self._persist_mosaic_pane_image(pane, image)
             elif missing:
                 self._raw_mosaic_panes[pane] = image.copy()
                 self._finish_mosaic_pane_still(pane)
@@ -4909,6 +5154,7 @@ class AppBackend(QObject):
             return
         existed = pane in self.mosaic_frames.indexes()
         self.mosaic_frames.put(pane, image)
+        self._persist_mosaic_pane_image(pane, image)
         if not existed:
             self.mosaicPreviewChanged.emit()
 
@@ -4985,6 +5231,7 @@ class AppBackend(QObject):
         ):
             return
         self.mosaic_frames.freeze(index)
+        self._persist_mosaic_pane_image(index, self.mosaic_frames.peek(index), force=True)
         self._publish_mosaic_pane_url(index)
         self._keep_mosaic_pane_raw(index)
         if index in self._raw_mosaic_panes:
@@ -5018,12 +5265,283 @@ class AppBackend(QObject):
             return
         self.mosaic_frames.put(index, image, replace_frozen=replace_frozen)
         self._publish_mosaic_pane_url(index)
+        self._persist_mosaic_pane_image(index, image, force=True)
 
-    def _clear_mosaic_preview(self) -> None:
-        had = bool(self.mosaic_frames.indexes() or self._mosaic_pane_urls or self.mosaic_frames.group())
+    def _device_mosaic_session(self, device_id: str = "") -> Session | None:
+        """Firmware mosaic for this telescope, including one recovered after restart."""
+        owner = str(device_id or self._selected_device_id or "")
+        session, _members = self._mosaic_context(owner)
+        if session is not None:
+            if session.mosaic.imported_plan or session.mosaic.panes <= 1:
+                return None
+            return session
+        group = self.mosaic_frames.group()
+        if group.startswith("session:"):
+            found = self.store.sessions.get(group.split(":", 1)[1])
+            if (
+                found is not None
+                and found.device_id == owner
+                and not found.mosaic.imported_plan
+                and found.mosaic.panes > 1
+            ):
+                return found
+        for session_id, item_owner in self._recovered_sessions.items():
+            if item_owner != owner:
+                continue
+            found = self.store.sessions.get(session_id)
+            if found is None or found.mosaic.imported_plan or found.mosaic.panes <= 1:
+                continue
+            return found
+        return None
+
+    def _mosaic_cache_identity(self, device_id: str = "") -> tuple[str, str]:
+        owner = str(device_id or self._selected_device_id or "")
+        group = self.mosaic_frames.group()
+        if not group:
+            live = self._live_mosaic.get(owner) or {}
+            group = str(live.get("group") or "")
+        if not group:
+            session = self._device_mosaic_session(owner)
+            if session is None:
+                session, _members = self._mosaic_context(owner)
+            if session is not None:
+                group = session.mosaic.group_id or f"session:{session.id}"
+        return owner, str(group or "")
+
+    def _ensure_mosaic_cache_layout(self, device_id: str = "") -> None:
+        """Give a device mosaic a group and grid before its pane stills are written."""
+        owner = str(device_id or self._selected_device_id or "")
+        _active, columns, rows, current, _images = self.mosaic_frames.snapshot()
+        group = self.mosaic_frames.group()
+        if group and (int(columns or 1) > 1 or int(rows or 1) > 1):
+            return
+        session = self._device_mosaic_session(owner)
+        if session is None:
+            return
+        layout_cols, layout_rows, index, layout_group = self._mosaic_layout(session, [session])
+        if layout_cols <= 1 and layout_rows <= 1 or not layout_group:
+            return
+        self.mosaic_frames.set_layout(
+            layout_cols,
+            layout_rows,
+            max(1, int(index or current or 1)),
+            True,
+            layout_group,
+        )
+
+    def _persist_mosaic_pane_image(self, index: int, image: QImage, *, force: bool = False) -> None:
+        """Write a pane still to disk. Live updates are throttled; freezes are not."""
+        try:
+            pane = int(index)
+        except (TypeError, ValueError):
+            return
+        if pane < 1 or image is None or image.isNull():
+            return
+        device_id, group = self._mosaic_cache_identity()
+        if not device_id or not group or device_id != self._selected_device_id:
+            return
+        now = time.monotonic()
+        if not force and now - float(self._mosaic_cache_at.get(pane) or 0.0) < 1.5:
+            return
+        _active, columns, rows, current, _images = self.mosaic_frames.snapshot()
+        if save_mosaic_pane_cache(
+            device_id,
+            group,
+            pane,
+            image,
+            frozen=self.mosaic_frames.frozen(pane),
+            current=current,
+            columns=columns,
+            rows=rows,
+        ):
+            self._mosaic_cache_at[pane] = now
+
+    def _flush_mosaic_pane_cache(self, device_id: str = "") -> None:
+        """Copy the latest stills, including the pane that is stacking, before the link drops."""
+        owner = str(device_id or self._selected_device_id or "")
+        if not owner or owner != self._selected_device_id:
+            return
+        self._ensure_mosaic_cache_layout(owner)
+        pane = self._current_mosaic_live_pane(owner)
+        if pane < 1:
+            pane = int(self._mosaic_firmware_pane or 0)
+        live = self.live_images.peek(mosaic_live_still_camera())
+        if pane >= 1 and live is not None and not live.isNull() and not self.mosaic_frames.frozen(pane):
+            self.mosaic_frames.put(pane, live)
+        for index, raw in list(self._raw_mosaic_panes.items()):
+            if index < 1 or raw is None or raw.isNull() or self.mosaic_frames.frozen(index):
+                continue
+            if self.mosaic_frames.peek(index).isNull():
+                self.mosaic_frames.put(index, raw)
+        for index in self.mosaic_frames.indexes():
+            self._persist_mosaic_pane_image(index, self.mosaic_frames.peek(index), force=True)
+
+    def _restore_cached_mosaic_panes(
+        self,
+        device_id: str,
+        group: str = "",
+        *,
+        prefer_cached_index: bool = False,
+    ) -> int:
+        """Fill empty contact-sheet cells from disk. Safe to call once per mosaic."""
+        owner = str(device_id or self._selected_device_id or "")
+        key = str(group or self.mosaic_frames.group() or "")
+        if not owner or owner != self._selected_device_id or not key:
+            return 0
+        token = (owner, key)
+        if token == self._mosaic_cache_loaded:
+            return 0
+        self._mosaic_cache_loaded = token
+        payload = load_mosaic_pane_cache(owner, key)
+        images = payload.get("images") or {}
+        if not images:
+            return 0
+        frozen = payload.get("frozen") or set()
+        loaded = 0
+        for index, image in images.items():
+            if self.mosaic_frames.peek(index).isNull():
+                self.mosaic_frames.put(index, image)
+                loaded += 1
+            if index in frozen:
+                self.mosaic_frames.freeze(index)
+            self._publish_mosaic_pane_url(index, notify=False)
+        if prefer_cached_index:
+            try:
+                current = int(payload.get("current") or 0)
+            except (TypeError, ValueError):
+                current = 0
+            try:
+                cached_columns = int(payload.get("columns") or 0)
+            except (TypeError, ValueError):
+                cached_columns = 0
+            try:
+                cached_rows = int(payload.get("rows") or 0)
+            except (TypeError, ValueError):
+                cached_rows = 0
+            _active, columns, rows, shown, _stored = self.mosaic_frames.snapshot()
+            next_columns = columns
+            next_rows = rows
+            next_current = shown
+            if (cached_columns > 1 or cached_rows > 1) and columns <= 1 and rows <= 1:
+                next_columns = max(1, cached_columns)
+                next_rows = max(1, cached_rows)
+            if current >= 1:
+                next_current = current
+            if (next_columns, next_rows, next_current) != (columns, rows, shown):
+                self.mosaic_frames.set_layout(next_columns, next_rows, next_current, True, key)
+        if loaded:
+            self._backfill_mosaic_pane_urls(notify=False)
+        return loaded
+
+    def _restore_cached_device_mosaic_sheet(self) -> None:
+        """Show a recovered device mosaic's cached panes before the telescope reconnects."""
+        device_id = str(self._selected_device_id or "")
+        if not device_id or self._live_mosaic.get(device_id):
+            return
+        for session_id, owner in self._recovered_sessions.items():
+            if owner != device_id:
+                continue
+            session = self.store.sessions.get(session_id)
+            if session is None or session.mosaic.imported_plan or session.mosaic.panes <= 1:
+                continue
+            columns, rows, index, group = self._mosaic_layout(session, [session])
+            if columns <= 1 and rows <= 1 or not group:
+                continue
+            if not mosaic_cache_has_panes(device_id, group):
+                continue
+            self.mosaic_frames.set_layout(columns, rows, max(1, index), True, group)
+            if not self._repopulate_mosaic_sheet_from_cache(device_id):
+                self.mosaic_frames.clear()
+                self._mosaic_cache_loaded = None
+            return
+
+    def _disconnected_mosaic_should_hold(self, device_id: str) -> bool:
+        live = self._live_mosaic.get(device_id) or {}
+        _active, columns, rows, _current, images = self.mosaic_frames.snapshot()
+        _owner, group = self._mosaic_cache_identity(device_id)
+        session = self._device_mosaic_session(device_id)
+        if columns <= 1 and rows <= 1 and session is not None:
+            layout = session.mosaic.firmware_layout()
+            if layout is not None:
+                columns, rows = int(layout[0]), int(layout[1])
+            if not group:
+                group = session.mosaic.group_id or f"session:{session.id}"
+        if columns <= 1 and rows <= 1 and live:
+            try:
+                columns = int(live.get("columns") or columns)
+                rows = int(live.get("rows") or rows)
+            except (TypeError, ValueError):
+                pass
+        worker = self._workers.get(device_id)
+        return mosaic_disconnected_sheet_should_hold(
+            keep_live=False,
+            phase=str(live.get("phase") or ""),
+            columns=columns,
+            rows=rows,
+            has_images=bool(images) or mosaic_cache_has_panes(device_id, group),
+            connected=bool(worker and worker.connected),
+            disconnecting=device_id in self._disconnecting_ids or self._shut_down,
+        )
+
+    def _mosaic_sheet_has_cached_panes(self, device_id: str = "") -> bool:
+        owner = str(device_id or self._selected_device_id or "")
+        _active, columns, rows, _current, images = self.mosaic_frames.snapshot()
+        _device, group = self._mosaic_cache_identity(owner)
+        session = self._device_mosaic_session(owner)
+        if columns <= 1 and rows <= 1 and session is not None:
+            layout = session.mosaic.firmware_layout()
+            if layout is not None:
+                columns, rows = int(layout[0]), int(layout[1])
+            if not group:
+                group = session.mosaic.group_id or f"session:{session.id}"
+        mosaic = int(columns or 1) > 1 or int(rows or 1) > 1
+        if not mosaic:
+            return False
+        return bool(images) or mosaic_cache_has_panes(owner, group)
+
+    def _mosaic_sheet_survives_preview_stop(self) -> bool:
+        device_id = str(self._selected_device_id or "")
+        worker = self._workers.get(device_id)
+        return mosaic_sheet_survives_preview_stop(
+            mosaic_running=self._mosaic_keep_live_sheet(device_id),
+            disconnecting=device_id in self._disconnecting_ids,
+            connected=bool(worker and worker.connected),
+            shutting_down=self._shut_down,
+            has_sheet=self._mosaic_sheet_has_cached_panes(device_id),
+        )
+
+    def _repopulate_mosaic_sheet_from_cache(self, device_id: str = "") -> bool:
+        """Fill the contact sheet from disk after the live stream has gone."""
+        owner = str(device_id or self._selected_device_id or "")
+        if not owner or owner != self._selected_device_id:
+            return False
+        live = self._live_mosaic.get(owner) or {}
+        if str(live.get("phase") or "").strip().lower() == "failed":
+            return False
+        self._ensure_mosaic_cache_layout(owner)
+        group = self.mosaic_frames.group()
+        self._mosaic_cache_loaded = None
+        self._restore_cached_mosaic_panes(owner, group, prefer_cached_index=True)
+        _active, columns, rows, _current, images = self.mosaic_frames.snapshot()
+        if not images or (int(columns or 1) <= 1 and int(rows or 1) <= 1):
+            return False
+        self._mosaic_result_held = True
+        self._mosaic_result_dismissed = False
+        self._backfill_mosaic_pane_urls(notify=False)
+        self.mosaicPreviewChanged.emit()
+        return True
+
+    def _clear_mosaic_preview(self, *, drop_cache: bool = True) -> None:
+        device_id = str(self._selected_device_id or "")
+        group = self.mosaic_frames.group()
+        had = bool(self.mosaic_frames.indexes() or self._mosaic_pane_urls or group)
         for pane in list(self._mosaic_enhance_token):
             self._mosaic_enhance_token[pane] = int(self._mosaic_enhance_token.get(pane, 0)) + 1
         self.mosaic_frames.clear()
+        self._mosaic_cache_at.clear()
+        self._mosaic_cache_loaded = None
+        if drop_cache and device_id and group:
+            clear_mosaic_pane_cache(device_id, group)
         self._mosaic_pane_urls = {}
         self._raw_mosaic_panes = {}
         self._mosaic_enhance_inflight = set()
@@ -5032,6 +5550,9 @@ class AppBackend(QObject):
         self._mosaic_firmware_stacked = 0
         self._mosaic_stream_pane = 0
         self._mosaic_seen_stack_reset = False
+        self._mosaic_join_locked = False
+        self._mosaic_join_seen_capture = None
+        self._mosaic_join_waited = False
         self._reset_mosaic_last_frame_hold()
         self._stack_result_mosaic_pane = 0
         self._mosaic_result_held = False
@@ -5060,6 +5581,92 @@ class AppBackend(QObject):
             self._mosaic_result_held = True
             self._mosaic_result_dismissed = False
         return keep
+
+    def _device_mosaic_cached_pane(self, device_id: str, group: str) -> int:
+        """Highest pane index already remembered for this mosaic, in memory or on disk."""
+        cached = 0
+        if group and self.mosaic_frames.group() == group:
+            _active, _columns, _rows, current, _images = self.mosaic_frames.snapshot()
+            try:
+                cached = int(current or 0)
+            except (TypeError, ValueError):
+                cached = 0
+        try:
+            disk = int(mosaic_cache_current(device_id, group) or 0)
+        except (TypeError, ValueError):
+            disk = 0
+        return max(cached, disk)
+
+    def _follow_joined_device_mosaic(
+        self,
+        device_id: str,
+        session: Session,
+        group: str,
+        tracked_index: int,
+    ) -> int:
+        """Move a restarted device mosaic off pane 1 onto the pane that is stacking.
+
+        A new mosaic that replaced another sheet does not come through here.
+        Once this process has seen the counter at the start of a pane, it
+        locks and the normal count-drop advance takes over.
+        """
+        try:
+            panes = max(1, int(session.mosaic.panes or 1))
+        except (TypeError, ValueError):
+            panes = 1
+        try:
+            tracked = max(1, min(panes, int(self._mosaic_firmware_pane or tracked_index or 1)))
+        except (TypeError, ValueError):
+            tracked = 1
+        if self._mosaic_join_locked:
+            self._mosaic_firmware_pane = tracked
+            return tracked
+        telemetry = self._device_telemetry.get(device_id) or {}
+        try:
+            reported = int(telemetry.get("mosaic_index") or 0)
+        except (TypeError, ValueError):
+            reported = 0
+        stacked, _taken = self._mosaic_capture_counts(device_id)
+        capturing = self._telemetry_capturing(device_id)
+        if not capturing and session.status != SessionStatus.RUNNING:
+            self._mosaic_firmware_pane = tracked
+            return tracked
+        if self._mosaic_join_seen_capture is None:
+            self._mosaic_join_seen_capture = capturing
+        elif not capturing:
+            self._mosaic_join_seen_capture = False
+        cached = self._device_mosaic_cached_pane(device_id, group)
+        joined = device_mosaic_join_pane(
+            reported=reported,
+            tracked=tracked,
+            cached=cached,
+            stacked=stacked,
+            panes=panes,
+        )
+        progress = bool(telemetry.get("capture_progress_seen"))
+        self._mosaic_firmware_pane = joined
+        opened_mid_pane = bool(
+            capturing
+            and self._mosaic_join_seen_capture
+            and device_mosaic_join_accepts_frames(stacked=stacked, joined=joined)
+        )
+        if opened_mid_pane:
+            self._mosaic_seen_stack_reset = True
+            self._mosaic_stream_pane = joined
+            self._mosaic_join_locked = True
+            return joined
+        if progress and stacked <= 1:
+            hinted = joined
+            if reported < 1 and cached > tracked:
+                hinted = min(panes, cached)
+            if hinted > tracked and not self._mosaic_join_waited:
+                # One low count after a restart is often the reconnect glitch.
+                # Keep the known pane until the next packet proves a new stack.
+                self._mosaic_join_waited = True
+                self._mosaic_firmware_pane = hinted
+                return hinted
+            self._mosaic_join_locked = True
+        return joined
 
     def _advance_firmware_mosaic_pane(self, previous: dict[str, Any], current: dict[str, Any], panes: int) -> int:
         reported = current.get("mosaic_index")
@@ -5101,18 +5708,34 @@ class AppBackend(QObject):
         if live.get("group"):
             group = str(live.get("group") or group)
         active = self._mosaic_is_active(session, members)
-        if live_index < 1 and session is not None and not session.mosaic.imported_plan and session.mosaic.panes > 1:
+        device_mosaic = (
+            live_index < 1
+            and session is not None
+            and not session.mosaic.imported_plan
+            and session.mosaic.panes > 1
+        )
+        if device_mosaic:
             telemetry = self._device_telemetry.get(owner) or {}
             index = self._advance_firmware_mosaic_pane(previous or {}, telemetry, session.mosaic.panes)
             self._mosaic_firmware_pane = index
         stored = self.mosaic_frames.group()
         same_group = bool(stored) and stored == group
+        fresh_mosaic = bool(group) and bool(stored) and not same_group
         if group and not same_group:
             self._mosaic_pane_urls = {}
             self._mosaic_firmware_pane = 1
             self._mosaic_firmware_stacked = 0
             self._mosaic_seen_stack_reset = False
             self._stack_result_mosaic_pane = 0
+            self._mosaic_join_locked = False
+            self._mosaic_join_seen_capture = None
+            self._mosaic_join_waited = False
+            if fresh_mosaic:
+                # Replacing a different sheet is a new mosaic, not a mid-pane join.
+                index = 1
+                self._mosaic_join_locked = True
+        if device_mosaic and not fresh_mosaic:
+            index = self._follow_joined_device_mosaic(owner, session, group, index)
         keep_live = mosaic_preview_keep_live_sheet(
             live_phase=str(live.get("phase") or ""),
             live_stopping=bool(live.get("stopping")),
@@ -5122,21 +5745,43 @@ class AppBackend(QObject):
             capture_continues=self._mosaic_capture_continues(owner),
         )
         if not keep_live:
-            held_active, held_cols, held_rows, _held_current, _held_images = self.mosaic_frames.snapshot()
-            if mosaic_result_holds_sheet(
+            held_active, held_cols, held_rows, held_current, _held_images = self.mosaic_frames.snapshot()
+            phase = str(live.get("phase") or "").strip().lower()
+            if phase != "failed" and mosaic_result_holds_sheet(
                 preview_result=self._preview_result,
                 active=held_active,
                 columns=held_cols,
                 rows=held_rows,
                 held=self._mosaic_result_held,
             ):
+                if (
+                    device_mosaic
+                    and group
+                    and index >= 1
+                    and self._telemetry_capturing(owner)
+                    and (int(held_current or 0) != int(index) or self.mosaic_frames.group() != group)
+                ):
+                    use_columns = columns if columns > 1 or rows > 1 else held_cols
+                    use_rows = rows if columns > 1 or rows > 1 else held_rows
+                    self.mosaic_frames.set_layout(
+                        max(1, int(use_columns or 1)),
+                        max(1, int(use_rows or 1)),
+                        int(index),
+                        True,
+                        group,
+                    )
                 return
+            if self._disconnected_mosaic_should_hold(owner):
+                self._flush_mosaic_pane_cache(owner)
+                if self._repopulate_mosaic_sheet_from_cache(owner):
+                    return
             self._clear_mosaic_preview()
             return
         before = self.mosaic_frames.snapshot()
         ready_before = self._mosaic_seen_stack_reset
         self._note_mosaic_stack_reset(owner)
         self.mosaic_frames.set_layout(columns, rows, index, True, group)
+        self._restore_cached_mosaic_panes(owner, group)
         after = self.mosaic_frames.snapshot()
         if before[:4] != after[:4] or ready_before != self._mosaic_seen_stack_reset:
             self.mosaicPreviewChanged.emit()
@@ -5156,20 +5801,23 @@ class AppBackend(QObject):
             phase = str((live or {}).get("phase") or "")
             if not phase and isinstance(session, Session) and session.status == SessionStatus.RUNNING:
                 if not session.mosaic.imported_plan and session.mosaic.panes > 1:
-                    phase = "stacking"
+                    phase = mosaic_progress_phase(session.current_step) or "stacking"
             layout = self._running_device_mosaic_layout(current_session if isinstance(current_session, Session) else None, live)
+            if layout is None:
+                layout = self._held_device_mosaic_layout()
             scale_text = mosaic_preview_scale_text(layout)
             if not scale_text and isinstance(current_session, Session) and not current_session.mosaic.imported_plan:
                 scale_text = str(current_session.mosaic.scale_text or "")
+            sheet_active = self._mosaic_keep_live_sheet() or mosaic_result_holds_sheet(
+                preview_result=self._preview_result,
+                active=active,
+                columns=columns,
+                rows=rows,
+                held=self._mosaic_result_held,
+            )
+            device_mosaic = layout is not None
             return {
-                "active": self._mosaic_keep_live_sheet()
-                or mosaic_result_holds_sheet(
-                    preview_result=self._preview_result,
-                    active=active,
-                    columns=columns,
-                    rows=rows,
-                    held=self._mosaic_result_held,
-                ),
+                "active": sheet_active,
                 "columns": int((live or {}).get("columns") or columns),
                 "rows": int((live or {}).get("rows") or rows),
                 "current_index": int((live or {}).get("current_index") or current or 0),
@@ -5180,7 +5828,12 @@ class AppBackend(QObject):
                 "ra_hours": getattr(target, "ra_hours", None) if target is not None else None,
                 "dec_degrees": getattr(target, "dec_degrees", None) if target is not None else None,
                 "completed": sorted(images),
-                "device": layout is not None,
+                "device": device_mosaic,
+                "live_feed": finished_device_mosaic_uses_live_feed(
+                    device=device_mosaic,
+                    active=sheet_active,
+                    phase=phase,
+                ),
                 "horizontal_scale": int(layout[2]) if layout is not None else 100,
                 "vertical_scale": int(layout[3]) if layout is not None else 100,
                 "scale_text": scale_text,
@@ -6575,9 +7228,14 @@ class AppBackend(QObject):
 
     @Slot()
     def stopPreview(self) -> None:
+        keep_mosaic = self._mosaic_sheet_survives_preview_stop()
+        if keep_mosaic:
+            self._flush_mosaic_pane_cache()
         self._clear_preview_hold()
-        self._clear_preview_result()
+        self._clear_preview_result(keep_mosaic=keep_mosaic)
         self._stop_preview_streams()
+        if keep_mosaic:
+            self._repopulate_mosaic_sheet_from_cache()
 
     def _stop_preview_streams(self) -> None:
         self._preview_token += 1
@@ -6684,7 +7342,7 @@ class AppBackend(QObject):
             capture_continues=self._mosaic_capture_continues(owner),
         )
 
-    def _clear_preview_result(self) -> None:
+    def _clear_preview_result(self, *, keep_mosaic: bool = False) -> None:
         self._cancel_stack_result_fetch()
         held_active, held_cols, held_rows, _held_current, _held_images = self.mosaic_frames.snapshot()
         drop_sheet = mosaic_result_should_drop_sheet(
@@ -6699,7 +7357,7 @@ class AppBackend(QObject):
         leftover_sheet = self._mosaic_result_held or (
             held_active and (int(held_cols or 1) > 1 or int(held_rows or 1) > 1)
         )
-        if had_result or drop_sheet:
+        if (had_result or drop_sheet) and not keep_mosaic:
             if leftover_sheet:
                 self._mosaic_result_dismissed = True
         if had_result:
@@ -6707,7 +7365,7 @@ class AppBackend(QObject):
             self._preview_result_title = ""
             self._preview_result_detail = ""
             self.previewResultChanged.emit()
-        if drop_sheet:
+        if drop_sheet and not keep_mosaic:
             self._clear_held_mosaic_result()
 
     def _clear_held_mosaic_result(self) -> None:
@@ -6981,11 +7639,7 @@ class AppBackend(QObject):
             if self._preview_result:
                 self._clear_preview_result()
             self._attach_preview_streams(device_id, "Capture started — reconnecting stacking preview…")
-            next_stream = self._current_mosaic_live_pane(device_id)
-            if next_stream != self._mosaic_stream_pane:
-                self._mosaic_seen_stack_reset = False
-                self._note_mosaic_stack_reset(device_id)
-            self._mosaic_stream_pane = next_stream
+            self._assign_mosaic_stream_pane(self._current_mosaic_live_pane(device_id), device_id)
             return
         if not self._preview_active:
             return
@@ -7082,11 +7736,7 @@ class AppBackend(QObject):
                 )
             self._retarget_preview_streams(tele_url, wide_url)
             if stacking:
-                next_stream = live_pane or self._mosaic_stream_pane
-                if next_stream != self._mosaic_stream_pane:
-                    self._mosaic_seen_stack_reset = False
-                    self._note_mosaic_stack_reset(device_id)
-                self._mosaic_stream_pane = next_stream
+                self._assign_mosaic_stream_pane(live_pane or self._mosaic_stream_pane, device_id)
 
     def _detach_mosaic_stacking_preview(self) -> None:
         """Stop polling stacked.jpg between mosaic panes.
@@ -7483,9 +8133,18 @@ class AppBackend(QObject):
         )
         window_live = preview_window_is_live(self._preview_window)
         now = time.monotonic()
-        if not first_frame and (
-            not window_live or now - self._last_preview_ui.get(camera, 0.0) < 0.05
+        panorama_running = False
+        if not window_live and camera == "tele":
+            telemetry = self._device_telemetry.get(self._selected_device_id) or {}
+            panorama_running = str(telemetry.get("panorama_state") or "") == "running"
+        if not preview_should_ingest_frame(
+            window_live,
+            first_frame=first_frame,
+            camera=camera,
+            panorama_running=panorama_running,
         ):
+            return
+        if not first_frame and now - self._last_preview_ui.get(camera, 0.0) < 0.05:
             return
         self._last_preview_ui[camera] = now
         raw = image.copy() if isinstance(image, QImage) and not image.isNull() else QImage()
@@ -7614,7 +8273,7 @@ class AppBackend(QObject):
             previous = self._selected_device_id
             if previous != device_id:
                 self.stopPreview()
-                self._clear_mosaic_preview()
+                self._clear_mosaic_preview(drop_cache=False)
             self._selected_device_id = device_id
             if previous != device_id and self._media_source != "local":
                 self._media_folder = ""
@@ -7634,6 +8293,7 @@ class AppBackend(QObject):
             self._sync_media_lock()
             if previous != device_id:
                 self._persist_last_device_id(device_id)
+                self._sync_mosaic_preview(device_id)
 
     @Property(str, notify=uiBusyChanged)
     def uiBusy(self) -> str:
@@ -7898,7 +8558,7 @@ class AppBackend(QObject):
         running_live = self._live_mosaic_running(device_id, live)
         if running_live:
             live["stopping"] = True
-            self._clear_mosaic_preview()
+            self._flush_mosaic_pane_cache(device_id)
             self.mosaicPreviewChanged.emit()
         session_id = self._active_sessions.get(device_id)
         if not session_id:
@@ -7922,9 +8582,9 @@ class AppBackend(QObject):
         worker = self._workers.get(device_id)
         if not worker or device_id in self._disconnecting_ids:
             return
+        self._disconnecting_ids.add(device_id)
         if device_id == self._selected_device_id:
             self.stopPreview()
-        self._disconnecting_ids.add(device_id)
         if self._abort_active_session(device_id, "Disconnect"):
             # Stop what the telescope is doing before dropping the link. Both
             # commands jump the worker queue ahead of the interrupted session.
@@ -8594,6 +9254,7 @@ class AppBackend(QObject):
 
         def after_mode(ok: bool, result: Any) -> None:
             if ok:
+                self._control_applying.add(device_id)
                 self._on_telemetry(
                     device_id,
                     {"shooting_mode": 2, "shooting_tech": 0, "photo_primed": False},
@@ -8646,6 +9307,32 @@ class AppBackend(QObject):
         self.add_log("success", "Capture disarmed", device_id)
         self._toast("Capture disarmed", "success")
 
+    def _telemetry_panorama_rect(self, device_id: str) -> tuple[float, float, float, float] | None:
+        telemetry = self._device_telemetry.get(device_id) or {}
+        if not telemetry.get("panorama_has_rect"):
+            return None
+        try:
+            x1 = float(telemetry["panorama_x1"])
+            y1 = float(telemetry["panorama_y1"])
+            x2 = float(telemetry["panorama_x2"])
+            y2 = float(telemetry["panorama_y2"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        left, right = (x1, x2) if x1 <= x2 else (x2, x1)
+        top, bottom = (y1, y2) if y1 <= y2 else (y2, y1)
+        if right - left < 0.02 or bottom - top < 0.02:
+            return None
+        return (left, top, right, bottom)
+
+    def _store_panorama_frame_rect(
+        self, device_id: str, x1: float, y1: float, x2: float, y2: float
+    ) -> tuple[float, float, float, float]:
+        left, right = (x1, x2) if x1 <= x2 else (x2, x1)
+        top, bottom = (y1, y2) if y1 <= y2 else (y2, y1)
+        framed = (float(left), float(top), float(right), float(bottom))
+        self._panorama_frame_rect[device_id] = framed
+        return framed
+
     @Slot(float, float, float, float)
     def updatePanoramaFrame(self, x1: float, y1: float, x2: float, y2: float) -> None:
         """Send a resized framing box. Ignored until this session has a device rect."""
@@ -8653,13 +9340,27 @@ class AppBackend(QObject):
         telemetry = self._device_telemetry.get(device_id) or {}
         if not telemetry.get("panorama_has_rect"):
             return
-        if str(telemetry.get("panorama_framing_state") or "") != "running":
+        if str(telemetry.get("panorama_state") or "") == "running":
             return
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
             return
-        self._panorama_frame_rect[device_id] = (float(x1), float(y1), float(x2), float(y2))
-        worker.send("panorama_frame_update", {"args": [float(x1), float(y1), float(x2), float(y2)]})
+        framed = self._store_panorama_frame_rect(device_id, x1, y1, x2, y2)
+        worker.send("panorama_frame_update", {"args": list(framed)})
+
+    @Slot(float, float, float, float)
+    def shootPanorama(self, x1: float, y1: float, x2: float, y2: float) -> None:
+        """Start the tele grid using the on-screen frame, even if it was never resized."""
+        device_id = self._selected_device_id
+        if not device_id:
+            return
+        self._store_panorama_frame_rect(device_id, x1, y1, x2, y2)
+        self.deviceAction(device_id, "panorama_shoot")
+
+    @Slot(float, result="QVariant")
+    def eqSetupPose(self, latitude: float) -> dict[str, Any]:
+        """Wedge instructions for the EQ setup modal, from the observing latitude."""
+        return eq_pose_steps(latitude)
 
     @Slot(str, str)
     def deviceAction(self, device_id: str, operation: str) -> None:
@@ -8756,6 +9457,7 @@ class AppBackend(QObject):
                 return
             self._complete_activity(device_id, operation, ok)
             if ok and operation == "photo_mode":
+                self._control_applying.add(device_id)
                 self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1})
                 self._apply_shooting_mode_camera(device_id)
             elif ok and operation in {"photo", "wide_photo"}:
@@ -8767,6 +9469,8 @@ class AppBackend(QObject):
                 operation in {"astro_mode", "calibrate", "polar", "track", "sky_track", "stack", "infinity"}
                 or (operation == "autofocus" and not photo_focus)
             ):
+                if operation == "astro_mode":
+                    self._control_applying.add(device_id)
                 self._on_telemetry(device_id, {"shooting_mode": 2, "shooting_tech": 0, "photo_primed": False})
                 if operation == "astro_mode":
                     self._apply_shooting_mode_camera(device_id)
@@ -8904,8 +9608,15 @@ class AppBackend(QObject):
             camera = device.camera.value if device and hasattr(device.camera, "value") else "tele"
             worker_operation = "wide_photo" if str(camera).lower() == "wide" else "photo"
             self._sync_worker_camera(device_id, str(camera))
+        if operation in {
+            "panorama_frame_start",
+            "panorama_frame_reset",
+            "panorama_frame_stop",
+            "panorama_stop",
+        }:
+            self._panorama_frame_rect.pop(device_id, None)
         if operation == "panorama_shoot":
-            framed = self._panorama_frame_rect.get(device_id)
+            framed = self._panorama_frame_rect.get(device_id) or self._telemetry_panorama_rect(device_id)
             if framed:
                 payload = {"args": list(framed)}
         worker.send(worker_operation, payload, callback=self._with_pending(device_id, operation, done))
@@ -9498,7 +10209,11 @@ class AppBackend(QObject):
         self._toast("Session reset", "success")
 
     def _remember_control_settings(self, device_id: str, telemetry: dict[str, Any] | None = None) -> None:
-        if device_id in self._control_restoring or device_id in self._control_restore_pending:
+        if (
+            device_id in self._control_restoring
+            or device_id in self._control_restore_pending
+            or device_id in self._control_applying
+        ):
             return
         live = self._live_mosaic.get(device_id)
         if live and live.get("phase"):
@@ -9786,6 +10501,7 @@ class AppBackend(QObject):
         notify: bool = True,
         callback: Callable[[bool, Any], None] | None = None,
         camera: str | None = None,
+        force: bool = False,
     ) -> bool:
         device = self._device_by_id(device_id)
         worker = self._workers.get(device_id)
@@ -9889,9 +10605,12 @@ class AppBackend(QObject):
             if callback:
                 callback(ok, result)
 
+        payload: dict[str, Any] = {"args": args}
+        if force:
+            payload["force"] = True
         worker.send(
             operation,
-            {"args": args},
+            payload,
             self._with_pending(device_id, "set_focus", done) if name == "focus" else done,
         )
         return True
@@ -9937,6 +10656,10 @@ class AppBackend(QObject):
             self._patch_control_settings(device_id, **({"wide_wb_value" if wide else "wb_value": value}))
         elif name in {"brightness", "contrast", "saturation", "hue", "sharpness"}:
             self._patch_control_settings(device_id, **({f"wide_{name}" if wide else name: value}))
+        if name in {"exposure", "gain", "ir", "count"}:
+            # A typed value is the setup to load next time this mode is selected.
+            # Leaving Auto Parameters on reapplied the camera's automatic table.
+            self._patch_control_settings(device_id, auto_parameters="false")
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
             self._flush_control_settings()
@@ -10024,27 +10747,30 @@ class AppBackend(QObject):
         )
         self._apply_shooting_mode_camera(device_id)
 
-    def _apply_shooting_mode_camera(self, device_id: str) -> None:
-        """Restore a mode's manual exposure and gain, or turn Auto Parameters on."""
+    def _apply_shooting_mode_camera(self, device_id: str, *, retry: bool = False) -> None:
+        """Load this mode's saved exposure, gain, filter, and frame count.
+
+        The live Auto Parameters switch is whatever the camera is doing now.
+        PHOTO often leaves it on, and entering DSO does too. Copying that
+        into the saved choice replaced the last DSO exposure, gain, filter,
+        and stack count with the automatic table.
+        """
+        if not retry:
+            self._control_apply_retried.discard(device_id)
+        self._control_applying.add(device_id)
         device = self._device_by_id(device_id)
         worker = self._workers.get(device_id)
         if device is None or not worker or not worker.connected:
+            self._control_applying.discard(device_id)
             self._flush_control_settings()
             return
         mode = _shooting_mode_int(self._device_telemetry.get(device_id, {}).get("shooting_mode"))
         if mode not in {1, 2}:
             mode = device.control_settings.shooting_mode
         device = self._device_by_id(device_id) or device
-        tel = self._device_telemetry.get(device_id) or {}
         wide = device.model != DeviceModel.DWARF_MINI
-        live_auto = tel.get("auto_parameters_tele") is True and (
-            not wide or tel.get("auto_parameters_wide") is True
-        )
         saved_auto = str(device.control_settings.auto_parameters).strip().lower() in {"1", "true", "yes", "on"}
-        if live_auto and not saved_auto:
-            self._patch_control_settings(device_id, auto_parameters="true")
-            device = self._device_by_id(device_id) or device
-        if str(device.control_settings.auto_parameters).strip().lower() in {"1", "true", "yes", "on"}:
+        if saved_auto:
             self._on_telemetry(
                 device_id,
                 {
@@ -10055,16 +10781,32 @@ class AppBackend(QObject):
         queue = shooting_mode_camera_steps(
             device.control_settings,
             mode,
-            include_wide=device.model != DeviceModel.DWARF_MINI,
+            include_wide=wide,
         )
 
+        def finish() -> None:
+            self._schedule_camera_param_refresh(
+                device_id,
+                keep_auto=saved_auto,
+                release_apply=True,
+            )
+
         def next_param(ok: bool = True, result: Any = None) -> None:
-            if self._shut_down or not queue:
-                self._schedule_camera_param_refresh(device_id, keep_auto=True)
+            if self._shut_down or device_id not in self._workers:
+                self._control_applying.discard(device_id)
+                return
+            if not queue:
+                finish()
                 return
             name, value, camera = queue.pop(0)
             self._send_camera_param(
-                device_id, name, value, notify=False, callback=next_param, camera=camera
+                device_id,
+                name,
+                value,
+                notify=False,
+                callback=next_param,
+                camera=camera,
+                force=retry,
             )
 
         next_param()
@@ -10447,15 +11189,59 @@ class AppBackend(QObject):
             "3",
         )
 
-    def _schedule_camera_param_refresh(self, device_id: str, delay_ms: int = 150, *, keep_auto: bool = False) -> None:
+    def _schedule_camera_param_refresh(
+        self,
+        device_id: str,
+        delay_ms: int = 150,
+        *,
+        keep_auto: bool = False,
+        release_apply: bool = False,
+    ) -> None:
         if keep_auto:
             self._keep_auto_parameters.add(device_id)
-        QTimer.singleShot(delay_ms, lambda did=device_id: self.refreshCameraParams(did))
+        token = None
+        if release_apply:
+            token = self._control_apply_token.get(device_id, 0) + 1
+            self._control_apply_token[device_id] = token
+        QTimer.singleShot(
+            delay_ms,
+            lambda did=device_id, tok=token: self.refreshCameraParams(did, release_token=tok),
+        )
+
+    def _release_control_apply(self, device_id: str, token: int | None) -> None:
+        if token is None or token != self._control_apply_token.get(device_id):
+            return
+        self._control_applying.discard(device_id)
+
+    def _saved_mode_differs(self, device_id: str, changes: dict[str, Any]) -> bool:
+        """The camera read does not match the saved manual exposure, gain, filter, or count."""
+        if self._saved_auto_parameters(device_id):
+            return False
+        device = self._device_by_id(device_id)
+        if device is None:
+            return False
+        mode = _shooting_mode_int(self._device_telemetry.get(device_id, {}).get("shooting_mode"))
+        if mode not in {1, 2}:
+            mode = device.control_settings.shooting_mode
+        merged = dict(self._device_telemetry.get(device_id) or {})
+        merged.update(changes or {})
+        return not control_mode_values_landed(
+            device.control_settings,
+            mode,
+            merged,
+            include_wide=device.model != DeviceModel.DWARF_MINI,
+        )
+
+    def _mode_camera_needs_retry(self, device_id: str, changes: dict[str, Any]) -> bool:
+        if device_id in self._control_apply_retried:
+            return False
+        return self._saved_mode_differs(device_id, changes)
 
     @Slot(str)
-    def refreshCameraParams(self, device_id: str) -> None:
+    def refreshCameraParams(self, device_id: str, release_token: int | None = None) -> None:
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
+            self._release_control_apply(device_id, release_token)
             return
         mode_id = self._camera_mode_id(device_id)
         model_id = self._camera_model_id(device_id)
@@ -10463,12 +11249,24 @@ class AppBackend(QObject):
         def done(ok: bool, result: Any) -> None:
             keep_auto = device_id in self._keep_auto_parameters
             self._keep_auto_parameters.discard(device_id)
+            applying_read = release_token is not None and release_token == self._control_apply_token.get(device_id)
             if not ok:
+                self._release_control_apply(device_id, release_token)
                 return
             changes = camera_params_to_telemetry(result, model_id)
             if keep_auto:
                 changes.pop("auto_parameters_tele", None)
                 changes.pop("auto_parameters_wide", None)
+            if applying_read and self._mode_camera_needs_retry(device_id, changes):
+                self._control_apply_retried.add(device_id)
+                if changes:
+                    self._on_telemetry(device_id, changes)
+                self._apply_shooting_mode_camera(device_id, retry=True)
+                return
+            self._control_apply_retried.discard(device_id)
+            self._release_control_apply(device_id, release_token)
+            if applying_read and self._saved_mode_differs(device_id, changes):
+                return
             if changes:
                 self._on_telemetry(device_id, changes)
 
@@ -13047,6 +13845,22 @@ class AppBackend(QObject):
             prompt_darks=prompt_darks,
         )
 
+    def _note_firmware_mosaic_phase(self, session: Session, step: str) -> None:
+        """Remember a device-mosaic pane change so leftover frames stay off the next cell."""
+        if session.mosaic.imported_plan or session.mosaic.panes <= 1:
+            return
+        phase = mosaic_progress_phase(step)
+        device_id = session.device_id
+        previous = str(self._firmware_mosaic_phase.get(device_id, "") or "")
+        if phase == previous:
+            return
+        if phase:
+            self._firmware_mosaic_phase[device_id] = phase
+        else:
+            self._firmware_mosaic_phase.pop(device_id, None)
+        if device_id == self._selected_device_id:
+            self.mosaicPreviewChanged.emit()
+
     @Slot(str, str, float)
     def _session_progress(self, session_id: str, step: str, wait_seconds: float = 0.0) -> None:
         session = self.store.sessions.get(session_id)
@@ -13067,6 +13881,7 @@ class AppBackend(QObject):
         except (TypeError, ValueError):
             timing["step_wait_seconds"] = 0.0
         self._apply_session_step(session, step)
+        self._note_firmware_mosaic_phase(session, step)
         if self._preview_hold_device_id == session.device_id:
             self._refresh_preview_hold()
             self._maybe_resume_held_preview(session.device_id)
@@ -13117,6 +13932,8 @@ class AppBackend(QObject):
             self._sync_session_activity(active_device, "")
         stopped = session_id in self._stop_requested
         self._stop_requested.discard(session_id)
+        if device_id:
+            self._firmware_mosaic_phase.pop(device_id, None)
         if not session:
             self._session_timing.pop(session_id, None)
             self._emit_sessions_changed()
@@ -13220,6 +14037,7 @@ class AppBackend(QObject):
         self._stellarium_rc_timer.stop()
         self._control_persist_timer.stop()
         self._flush_control_settings()
+        self._flush_mosaic_pane_cache()
         self.stopPreview()
         self._enhance_pool.waitForDone(1500)
         self._mosaic_enhance_pool.waitForDone(1500)

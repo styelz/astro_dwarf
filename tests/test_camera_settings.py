@@ -13,6 +13,7 @@ from astro_dwarf.domain import (
     control_settings_from_dict,
     control_settings_from_telemetry,
     firmware_stack_format,
+    control_mode_values_landed,
     shooting_mode_camera_steps,
 )
 from astro_dwarf.telemetry_view import camera_params_to_telemetry
@@ -71,6 +72,54 @@ def test_dso_entry_restores_dso_slots_not_photo() -> None:
     _assert(("exposure", "1/30", "tele") not in steps, steps)
     _assert(("ir", "Astro", "tele") in steps, steps)
     _assert(("count", "40", "tele") in steps, steps)
+
+
+def test_dso_read_mismatch_is_not_landed() -> None:
+    settings = ControlSettings(
+        shooting_mode=2,
+        exposure="15",
+        gain="60",
+        wide_exposure="10",
+        wide_gain="40",
+        ir_filter="VIS Filter",
+        stack_count="20",
+        auto_parameters="false",
+    )
+    reset = {
+        "astro_exposure_text": "1",
+        "astro_gain": 0,
+        "astro_wide_exposure_text": "1/30",
+        "astro_wide_gain": 0,
+        "ir_filter": "Astro Filter",
+        "stack_count": 999,
+        "auto_parameters_tele": True,
+        "auto_parameters_wide": True,
+    }
+    _assert(not control_mode_values_landed(settings, 2, reset, include_wide=True), reset)
+    landed = {
+        "astro_exposure_text": "15",
+        "astro_gain": 60,
+        "astro_wide_exposure_text": "10",
+        "astro_wide_gain": 40,
+        "ir_filter": "VIS",
+        "stack_count": 20,
+        "auto_parameters_tele": False,
+        "auto_parameters_wide": False,
+    }
+    _assert(control_mode_values_landed(settings, 2, landed, include_wide=True), landed)
+    _assert(
+        control_mode_values_landed(settings, 2, {}, include_wide=True),
+        "a read with no camera fields must not force another write",
+    )
+
+
+def test_dso_count_and_filter_stay_manual() -> None:
+    settings = ControlSettings(shooting_mode=2, ir_filter="VIS Filter", stack_count="20")
+    steps = shooting_mode_camera_steps(settings, 2, include_wide=False)
+    _assert(("auto_parameters", "false", "tele") in steps, steps)
+    _assert(("ir", "VIS Filter", "tele") in steps, steps)
+    _assert(("count", "20", "tele") in steps, steps)
+    _assert(("auto_parameters", "true", "tele") not in steps, steps)
 
 
 def test_auto_parameters_stays_on_across_modes() -> None:
@@ -166,6 +215,8 @@ if __name__ == "__main__":
     test_stack_format_maps_legacy_indexes()
     test_stack_format_skip_uses_firmware_values()
     test_dso_entry_restores_dso_slots_not_photo()
+    test_dso_read_mismatch_is_not_landed()
+    test_dso_count_and_filter_stay_manual()
     test_auto_parameters_stays_on_across_modes()
     test_empty_mode_enables_auto_parameters()
     test_auto_telemetry_does_not_become_manual()

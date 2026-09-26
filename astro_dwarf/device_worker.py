@@ -1067,7 +1067,7 @@ def _set_focus_position(target: int) -> bool:
     return True
 
 
-def sdk_call(operation: str, *args: Any) -> Any:
+def sdk_call(operation: str, *args: Any, force: bool = False) -> Any:
     global _motors_unhomed, _photo_capture_camera
     if _api is None:
         raise RuntimeError("Telescope worker is not configured")
@@ -1135,7 +1135,7 @@ def sdk_call(operation: str, *args: Any) -> Any:
         "set_burst_interval",
         "set_timelapse_interval",
         "set_timelapse_duration",
-    } and camera_param_unchanged(
+    } and not force and camera_param_unchanged(
         operation,
         args,
         _tap.snapshot() if _tap is not None else {},
@@ -1319,11 +1319,8 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
     )
 
     module_id = 10
-    if operation == "panorama_frame_update" or (
-        operation == "panorama_shoot" and len(args) >= 4
-    ):
-        if len(args) < 4:
-            raise RuntimeError("Panorama framing needs four normalized corners")
+
+    def _send_framing_rect() -> bool:
         message = panorama_pb2.ReqUpdatePanoramaFramingRect()
         message.norm_x_tl = float(args[0])
         message.norm_y_tl = float(args[1])
@@ -1334,9 +1331,16 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
             f"{message.norm_x_tl:.3f},{message.norm_y_tl:.3f} "
             f"{message.norm_x_br:.3f},{message.norm_y_br:.3f}"
         )
-        updated = send_without_response(message, CMD_PANORAMA_UPDATE_FRAMING_RECT, module_id)
-        if operation != "panorama_shoot":
-            return updated
+        return send_without_response(message, CMD_PANORAMA_UPDATE_FRAMING_RECT, module_id)
+
+    if operation == "panorama_frame_update":
+        if len(args) < 4:
+            raise RuntimeError("Panorama framing needs four normalized corners")
+        return _send_framing_rect()
+    if operation == "panorama_shoot" and len(args) >= 4:
+        # Firmware StartGrid is the full canvas. The yellow box is overlay-only;
+        # 15502 Euler range is acknowledged then ignored. Do not leave framing.
+        _send_framing_rect()
     messages = {
         "panorama_frame_start": (panorama_pb2.ReqStartPanoramaFraming, CMD_PANORAMA_START_FRAMING),
         "panorama_frame_reset": (panorama_pb2.ReqResetPanoramaFraming, CMD_PANORAMA_RESET_FRAMING),
@@ -1347,14 +1351,41 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
     factory, command = messages[operation]
     ok = send_without_response(factory(), command, module_id)
     if ok and operation == "panorama_frame_start" and _tap is not None:
-        _tap.update({"panorama_framing_state": "running", "panorama_has_rect": False, "panorama_error": ""}, force=True)
+        _tap.update(
+            {
+                "panorama_framing_state": "running",
+                "panorama_has_rect": False,
+                "panorama_error": "",
+                "panorama_completed": 0,
+                "panorama_total": 0,
+                "panorama_canvas_fov_h": 0,
+                "panorama_canvas_fov_v": 0,
+            },
+            force=True,
+        )
     if ok and operation == "panorama_shoot" and _tap is not None:
-        _tap.update({"panorama_state": "running", "panorama_framing_state": "idle"}, force=True)
+        _tap.update(
+            {
+                "panorama_state": "running",
+                "panorama_framing_state": "idle",
+                "panorama_completed": 0,
+                "panorama_total": 0,
+            },
+            force=True,
+        )
         # Grid capture sends no further framing thumbnails; keep a copy so a
         # reconnect mid-shoot has the background back instead of a blank pane.
         _tap.persist_panorama_scan()
     if ok and operation == "panorama_stop" and _tap is not None:
-        _tap.update({"panorama_state": "idle", "panorama_framing_state": "idle"}, force=True)
+        _tap.update(
+            {
+                "panorama_state": "idle",
+                "panorama_framing_state": "idle",
+                "panorama_scan_path": "",
+                "panorama_scan_rev": 0,
+            },
+            force=True,
+        )
         _tap.clear_panorama_scan_cache()
     return ok
 
@@ -2726,6 +2757,28 @@ def _capture_counts(snapshot: dict[str, Any]) -> tuple[int, int]:
     return max(0, frames), total
 
 
+def mosaic_pane_change_label(stacked_pane: int, panes: int, reported_index: int = 0) -> str:
+    """Progress step while firmware moves from a finished pane to the next one.
+
+    The base name is ``Changing mosaic pane`` so session timing can measure
+    the gap. The ``N/M`` suffix is what the HUD shows.
+    """
+    try:
+        done = int(stacked_pane or 0)
+        total = int(panes or 0)
+        reported = int(reported_index or 0)
+    except (TypeError, ValueError):
+        return ""
+    if total <= 1 or done < 1 or done >= total:
+        return ""
+    nxt = done + 1
+    if reported > done:
+        nxt = min(total, reported)
+    if nxt <= done or nxt > total:
+        return ""
+    return f"Changing mosaic pane · {nxt}/{total}"
+
+
 def _capture_wait_label(name: str, snapshot: dict[str, Any]) -> str:
     frames, total = _capture_counts(snapshot)
     if total:
@@ -2754,6 +2807,9 @@ def _wait_for_capture_end(
     seen = False
     continued = False
     quiet_since: float | None = None
+    stacked_pane = 0
+    last_stacked = 0
+    in_gap = False
     started = time.monotonic()
     last_label = ""
     last_heartbeat = started
@@ -2778,7 +2834,25 @@ def _wait_for_capture_end(
                 continue
         capturing = _capture_running(snapshot)
         slewing = mosaic and _goto_busy(snapshot)
+        try:
+            reported_pane = int(snapshot.get("mosaic_index") or 0)
+        except (TypeError, ValueError):
+            reported_pane = 0
+        changing = False
         if capturing or slewing:
+            if capturing:
+                frames_now, _total_frames = _capture_counts(snapshot)
+                if reported_pane > stacked_pane:
+                    stacked_pane = reported_pane
+                elif in_gap and last_stacked >= 2 and frames_now <= 1 and stacked_pane < mosaic_panes:
+                    stacked_pane += 1
+                elif stacked_pane < 1:
+                    stacked_pane = 1
+                in_gap = False
+                last_stacked = frames_now
+            elif seen and mosaic_pane_change_label(stacked_pane, mosaic_panes, reported_pane):
+                changing = True
+                in_gap = True
             if capturing and not seen:
                 frames, total = _capture_counts(snapshot)
                 detail = f"{frames}/{total}" if total else "stacking started"
@@ -2789,6 +2863,9 @@ def _wait_for_capture_end(
             if not seen:
                 seen = True
                 log(f"{name}: mosaic still active; waiting for the next pane")
+            if mosaic_pane_change_label(stacked_pane, mosaic_panes, reported_pane):
+                changing = True
+                in_gap = True
             if quiet_since is None:
                 quiet_since = time.monotonic()
             elif time.monotonic() - quiet_since >= _mosaic_idle_timeout_s(snapshot, mosaic_panes):
@@ -2797,9 +2874,12 @@ def _wait_for_capture_end(
         elif seen:
             state = str(snapshot.get("capture_state") or "")
             if mosaic:
+                if mosaic_pane_change_label(stacked_pane, mosaic_panes, reported_pane):
+                    changing = True
+                    in_gap = True
                 if quiet_since is None:
                     quiet_since = time.monotonic()
-                    if mosaic_panes > 1:
+                    if mosaic_panes > 1 and changing:
                         log(f"{name}: pane gap; waiting for the next mosaic pane")
                 elif time.monotonic() - quiet_since >= _mosaic_idle_timeout_s(snapshot, mosaic_panes):
                     log(f"{name} finished after {_format_duration(elapsed)}")
@@ -2823,8 +2903,12 @@ def _wait_for_capture_end(
                 "If dark frames are missing, add matching darks or retry."
             )
         if on_progress:
-            label = _capture_wait_label(name, snapshot)
-            if label != last_label:
+            label = (
+                mosaic_pane_change_label(stacked_pane, mosaic_panes, reported_pane)
+                if changing
+                else _capture_wait_label(name, snapshot)
+            )
+            if label and label != last_label:
                 on_progress(label)
                 last_label = label
         if seen and time.monotonic() - last_heartbeat >= _CAPTURE_HEARTBEAT_S:
@@ -4642,9 +4726,9 @@ def camera_param_unchanged(
     wide = camera == "wide"
     if operation in {"set_exposure", "set_photo_exposure"}:
         if operation == "set_photo_exposure":
-            keys = ("photo_wide_exposure_text", "wide_exposure_text") if wide else ("photo_exposure_text", "exposure_text")
+            keys = ("photo_wide_exposure_text",) if wide else ("photo_exposure_text",)
         else:
-            keys = ("astro_wide_exposure_text", "wide_exposure_text") if wide else ("astro_exposure_text", "exposure_text")
+            keys = ("astro_wide_exposure_text",) if wide else ("astro_exposure_text",)
         live = next((snapshot.get(key) for key in keys if snapshot.get(key) not in (None, "", "—")), None)
         if live in (None, "", "—"):
             return False
@@ -4653,9 +4737,9 @@ def camera_param_unchanged(
     if operation in {"set_gain", "set_photo_gain"}:
         wanted = _param_int(values[0] if values else None)
         if operation == "set_photo_gain":
-            keys = ("photo_wide_gain", "wide_gain") if wide else ("photo_gain", "gain")
+            keys = ("photo_wide_gain",) if wide else ("photo_gain",)
         else:
-            keys = ("astro_wide_gain", "wide_gain") if wide else ("astro_gain", "gain")
+            keys = ("astro_wide_gain",) if wide else ("astro_gain",)
         live = next((_param_int(snapshot.get(key)) for key in keys if snapshot.get(key) not in (None, "", "—")), None)
         return wanted is not None and wanted == live
     return False
@@ -6179,7 +6263,7 @@ def dispatch(message: dict[str, Any]) -> Any:
         return serializable_state(sdk_call("read_camera", mode_id))
     if command == "set_auto_params":
         args = list(message.get("args") or [])
-        if camera_param_unchanged(
+        if not message.get("force") and camera_param_unchanged(
             "set_auto_params",
             args,
             _tap.snapshot() if _tap is not None else {},
@@ -6259,7 +6343,7 @@ def dispatch(message: dict[str, Any]) -> Any:
         if command in _CAPTURE_TECHNIQUES:
             if _ensure_capture_technique(_CAPTURE_TECHNIQUES[command]) is False:
                 return False
-        result = sdk_call(command, *message.get("args", []))
+        result = sdk_call(command, *message.get("args", []), force=bool(message.get("force")))
         if result is not False:
             if command == "photo_mode":
                 _remember_shooting(_PHOTO_SHOOTING_MODE, _PHOTO_STILL_TECH)

@@ -71,14 +71,18 @@ CMD_NOTIFY_PANORAMA_PROGRESS = 15219
 CMD_NOTIFY_PANO_FRAMING_RECT = 15297
 CMD_NOTIFY_PANO_FRAMING_THUMBNAIL = 15298
 CMD_NOTIFY_PANO_FRAMING_STATE = 15299
+CMD_PANORAMA_START_GRID = 15500
 CMD_PANORAMA_STOP = 15501
+CMD_PANORAMA_START_EULER_RANGE = 15502
 CMD_PANORAMA_START_FRAMING = 15509
 CMD_PANORAMA_STOP_FRAMING = 15510
 CMD_PANORAMA_RESET_FRAMING = 15511
 CMD_PANORAMA_UPDATE_FRAMING_RECT = 15512
 CMD_PANORAMA_STOP_FRAMING_AND_START_GRID = 15513
 _PANORAMA_COMMANDS = frozenset({
+    CMD_PANORAMA_START_GRID,
     CMD_PANORAMA_STOP,
+    CMD_PANORAMA_START_EULER_RANGE,
     CMD_PANORAMA_START_FRAMING,
     CMD_PANORAMA_STOP_FRAMING,
     CMD_PANORAMA_RESET_FRAMING,
@@ -956,19 +960,29 @@ class TelemetryTap:
         message = self._parse("PanoFramingRectUpdateNotify", data)
         if message is None:
             return {}
+        x1 = float(message.norm_x_tl)
+        y1 = float(message.norm_y_tl)
+        x2 = float(message.norm_x_br)
+        y2 = float(message.norm_y_br)
+        limit_left = float(message.norm_limit_x_left)
+        limit_top = float(message.norm_limit_y_top)
+        limit_right = float(message.norm_limit_x_right)
+        limit_bottom = float(message.norm_limit_y_bottom)
+        rect_fov_h = float(message.rect_hor_fov)
+        rect_fov_v = float(message.rect_ver_fov)
         changes = {
             "panorama_has_rect": True,
             "panorama_framing_state": "running",
-            "panorama_x1": float(message.norm_x_tl),
-            "panorama_y1": float(message.norm_y_tl),
-            "panorama_x2": float(message.norm_x_br),
-            "panorama_y2": float(message.norm_y_br),
-            "panorama_limit_left": float(message.norm_limit_x_left),
-            "panorama_limit_top": float(message.norm_limit_y_top),
-            "panorama_limit_right": float(message.norm_limit_x_right),
-            "panorama_limit_bottom": float(message.norm_limit_y_bottom),
-            "panorama_rect_fov_h": float(message.rect_hor_fov),
-            "panorama_rect_fov_v": float(message.rect_ver_fov),
+            "panorama_x1": x1,
+            "panorama_y1": y1,
+            "panorama_x2": x2,
+            "panorama_y2": y2,
+            "panorama_limit_left": limit_left,
+            "panorama_limit_top": limit_top,
+            "panorama_limit_right": limit_right,
+            "panorama_limit_bottom": limit_bottom,
+            "panorama_rect_fov_h": rect_fov_h,
+            "panorama_rect_fov_v": rect_fov_v,
             "panorama_rect_error": int(message.error_code),
         }
         from .device_worker import log
@@ -998,7 +1012,7 @@ class TelemetryTap:
         # one has loaded, so the file it is showing is not replaced underneath it.
         path = self._panorama_scan_dir / f"scan-{self._panorama_scan_rev}.webp"
         path.write_bytes(blob)
-        stale = self._panorama_scan_dir / f"scan-{self._panorama_scan_rev - 3}.webp"
+        stale = self._panorama_scan_dir / f"scan-{self._panorama_scan_rev - 8}.webp"
         if stale.is_file():
             try:
                 stale.unlink()
@@ -1515,6 +1529,7 @@ class TelemetryTap:
             changes = {"panorama_state": state}
             if state != "running":
                 changes["panorama_completed"] = 0
+                changes["panorama_total"] = 0
             return changes
         if cmd == CMD_NOTIFY_PANO_FRAMING_STATE:
             message = self._parse("PanoFramingStateNotify", data)

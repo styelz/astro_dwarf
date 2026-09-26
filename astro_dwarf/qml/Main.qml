@@ -106,6 +106,7 @@ ApplicationWindow {
         || settingsLeaveDialog.visible
         || confirmDialog.visible
         || darkFrameDialog.visible
+        || eqSetupDialog.visible
         || scheduleTemplateDialog.visible
         || duplicateSessionDialog.visible
         || sessionDialog.visible
@@ -304,6 +305,10 @@ ApplicationWindow {
         if (activity === "panorama_frame" && (op === "panorama_shoot" || op === "panorama_frame_reset"))
             return !!root.scopeTelemetry.panorama_has_rect
         return !root.scopeOccupied
+    }
+
+    function openEqSetup() {
+        eqSetupDialog.openSetup()
     }
 
     function requestDeviceAction(operation, label) {
@@ -1682,6 +1687,11 @@ ApplicationWindow {
         onViewerCloseRequested: mediaPage.closeViewer()
     }
     DarkFrameDialog { id: darkFrameDialog }
+    EqSetupDialog {
+        id: eqSetupDialog
+        canRun: function(op) { return root.commandEnabled(op) }
+        runAction: function(op, label) { root.requestDeviceAction(op, label) }
+    }
     ScheduleTemplateDialog { id: scheduleTemplateDialog }
     DuplicateSessionDialog { id: duplicateSessionDialog }
 

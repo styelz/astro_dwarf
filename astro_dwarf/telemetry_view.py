@@ -611,6 +611,72 @@ def tracking_needs_calibration(result: Any) -> bool:
     )
 
 
+# DWARF accepts EQ mode for mosaic and long exposures once both residuals
+# are within this. The mobile app still offers "Be more precise" until 0°.
+EQ_ACCEPT_DEG = 2.0
+
+
+def eq_within_limit(azimuth: Any, altitude: Any, limit: float = EQ_ACCEPT_DEG) -> bool:
+    try:
+        azi = abs(float(azimuth))
+        alt = abs(float(altitude))
+    except (TypeError, ValueError):
+        return False
+    return azi <= float(limit) and alt <= float(limit)
+
+
+def eq_move_instruction(axis: str, degrees: Any) -> str:
+    """Wedge move for one plate-solve residual, in the official app's sense.
+
+    Positive azimuth is clockwise. Positive altitude is tilt the top up.
+    """
+    try:
+        value = float(degrees)
+    except (TypeError, ValueError):
+        return ""
+    amount = abs(value)
+    if amount < 0.05:
+        return "Azimuth is on the pole." if axis == "azi" else "Altitude is on the pole."
+    text = f"{amount:.2f}°"
+    if axis == "azi":
+        turn = "clockwise" if value > 0 else "counterclockwise"
+        return f"Rotate the head {turn} {text}."
+    tilt = "up" if value > 0 else "down"
+    return f"Tilt the top of the telescope {tilt} {text}."
+
+
+def eq_pose_steps(latitude: Any) -> dict[str, Any]:
+    """Physical setup the DWARF app shows before the first EQ plate-solve."""
+    try:
+        lat = float(latitude)
+    except (TypeError, ValueError):
+        lat = 0.0
+    tilt = abs(lat)
+    if tilt < 1e-6:
+        lines = [
+            "Latitude is 0°. Keep the polar axis level.",
+            "Point the back of the telescope at a celestial pole.",
+            "Rotate the lens up so it faces the opposite horizon. Use the joystick or turn it by hand.",
+            "Leave the tripod legs where they are.",
+        ]
+        return {"hemisphere": "equator", "tilt_deg": 0.0, "text": "\n".join(lines)}
+    south = lat < 0
+    back = "south" if south else "north"
+    front = "north" if south else "south"
+    pole = "the south celestial pole" if south else "Polaris"
+    lines = [
+        f"Point the back of the telescope {back}, so the logo faces {front}.",
+        f"Tilt the head back until the top points at {pole}, about {tilt:.1f}° above the horizon.",
+        f"Rotate the lens up so it faces {front}. Use the joystick or turn it by hand.",
+        "Leave the tripod legs where they are. Only the head rotates and tilts.",
+    ]
+    return {
+        "hemisphere": "south" if south else "north",
+        "tilt_deg": round(tilt, 2),
+        "text": "\n".join(lines),
+    }
+
+
 def derive_activity(raw: dict[str, Any], now: float | None = None) -> tuple[str, str]:
     """Return (activity, detail) as reported by the device, or ("", "")."""
     now = time.time() if now is None else now
@@ -802,6 +868,7 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     view["eq_azi_err"] = azi_value if azi_value is not None else 0
     view["eq_alt_err"] = alt_value if alt_value is not None else 0
     view["eq_has_result"] = azi_value is not None and alt_value is not None
+    view["eq_ready"] = bool(view["eq_has_result"] and eq_within_limit(azi_value, alt_value))
     if view["eq_has_result"]:
         azi_glyph = "↻" if azi_value > 0 else ("↺" if azi_value < 0 else "·")
         alt_glyph = "↑" if alt_value > 0 else ("↓" if alt_value < 0 else "·")
@@ -809,9 +876,13 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
         alt_dir = "UP" if alt_value > 0 else ("DOWN" if alt_value < 0 else "OK")
         view["eq_azi_text"] = f"{azi_glyph} {abs(azi_value):.2f}° AZ {azi_dir}"
         view["eq_alt_text"] = f"{alt_glyph} {abs(alt_value):.2f}° ALT {alt_dir}"
+        view["eq_azi_action"] = eq_move_instruction("azi", azi_value)
+        view["eq_alt_action"] = eq_move_instruction("alt", alt_value)
     else:
         view["eq_azi_text"] = ""
         view["eq_alt_text"] = ""
+        view["eq_azi_action"] = ""
+        view["eq_alt_action"] = ""
     view["timelapse_shoot_s"] = _timelapse_total_s(raw)
     activity, detail = derive_activity(raw, now)
     view["activity"] = activity
@@ -911,14 +982,20 @@ class AlertEngine:
                 add("success", "Calibration complete", detail)
             elif failed and not previous.get("calibration_error"):
                 add("error", "Calibration failed", "The telescope could not plate-solve")
-        # EQ / polar
+        # EQ / polar. A finished plate-solve is the residual, not alignment.
         if changed("eq_state") and current["eq_state"] in ("stopped", "idle") and previous.get("eq_state") == "running":
             azi = current.get("eq_azi_err", previous.get("eq_azi_err"))
             alt = current.get("eq_alt_err", previous.get("eq_alt_err"))
-            detail = ""
-            if azi is not None and alt is not None:
-                detail = f"Az {abs(float(azi)):.2f}° · Alt {abs(float(alt)):.2f}°"
-            add("success", "EQ solving complete", detail)
+            if azi is None or alt is None:
+                add("warning", "EQ solving finished", "No azimuth or altitude error was reported")
+            elif eq_within_limit(azi, alt):
+                add("success", "EQ aligned", f"Az {abs(float(azi)):.2f}° · Alt {abs(float(alt)):.2f}°")
+            else:
+                add(
+                    "warning",
+                    "Adjust the wedge",
+                    f"{eq_move_instruction('azi', azi)} {eq_move_instruction('alt', alt)}",
+                )
         # Autofocus
         if changed("autofocus_state") and current["autofocus_state"] in ("stopped", "idle") and previous.get("autofocus_state") == "running":
             focus = current.get("focus_position") or previous.get("focus_position")

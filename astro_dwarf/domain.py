@@ -1124,6 +1124,87 @@ def camera_fov(model: DeviceModel | str | None = None, camera: Camera | str | No
     return table[lens]
 
 
+def panorama_rect_matches(
+    current: Any,
+    intended: Any,
+    tol: float = 0.02,
+) -> bool:
+    """True when firmware's framing rect is already the box we want to shoot."""
+    try:
+        have = [float(value) for value in tuple(current)[:4]]
+        want = [float(value) for value in tuple(intended)[:4]]
+    except (TypeError, ValueError):
+        return False
+    if len(have) < 4 or len(want) < 4:
+        return False
+    return all(abs(left - right) <= float(tol) for left, right in zip(have, want))
+
+
+def panorama_shoot_needs_rect_update(current: Any, intended: Any) -> bool:
+    """Send UpdateFramingRect before StartGrid only when the device box differs."""
+    try:
+        want = tuple(intended)[:4]
+        if len(want) < 4:
+            return False
+        float(want[0]); float(want[1]); float(want[2]); float(want[3])
+    except (TypeError, ValueError):
+        return False
+    if current is None:
+        return True
+    return not panorama_rect_matches(current, want)
+
+
+PANORAMA_FULL_SHOT_TOTAL = 1800
+
+
+def panorama_canvas_stamp_norm(
+    span_x: float,
+    span_y: float,
+    view_aspect: float,
+    tele_fov_h: float = 2.95,
+    tele_fov_v: float = 1.66,
+    full_total: int = PANORAMA_FULL_SHOT_TOTAL,
+) -> dict[str, float] | None:
+    """Tele cell size on the full painted canvas. Independent of the yellow box."""
+    try:
+        span_x_n = float(span_x)
+        span_y_n = float(span_y)
+    except (TypeError, ValueError):
+        return None
+    if span_x_n <= 0 or span_y_n <= 0:
+        return None
+    col_count, row_count = panorama_shot_grid(
+        full_total, view_aspect, tele_fov_h, tele_fov_v
+    )
+    if col_count < 2 or row_count < 2:
+        return None
+    return {
+        "nw": span_x_n / col_count,
+        "nh": span_y_n / row_count,
+        "colCount": float(col_count),
+        "rowCount": float(row_count),
+    }
+
+
+def panorama_fov_grid(
+    box_w: float,
+    box_h: float,
+    stamp_nw: float,
+    stamp_nh: float,
+) -> tuple[int, int]:
+    """How many full-canvas tele cells fit in the framed box."""
+    try:
+        width = float(box_w)
+        height = float(box_h)
+        cell_w = float(stamp_nw)
+        cell_h = float(stamp_nh)
+    except (TypeError, ValueError):
+        return (1, 1)
+    if width < 0.001 or height < 0.001 or cell_w < 0.001 or cell_h < 0.001:
+        return (1, 1)
+    return (max(1, int(round(width / cell_w))), max(1, int(round(height / cell_h))))
+
+
 def panorama_shot_grid(
     total: int,
     view_aspect: float,
@@ -1170,6 +1251,153 @@ def panorama_shot_cell(index: int, cols: int) -> tuple[int, int]:
     if row % 2:
         col = cols - 1 - col
     return (col, row)
+
+
+def panorama_stamp_live_ready(columns: int, rows: int, total: int = 0) -> bool:
+    """True when the tracker is a tele cell, not the whole canvas.
+
+    Firmware does not send ``panorama_total`` until after SHOOT has already
+    marked the run running. A 1×1 grid would paint live tele over the scan.
+    """
+    try:
+        cols = max(1, int(columns or 1))
+        row_count = max(1, int(rows or 1))
+        total_n = int(total or 0)
+    except (TypeError, ValueError):
+        return False
+    if total_n == 1:
+        return False
+    return cols * row_count >= 2
+
+
+def panorama_leave_index(previous_index: Any, current_index: Any) -> int | None:
+    """Cell to freeze when the yellow tracker moves. None if nothing to leave."""
+    try:
+        previous = int(previous_index)
+        current = int(current_index)
+    except (TypeError, ValueError):
+        return None
+    if previous < 0 or previous == current:
+        return None
+    return previous
+
+
+def panorama_unit_to_px(
+    nx: float,
+    ny: float,
+    *,
+    limit_left: float,
+    limit_top: float,
+    span_x: float,
+    span_y: float,
+    fit_x: float,
+    fit_y: float,
+    fit_w: float,
+    fit_h: float,
+) -> tuple[float, float] | None:
+    """Map framing-canvas units onto the painted rectangle (same as QML unitToPx)."""
+    try:
+        span_x_n = float(span_x)
+        span_y_n = float(span_y)
+        fit_w_n = float(fit_w)
+        fit_h_n = float(fit_h)
+        x = float(fit_x) + ((float(nx) - float(limit_left)) / span_x_n) * fit_w_n
+        y = float(fit_y) + ((float(ny) - float(limit_top)) / span_y_n) * fit_h_n
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    if span_x_n <= 0 or span_y_n <= 0 or fit_w_n < 1 or fit_h_n < 1:
+        return None
+    return (x, y)
+
+
+def panorama_shot_cell_norm(
+    index: int,
+    cols: int,
+    rows: int,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> dict[str, float] | None:
+    """Centre and size of a snake-grid cell in framing-canvas units."""
+    try:
+        cols_n = max(1, int(cols or 1))
+        rows_n = max(1, int(rows or 1))
+        index_n = int(index)
+        left = min(float(x1), float(x2))
+        top = min(float(y1), float(y2))
+        span_w = abs(float(x2) - float(x1))
+        span_h = abs(float(y2) - float(y1))
+    except (TypeError, ValueError):
+        return None
+    if index_n < 0 or index_n >= cols_n * rows_n or span_w <= 0 or span_h <= 0:
+        return None
+    col, row = panorama_shot_cell(index_n, cols_n)
+    nw = span_w / cols_n
+    nh = span_h / rows_n
+    return {
+        "nx": left + (col + 0.5) * nw,
+        "ny": top + (row + 0.5) * nh,
+        "nw": nw,
+        "nh": nh,
+        "col": float(col),
+        "row": float(row),
+    }
+
+
+def panorama_shot_cell_px(
+    index: int,
+    cols: int,
+    rows: int,
+    *,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    limit_left: float,
+    limit_top: float,
+    span_x: float,
+    span_y: float,
+    fit_x: float,
+    fit_y: float,
+    fit_w: float,
+    fit_h: float,
+) -> tuple[float, float, float, float] | None:
+    """Pixel rect (x, y, w, h) of a snake-grid cell on the painted canvas."""
+    cell = panorama_shot_cell_norm(index, cols, rows, x1, y1, x2, y2)
+    if cell is None:
+        return None
+    origin = panorama_unit_to_px(
+        cell["nx"] - cell["nw"] / 2.0,
+        cell["ny"] - cell["nh"] / 2.0,
+        limit_left=limit_left,
+        limit_top=limit_top,
+        span_x=span_x,
+        span_y=span_y,
+        fit_x=fit_x,
+        fit_y=fit_y,
+        fit_w=fit_w,
+        fit_h=fit_h,
+    )
+    far = panorama_unit_to_px(
+        cell["nx"] + cell["nw"] / 2.0,
+        cell["ny"] + cell["nh"] / 2.0,
+        limit_left=limit_left,
+        limit_top=limit_top,
+        span_x=span_x,
+        span_y=span_y,
+        fit_x=fit_x,
+        fit_y=fit_y,
+        fit_w=fit_w,
+        fit_h=fit_h,
+    )
+    if origin is None or far is None:
+        return None
+    width = far[0] - origin[0]
+    height = far[1] - origin[1]
+    if width < 1 or height < 1:
+        return None
+    return (origin[0], origin[1], width, height)
 
 
 def panorama_tele_overlay(
@@ -1740,11 +1968,15 @@ def control_gain_field(shooting_mode: int, wide: bool) -> str:
 
 
 def camera_has_manual_settings(settings: ControlSettings | None, shooting_mode: int, wide: bool) -> bool:
-    """True when this mode and camera have a saved exposure or gain."""
+    """True when this mode and camera have a saved exposure, gain, filter, or count."""
     item = settings or ControlSettings()
     exposure = getattr(item, control_exposure_field(shooting_mode, wide), "")
     gain = getattr(item, control_gain_field(shooting_mode, wide), "")
-    return bool(str(exposure or "").strip() or str(gain or "").strip())
+    if str(exposure or "").strip() or str(gain or "").strip():
+        return True
+    if shooting_mode == 2 and (str(item.ir_filter or "").strip() or str(item.stack_count or "").strip()):
+        return True
+    return False
 
 
 def shooting_mode_camera_steps(
@@ -1756,9 +1988,9 @@ def shooting_mode_camera_steps(
     """Camera writes after entering PHOTO or DSO.
 
     When Auto Parameters is selected it stays on in both PHOTO and DSO.
-    Otherwise a camera with a saved exposure or gain stays manual, and a camera
-    with neither gets Auto Parameters. DSO manual mode also restores filter
-    and stack count.
+    Otherwise a camera with a saved exposure, gain, filter, or stack count stays
+    manual, and a camera with none of those gets Auto Parameters. DSO manual
+    mode also restores filter and stack count.
     """
     if shooting_mode not in {1, 2}:
         return []
@@ -1787,6 +2019,70 @@ def shooting_mode_camera_steps(
         if item.stack_count:
             steps.append(("count", item.stack_count, manual_cameras[0]))
     return steps
+
+
+def control_mode_values_landed(
+    settings: ControlSettings | None,
+    shooting_mode: int,
+    telemetry: dict[str, Any] | None,
+    *,
+    include_wide: bool,
+) -> bool:
+    """True when a camera read already shows this mode's saved manual setup.
+
+    A missing field stays unknown. A present exposure, gain, filter, or count
+    that differs from the saved value means DSO entry still has to write it.
+    Auto Parameters that the user turned on is already the chosen setup.
+    """
+    item = settings or ControlSettings()
+    if str(item.auto_parameters).strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    tel = telemetry or {}
+
+    def reported(name: str, camera: str) -> Any:
+        wide = camera == "wide"
+        slot = "photo" if shooting_mode == 1 else "astro"
+        prefix = "wide_" if wide else ""
+        if name == "exposure":
+            return tel.get(f"{slot}_{prefix}exposure_text")
+        if name == "gain":
+            return tel.get(f"{slot}_{prefix}gain")
+        if name == "ir":
+            return tel.get("ir_filter")
+        if name == "count":
+            return tel.get("wide_stack_count" if wide else "stack_count")
+        if name == "auto_parameters":
+            return tel.get("auto_parameters_wide" if wide else "auto_parameters_tele")
+        return None
+
+    for name, value, camera in shooting_mode_camera_steps(item, shooting_mode, include_wide=include_wide):
+        have = reported(name, camera)
+        if have in (None, "", "—"):
+            continue
+        if name == "auto_parameters":
+            wanted = str(value).strip().lower() in {"1", "true", "yes", "on"}
+            if isinstance(have, bool):
+                live = have
+            else:
+                live = str(have).strip().lower() in {"1", "true", "yes", "on"}
+            if live is not wanted:
+                return False
+            continue
+        if name == "exposure":
+            if firmware_exposure_name(have) != firmware_exposure_name(value):
+                return False
+            continue
+        if name in {"gain", "count"}:
+            try:
+                if int(float(have)) != int(float(value)):
+                    return False
+            except (TypeError, ValueError):
+                if str(have).strip() != str(value).strip():
+                    return False
+            continue
+        if name == "ir" and normalize_ir_filter(have) != normalize_ir_filter(value):
+            return False
+    return True
 
 
 def control_settings_patch(previous: ControlSettings | None, **changes: Any) -> ControlSettings:

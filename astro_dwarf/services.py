@@ -3599,7 +3599,7 @@ def live_mosaic_resume_plan(
             if panes and start > panes:
                 return None
             return start, False
-        if label == "goto":
+        if label in {"goto", "changing"}:
             return index, False
         return index, True
     if label == "complete":

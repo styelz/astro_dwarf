@@ -7,10 +7,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from astro_dwarf.device_worker import camera_param_unchanged
+from astro_dwarf.device_worker import camera_param_unchanged, mosaic_pane_change_label
 from astro_dwarf.qt_backend import (
     control_restore_should_set_auto_calibration,
     mosaic_capture_continues,
+    device_mosaic_join_accepts_frames,
+    device_mosaic_join_pane,
     mosaic_accept_live_frame,
     mosaic_finished_pane,
     mosaic_hold_pane,
@@ -19,6 +21,9 @@ from astro_dwarf.qt_backend import (
     mosaic_preview_keep_live_sheet,
     mosaic_preview_scale_text,
     mosaic_preview_should_open_wide,
+    mosaic_stitch_button_visible,
+    finished_device_mosaic_uses_live_feed,
+    held_sheet_device_layout,
     mosaic_frozen_takes_dropped_enhance,
     mosaic_goto_failed_result,
     mosaic_group_sessions,
@@ -26,9 +31,11 @@ from astro_dwarf.qt_backend import (
     mosaic_overlay_live_pane,
     mosaic_pane_may_replace_frozen,
     mosaic_progress_phase,
+    mosaic_retarget_keeps_joined_frames,
     mosaic_result_holds_sheet,
     mosaic_result_pane,
     mosaic_result_should_drop_sheet,
+    mosaic_sheet_survives_preview_stop,
     mosaic_should_copy_live_still,
     mosaic_should_hold_last_live_frame,
     mosaic_should_hold_slew_frame,
@@ -48,10 +55,18 @@ from astro_dwarf.qt_backend import (
     preview_should_skip_go_live,
 )
 from astro_dwarf.stream_preview import (
+    LiveFrames,
     MosaicFrames,
     MosaicLiveItem,
+    PanoramaStampItem,
+    clear_mosaic_pane_cache,
     live_frame_data_url,
+    load_mosaic_pane_cache,
+    mosaic_cache_current,
     mosaic_live_overlay_ready,
+    preview_should_ingest_frame,
+    save_mosaic_pane_cache,
+    set_live_frames,
 )
 from astro_dwarf.telemetry_view import auto_parameter_cameras, camera_params_to_telemetry
 
@@ -88,6 +103,114 @@ def test_mosaic_live_item_font_pixel_size() -> None:
     )
     _assert(mosaic_live_overlay_ready(nxt, 0), "first frame after a blank pane is live")
     del app
+
+
+def test_panorama_stamp_leaves_tele_in_previous_cell() -> None:
+    from PySide6.QtGui import QColor, QGuiApplication, QImage
+
+    app = QGuiApplication.instance() or QGuiApplication([])
+    previous_hub = None
+    try:
+        hub = LiveFrames()
+        set_live_frames(hub)
+        item = PanoramaStampItem()
+        item.active = True
+        item.fitX = 0
+        item.fitY = 0
+        item.fitW = 320
+        item.fitH = 90
+        item.limitLeft = 0
+        item.limitTop = 0
+        item.spanX = 1
+        item.spanY = 1
+        item.boxX1 = 0
+        item.boxY1 = 0
+        item.boxX2 = 1
+        item.boxY2 = 1
+        item.gridColumns = 4
+        item.gridRows = 2
+        item.tileIndex = 0
+        red = QImage(16, 9, QImage.Format.Format_RGB32)
+        red.fill(QColor(220, 30, 30))
+        hub.update("tele", red)
+        item.playing = True
+        item.shooting = True
+        _assert(item.stampedIndexes() == [], item.stampedIndexes())
+        item.tileIndex = 1
+        _assert(item.stampedIndexes() == [0], item.stampedIndexes())
+        sheet = item.sheetImage()
+        _assert(not sheet.isNull(), "left cell must keep a downscaled tele still")
+        pixel = sheet.pixelColor(10, 10)
+        _assert(pixel.red() > 180 and pixel.green() < 80, pixel)
+        later = sheet.pixelColor(90, 10)
+        _assert(later.alpha() == 0, "current cell is live, not frozen yet")
+        item.shooting = False
+        _assert(1 in item.stampedIndexes(), item.stampedIndexes())
+    finally:
+        set_live_frames(previous_hub)
+    del app
+
+
+def test_panorama_stamp_ignores_one_by_one_grid() -> None:
+    from PySide6.QtGui import QColor, QGuiApplication, QImage
+
+    app = QGuiApplication.instance() or QGuiApplication([])
+    previous_hub = None
+    try:
+        hub = LiveFrames()
+        set_live_frames(hub)
+        item = PanoramaStampItem()
+        item.active = True
+        item.fitX = 0
+        item.fitY = 0
+        item.fitW = 320
+        item.fitH = 90
+        item.limitLeft = 0
+        item.limitTop = 0
+        item.spanX = 1
+        item.spanY = 1
+        item.boxX1 = 0
+        item.boxY1 = 0
+        item.boxX2 = 1
+        item.boxY2 = 1
+        item.gridColumns = 1
+        item.gridRows = 1
+        red = QImage(16, 9, QImage.Format.Format_RGB32)
+        red.fill(QColor(220, 30, 30))
+        hub.update("tele", red)
+        item.playing = True
+        item.shooting = True
+        item.shooting = False
+        _assert(item.stampedIndexes() == [], item.stampedIndexes())
+        sheet = item.sheetImage()
+        _assert(sheet.isNull(), "1×1 must not freeze live tele over the scan")
+    finally:
+        set_live_frames(previous_hub)
+    del app
+
+
+def test_preview_keeps_panorama_tele_while_unfocused() -> None:
+    _assert(preview_should_ingest_frame(True, first_frame=False, camera="tele"), "focused preview")
+    _assert(
+        not preview_should_ingest_frame(False, first_frame=False, camera="tele"),
+        "background drops idle tele",
+    )
+    _assert(
+        not preview_should_ingest_frame(
+            False, first_frame=False, camera="wide", panorama_running=True
+        ),
+        "background still drops wide",
+    )
+    _assert(
+        preview_should_ingest_frame(
+            False, first_frame=False, camera="tele", panorama_running=True
+        ),
+        "panorama stamps need tele while unfocused",
+    )
+    _assert(
+        preview_should_ingest_frame(False, first_frame=True, camera="wide"),
+        "first frame still opens the stream",
+    )
 
 
 def test_preview_preserves_dso_after_tracking() -> None:
@@ -482,6 +605,25 @@ def test_mosaic_keeps_preview_open_between_panes() -> None:
         mosaic_slew_frame_ready(has_frame=False, timed_out=True),
         "wait a few seconds for the last frame, then switch anyway",
     )
+    _assert(mosaic_progress_phase("Changing mosaic pane · 2/4") == "changing", "firmware pane change")
+    _assert(mosaic_progress_phase("Changing to pane 3/4") == "changing", "pane change wording")
+    _assert(
+        not mosaic_should_copy_live_still(
+            camera="tele",
+            phase="changing",
+            pane=2,
+            stream_pane=2,
+            capturing=True,
+            stacked=12,
+            taken=12,
+            seen_reset=True,
+        ),
+        "a pane change must not copy leftover frames into the next cell",
+    )
+    _assert(mosaic_pane_change_label(1, 4, 0) == "Changing mosaic pane · 2/4", "next pane after the first stack")
+    _assert(mosaic_pane_change_label(1, 4, 2) == "Changing mosaic pane · 2/4", "reported index wins when it has advanced")
+    _assert(mosaic_pane_change_label(4, 4, 4) == "", "the last pane is not a change")
+    _assert(mosaic_pane_change_label(0, 4, 0) == "", "no change before the first pane stacks")
     _assert(mosaic_progress_phase("Stacking pane 2/4") == "stacking", "stack start")
     _assert(mosaic_progress_phase("Waiting for pane 2 · 6/15") == "stacking", "stack progress")
     _assert(mosaic_progress_phase("Pane 2/4 complete") == "complete", "pane done")
@@ -772,6 +914,50 @@ def test_mosaic_dismiss_drops_leftover_sheet_and_sky_stills() -> None:
     )
 
 
+def test_finished_device_mosaic_shows_the_live_stitch() -> None:
+    from astro_dwarf.domain import Mosaic
+
+    empty = mosaic_preview_empty()
+    _assert(empty["live_feed"] is False, empty)
+    device = Mosaic(rows=2, columns=2, horizontal_scale=180, vertical_scale=180)
+    custom = Mosaic(grid_rows=2, grid_columns=2, horizontal_scale=180, vertical_scale=180)
+    _assert(held_sheet_device_layout(device) == (2, 2, 180, 180), "a held device mosaic stays a device mosaic")
+    _assert(held_sheet_device_layout(custom) is None, "a custom sheet is not a device mosaic")
+    _assert(held_sheet_device_layout(None) is None, "no mosaic")
+    _assert(
+        not finished_device_mosaic_uses_live_feed(device=True, active=True, phase="stacking"),
+        "a device mosaic keeps the sheet while panes are still shooting",
+    )
+    _assert(
+        not finished_device_mosaic_uses_live_feed(device=True, active=True, phase="changing"),
+        "the gap between panes is not the finished stitch",
+    )
+    _assert(
+        finished_device_mosaic_uses_live_feed(device=True, active=True, phase=""),
+        "a finished device mosaic is already stitched on the live feed",
+    )
+    _assert(
+        not finished_device_mosaic_uses_live_feed(device=False, active=True, phase=""),
+        "a finished custom mosaic stays on the contact sheet",
+    )
+    _assert(
+        not mosaic_stitch_button_visible(device=True, active=True, running=False, completed=4, stitch_status=""),
+        "a device mosaic has no stitch button",
+    )
+    _assert(
+        mosaic_stitch_button_visible(device=False, active=True, running=False, completed=4, stitch_status=""),
+        "a finished custom mosaic can be stitched",
+    )
+    _assert(
+        not mosaic_stitch_button_visible(device=False, active=True, running=True, completed=4, stitch_status=""),
+        "stitch waits until the custom mosaic finishes",
+    )
+    _assert(
+        mosaic_stitch_button_visible(device=False, active=False, running=False, completed=0, stitch_status="working"),
+        "a stitch already running stays visible",
+    )
+
+
 def test_device_mosaic_hud_uses_scale_not_pane_count() -> None:
     empty = mosaic_preview_empty()
     _assert(empty["device"] is False, empty)
@@ -780,6 +966,163 @@ def test_device_mosaic_hud_uses_scale_not_pane_count() -> None:
     _assert(mosaic_preview_scale_text((2, 2, 180, 180)) == "1.8×1.8", "1.8W × 1.8H")
     _assert(mosaic_preview_scale_text((2, 1, 150, 100)) == "1.5×1.0", "strip")
     _assert(mosaic_preview_scale_text((1, 1, 100, 100)) == "", "1.0×1.0 is not a mosaic")
+
+
+def test_mosaic_pane_cache_roundtrip() -> None:
+    import tempfile
+
+    from PySide6.QtGui import QGuiApplication, QImage
+
+    QGuiApplication.instance() or QGuiApplication([])
+    image = QImage(40, 24, QImage.Format.Format_RGB32)
+    image.fill(0x2266AA)
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        group = "session:abc-def"
+        _assert(
+            save_mosaic_pane_cache(
+                "scope-1",
+                group,
+                2,
+                image,
+                frozen=True,
+                current=2,
+                columns=2,
+                rows=2,
+                root=root,
+            ),
+            "pane still must be written",
+        )
+        _assert(
+            save_mosaic_pane_cache("scope-1", group, 1, image, current=2, columns=2, rows=2, root=root),
+            "an earlier pane still must be written beside it",
+        )
+        loaded = load_mosaic_pane_cache("scope-1", group, root=root)
+        _assert(set(loaded["images"]) == {1, 2}, loaded)
+        _assert(not loaded["images"][2].isNull(), "cached pane 2 must decode")
+        _assert(loaded["images"][2].width() == 40, loaded["images"][2].size())
+        _assert(loaded["frozen"] == {2}, loaded["frozen"])
+        _assert(loaded["current"] == 2 and loaded["columns"] == 2 and loaded["rows"] == 2, loaded)
+        _assert(mosaic_cache_current("scope-1", group, root=root) == 2, "cache meta remembers the stacking pane")
+        clear_mosaic_pane_cache("scope-1", group, root=root)
+        again = load_mosaic_pane_cache("scope-1", group, root=root)
+        _assert(again["images"] == {}, again)
+
+
+def test_device_mosaic_restart_joins_the_stacking_pane() -> None:
+    _assert(
+        device_mosaic_join_pane(reported=3, tracked=1, cached=2, stacked=28, panes=4) == 3,
+        "firmware pane index wins after a restart",
+    )
+    _assert(
+        device_mosaic_join_pane(reported=0, tracked=1, cached=3, stacked=28, panes=4) == 3,
+        "a mid-pane restart without an index follows the cached pane",
+    )
+    _assert(
+        device_mosaic_join_pane(reported=0, tracked=1, cached=3, stacked=1, panes=4) == 1,
+        "a new stack does not jump to a stale cached pane",
+    )
+    _assert(
+        device_mosaic_join_pane(reported=0, tracked=1, cached=3, stacked=0, panes=4) == 1,
+        "no frames yet stays on the tracked pane",
+    )
+    _assert(
+        device_mosaic_join_pane(reported=0, tracked=2, cached=1, stacked=28, panes=4) == 2,
+        "an advanced tracker is not pulled backward",
+    )
+    _assert(
+        device_mosaic_join_accepts_frames(stacked=28, joined=3),
+        "a pane found already stacking accepts frames without waiting for a count reset",
+    )
+    _assert(
+        not device_mosaic_join_accepts_frames(stacked=1, joined=3),
+        "a fresh count still waits for its own frames",
+    )
+    _assert(
+        not device_mosaic_join_accepts_frames(stacked=28, joined=0),
+        "no pane means no frames",
+    )
+    _assert(
+        mosaic_retarget_keeps_joined_frames(
+            stacked=28, next_pane=3, previous_stream=0, seen_reset=False, join_locked=True
+        ),
+        "preview attaching to the joined pane keeps acceptance",
+    )
+    _assert(
+        not mosaic_retarget_keeps_joined_frames(
+            stacked=40, next_pane=3, previous_stream=2, seen_reset=True, join_locked=True
+        ),
+        "leaving a pane that already accepted frames waits for the counter to fall",
+    )
+    _assert(
+        not mosaic_retarget_keeps_joined_frames(
+            stacked=28, next_pane=3, previous_stream=0, seen_reset=False, join_locked=False
+        ),
+        "an unlocked mosaic does not skip the reset",
+    )
+
+
+def test_preview_stop_keeps_cached_mosaic_panes() -> None:
+    _assert(
+        mosaic_sheet_survives_preview_stop(
+            mosaic_running=True,
+            disconnecting=False,
+            connected=True,
+            shutting_down=False,
+            has_sheet=True,
+        ),
+        "a running mosaic must keep pane stills when live view stops",
+    )
+    _assert(
+        mosaic_sheet_survives_preview_stop(
+            mosaic_running=False,
+            disconnecting=True,
+            connected=True,
+            shutting_down=False,
+            has_sheet=True,
+        ),
+        "disconnect must keep the cached panes",
+    )
+    _assert(
+        mosaic_sheet_survives_preview_stop(
+            mosaic_running=False,
+            disconnecting=False,
+            connected=False,
+            shutting_down=False,
+            has_sheet=True,
+        ),
+        "a dropped link must keep the cached panes",
+    )
+    _assert(
+        mosaic_sheet_survives_preview_stop(
+            mosaic_running=False,
+            disconnecting=False,
+            connected=True,
+            shutting_down=True,
+            has_sheet=True,
+        ),
+        "shutdown must not delete pane stills the next launch needs",
+    )
+    _assert(
+        not mosaic_sheet_survives_preview_stop(
+            mosaic_running=False,
+            disconnecting=False,
+            connected=True,
+            shutting_down=False,
+            has_sheet=True,
+        ),
+        "stop live view while connected still dismisses a finished sheet",
+    )
+    _assert(
+        not mosaic_sheet_survives_preview_stop(
+            mosaic_running=False,
+            disconnecting=True,
+            connected=False,
+            shutting_down=False,
+            has_sheet=False,
+        ),
+        "disconnect with no mosaic sheet has nothing to restore",
+    )
 
 
 def test_mosaic_preview_hides_after_capture_without_held_result() -> None:
@@ -912,6 +1255,7 @@ def test_auto_parameters_follow_the_camera_switch() -> None:
 
 if __name__ == "__main__":
     test_mosaic_live_item_font_pixel_size()
+    test_preview_keeps_panorama_tele_while_unfocused()
     test_preview_preserves_dso_after_tracking()
     test_preview_skips_golive_after_tracking()
     test_preview_attaches_when_rtsp_is_already_live()
@@ -927,11 +1271,17 @@ if __name__ == "__main__":
     test_sky_mosaic_urls_backfill_from_stored_stills()
     test_mosaic_result_keeps_contact_sheet_until_dismissed()
     test_mosaic_dismiss_drops_leftover_sheet_and_sky_stills()
+    test_finished_device_mosaic_shows_the_live_stitch()
     test_device_mosaic_hud_uses_scale_not_pane_count()
+    test_mosaic_pane_cache_roundtrip()
+    test_device_mosaic_restart_joins_the_stacking_pane()
+    test_preview_stop_keeps_cached_mosaic_panes()
     test_mosaic_preview_hides_after_capture_without_held_result()
     test_mosaic_frames_clear_resets_grid()
     test_restore_skips_unknown_auto_calibration()
     test_camera_params_map_ir_and_auto_calibration()
     test_stack_count_is_firmware_stack_count_not_a_local_cache()
     test_auto_parameters_follow_the_camera_switch()
+    test_panorama_stamp_leaves_tele_in_previous_cell()
+    test_panorama_stamp_ignores_one_by_one_grid()
     print("ok")

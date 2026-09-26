@@ -1,12 +1,16 @@
 import QtQuick
+import AstroDwarf 1.0
 import ".."
 
 // Device framing canvas. The blank area is the mount's reachable panorama.
-// The box starts as one wide frame. A resize asks the telescope to scan.
+// Firmware draws the first yellow box (usually one wide frame). A resize
+// asks the telescope to scan that crop. Tele stamps stay the full-canvas
+// cell size; they only walk the yellow box.
 Item {
     id: pane
     property bool active: false
     property bool widePlaying: false
+    property bool telePlaying: false
 
     readonly property var telemetry: (backend.selectedDevice && backend.selectedDevice.telemetry) || ({})
     readonly property bool hasRect: !!telemetry.panorama_has_rect
@@ -41,10 +45,14 @@ Item {
     readonly property real fitH: canvasAspect > 0 ? fitW / canvasAspect : 0
     readonly property real fitX: (width - fitW) / 2
     readonly property real fitY: (height - fitH) / 2
-    readonly property real boxX1: Number(telemetry.panorama_x1 || limitLeft)
-    readonly property real boxY1: Number(telemetry.panorama_y1 || limitTop)
-    readonly property real boxX2: Number(telemetry.panorama_x2 || limitRight)
-    readonly property real boxY2: Number(telemetry.panorama_y2 || limitBottom)
+    function numOr(value, fallback) {
+        const n = Number(value)
+        return isFinite(n) ? n : fallback
+    }
+    readonly property real boxX1: numOr(telemetry.panorama_x1, limitLeft)
+    readonly property real boxY1: numOr(telemetry.panorama_y1, limitTop)
+    readonly property real boxX2: numOr(telemetry.panorama_x2, limitRight)
+    readonly property real boxY2: numOr(telemetry.panorama_y2, limitBottom)
     readonly property bool wideSized: {
         const h = Number(telemetry.panorama_rect_fov_h || 0)
         const v = Number(telemetry.panorama_rect_fov_v || 0)
@@ -55,7 +63,6 @@ Item {
         return Math.abs(h - wh) / wh < 0.2 && Math.abs(v - wv) / wv < 0.2
     }
     property bool userEnlarged: false
-    property bool seeded: false
     property bool holding: false
     property real heldX1: 0
     property real heldY1: 0
@@ -76,37 +83,55 @@ Item {
     readonly property bool shooting: String(telemetry.panorama_state || "") === "running"
     readonly property int tileDone: Math.max(0, Number(telemetry.panorama_completed || 0))
     readonly property int tileTotal: Math.max(0, Number(telemetry.panorama_total || 0))
-    readonly property int tileIndex: tileTotal > 0 ? Math.min(tileTotal - 1, tileDone) : 0
-
-    // Same factoring as domain.panorama_shot_grid: tele FOV on the painted
-    // canvas, not a 1:1 split of normalized x/y (that overlay is too wide).
-    function tileGrid() {
-        const total = tileTotal
-        if (total < 2 || fitW < 2 || fitH < 2)
-            return {cols: 1, rows: 1}
+    // Same 1800-on-canvas factoring as before the FOV-fill change. Cell size
+    // is span/fullGrid, never the yellow box divided by that grid.
+    readonly property int fullColCount: {
+        const total = 1800
         const teleH = Number(telemetry.tele_fov_h || 0)
         const teleV = Number(telemetry.tele_fov_v || 0)
         const teleAspect = (teleH > 0.5 && teleV > 0.3) ? teleH / teleV : 2.95 / 1.66
-        const target = (fitW / fitH) / teleAspect
-        let cols = 1
-        let err = 1e9
-        for (let c = 1; c <= total; ++c) {
-            if (total % c !== 0)
+        const view = (fitW > 2 && fitH > 2) ? (fitW / fitH) : canvasAspect
+        const target = (view > 0.2 ? view : 32 / 9) / teleAspect
+        let bestCols = 1
+        let bestErr = 1e9
+        for (let cols = 1; cols <= total; cols++) {
+            if (total % cols)
                 continue
-            const rows = total / c
-            const delta = Math.abs(c / rows - target)
-            if (delta < err) {
-                err = delta
-                cols = c
+            const rowCount = total / cols
+            const err = Math.abs(cols / rowCount - target)
+            if (err < bestErr) {
+                bestErr = err
+                bestCols = cols
             }
         }
-        return {cols: cols, rows: total / cols}
+        return Math.max(1, bestCols)
     }
+    readonly property int fullRowCount: Math.max(1, Math.round(1800 / Math.max(1, fullColCount)))
+    readonly property real stampNw: spanX / Math.max(1, fullColCount)
+    readonly property real stampNh: spanY / Math.max(1, fullRowCount)
+    readonly property real frameLeft: Math.min(showX1, showX2)
+    readonly property real frameTop: Math.min(showY1, showY2)
+    // Do not name these `rows`/`columns` or return `{rows: …}`. QML treats
+    // `.rows` as a recursive lookup of a property named `rows` and blows the
+    // JS stack (RangeError, fake line ~8e8).
+    readonly property int tileColCount: {
+        const bw = Math.abs(showX2 - showX1)
+        if (!(stampNw > 0.001) || !(bw > 0.001) || fitW < 2)
+            return 1
+        return Math.max(1, Math.round(bw / stampNw))
+    }
+    readonly property int tileRowCount: {
+        const bh = Math.abs(showY2 - showY1)
+        if (!(stampNh > 0.001) || !(bh > 0.001) || fitH < 2)
+            return 1
+        return Math.max(1, Math.round(bh / stampNh))
+    }
+    readonly property int tileCap: Math.max(1, tileColCount * tileRowCount)
+    readonly property int tileIndex: Math.max(0, Math.min(tileCap - 1, tileDone))
 
     onActiveChanged: {
-        if (!active) {
+        if (!active && !shooting) {
             userEnlarged = false
-            seeded = false
             holding = false
             shownScanRev = -1
             lockedAspect = 0
@@ -115,7 +140,6 @@ Item {
             frontScan = scanA
         }
     }
-    onHasRectChanged: seedFrame()
     onTelemetryChanged: reloadScan()
 
     function noteScanAspect(image) {
@@ -128,7 +152,18 @@ Item {
     function reloadScan() {
         const url = String(telemetry.panorama_scan_url || "")
         const rev = Number(telemetry.panorama_scan_rev || 0)
-        if (!url || rev === shownScanRev)
+        if (!active || !url) {
+            shownScanRev = -1
+            if (scanA.source !== "")
+                scanA.source = ""
+            if (scanB.source !== "")
+                scanB.source = ""
+            frontScan = scanA
+            return
+        }
+        if (rev === shownScanRev)
+            return
+        if (scanA.status === Image.Loading || scanB.status === Image.Loading)
             return
         shownScanRev = rev
         const incoming = frontScan === scanA ? scanB : scanA
@@ -136,11 +171,16 @@ Item {
     }
 
     function promoteScan(image) {
+        if (image.status === Image.Error) {
+            image.source = ""
+            reloadScan()
+            return
+        }
         if (image.status !== Image.Ready || String(image.source) === "")
             return
         noteScanAspect(image)
         frontScan = image
-        lumaProbe.schedule()
+        reloadScan()
     }
 
     function holdBox(x1, y1, x2, y2) {
@@ -151,40 +191,21 @@ Item {
         holding = true
     }
 
-    // The telescope opens framing on the full reachable area. Start at half
-    // that width and keep the box there while the quick scan updates the rect.
-    function seedFrame() {
-        if (!active || !hasRect || seeded || dragging || userEnlarged)
-            return
-        seeded = true
-        const w = spanX * 0.5
-        const h = Math.min(spanY, spanY * w / spanX * canvasAspect / wideAspect)
-        const cx = (limitLeft + limitRight) / 2
-        const cy = (limitTop + limitBottom) / 2
-        const x1 = cx - w / 2
-        const y1 = cy - h / 2
-        const x2 = cx + w / 2
-        const y2 = cy + h / 2
-        holdBox(x1, y1, x2, y2)
-        backend.updatePanoramaFrame(x1, y1, x2, y2)
+    function releaseFrame() {
+        userEnlarged = false
+        holding = false
+    }
+
+    function unitPxX(nx) {
+        return fitX + ((nx - limitLeft) / spanX) * fitW
+    }
+
+    function unitPxY(ny) {
+        return fitY + ((ny - limitTop) / spanY) * fitH
     }
 
     function unitToPx(nx, ny) {
-        return Qt.point(
-            fitX + ((nx - limitLeft) / spanX) * fitW,
-            fitY + ((ny - limitTop) / spanY) * fitH
-        )
-    }
-
-    function scanPainted(image) {
-        if (!image || image.paintedWidth < 2 || image.paintedHeight < 2)
-            return Qt.rect(0, 0, 0, 0)
-        return Qt.rect(
-            image.x + (image.width - image.paintedWidth) / 2,
-            image.y + (image.height - image.paintedHeight) / 2,
-            image.paintedWidth,
-            image.paintedHeight
-        )
+        return Qt.point(unitPxX(nx), unitPxY(ny))
     }
 
     function pxToUnit(px, py) {
@@ -270,12 +291,14 @@ Item {
     Item {
         id: box
         visible: pane.active && pane.fitW > 0 && (pane.hasRect || pane.holding)
-        readonly property point origin: pane.unitToPx(Math.min(pane.showX1, pane.showX2), Math.min(pane.showY1, pane.showY2))
-        readonly property point far: pane.unitToPx(Math.max(pane.showX1, pane.showX2), Math.max(pane.showY1, pane.showY2))
-        x: origin.x
-        y: origin.y
-        width: Math.max(Theme.px(28), far.x - origin.x)
-        height: Math.max(Theme.px(28), far.y - origin.y)
+        readonly property real minNX: Math.min(pane.showX1, pane.showX2)
+        readonly property real minNY: Math.min(pane.showY1, pane.showY2)
+        readonly property real maxNX: Math.max(pane.showX1, pane.showX2)
+        readonly property real maxNY: Math.max(pane.showY1, pane.showY2)
+        x: pane.unitPxX(minNX)
+        y: pane.unitPxY(minNY)
+        width: Math.max(Theme.px(28), pane.unitPxX(maxNX) - pane.unitPxX(minNX))
+        height: Math.max(Theme.px(28), pane.unitPxY(maxNY) - pane.unitPxY(minNY))
 
         Rectangle {
             anchors.fill: parent
@@ -381,131 +404,65 @@ Item {
         }
     }
 
+    PanoramaStampItem {
+        id: stampLayer
+        anchors.fill: parent
+        z: 4
+        enabled: false
+        visible: pane.active
+        active: pane.active
+        shooting: pane.shooting
+        playing: pane.telePlaying && pane.shooting && pane.tileCap > 1
+        tileIndex: pane.tileIndex
+        gridColumns: pane.tileColCount
+        gridRows: pane.tileRowCount
+        fitX: pane.fitX
+        fitY: pane.fitY // C++ name; do not bind `.rows` on a JS object
+        fitW: pane.fitW
+        fitH: pane.fitH
+        boxX1: pane.frameLeft
+        boxY1: pane.frameTop
+        boxX2: pane.frameLeft + pane.tileColCount * pane.stampNw
+        boxY2: pane.frameTop + pane.tileRowCount * pane.stampNh
+        limitLeft: pane.limitLeft
+        limitTop: pane.limitTop
+        spanX: pane.spanX
+        spanY: pane.spanY
+    }
+
     Rectangle {
         id: tileBox
         z: 5
-        visible: pane.active && pane.shooting && pane.tileTotal > 1 && pane.fitW > 0
-        readonly property var grid: pane.tileGrid()
-        readonly property real tileLeft: Math.min(pane.showX1, pane.showX2)
-        readonly property real tileTop: Math.min(pane.showY1, pane.showY2)
-        readonly property real spanW: Math.abs(pane.showX2 - pane.showX1)
-        readonly property real spanH: Math.abs(pane.showY2 - pane.showY1)
-        readonly property int row: Math.floor(pane.tileIndex / Math.max(1, grid.cols))
-        readonly property int col: {
-            const cols = Math.max(1, grid.cols)
-            const c = pane.tileIndex % cols
-            return (row % 2) ? (cols - 1 - c) : c
+        visible: pane.active && pane.shooting && pane.tileCap > 1 && pane.fitW > 0
+        readonly property int shotCols: Math.max(1, pane.tileColCount)
+        readonly property int shotRowCount: Math.max(1, pane.tileRowCount)
+        readonly property real tileLeft: pane.frameLeft
+        readonly property real tileTop: pane.frameTop
+        readonly property int shotRow: Math.floor(pane.tileIndex / shotCols)
+        readonly property int shotCol: {
+            const c = pane.tileIndex % shotCols
+            return (shotRow % 2) ? (shotCols - 1 - c) : c
         }
-        readonly property real shotNx: tileLeft + (col + 0.5) * spanW / grid.cols
-        readonly property real shotNy: tileTop + (row + 0.5) * spanH / grid.rows
-        readonly property real shotNw: spanW / grid.cols
-        readonly property real shotNh: spanH / grid.rows
-        readonly property point origin: pane.unitToPx(shotNx - shotNw / 2, shotNy - shotNh / 2)
-        readonly property point far: pane.unitToPx(shotNx + shotNw / 2, shotNy + shotNh / 2)
-        readonly property color strokeDark: Theme.hsl(0, 0.25, 0.08)
-        readonly property color strokeLight: Theme.hsl(0, 0.12, 0.94)
-        property bool overLight: false
-        property bool strokeReady: false
-        x: origin.x
-        y: origin.y
-        width: Math.max(1, far.x - origin.x)
-        height: Math.max(1, far.y - origin.y)
+        readonly property real shotNw: pane.stampNw
+        readonly property real shotNh: pane.stampNh
+        readonly property real shotNx: tileLeft + (shotCol + 0.5) * shotNw
+        readonly property real shotNy: tileTop + (shotRow + 0.5) * shotNh
+        x: pane.unitPxX(shotNx - shotNw / 2)
+        y: pane.unitPxY(shotNy - shotNh / 2)
+        width: Math.max(1, pane.unitPxX(shotNx + shotNw / 2) - pane.unitPxX(shotNx - shotNw / 2))
+        height: Math.max(1, pane.unitPxY(shotNy + shotNh / 2) - pane.unitPxY(shotNy - shotNh / 2))
         color: "transparent"
-        border.color: strokeReady ? (overLight ? strokeDark : strokeLight) : Theme.accent
+        border.color: Theme.hsl(0, 0.12, 0.94)
         border.width: 1
         antialiasing: false
-        onVisibleChanged: lumaProbe.schedule()
-        onXChanged: lumaProbe.schedule()
-        onYChanged: lumaProbe.schedule()
-        onWidthChanged: lumaProbe.schedule()
-        onHeightChanged: lumaProbe.schedule()
-    }
 
-    Canvas {
-        id: lumaProbe
-        x: -64
-        y: -64
-        width: 32
-        height: 18
-        opacity: 0
-        renderTarget: Canvas.Image
-        contextType: "2d"
-        property bool scheduled: false
-        property bool sampled: false
-
-        function schedule() {
-            if (scheduled || !tileBox.visible)
-                return
-            scheduled = true
-            Qt.callLater(kick)
-        }
-
-        function kick() {
-            scheduled = false
-            if (tileBox.visible)
-                requestPaint()
-        }
-
-        onPaint: {
-            sampled = false
-            const img = pane.frontScan
-            const ctx = getContext("2d")
-            if (!ctx)
-                return
-            ctx.reset()
-            if (!img || img.status !== Image.Ready || img.implicitWidth < 2 || img.implicitHeight < 2)
-                return
-            const painted = pane.scanPainted(img)
-            if (painted.width < 2 || painted.height < 2)
-                return
-            const sx = (tileBox.x - painted.x) / painted.width * img.implicitWidth
-            const sy = (tileBox.y - painted.y) / painted.height * img.implicitHeight
-            const sw = tileBox.width / painted.width * img.implicitWidth
-            const sh = tileBox.height / painted.height * img.implicitHeight
-            if (!(sw > 1 && sh > 1))
-                return
-            try {
-                ctx.drawImage(img, sx, sy, sw, sh, 0, 0, width, height)
-            } catch (err) {
-                try {
-                    ctx.drawImage(img.source, sx, sy, sw, sh, 0, 0, width, height)
-                } catch (err2) {
-                    return
-                }
-            }
-            sampled = true
-        }
-
-        onPainted: {
-            if (!sampled) {
-                tileBox.strokeReady = false
-                return
-            }
-            const ctx = getContext("2d")
-            const pix = ctx ? ctx.getImageData(0, 0, width, height) : null
-            const data = pix && pix.data
-            if (!data || data.length < 16) {
-                tileBox.strokeReady = false
-                return
-            }
-            let sum = 0
-            let n = 0
-            for (let i = 0; i < data.length; i += 4) {
-                if (data[i + 3] < 16)
-                    continue
-                sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]
-                n++
-            }
-            if (n < 4) {
-                tileBox.strokeReady = false
-                return
-            }
-            const luma = sum / n / 255
-            if (luma > 0.55)
-                tileBox.overLight = true
-            else if (luma < 0.45)
-                tileBox.overLight = false
-            tileBox.strokeReady = true
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: 1
+            color: "transparent"
+            border.color: Theme.hsl(0, 0.25, 0.08)
+            border.width: 1
+            antialiasing: false
         }
     }
 

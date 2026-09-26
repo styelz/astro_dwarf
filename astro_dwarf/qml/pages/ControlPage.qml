@@ -96,11 +96,39 @@ Item {
         return ""
     }
     readonly property string mosaicGridText: mosaicScaleText || (backend.mosaicColumns + "×" + backend.mosaicRows)
+    readonly property int mosaicChangingPane: {
+        const step = String((backend.currentSession && backend.currentSession.current_step) || "")
+        const match = /changing mosaic pane\s*·\s*(\d+)\s*\/\s*(\d+)/i.exec(step)
+        return match ? Number(match[1]) : 0
+    }
+    readonly property int mosaicPaneTotal: {
+        const step = String((backend.currentSession && backend.currentSession.current_step) || "")
+        const match = /changing mosaic pane\s*·\s*(\d+)\s*\/\s*(\d+)/i.exec(step)
+        if (match)
+            return Number(match[2])
+        const total = Number(mosaicPreview.total || 0)
+        if (isFinite(total) && total >= 1)
+            return total
+        const cols = Number(mosaicPreview.columns || 0)
+        const rows = Number(mosaicPreview.rows || 0)
+        return (cols >= 1 && rows >= 1) ? cols * rows : 0
+    }
+    readonly property int mosaicPaneIndex: {
+        if (mosaicChangingPane >= 1)
+            return mosaicChangingPane
+        const pane = Number(mosaicPreview.current_index || 0)
+        return isFinite(pane) && pane >= 1 ? pane : 0
+    }
+    readonly property bool mosaicChanging: mosaicChangingPane >= 1 || String(mosaicPreview.phase || "") === "changing"
     readonly property string mosaicPaneText: {
+        if (mosaicRunning && mosaicPaneIndex >= 1 && mosaicPaneTotal >= 1)
+            return "PANE " + mosaicPaneIndex + "/" + mosaicPaneTotal
+        if (mosaicRunning && mosaicPaneTotal > 1)
+            return mosaicPaneTotal + " PANES"
         if (mosaicScaleText)
             return mosaicScaleText
-        const pane = Number(mosaicPreview.current_index || 0)
-        const total = Number(mosaicPreview.total || 0)
+        const pane = mosaicPaneIndex
+        const total = mosaicPaneTotal
         if (pane >= 1 && total >= 1)
             return "PANE " + pane + "/" + total
         if (pane >= 1)
@@ -489,7 +517,10 @@ Item {
                         visible: root.scopeOnline && (!!t.capture_active || controlPage.mosaicRunning)
                         label: controlPage.mosaicRunning ? "MOSAIC" : "STACKING"
                         value: controlPage.mosaicRunning
-                               ? (controlPage.mosaicPaneText + (t.capture_text ? "  ·  " + t.capture_text : ""))
+                               ? (controlPage.mosaicPaneText
+                                  + (controlPage.mosaicScaleText && controlPage.mosaicPaneText.indexOf(controlPage.mosaicScaleText) < 0
+                                     ? "  ·  " + controlPage.mosaicScaleText : "")
+                                  + (t.capture_text && !controlPage.mosaicChanging ? "  ·  " + t.capture_text : ""))
                                : String(t.capture_text || "")
                         tone: Theme.danger
                         glow: true
@@ -550,6 +581,8 @@ Item {
                         if (controlPage.mosaicRunning) {
                             const phase = String(mosaicPreview.phase || "")
                             const pane = controlPage.mosaicPaneText
+                            if (controlPage.mosaicChanging || phase === "changing")
+                                return "Changing to " + pane.toLowerCase()
                             if (phase === "goto")
                                 return "Slewing to " + pane.toLowerCase()
                             if (t.capture_active && t.capture_text)
@@ -1385,20 +1418,33 @@ Item {
                     // The framing canvas already shows the scanned wide image full-frame,
                     // so the PIP adds nothing there. Once shooting starts the PIP is the
                     // only live feed with the tele footprint reticle, so keep it up.
+                    property bool panoramaKeep: false
                     onPanoramaFrameChanged: {
                         if (panoramaFrame) {
+                            panoramaKeep = true
                             if (pipEnabled) {
                                 pipRestoreAfterPano = true
                                 pipEnabled = false
                             }
-                        } else if (pipRestoreAfterPano) {
-                            pipEnabled = true
-                            pipRestoreAfterPano = false
+                        } else if (!panoramaShooting && root.scopePending !== "panorama_shoot") {
+                            panoramaKeep = false
+                            if (pipRestoreAfterPano) {
+                                pipEnabled = true
+                                pipRestoreAfterPano = false
+                            }
                         }
                     }
                     onPanoramaShootingChanged: {
-                        if (panoramaShooting)
+                        if (panoramaShooting) {
+                            panoramaKeep = true
                             mainWide = false
+                        } else if (!panoramaFrame) {
+                            panoramaKeep = false
+                            if (pipRestoreAfterPano) {
+                                pipEnabled = true
+                                pipRestoreAfterPano = false
+                            }
+                        }
                     }
                     readonly property bool pipAvailable: backend.previewTelePlaying && backend.previewWidePlaying
                         && !backend.previewStacking
@@ -1431,14 +1477,17 @@ Item {
                     // Raw-telemetry fallback so a reconnect mid-shoot (activity cleared, telemetry not yet re-derived) still shows the canvas.
                     readonly property bool panoramaShooting: root.scopeActivity === "panorama"
                         || String(root.scopeTelemetry.panorama_state || "") === "running"
-                    readonly property bool panoramaCanvas: panoramaFrame || panoramaShooting
+                    readonly property bool panoramaCanvas: panoramaFrame || panoramaShooting || panoramaKeep
                     readonly property bool mosaicActive: !!(backend.mosaicPreview && backend.mosaicPreview.active)
+                    // A finished device mosaic is already stitched on the live feed.
+                    readonly property bool deviceMosaicFinished: !!(backend.mosaicPreview && backend.mosaicPreview.live_feed)
                     property bool showMosaicSheet: true
-                    // A device mosaic is one telescope-managed capture; keep the live
-                    // camera. Only the app's own multi-target mosaic uses the contact sheet.
-                    onMosaicActiveChanged: if (mosaicActive) showMosaicSheet = !mosaicPreview.device
-                    readonly property bool mosaicSheet: mosaicActive && showMosaicSheet && !mosaicPreview.device
-                    readonly property bool paneView: mosaicActive && !showMosaicSheet && !mosaicPreview.device
+                    // Device mosaics paint each pane in the field the telescope is
+                    // building. The PANE toggle still opens one pane full frame.
+                    // Once the telescope finishes, that feed replaces the sheet.
+                    onMosaicActiveChanged: if (mosaicActive && !deviceMosaicFinished) showMosaicSheet = true
+                    readonly property bool mosaicSheet: mosaicActive && showMosaicSheet && !deviceMosaicFinished
+                    readonly property bool paneView: mosaicActive && !showMosaicSheet && !deviceMosaicFinished
                     readonly property bool idlePreviewArt: !backend.previewPlaying && !backend.previewStacking && !backend.previewResult && !previewHost.awaitingFirstStack && !previewHost.mosaicActive && !previewHost.panoramaCanvas
                     readonly property real teleFovH: {
                         const tele = Number(root.scopeTelemetry.tele_fov_h)
@@ -1814,15 +1863,16 @@ Item {
                         visible: previewHost.panoramaCanvas && !previewHost.mosaicSheet
                         active: visible && !previewHost.feedFullscreen
                         widePlaying: backend.previewWidePlaying
+                        telePlaying: backend.previewTelePlaying
                     }
                     LiveViewPane {
                         id: liveFrame
                         objectName: "livePane"
                         anchors.fill: parent
                         visible: !previewHost.mosaicSheet && !previewHost.panoramaCanvas
-                        playing: !previewHost.panoramaCanvas && !previewHost.feedFullscreen && (previewHost.paneView || (previewHost.mainPlaying && !previewHost.mosaicSheet))
-                        wideView: previewHost.paneView ? false : previewHost.displayWide
-                        camera: previewHost.paneView ? "tele" : previewHost.liveCamera(previewHost.displayWide)
+                        playing: !previewHost.panoramaCanvas && !previewHost.feedFullscreen && (previewHost.paneView || previewHost.deviceMosaicFinished || (previewHost.mainPlaying && !previewHost.mosaicSheet))
+                        wideView: (previewHost.paneView || previewHost.deviceMosaicFinished) ? false : previewHost.displayWide
+                        camera: (previewHost.paneView || previewHost.deviceMosaicFinished) ? "tele" : previewHost.liveCamera(previewHost.displayWide)
                         centerEnabled: playing && root.motionEnabled && !backend.previewResult && !backend.centerTapBusy
                         feedDoubleClick: !wideView && playing && backend.previewTelePlaying
                         onFeedDoubleClicked: previewHost.toggleFeedFullscreen("tele")
@@ -1846,7 +1896,7 @@ Item {
                     }
                     Image {
                         anchors.fill: parent
-                        visible: backend.stitchStatus === "done" && backend.stitchImage !== ""
+                        visible: !mosaicPreview.device && backend.stitchStatus === "done" && backend.stitchImage !== ""
                         source: backend.stitchImage
                         fillMode: Image.PreserveAspectFit
                         cache: false
@@ -1857,7 +1907,7 @@ Item {
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         anchors.margins: Theme.px(14)
-                        visible: backend.stitchStatus !== "" && (previewHost.mosaicSheet || backend.stitchStatus === "done" || backend.stitchStatus === "failed")
+                        visible: !mosaicPreview.device && backend.stitchStatus !== "" && (previewHost.mosaicSheet || backend.stitchStatus === "done" || backend.stitchStatus === "failed")
                         text: (backend.stitchWarning ? backend.stitchWarning + "  ·  " : "") + (backend.stitchDetail || backend.stitchStatus)
                         color: backend.stitchStatus === "failed" ? Theme.danger : Theme.textPrimary
                         font.pixelSize: Theme.fontSm
@@ -2136,9 +2186,23 @@ Item {
                             Text { text: "GAIN " + readoutStrip.gain; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: Theme.px(36); Layout.preferredWidth: implicitWidth }
                             Text { visible: !readoutStrip.wide; text: liveFilter.currentText.toUpperCase(); color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: Theme.px(24); Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
                             Text {
-                                visible: root.scopeOnline && readoutStrip.t.capture_active && !!readoutStrip.t.capture_text
-                                text: "FRAMES " + (readoutStrip.t.capture_text || "")
-                                color: readoutStrip.t.capture_active ? Theme.danger : Theme.textPrimary
+                                visible: root.scopeOnline && (controlPage.mosaicRunning || (readoutStrip.t.capture_active && !!readoutStrip.t.capture_text))
+                                text: {
+                                    if (!controlPage.mosaicRunning)
+                                        return "FRAMES " + (readoutStrip.t.capture_text || "")
+                                    const total = controlPage.mosaicPaneTotal
+                                    const pane = controlPage.mosaicPaneIndex
+                                    const frames = readoutStrip.t.capture_active && readoutStrip.t.capture_text
+                                            ? (" · FRAMES " + readoutStrip.t.capture_text) : ""
+                                    if (controlPage.mosaicChanging && pane >= 1 && total >= 1)
+                                        return "CHANGING PANE " + pane + "/" + total
+                                    if (pane >= 1 && total >= 1)
+                                        return "PANE " + pane + "/" + total + frames
+                                    if (total > 1)
+                                        return total + " PANES" + frames
+                                    return frames ? ("FRAMES " + readoutStrip.t.capture_text) : (total > 1 ? total + " PANES" : "")
+                                }
+                                color: readoutStrip.t.capture_active || controlPage.mosaicChanging ? Theme.danger : Theme.textPrimary
                                 font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; font.bold: true
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
@@ -2614,7 +2678,13 @@ Item {
                             buttonColor: Theme.fillActive
                             foregroundColor: Theme.accent
                             onHoveredChanged: previewHost.holdControls(hovered)
-                            onClicked: root.requestDeviceAction("panorama_shoot", "PANO")
+                            onClicked: {
+                                const x1 = Math.min(panoramaFramePane.showX1, panoramaFramePane.showX2)
+                                const y1 = Math.min(panoramaFramePane.showY1, panoramaFramePane.showY2)
+                                const x2 = Math.max(panoramaFramePane.showX1, panoramaFramePane.showX2)
+                                const y2 = Math.max(panoramaFramePane.showY1, panoramaFramePane.showY2)
+                                backend.shootPanorama(x1, y1, x2, y2)
+                            }
                         }
                         HudButton {
                             objectName: "panoramaReset"
@@ -2623,7 +2693,10 @@ Item {
                             tooltip: "Restore the wide-camera frame"
                             enabled: root.commandEnabled("panorama_frame_reset")
                             onHoveredChanged: previewHost.holdControls(hovered)
-                            onClicked: root.requestDeviceAction("panorama_frame_reset", "PANO")
+                            onClicked: {
+                                panoramaFramePane.releaseFrame()
+                                root.requestDeviceAction("panorama_frame_reset", "PANO")
+                            }
                         }
                         HudButton {
                             objectName: "panoramaCancel"
@@ -2636,8 +2709,11 @@ Item {
                         }
                         HudButton {
                             objectName: "mosaicStitch"
-                            visible: backend.stitchStatus === "done" || backend.stitchStatus === "working" || backend.stitchStatus === "failed"
-                                     || (previewHost.mosaicActive && !mosaicPreview.device && !controlPage.mosaicRunning && (mosaicPreview.completed || []).length >= 2)
+                            // The telescope stitches a device mosaic. STITCH is for custom panes.
+                            visible: !mosaicPreview.device && (
+                                         backend.stitchStatus === "done" || backend.stitchStatus === "working" || backend.stitchStatus === "failed"
+                                         || (previewHost.mosaicActive && !controlPage.mosaicRunning && (mosaicPreview.completed || []).length >= 2)
+                                     )
                             text: backend.stitchStatus === "done" ? "SHEET" : "STITCH"
                             busyText: "STITCHING…"
                             tooltip: backend.stitchStatus === "done"
@@ -2652,7 +2728,7 @@ Item {
                         }
                         HudButton {
                             objectName: "mosaicViewToggle"
-                            visible: previewHost.mosaicActive && !mosaicPreview.device
+                            visible: previewHost.mosaicActive && previewHost.chromeShown && !previewHost.deviceMosaicFinished
                             text: previewHost.showMosaicSheet ? "PANE" : "MOSAIC"
                             tooltip: previewHost.showMosaicSheet
                                      ? "Show the current pane full frame"
@@ -2911,13 +2987,13 @@ Item {
                     visible: !!(root.scopeTelemetry.eq_has_result)
                     Text {
                         text: String(root.scopeTelemetry.eq_azi_text || "")
-                        color: Number(root.scopeTelemetry.eq_azi_err) > 0 ? Theme.success : (Number(root.scopeTelemetry.eq_azi_err) < 0 ? Theme.danger : Theme.textSecondary)
+                        color: Math.abs(Number(root.scopeTelemetry.eq_azi_err)) <= 2 ? Theme.success : Theme.warning
                         font.pixelSize: Theme.fontSm
                         font.family: Theme.fontMono
                     }
                     Text {
                         text: String(root.scopeTelemetry.eq_alt_text || "")
-                        color: Number(root.scopeTelemetry.eq_alt_err) > 0 ? Theme.success : (Number(root.scopeTelemetry.eq_alt_err) < 0 ? Theme.danger : Theme.textSecondary)
+                        color: Math.abs(Number(root.scopeTelemetry.eq_alt_err)) <= 2 ? Theme.success : Theme.warning
                         font.pixelSize: Theme.fontSm
                         font.family: Theme.fontMono
                     }
@@ -3165,10 +3241,13 @@ Item {
                             if (trackingPad)
                                 return "TAP THE STAR · TRACK"
                             if (modelData.state === "imaging" && activeForState) {
-                                if (controlPage.mosaicRunning)
+                                if (controlPage.mosaicRunning) {
+                                    if (controlPage.mosaicChanging)
+                                        return "CHANGING " + controlPage.mosaicPaneText
                                     return t.capture_text
                                            ? controlPage.mosaicPaneText + " · " + t.capture_text
                                            : controlPage.mosaicPaneText + " · STOP"
+                                }
                                 return t.capture_text ? "STACK · " + t.capture_text : "STACKING · STOP"
                             }
                             if (modelData.start === "stack" && root.scopeOnline && cameraPanel.dsoMode && !stackTracking)
@@ -3221,7 +3300,7 @@ Item {
                                 return t.focus_text && t.focus_text !== "—" ? "RUNNING · " + t.focus_text : "RUNNING"
                             case "polar":
                                 if (t.eq_has_result && !activeForState)
-                                    return t.eq_azi_text || "ALIGN"
+                                    return t.eq_ready ? "ALIGNED" : "ADJUST"
                                 return root.scopeActivityDetail || "RUNNING"
                             case "polar_position":
                                 return "HOMING · STOP"
@@ -3294,6 +3373,10 @@ Item {
                         onClicked: {
                             if (!pad.enabled || pad.stopPressed)
                                 return
+                            if (effectiveOperation === "polar") {
+                                root.openEqSetup()
+                                return
+                            }
                             if (effectiveOperation === "stack")
                                 cameraPanel.applyPendingStackParams()
                             root.requestDeviceAction(effectiveOperation, padLabel)

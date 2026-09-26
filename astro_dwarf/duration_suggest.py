@@ -62,6 +62,7 @@ _STEP_BUCKETS = {
     "waiting after setup": "startup",
     "waiting before capture": "startup",
     "waiting for slew to finish": "slew",
+    "changing mosaic pane": "pane_slew",
 }
 
 _FIELD_META = {
@@ -72,6 +73,7 @@ _FIELD_META = {
     "infinite_focus_seconds": {"label": "Infinity", "min": 5.0, "max": 60.0, "threshold": 3.0},
     "polar_seconds": {"label": "Polar", "min": 30.0, "max": 600.0, "threshold": 10.0},
     "readout_seconds": {"label": "Readout", "min": 0.3, "max": 15.0, "threshold": 0.2},
+    "pane_slew_seconds": {"label": "Pane slew", "min": 3.0, "max": 180.0, "threshold": 3.0},
 }
 
 
@@ -235,6 +237,10 @@ def _from_steps(items: list[dict[str, Any]], profile: HardwareProfile) -> tuple[
         readout = _readout_from_imaging(item)
         if readout is not None:
             observed["readout_seconds"].append(readout)
+        pane_slew = buckets.get("pane_slew")
+        gaps = max(0, int(item["panes"]) - 1)
+        if pane_slew and gaps:
+            observed["pane_slew_seconds"].append(float(pane_slew) / gaps)
     changes = []
     for key, samples in observed.items():
         change = _change_for(key, profile, samples)

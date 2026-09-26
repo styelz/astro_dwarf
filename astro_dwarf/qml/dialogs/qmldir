@@ -1,3 +1,4 @@
+EqSetupDialog 1.0 EqSetupDialog.qml
 LocationDialog 1.0 LocationDialog.qml
 SettingsLeaveDialog 1.0 SettingsLeaveDialog.qml
 ConfirmDialog 1.0 ConfirmDialog.qml

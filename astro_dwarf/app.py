@@ -28,7 +28,7 @@ from .runtime import (
     kill_pid_tree,
     package_root,
 )
-from .stream_preview import LiveFrameItem, MosaicLiveItem
+from .stream_preview import LiveFrameItem, MosaicLiveItem, PanoramaStampItem
 from .version import __version__
 
 _DWMWA_USE_IMMERSIVE_DARK_MODE = 20
@@ -272,6 +272,7 @@ def run() -> int:
     backend = AppBackend(data_root())
     qmlRegisterType(LiveFrameItem, "AstroDwarf", 1, 0, "LiveFrameItem")
     qmlRegisterType(MosaicLiveItem, "AstroDwarf", 1, 0, "MosaicLiveItem")
+    qmlRegisterType(PanoramaStampItem, "AstroDwarf", 1, 0, "PanoramaStampItem")
     engine = QQmlApplicationEngine()
     engine.warnings.connect(lambda warnings: [print(warning.toString(), file=sys.stderr) for warning in warnings])
     engine.rootContext().setContextProperty("backend", backend)

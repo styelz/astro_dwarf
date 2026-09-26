@@ -972,7 +972,7 @@ Item {
                             FieldHint { text: "Added to every frame on top of its exposure. Small per frame, but it scales with the frame count." }
                             FieldLabel { text: "PANE SLEW S" }
                             HudField { id: paneField; Layout.preferredWidth: settingsPage.numberWidth; accessibleName: "Pane slew seconds" }
-                            FieldHint { text: "Move between mosaic panes; counted once per pane change." }
+                            FieldHint { text: "Wait while the telescope moves to the next mosaic pane. Counted once per pane change. Completed runs measure this and can suggest a correction." }
                         }
                         Text {
                             Layout.fillWidth: true
