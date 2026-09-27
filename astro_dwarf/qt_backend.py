@@ -143,6 +143,7 @@ from .services import (
     mosaic_pane_number,
     mosaic_pane_workflow,
     mosaic_session_footprints,
+    mosaic_stitch_cell,
     mosaic_position_angle,
     copy_session_name,
     duplicate_session_drafts,
@@ -160,6 +161,7 @@ from .services import (
     parse_coordinate_fields,
     parse_coordinate_text,
     MOSAIC_PA_DEFAULT,
+    MOSAIC_PA_PARALLACTIC,
     MosaicPa,
     mosaic_overlay_pa_fields,
     mosaic_pa_chip,
@@ -1403,6 +1405,24 @@ def finished_device_mosaic_uses_live_feed(*, device: bool, active: bool, phase: 
     return not str(phase or "").strip()
 
 
+def mosaic_host_pane(*, imported: bool, columns: int, rows: int, pane: int) -> int:
+    """1-based pane for a scheduled custom mosaic.
+
+    Device mosaics keep the firmware pane index. A single frame is not a sheet.
+    """
+    if not imported:
+        return 0
+    try:
+        cols = int(columns or 1)
+        row_count = int(rows or 1)
+        index = int(pane or 0)
+    except (TypeError, ValueError):
+        return 0
+    if cols < 1 or row_count < 1 or cols * row_count < 2 or index < 1:
+        return 0
+    return min(index, cols * row_count)
+
+
 def mosaic_stitch_button_visible(
     *,
     device: bool,
@@ -1410,18 +1430,29 @@ def mosaic_stitch_button_visible(
     running: bool,
     completed: int,
     stitch_status: str,
+    panes: int = 0,
 ) -> bool:
-    """STITCH is for a finished custom mosaic. A device mosaic is already stitched."""
+    """STITCH is for a custom mosaic. A device mosaic is already stitched.
+
+    The control stays on a finished custom grid even when only one pane has a
+    still yet. The stitch itself still needs two images.
+    """
     if device:
         return False
     status = str(stitch_status or "")
     if status in {"done", "working", "failed"}:
         return True
+    if not active or running:
+        return False
     try:
-        panes = int(completed or 0)
+        done = int(completed or 0)
     except (TypeError, ValueError):
-        panes = 0
-    return bool(active and not running and panes >= 2)
+        done = 0
+    try:
+        total = int(panes or 0)
+    except (TypeError, ValueError):
+        total = 0
+    return done >= 2 or total >= 2
 
 
 def mosaic_preview_empty() -> dict[str, Any]:
@@ -4790,7 +4821,27 @@ class AppBackend(QObject):
                 members = self._mosaic_group_sessions(owner, group)
                 if members:
                     running = next((item for item in members if item.status == SessionStatus.RUNNING), None)
-                    session = running or members[-1]
+                    if running is not None:
+                        return running, members
+                    # The sheet already knows which pane stacked. Do not jump
+                    # to whichever session was saved last in the group.
+                    rows, columns = mosaic_grid_size(*(item.mosaic for item in members))
+                    try:
+                        shown = int(self.mosaic_frames.snapshot()[3] or 0)
+                    except (TypeError, ValueError):
+                        shown = 0
+                    if shown >= 1:
+                        match = next(
+                            (
+                                item
+                                for item in members
+                                if mosaic_pane_number(item.mosaic, columns, item.name) == shown
+                            ),
+                            None,
+                        )
+                        if match is not None:
+                            return match, members
+                    session = members[-1]
                     return session, members
             return None, []
         group_id = session.mosaic.group_id or ""
@@ -4877,6 +4928,28 @@ class AppBackend(QObject):
         except (TypeError, ValueError, IndexError):
             return 0
 
+    def _host_mosaic_pane(self, device_id: str = "") -> int:
+        """Pane a scheduled custom mosaic is shooting. Zero for a device mosaic."""
+        owner = str(device_id or self._selected_device_id or "")
+        session, members = self._mosaic_context(owner)
+        if session is None or session.status != SessionStatus.RUNNING or not session.mosaic.imported_plan:
+            return 0
+        rows, columns = mosaic_grid_size(session.mosaic, *(item.mosaic for item in members))
+        return mosaic_host_pane(
+            imported=True,
+            columns=columns,
+            rows=rows,
+            pane=mosaic_pane_number(session.mosaic, columns, session.name),
+        )
+
+    def _mosaic_phase_name(self, device_id: str = "") -> str:
+        owner = str(device_id or self._selected_device_id or "")
+        live = self._live_mosaic.get(owner) or {}
+        phase = str(live.get("phase") or "")
+        if phase:
+            return phase
+        return str(self._firmware_mosaic_phase.get(owner, "") or "")
+
     def _current_mosaic_live_pane(self, device_id: str = "") -> int:
         owner = str(device_id or self._selected_device_id or "")
         live = self._live_mosaic.get(owner) or {}
@@ -4884,11 +4957,17 @@ class AppBackend(QObject):
             index = int(live.get("current_index") or 0)
         except (TypeError, ValueError):
             index = 0
-        pane = mosaic_live_pane(index, str(live.get("phase") or ""), bool(live.get("phase")))
+        if index < 1:
+            index = self._host_mosaic_pane(owner)
+        phase = self._mosaic_phase_name(owner)
+        pane = mosaic_live_pane(index, phase, bool(phase))
         if pane >= 1:
             return pane
         if not (self._preview_stack_mode or self._preview_stacking(owner)):
             return 0
+        host = self._host_mosaic_pane(owner)
+        if host >= 1:
+            return host
         session, _members = self._mosaic_context(owner)
         if session is not None and not session.mosaic.imported_plan and session.mosaic.panes > 1:
             return max(1, int(self._mosaic_firmware_pane or 1))
@@ -4954,9 +5033,7 @@ class AppBackend(QObject):
         owner = str(device_id or self._selected_device_id or "")
         live = self._live_mosaic.get(owner) or {}
         stacked, taken = self._mosaic_capture_counts(owner)
-        phase = str(live.get("phase") or "")
-        if not phase:
-            phase = str(self._firmware_mosaic_phase.get(owner, "") or "")
+        phase = self._mosaic_phase_name(owner)
         return mosaic_should_copy_live_still(
             camera=mosaic_live_still_camera(),
             phase=phase,
@@ -4979,10 +5056,11 @@ class AppBackend(QObject):
         stacking_pane = self._current_mosaic_live_pane(owner)
         if stacking_pane >= 1 and self._mosaic_may_copy_live(stacking_pane, owner):
             return stacking_pane
+        phase = self._mosaic_phase_name(owner)
         return mosaic_overlay_live_pane(
             current_index=index or stacking_pane,
-            phase=str(live.get("phase") or ""),
-            active=bool(live.get("phase")),
+            phase=phase,
+            active=bool(phase),
             stacking_preview=bool(self._preview_stack_mode),
             preview_playing=bool(self._preview_playing or self._preview_tele_playing),
         )
@@ -4994,7 +5072,10 @@ class AppBackend(QObject):
             index = int(live.get("current_index") or 0)
         except (TypeError, ValueError):
             index = 0
-        pane = mosaic_hold_pane(index, str(live.get("phase") or ""), bool(live.get("phase")))
+        if index < 1:
+            index = self._host_mosaic_pane(owner)
+        phase = self._mosaic_phase_name(owner)
+        pane = mosaic_hold_pane(index, phase, bool(phase))
         if pane >= 1:
             return pane
         return self._current_mosaic_live_pane(owner)
@@ -5815,9 +5896,19 @@ class AppBackend(QObject):
                     current_session = session
             target = current_session.target if isinstance(current_session, Session) else None
             phase = str((live or {}).get("phase") or "")
-            if not phase and isinstance(session, Session) and session.status == SessionStatus.RUNNING:
-                if not session.mosaic.imported_plan and session.mosaic.panes > 1:
-                    phase = mosaic_progress_phase(session.current_step) or "stacking"
+            if not phase:
+                phase = str(self._firmware_mosaic_phase.get(self._selected_device_id, "") or "")
+            owner_session = session if isinstance(session, Session) else None
+            if owner_session is None and isinstance(current_session, Session):
+                owner_session = current_session
+            if not phase and isinstance(owner_session, Session) and owner_session.status == SessionStatus.RUNNING:
+                custom = (
+                    owner_session.mosaic.imported_plan
+                    and int(owner_session.mosaic.grid_rows or 0) * int(owner_session.mosaic.grid_columns or 0) > 1
+                )
+                device_grid = not owner_session.mosaic.imported_plan and owner_session.mosaic.panes > 1
+                if custom or device_grid:
+                    phase = mosaic_progress_phase(owner_session.current_step) or "stacking"
             layout = self._running_device_mosaic_layout(current_session if isinstance(current_session, Session) else None, live)
             if layout is None:
                 layout = self._held_device_mosaic_layout()
@@ -5927,6 +6018,18 @@ class AppBackend(QObject):
         pa = mosaic_position_angle(self._mosaic_south_up(), members[0].mosaic.rotation_degrees)
         return mosaic_session_footprints(members, fov_h, fov_v, pa)
 
+    def _stitch_sheet_cell(self, index: int, columns: int, rows: int) -> tuple[int, int, bool]:
+        """Same cell and JPEG flip the contact sheet uses for this pane."""
+        state = self._mosaic_pa_state()
+        return mosaic_stitch_cell(
+            index,
+            columns,
+            rows,
+            south_up=bool(state.south_up),
+            position_angle=state.degrees,
+            zenith_camera=state.source == MOSAIC_PA_PARALLACTIC,
+        )
+
     def _queue_stitch(self, panes: list[StitchPane], overlap: float, key: str, source: str) -> None:
         if not stitch_available():
             self._set_stitch("failed", "numpy and opencv are required to stitch a mosaic", source=source)
@@ -5961,12 +6064,18 @@ class AppBackend(QObject):
             if index < 1 or images[index] is None or images[index].isNull():
                 continue
             foot = footprints.get(index) or {}
-            row = int(foot.get("row") or ((index - 1) // max(columns, 1)) + 1)
-            column = int(foot.get("column") or ((index - 1) % max(columns, 1)) + 1)
-            member = next((item for item in members if mosaic_pane_number(item.mosaic, columns, item.name) == index), None)
-            local = self._local_stack_for_name(member.target.name if member is not None else "")
-            array = None if local is not None else qimage_rgb(self._raw_mosaic_panes.get(index) or images[index])
-            if local is None and array is None:
+            row, column, flip = self._stitch_sheet_cell(index, columns, rows)
+            # The sheet is the still the operator is looking at. A downloaded
+            # linear stack is a different picture and must not replace it.
+            array = qimage_rgb(images[index])
+            local = None
+            if array is None:
+                member = next((item for item in members if mosaic_pane_number(item.mosaic, columns, item.name) == index), None)
+                raw = self._raw_mosaic_panes.get(index)
+                array = qimage_rgb(raw) if raw is not None and not raw.isNull() else None
+                if array is None:
+                    local = self._local_stack_for_name(member.target.name if member is not None else "")
+            if array is None and local is None:
                 continue
             panes.append(
                 StitchPane(
@@ -5978,6 +6087,7 @@ class AppBackend(QObject):
                     dec_degrees=foot.get("dec_degrees"),
                     position_angle=float(foot.get("position_angle") or 0.0),
                     path=str(local) if local is not None else "",
+                    flip=flip,
                 )
             )
         if len(panes) < 2:
@@ -6012,6 +6122,7 @@ class AppBackend(QObject):
             return
         panes: list[StitchPane] = []
         found_file = False
+        pending: list[tuple[Any, str, int, str]] = []
         for record in records:
             if isinstance(record, dict):
                 name = str(record.get("target_name") or record.get("pane_name") or "")
@@ -6030,22 +6141,28 @@ class AppBackend(QObject):
             column = int(session.mosaic.column or 0)
             if row < 1 or column < 1:
                 continue
+            pending.append((session, name, index, str(local)))
+        if len(pending) < 2:
+            detail = "Pane positions are not stored for this group" if found_file else "Stacks are not downloaded yet"
+            self._set_stitch("failed", detail, source="history")
+            return
+        grid_rows, grid_columns = mosaic_grid_size(*(item[0].mosaic for item in pending))
+        for session, name, index, local in pending:
+            pane_index = index or mosaic_pane_number(session.mosaic, grid_columns, name)
+            row, column, flip = self._stitch_sheet_cell(pane_index, grid_columns, grid_rows)
             panes.append(
                 StitchPane(
-                    index=index or (row * 100 + column),
+                    index=pane_index,
                     row=row,
                     column=column,
                     image=None,
                     ra_hours=session.target.ra_hours,
                     dec_degrees=session.target.dec_degrees,
                     position_angle=float(session.mosaic.rotation_degrees or 0.0),
-                    path=str(local),
+                    path=local,
+                    flip=flip,
                 )
             )
-        if len(panes) < 2:
-            detail = "Pane positions are not stored for this group" if found_file else "Stacks are not downloaded yet"
-            self._set_stitch("failed", detail, source="history")
-            return
         overlap = float(self._sky_mosaic_overlap)
         safe = "".join(ch for ch in group if ch.isalnum())[:48] or "history"
         self._queue_stitch(panes, overlap, safe, "history")
@@ -7817,6 +7934,25 @@ class AppBackend(QObject):
         )
         if not preview_was_on:
             return
+        # Freeze the pane that actually stacked before sync can retarget the
+        # sheet onto another session in the group. A scheduled custom mosaic
+        # has no live index, so the host pane is the one that just finished.
+        pane = mosaic_finished_pane(
+            self._mosaic_stream_pane,
+            self._mosaic_result_pane_for(device_id),
+        )
+        if pane < 1:
+            pane = self._host_mosaic_pane(device_id)
+        if pane < 1:
+            try:
+                pane = int(self._stack_result_mosaic_pane or 0)
+            except (TypeError, ValueError):
+                pane = 0
+        if pane >= 1:
+            self._stack_result_mosaic_pane = pane
+            self._snapshot_mosaic_pane(pane)
+            self._mosaic_result_held = True
+            self._mosaic_result_dismissed = False
         already = self._preview_result and self._stack_result_device_id == device_id
         if not has_frame and not already:
             self._close_preview_streams_keep_frames()
@@ -7846,11 +7982,12 @@ class AppBackend(QObject):
             return
         self.add_log("info", "Capture ended — loading the completed stack", device_id)
         self._sync_mosaic_preview(device_id)
-        self._stack_result_mosaic_pane = mosaic_finished_pane(
-            self._mosaic_stream_pane,
-            self._mosaic_result_pane_for(device_id),
-        )
-        self._snapshot_mosaic_pane(self._stack_result_mosaic_pane)
+        if not self._stack_result_mosaic_pane:
+            self._stack_result_mosaic_pane = mosaic_finished_pane(
+                self._mosaic_stream_pane,
+                self._mosaic_result_pane_for(device_id),
+            )
+            self._snapshot_mosaic_pane(self._stack_result_mosaic_pane)
         self._start_stack_result_fetch(device_id, target, camera, since)
 
     def _start_stack_result_fetch(
@@ -14246,8 +14383,16 @@ class AppBackend(QObject):
         )
 
     def _note_firmware_mosaic_phase(self, session: Session, step: str) -> None:
-        """Remember a device-mosaic pane change so leftover frames stay off the next cell."""
-        if session.mosaic.imported_plan or session.mosaic.panes <= 1:
+        """Remember which mosaic phase is shooting so leftover frames stay off the next cell.
+
+        Scheduled custom panes are separate sessions. They still need the
+        stacking phase, or the contact sheet never accepts their frames.
+        """
+        custom = (
+            session.mosaic.imported_plan
+            and int(session.mosaic.grid_rows or 0) * int(session.mosaic.grid_columns or 0) > 1
+        )
+        if not custom and (session.mosaic.imported_plan or session.mosaic.panes <= 1):
             return
         phase = mosaic_progress_phase(step)
         device_id = session.device_id

@@ -17,6 +17,7 @@ from astro_dwarf.qt_backend import (
     mosaic_finished_pane,
     mosaic_hold_pane,
     mosaic_live_still_camera,
+    mosaic_host_pane,
     mosaic_preview_empty,
     mosaic_preview_keep_live_sheet,
     mosaic_preview_scale_text,
@@ -956,6 +957,34 @@ def test_finished_device_mosaic_shows_the_live_stitch() -> None:
         mosaic_stitch_button_visible(device=False, active=False, running=False, completed=0, stitch_status="working"),
         "a stitch already running stays visible",
     )
+    _assert(
+        mosaic_stitch_button_visible(
+            device=False, active=True, running=False, completed=1, stitch_status="", panes=4
+        ),
+        "a finished custom grid keeps STITCH after the first pane",
+    )
+    _assert(
+        not mosaic_stitch_button_visible(
+            device=True, active=True, running=False, completed=1, stitch_status="", panes=4
+        ),
+        "a device mosaic still has no stitch button",
+    )
+    _assert(
+        not mosaic_stitch_button_visible(
+            device=False, active=True, running=True, completed=1, stitch_status="", panes=4
+        ),
+        "stitch stays hidden while a custom pane is still shooting",
+    )
+    _assert(
+        not mosaic_stitch_button_visible(
+            device=False, active=True, running=False, completed=1, stitch_status="", panes=1
+        ),
+        "a single frame is not a stitch",
+    )
+    _assert(mosaic_host_pane(imported=False, columns=2, rows=2, pane=3) == 0, "device mosaics are not host panes")
+    _assert(mosaic_host_pane(imported=True, columns=2, rows=2, pane=1) == 1, "custom pane 1")
+    _assert(mosaic_host_pane(imported=True, columns=2, rows=2, pane=4) == 4, "custom pane 4")
+    _assert(mosaic_host_pane(imported=True, columns=1, rows=1, pane=1) == 0, "one frame is not a custom sheet")
 
 
 def test_device_mosaic_hud_uses_scale_not_pane_count() -> None:

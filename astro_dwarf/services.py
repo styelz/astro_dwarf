@@ -4066,6 +4066,40 @@ def mosaic_sheet_row(
     return (row_count - 1) - raw
 
 
+def mosaic_stitch_cell(
+    index: int,
+    columns: int,
+    rows: int,
+    *,
+    south_up: bool = False,
+    position_angle: Any = None,
+    zenith_camera: bool = False,
+) -> tuple[int, int, bool]:
+    """Contact-sheet cell for a stitch, 1-based, plus the JPEG flip.
+
+    Row 1 is the top of the canvas and column 1 is the left, matching the
+    sheet the operator just looked at. EQ frames whose camera-up is south
+    are rotated 180° so the overlapping edges still face each other.
+    """
+    row = mosaic_sheet_row(
+        index,
+        columns,
+        rows,
+        south_up=south_up,
+        position_angle=position_angle,
+        zenith_camera=zenith_camera,
+    )
+    column = mosaic_sheet_column(
+        index,
+        columns,
+        south_up=south_up,
+        position_angle=position_angle,
+        zenith_camera=zenith_camera,
+    )
+    flip = (not zenith_camera) and mosaic_camera_up_is_south(south_up, position_angle)
+    return row + 1, column + 1, flip
+
+
 def device_mosaic_pane_norm(
     index: int,
     columns: int,

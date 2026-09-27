@@ -73,6 +73,7 @@ Sky-frame, pane-number, and PA rules: `.cursor/rules/sky-mosaic-astronomy.mdc`.
 ## Lab device
 
 - A configured DWARF is expected on the LAN at `192.168.1.42`. Use the title-bar CONNECT control or the harness `connect` command; do not invent a second device.
+- The Arch test machine is `192.168.1.14` (`archy`). SSH as `pbp` / `pbp`. The app checkout is `~/Desktop/astro_dwarf`. Bluetooth discovery on that host needs `Experimental = true` in `/etc/bluetooth/main.conf`.
 - When asked to test the HUD or a device flow, use this harness. Do not drive the Qt window with OS mouse control or browser tools.
 - Start the optional UI harness only in a source checkout: `$env:ASTRO_DWARF_TEST_HARNESS=1; .\.venv\Scripts\python.exe app.py`. It binds `127.0.0.1:8765`, maximizes the window, and is off unless that env var is set. Packaged builds never load it.
 - Drive it with `python scripts/harness.py` (`state`, `controls`, `click`, `set`, `page`, `snapshot`, `action`, lists, sky, confirm). Connect with `scripts/harness.py connect`. When `/state` shows `device.ready` or `connected`, keep that reading, then read `/state` once more a few seconds later before calibrate, GOTO, mosaic, track, or stack. The second reading is there to catch tracking or a busy flag that turns on by itself after connect. `preview.playing` means the camera is up. It does not skip the second reading. A standing instruction to continue on the first ready state does not apply here. Do not poll for preview unless the test is about preview.

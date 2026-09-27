@@ -40,6 +40,7 @@ class StitchPane:
     fov_h: float = 0.0
     fov_v: float = 0.0
     path: str = ""
+    flip: bool = False
 
 
 @dataclass(slots=True)
@@ -236,6 +237,8 @@ def _image_ok(image: Any) -> bool:
 
 def _prepare(pane: StitchPane) -> dict[str, Any]:
     rgb = _as_rgb_float(pane.image)
+    if pane.flip:
+        rgb = np.ascontiguousarray(np.flip(rgb, axis=(0, 1)))
     return {
         "index": int(pane.index),
         "row": int(pane.row),
@@ -248,16 +251,21 @@ def _prepare(pane: StitchPane) -> dict[str, Any]:
 
 
 def _as_rgb_float(image: Any) -> Any:
-    array = np.asarray(image)
-    if array.ndim == 2:
-        rgb = np.repeat(array[..., None], 3, axis=2)
-    elif array.ndim == 3 and array.shape[2] == 1:
-        rgb = np.repeat(array, 3, axis=2)
-    elif array.ndim == 3 and array.shape[2] >= 3:
-        rgb = array[..., :3]
-        if rgb.shape[2] == 3 and array.shape[2] >= 3:
-            # OpenCV BGR files are converted by the caller for disk loads.
-            pass
+    """Map a pane into 0–1 RGB without changing a display JPEG's sky.
+
+    Contact-sheet stills are already stretched. A second 1%–99.5% stretch
+    lands in the sky noise when stars are sparse, so the mosaic goes gray
+    and the darker pane edges show up as a cross. Linear FITS stay linear
+    until a sky-based stretch below.
+    """
+    source = np.asarray(image)
+    integer = np.issubdtype(source.dtype, np.integer)
+    if source.ndim == 2:
+        rgb = np.repeat(source[..., None], 3, axis=2)
+    elif source.ndim == 3 and source.shape[2] == 1:
+        rgb = np.repeat(source, 3, axis=2)
+    elif source.ndim == 3 and source.shape[2] >= 3:
+        rgb = source[..., :3]
     else:
         raise ValueError("Pane image must be gray or RGB")
     work = rgb.astype(np.float32, copy=False)
@@ -266,14 +274,43 @@ def _as_rgb_float(image: Any) -> Any:
     peak = float(np.nanmax(work)) if work.size else 0.0
     if not np.isfinite(peak) or peak <= 0:
         return np.zeros(work.shape, dtype=np.float32)
-    if peak > 1.5:
-        lo = float(np.nanpercentile(work, 1.0))
-        hi = float(np.nanpercentile(work, 99.5))
-        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-            work = work / peak
-        else:
-            work = (work - lo) / (hi - lo)
-    return np.clip(work, 0.0, 1.0).astype(np.float32)
+    if peak <= 1.5:
+        return np.clip(work, 0.0, 1.0).astype(np.float32)
+    if integer and peak <= 255.0:
+        return np.clip(work / 255.0, 0.0, 1.0).astype(np.float32)
+    return _linear_display(work)
+
+
+def _linear_display(work: Any) -> Any:
+    """Show a linear stack with the sky dark and star cores near white."""
+    out = np.empty(work.shape, dtype=np.float32)
+    for channel in range(work.shape[2]):
+        out[..., channel] = _stretch_linear_channel(work[..., channel])
+    return out
+
+
+def _stretch_linear_channel(channel: Any) -> Any:
+    step_y = max(1, int(channel.shape[0]) // 180)
+    step_x = max(1, int(channel.shape[1]) // 180)
+    sample = channel[::step_y, ::step_x]
+    finite = sample[np.isfinite(sample)]
+    if finite.size < 16:
+        peak = float(np.nanmax(channel)) if channel.size else 0.0
+        if not np.isfinite(peak) or peak <= 0:
+            return np.zeros(channel.shape, dtype=np.float32)
+        return np.clip(channel / peak, 0.0, 1.0).astype(np.float32)
+    med = float(np.median(finite))
+    mad = max(float(np.median(np.abs(finite - med))) * 1.4826, 1e-6)
+    black = med - 2.0 * mad
+    keep = max(8, int(finite.size * 0.002))
+    white = float(np.median(np.partition(finite, -keep)[-keep:]))
+    white = max(white, med + 12.0 * mad)
+    if white <= black:
+        white = black + 1.0
+    scaled = np.clip((channel - np.float32(black)) / np.float32(white - black), 0.0, 1.0)
+    strength = 6.0
+    curved = np.arcsinh(scaled * strength) / np.arcsinh(strength)
+    return curved.astype(np.float32)
 
 
 def _seed_placements(prepared: list[dict[str, Any]], overlap_h: float, overlap_v: float) -> dict[int, Any]:
@@ -524,8 +561,7 @@ def _blend(prepared: list[dict[str, Any]], solved: dict[int, Any]) -> tuple[Any,
             matrix,
             (width, height),
             flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
+            borderMode=cv2.BORDER_REPLICATE,
         )
         mask = np.full((item["height"], item["width"]), 255, np.uint8)
         warped_mask = cv2.warpAffine(mask, matrix, (width, height), flags=cv2.INTER_NEAREST)

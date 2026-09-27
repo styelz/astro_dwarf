@@ -2710,16 +2710,27 @@ Item {
                         HudButton {
                             objectName: "mosaicStitch"
                             // The telescope stitches a device mosaic. STITCH is for custom panes.
+                            readonly property int stitchPaneCount: {
+                                const done = (mosaicPreview.completed || []).length
+                                const total = Number(mosaicPreview.total || 0)
+                                const grid = Number(mosaicPreview.columns || 0) * Number(mosaicPreview.rows || 0)
+                                return Math.max(done, isFinite(total) ? total : 0, isFinite(grid) ? grid : 0)
+                            }
+                            readonly property int stitchReadyCount: (mosaicPreview.completed || []).length
                             visible: !mosaicPreview.device && (
                                          backend.stitchStatus === "done" || backend.stitchStatus === "working" || backend.stitchStatus === "failed"
-                                         || (previewHost.mosaicActive && !controlPage.mosaicRunning && (mosaicPreview.completed || []).length >= 2)
+                                         || (previewHost.mosaicActive && !controlPage.mosaicRunning && stitchPaneCount >= 2)
                                      )
                             text: backend.stitchStatus === "done" ? "SHEET" : "STITCH"
                             busyText: "STITCHING…"
                             tooltip: backend.stitchStatus === "done"
                                      ? "Return to the contact sheet"
-                                     : "Align the finished panes into one image"
-                            enabled: backend.stitchStatus !== "working"
+                                     : (stitchReadyCount >= 2
+                                        ? "Align the finished panes into one image"
+                                        : "Needs a still in at least two panes")
+                            enabled: backend.stitchStatus === "done"
+                                     || backend.stitchStatus === "failed"
+                                     || (backend.stitchStatus !== "working" && stitchReadyCount >= 2)
                             busy: backend.stitchStatus === "working"
                             buttonColor: Theme.fillActive
                             foregroundColor: Theme.accent

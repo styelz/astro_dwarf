@@ -1761,6 +1761,109 @@ def _ensure_hotspot_link(ip: str) -> None:
     _join_dwarf_hotspot(str(_device.get("_ble_ssid") or ""), ip or "192.168.88.1")
 
 
+_LE_BEARER_INTERFACE = "org.bluez.Bearer.LE1"
+
+
+def _bluez_device_path(dwarf: Any) -> str:
+    details = getattr(dwarf, "details", None)
+    if isinstance(details, dict):
+        return str(details.get("path") or "")
+    return ""
+
+
+def _le_bearer_missing(error_name: str) -> bool:
+    return error_name.endswith(("UnknownMethod", "UnknownInterface", "NotSupported"))
+
+
+async def _connect_bluez_le(device_path: str) -> str:
+    """Open the LE bearer. Empty means the link is up.
+
+    BlueZ 5.87 Device1.Connect() picks a classic profile when the telescope
+    advertises simultaneous BR/EDR. That returns ProfileUnavailable and never
+    opens GATT. Bearer.LE1.Connect() is the experimental LE link.
+    """
+    if sys.platform != "linux" or not device_path:
+        return ""
+    try:
+        from dbus_fast.aio import MessageBus
+        from dbus_fast.constants import BusType, MessageType
+        from dbus_fast.message import Message
+    except Exception:
+        return "org.freedesktop.DBus.Error.UnknownMethod"
+    try:
+        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    except Exception as exc:
+        return str(exc)
+    try:
+        reply = await bus.call(
+            Message(
+                destination="org.bluez",
+                path=device_path,
+                interface=_LE_BEARER_INTERFACE,
+                member="Connect",
+            )
+        )
+    except Exception as exc:
+        return str(exc)
+    finally:
+        try:
+            bus.disconnect()
+        except Exception:
+            pass
+    if reply is None or getattr(reply, "message_type", None) != MessageType.ERROR:
+        return ""
+    return str(getattr(reply, "error_name", "") or "org.bluez.Error.Failed")
+
+
+def _classic_profile_error(exc: BaseException) -> bool:
+    text = str(exc)
+    return "ProfileUnavailable" in text or "No more profiles to connect to" in text
+
+
+def _experimental_le_message() -> str:
+    return (
+        "Linux Bluetooth has no BLE connect method for this telescope. "
+        "Set Experimental = true in /etc/bluetooth/main.conf, restart bluetooth, "
+        "and try Discover again."
+    )
+
+
+async def _open_dwarf_ble(dwarf: Any):
+    """Connect GATT, using the Linux LE bearer when BlueZ would pick classic."""
+    from bleak import BleakClient
+
+    path = _bluez_device_path(dwarf)
+    address = str(getattr(dwarf, "address", "") or "")
+    target: Any = dwarf if path else (address or dwarf)
+    if path:
+        error = await _connect_bluez_le(path)
+        if _le_bearer_missing(error):
+            raise RuntimeError(_experimental_le_message())
+        if error and not error.endswith("AlreadyConnected"):
+            if "UnknownObject" in error:
+                target = address or target
+            else:
+                raise RuntimeError(f"Bluetooth LE connect failed: {error}")
+    client = BleakClient(target, timeout=15)
+    try:
+        await client.connect()
+        return client
+    except Exception as exc:
+        resolved = str(getattr(client, "_device_path", "") or "")
+        if not _classic_profile_error(exc) or not resolved or resolved == path:
+            if _classic_profile_error(exc):
+                raise RuntimeError(_experimental_le_message()) from exc
+            raise
+        error = await _connect_bluez_le(resolved)
+        if _le_bearer_missing(error):
+            raise RuntimeError(_experimental_le_message()) from exc
+        if error and not error.endswith("AlreadyConnected"):
+            raise RuntimeError(f"Bluetooth LE connect failed: {error}") from exc
+        client = BleakClient(target, timeout=15)
+        await client.connect()
+        return client
+
+
 def _set_wifi_ap_message(ble_password: str) -> bytes:
     import dwarf_python_api.proto.ble_pb2 as ble
     from dwarf_ble_connect.lib.dwarf_protocol_ble import create_packet_ble
@@ -1782,7 +1885,6 @@ async def _ble_wifi_session(
     preferred: str = "auto",
     on_log: Any = None,
 ) -> dict[str, Any]:
-    from bleak import BleakClient
     from dwarf_ble_connect.lib.dwarf_lib_ble import DWARF_CHARACTERISTIC_UUID
     from dwarf_ble_connect.lib.dwarf_protocol_ble import (
         analyze_packet_ble,
@@ -1809,8 +1911,7 @@ async def _ble_wifi_session(
         await asyncio.wait_for(ready.wait(), timeout)
         return replies.get(cmd) or {}
 
-    client = BleakClient(dwarf.address, timeout=15)
-    await client.connect()
+    client = await _open_dwarf_ble(dwarf)
     try:
         await client.start_notify(DWARF_CHARACTERISTIC_UUID, on_notify)
         config = await write_and_wait(get_wifi_config_message(ble_password), 1, 8)

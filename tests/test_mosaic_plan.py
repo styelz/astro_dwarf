@@ -34,6 +34,7 @@ from astro_dwarf.services import (
     mosaic_position_angle,
     mosaic_sheet_column,
     mosaic_sheet_row,
+    mosaic_stitch_cell,
     parallactic_angle_deg,
     resolve_device_mosaic_pa,
     sky_web_center_view_script,
@@ -217,6 +218,22 @@ def test_contact_sheet_matches_zenith_up_overlay() -> None:
     _assert(mosaic_sheet_row(1, 2, 2, south_up=True, position_angle=0) == 0, "PA 0 pane 1 top")
     _assert(mosaic_sheet_column(1, 2, south_up=False, position_angle=0) == 1, "N-up pane 1 right")
     _assert(mosaic_sheet_row(1, 2, 2, south_up=False, position_angle=0) == 0, "N-up pane 1 top")
+    _assert(
+        mosaic_stitch_cell(1, 2, 2, south_up=True, position_angle=180, zenith_camera=True) == (1, 2, False),
+        "alt-az stitch keeps pane 1 top-right, unflipped",
+    )
+    _assert(
+        mosaic_stitch_cell(2, 2, 2, south_up=True, position_angle=180, zenith_camera=True) == (1, 1, False),
+        "alt-az stitch keeps pane 2 top-left",
+    )
+    _assert(
+        mosaic_stitch_cell(1, 2, 2, south_up=True, position_angle=180) == (2, 1, True),
+        "EQ south stitch puts pane 1 bottom-left and flips",
+    )
+    _assert(
+        mosaic_stitch_cell(1, 2, 2, south_up=False, position_angle=0) == (1, 2, False),
+        "EQ north stitch puts pane 1 top-right",
+    )
     # Alt-az PA is the parallactic angle. On the zenith-up chart that direction
     # is the top, so pane 1 stays top-right even when q is near 180°.
     _assert(
