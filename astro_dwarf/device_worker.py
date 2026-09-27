@@ -1067,7 +1067,7 @@ def _set_focus_position(target: int) -> bool:
     return True
 
 
-def sdk_call(operation: str, *args: Any, force: bool = False) -> Any:
+def sdk_call(operation: str, *args: Any) -> Any:
     global _motors_unhomed, _photo_capture_camera
     if _api is None:
         raise RuntimeError("Telescope worker is not configured")
@@ -1135,7 +1135,7 @@ def sdk_call(operation: str, *args: Any, force: bool = False) -> Any:
         "set_burst_interval",
         "set_timelapse_interval",
         "set_timelapse_duration",
-    } and not force and camera_param_unchanged(
+    } and camera_param_unchanged(
         operation,
         args,
         _tap.snapshot() if _tap is not None else {},
@@ -1143,10 +1143,8 @@ def sdk_call(operation: str, *args: Any, force: bool = False) -> Any:
     ):
         log(f"{operation} already matches; skipping", "debug")
         return True
-    if operation == "set_ir":
-        if args:
-            _device["ir_filter"] = args[0]
-        return _set_ir_filter(args)
+    if operation == "set_ir" and args:
+        _device["ir_filter"] = args[0]
     if operation == "set_count":
         # img_to_take plus both cameras' stackCount. A matching local cache
         # must not skip this; wide stays at 999 until it is written.
@@ -1321,8 +1319,11 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
     )
 
     module_id = 10
-
-    def _send_framing_rect() -> bool:
+    if operation == "panorama_frame_update" or (
+        operation == "panorama_shoot" and len(args) >= 4
+    ):
+        if len(args) < 4:
+            raise RuntimeError("Panorama framing needs four normalized corners")
         message = panorama_pb2.ReqUpdatePanoramaFramingRect()
         message.norm_x_tl = float(args[0])
         message.norm_y_tl = float(args[1])
@@ -1333,16 +1334,9 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
             f"{message.norm_x_tl:.3f},{message.norm_y_tl:.3f} "
             f"{message.norm_x_br:.3f},{message.norm_y_br:.3f}"
         )
-        return send_without_response(message, CMD_PANORAMA_UPDATE_FRAMING_RECT, module_id)
-
-    if operation == "panorama_frame_update":
-        if len(args) < 4:
-            raise RuntimeError("Panorama framing needs four normalized corners")
-        return _send_framing_rect()
-    if operation == "panorama_shoot" and len(args) >= 4:
-        # Firmware StartGrid is the full canvas. The yellow box is overlay-only;
-        # 15502 Euler range is acknowledged then ignored. Do not leave framing.
-        _send_framing_rect()
+        updated = send_without_response(message, CMD_PANORAMA_UPDATE_FRAMING_RECT, module_id)
+        if operation != "panorama_shoot":
+            return updated
     messages = {
         "panorama_frame_start": (panorama_pb2.ReqStartPanoramaFraming, CMD_PANORAMA_START_FRAMING),
         "panorama_frame_reset": (panorama_pb2.ReqResetPanoramaFraming, CMD_PANORAMA_RESET_FRAMING),
@@ -1360,8 +1354,6 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
                 "panorama_error": "",
                 "panorama_completed": 0,
                 "panorama_total": 0,
-                "panorama_canvas_fov_h": 0,
-                "panorama_canvas_fov_v": 0,
             },
             force=True,
         )
@@ -1769,156 +1761,6 @@ def _ensure_hotspot_link(ip: str) -> None:
     _join_dwarf_hotspot(str(_device.get("_ble_ssid") or ""), ip or "192.168.88.1")
 
 
-_BLUEZ_PROFILE_UNAVAILABLE = "org.bluez.Error.BREDR.ProfileUnavailable"
-
-
-def _bluez_device_path(dwarf: Any) -> str:
-    details = getattr(dwarf, "details", None)
-    if isinstance(details, dict):
-        return str(details.get("path") or "")
-    return ""
-
-
-def _is_bredr_profile_unavailable(exc: BaseException) -> bool:
-    name = str(getattr(exc, "dbus_error", "") or "")
-    text = str(exc)
-    return (
-        name == _BLUEZ_PROFILE_UNAVAILABLE
-        or "ProfileUnavailable" in text
-        or "No more profiles to connect to" in text
-    )
-
-
-def _ble_device_missing(exc: BaseException) -> bool:
-    name = str(getattr(exc, "dbus_error", "") or "")
-    text = str(exc).lower()
-    return "UnknownObject" in name or "not found" in text or "removed from bluez" in text
-
-
-async def _prefer_le_bearer(device_path: str) -> bool:
-    """Ask BlueZ to use BLE for this telescope.
-
-    A Dwarf advertisement often looks dual-mode. Device1.Connect() then
-    tries classic profiles, finds none, and returns ProfileUnavailable
-    without opening the GATT link that carries the Wi-Fi address.
-    """
-    if sys.platform != "linux" or not device_path:
-        return False
-    try:
-        from dbus_fast.aio import MessageBus
-        from dbus_fast.constants import BusType, MessageType
-        from dbus_fast.message import Message
-        from dbus_fast.signature import Variant
-    except Exception:
-        return False
-    try:
-        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    except Exception:
-        return False
-    try:
-        reply = await bus.call(
-            Message(
-                destination="org.bluez",
-                path=device_path,
-                interface="org.freedesktop.DBus.Properties",
-                member="Set",
-                signature="ssv",
-                body=["org.bluez.Device1", "PreferredBearer", Variant("s", "le")],
-            )
-        )
-    except Exception:
-        return False
-    finally:
-        try:
-            bus.disconnect()
-        except Exception:
-            pass
-    if reply is None or getattr(reply, "message_type", None) == MessageType.ERROR:
-        return False
-    return True
-
-
-async def _forget_bluez_device(device_path: str) -> bool:
-    """Drop a cached classic bond so the next scan can connect over BLE."""
-    if sys.platform != "linux" or not device_path or "/" not in device_path:
-        return False
-    try:
-        from dbus_fast.aio import MessageBus
-        from dbus_fast.constants import BusType, MessageType
-        from dbus_fast.message import Message
-    except Exception:
-        return False
-    try:
-        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    except Exception:
-        return False
-    try:
-        reply = await bus.call(
-            Message(
-                destination="org.bluez",
-                path=device_path.rsplit("/", 1)[0],
-                interface="org.bluez.Adapter1",
-                member="RemoveDevice",
-                signature="o",
-                body=[device_path],
-            )
-        )
-    except Exception:
-        return False
-    finally:
-        try:
-            bus.disconnect()
-        except Exception:
-            pass
-    return reply is not None and getattr(reply, "message_type", None) != MessageType.ERROR
-
-
-async def _open_dwarf_ble(dwarf: Any):
-    """Connect to the telescope GATT service, forcing BLE on Linux."""
-    from bleak import BleakClient
-
-    path = _bluez_device_path(dwarf)
-    address = str(getattr(dwarf, "address", "") or "")
-    target: Any = dwarf if path else (address or dwarf)
-    last: BaseException | None = None
-    forgot = False
-    for attempt in range(4):
-        if path:
-            await _prefer_le_bearer(path)
-        client = BleakClient(target, timeout=15)
-        try:
-            await client.connect()
-            return client
-        except Exception as exc:
-            last = exc
-            resolved = str(getattr(client, "_device_path", "") or "")
-            if attempt >= 3:
-                break
-            if _is_bredr_profile_unavailable(exc) and (resolved or path):
-                if resolved:
-                    path = resolved
-                if attempt >= 1 and not forgot:
-                    await _forget_bluez_device(path)
-                    forgot = True
-                    path = ""
-                    if address:
-                        target = address
-                continue
-            if _ble_device_missing(exc) and address and target is not address:
-                target = address
-                path = ""
-                continue
-            break
-    if last and _is_bredr_profile_unavailable(last):
-        raise RuntimeError(
-            "Bluetooth found the telescope, but Linux tried a classic profile. "
-            "Keep it powered on nearby and try Discover again."
-        ) from last
-    if last:
-        raise last
-    raise RuntimeError("Bluetooth connection failed")
-
-
 def _set_wifi_ap_message(ble_password: str) -> bytes:
     import dwarf_python_api.proto.ble_pb2 as ble
     from dwarf_ble_connect.lib.dwarf_protocol_ble import create_packet_ble
@@ -1940,6 +1782,7 @@ async def _ble_wifi_session(
     preferred: str = "auto",
     on_log: Any = None,
 ) -> dict[str, Any]:
+    from bleak import BleakClient
     from dwarf_ble_connect.lib.dwarf_lib_ble import DWARF_CHARACTERISTIC_UUID
     from dwarf_ble_connect.lib.dwarf_protocol_ble import (
         analyze_packet_ble,
@@ -1966,7 +1809,8 @@ async def _ble_wifi_session(
         await asyncio.wait_for(ready.wait(), timeout)
         return replies.get(cmd) or {}
 
-    client = await _open_dwarf_ble(dwarf)
+    client = BleakClient(dwarf.address, timeout=15)
+    await client.connect()
     try:
         await client.start_notify(DWARF_CHARACTERISTIC_UUID, on_notify)
         config = await write_and_wait(get_wifi_config_message(ble_password), 1, 8)
@@ -2167,30 +2011,8 @@ def _cancel_queued_connects() -> bool:
     return True
 
 
-def _sdk_connection_error() -> str:
-    """Stable reason from the SDK, if this build still has it after disconnect."""
-    if _api is None:
-        return ""
-    try:
-        getter = getattr(_api, "perform_get_last_connection_error", None)
-        if getter is not None:
-            code = getter()
-            if code:
-                return str(code)
-    except Exception:
-        pass
-    try:
-        from dwarf_python_api.lib import websockets_utils
-
-        client = getattr(websockets_utils, "client_instance", None)
-        code = getattr(client, "last_connection_error", None) if client is not None else None
-        return str(code or "")
-    except Exception:
-        return ""
-
-
 def _raise_if_device_occupied() -> None:
-    if not device_occupied() and _sdk_connection_error() != "DEVICE_OCCUPIED":
+    if not device_occupied():
         return
     _safe_disconnect()
     raise RuntimeError(DEVICE_OCCUPIED_MESSAGE)
@@ -2929,28 +2751,6 @@ def _capture_counts(snapshot: dict[str, Any]) -> tuple[int, int]:
     return max(0, frames), total
 
 
-def mosaic_pane_change_label(stacked_pane: int, panes: int, reported_index: int = 0) -> str:
-    """Progress step while firmware moves from a finished pane to the next one.
-
-    The base name is ``Changing mosaic pane`` so session timing can measure
-    the gap. The ``N/M`` suffix is what the HUD shows.
-    """
-    try:
-        done = int(stacked_pane or 0)
-        total = int(panes or 0)
-        reported = int(reported_index or 0)
-    except (TypeError, ValueError):
-        return ""
-    if total <= 1 or done < 1 or done >= total:
-        return ""
-    nxt = done + 1
-    if reported > done:
-        nxt = min(total, reported)
-    if nxt <= done or nxt > total:
-        return ""
-    return f"Changing mosaic pane · {nxt}/{total}"
-
-
 def _capture_wait_label(name: str, snapshot: dict[str, Any]) -> str:
     frames, total = _capture_counts(snapshot)
     if total:
@@ -2979,9 +2779,6 @@ def _wait_for_capture_end(
     seen = False
     continued = False
     quiet_since: float | None = None
-    stacked_pane = 0
-    last_stacked = 0
-    in_gap = False
     started = time.monotonic()
     last_label = ""
     last_heartbeat = started
@@ -3006,25 +2803,7 @@ def _wait_for_capture_end(
                 continue
         capturing = _capture_running(snapshot)
         slewing = mosaic and _goto_busy(snapshot)
-        try:
-            reported_pane = int(snapshot.get("mosaic_index") or 0)
-        except (TypeError, ValueError):
-            reported_pane = 0
-        changing = False
         if capturing or slewing:
-            if capturing:
-                frames_now, _total_frames = _capture_counts(snapshot)
-                if reported_pane > stacked_pane:
-                    stacked_pane = reported_pane
-                elif in_gap and last_stacked >= 2 and frames_now <= 1 and stacked_pane < mosaic_panes:
-                    stacked_pane += 1
-                elif stacked_pane < 1:
-                    stacked_pane = 1
-                in_gap = False
-                last_stacked = frames_now
-            elif seen and mosaic_pane_change_label(stacked_pane, mosaic_panes, reported_pane):
-                changing = True
-                in_gap = True
             if capturing and not seen:
                 frames, total = _capture_counts(snapshot)
                 detail = f"{frames}/{total}" if total else "stacking started"
@@ -3035,9 +2814,6 @@ def _wait_for_capture_end(
             if not seen:
                 seen = True
                 log(f"{name}: mosaic still active; waiting for the next pane")
-            if mosaic_pane_change_label(stacked_pane, mosaic_panes, reported_pane):
-                changing = True
-                in_gap = True
             if quiet_since is None:
                 quiet_since = time.monotonic()
             elif time.monotonic() - quiet_since >= _mosaic_idle_timeout_s(snapshot, mosaic_panes):
@@ -3046,12 +2822,9 @@ def _wait_for_capture_end(
         elif seen:
             state = str(snapshot.get("capture_state") or "")
             if mosaic:
-                if mosaic_pane_change_label(stacked_pane, mosaic_panes, reported_pane):
-                    changing = True
-                    in_gap = True
                 if quiet_since is None:
                     quiet_since = time.monotonic()
-                    if mosaic_panes > 1 and changing:
+                    if mosaic_panes > 1:
                         log(f"{name}: pane gap; waiting for the next mosaic pane")
                 elif time.monotonic() - quiet_since >= _mosaic_idle_timeout_s(snapshot, mosaic_panes):
                     log(f"{name} finished after {_format_duration(elapsed)}")
@@ -3075,12 +2848,8 @@ def _wait_for_capture_end(
                 "If dark frames are missing, add matching darks or retry."
             )
         if on_progress:
-            label = (
-                mosaic_pane_change_label(stacked_pane, mosaic_panes, reported_pane)
-                if changing
-                else _capture_wait_label(name, snapshot)
-            )
-            if label and label != last_label:
+            label = _capture_wait_label(name, snapshot)
+            if label != last_label:
                 on_progress(label)
                 last_label = label
         if seen and time.monotonic() - last_heartbeat >= _CAPTURE_HEARTBEAT_S:
@@ -4796,35 +4565,6 @@ def _ir_name(value: Any) -> str:
     return str(value or "").strip().lower().replace(" filter", "")
 
 
-def _set_ir_filter(args: tuple[Any, ...] | list[Any]) -> Any:
-    """Set the tele IR filter.
-
-    DSO mode uses ``perform_set_astro_ir_filter_v3`` (param
-    ``0x020100000000000d``) when this SDK has it. Photo mode stays on the
-    legacy IR-cut command; that path is the one still used outside astro.
-    Mini slot 0 is the dark-frame position and is not a selectable filter.
-    """
-    raw = args[0] if args else ""
-    from .domain import ir_filter_index
-
-    index = ir_filter_index(raw)
-    snapshot = _tap.snapshot() if _tap is not None else {}
-    mode = _shooting_int(snapshot.get("shooting_mode"))
-    if mode is None:
-        mode = _shooting_int(_device.get("shooting_mode"))
-    model = str(_device.get("model") or "")
-    if model == "Dwarf Mini" and index == 0:
-        log("Mini slot 0 is the dark-frame position; the astro filter was left unchanged", "warning")
-        return True
-    modern = getattr(_api, "perform_set_astro_ir_filter_v3", None) if _api is not None else None
-    if modern is not None and mode == _ASTRO_SHOOTING_MODE and index is not None:
-        return _invoke_sdk("set_ir", modern, int(index))
-    legacy = getattr(_api, "perform_set_ir_filter_v3", None) if _api is not None else None
-    if legacy is None:
-        raise NotImplementedError("Installed SDK does not provide 'set_ir'")
-    return _invoke_sdk("set_ir", legacy, raw)
-
-
 def _timelapse_interval_seconds(snapshot: dict[str, Any]) -> int:
     interval = photo_capture_seconds(snapshot.get("timelapse_interval")) or 1
     return interval if interval > 0 else 1
@@ -4927,9 +4667,9 @@ def camera_param_unchanged(
     wide = camera == "wide"
     if operation in {"set_exposure", "set_photo_exposure"}:
         if operation == "set_photo_exposure":
-            keys = ("photo_wide_exposure_text",) if wide else ("photo_exposure_text",)
+            keys = ("photo_wide_exposure_text", "wide_exposure_text") if wide else ("photo_exposure_text", "exposure_text")
         else:
-            keys = ("astro_wide_exposure_text",) if wide else ("astro_exposure_text",)
+            keys = ("astro_wide_exposure_text", "wide_exposure_text") if wide else ("astro_exposure_text", "exposure_text")
         live = next((snapshot.get(key) for key in keys if snapshot.get(key) not in (None, "", "—")), None)
         if live in (None, "", "—"):
             return False
@@ -4938,9 +4678,9 @@ def camera_param_unchanged(
     if operation in {"set_gain", "set_photo_gain"}:
         wanted = _param_int(values[0] if values else None)
         if operation == "set_photo_gain":
-            keys = ("photo_wide_gain",) if wide else ("photo_gain",)
+            keys = ("photo_wide_gain", "wide_gain") if wide else ("photo_gain", "gain")
         else:
-            keys = ("astro_wide_gain",) if wide else ("astro_gain",)
+            keys = ("astro_wide_gain", "wide_gain") if wide else ("astro_gain", "gain")
         live = next((_param_int(snapshot.get(key)) for key in keys if snapshot.get(key) not in (None, "", "—")), None)
         return wanted is not None and wanted == live
     return False
@@ -6301,66 +6041,21 @@ def _polar_position_stopped() -> None:
         raise InterruptedError("Session stopped" if _session_active.is_set() else "Polar positioning stopped")
 
 
-def _motor_action_supports(action: int) -> bool:
-    function = getattr(_api, "motor_action", None) if _api is not None else None
-    if function is None:
-        return False
-    try:
-        import inspect
-
-        return f"action == {int(action)}" in inspect.getsource(function)
-    except (OSError, TypeError):
-        return False
-
-
-def _mini_polar_pitch() -> Any:
-    """Pitch RUN_TO 183° when this SDK's ``motor_action`` has no Mini case."""
-    from dwarf_python_api.proto import motor_control_pb2
-
-    message = motor_control_pb2.ReqMotorRunTo()
-    message.id = 2
-    message.end_position = 183
-    message.speed = 10
-    message.speed_ramping = 100
-    message.resolution_level = 3
-    return _send_request("polar_position", message, 14001, 6, "Slewing pitch to polar pose")
-
-
 def polar_position() -> bool:
-    """Home and slew to the polar-alignment pose (POLAR POS).
-
-    DWARF II resets both axes, then rotation 2 and pitch 3. DWARF 3 resets
-    both axes, then rotation 9 and pitch 7. DWARF Mini only resets pitch
-    (6) and slews it with action 11 (183°). Its rotation axis has no home
-    sensor, so actions 5 and 9 are not sent.
-    """
+    """Home both axes and slew to the polar-alignment pose (POLAR POS)."""
     global _motors_unhomed
     function = getattr(_api, "motor_action", None) if _api is not None else None
     if function is None:
         raise RuntimeError("motor_action is not available in this SDK")
     model = str(_device.get("model") or "")
-    if model == "Dwarf Mini":
-        steps = ((6, "Resetting pitch motor"), (11, "Slewing pitch to polar pose"))
-    elif model == "Dwarf 3":
-        steps = (
-            (5, "Resetting rotation motor"),
-            (6, "Resetting pitch motor"),
-            (9, "Slewing rotation to polar pose"),
-            (7, "Slewing pitch to polar pose"),
-        )
-    else:
-        steps = (
-            (5, "Resetting rotation motor"),
-            (6, "Resetting pitch motor"),
-            (2, "Slewing rotation to polar pose"),
-            (3, "Slewing pitch to polar pose"),
-        )
+    steps = (
+        ((5, "Resetting rotation motor"), (6, "Resetting pitch motor"), (9, "Slewing rotation to polar pose"), (7, "Slewing pitch to polar pose"))
+        if model in {"Dwarf 3", "Dwarf Mini"}
+        else ((5, "Resetting rotation motor"), (6, "Resetting pitch motor"), (2, "Slewing rotation to polar pose"), (3, "Slewing pitch to polar pose"))
+    )
     for action, label in steps:
         _polar_position_stopped()
-        if action == 11 and not _motor_action_supports(11):
-            result = _mini_polar_pitch()
-        else:
-            result = _invoke_sdk("polar_position", function, action, label=label)
+        result = _invoke_sdk("polar_position", function, action, label=label)
         _polar_position_stopped()
         if result is False:
             return False
@@ -6392,151 +6087,10 @@ def stop_polar_position() -> bool:
     return ok
 
 
-def _schedule_deadline(seconds: float, label: str) -> threading.Timer:
-    timer = threading.Timer(seconds, lambda: _interrupt_sdk_wait(f"{label} timed out"))
-    timer.daemon = True
-    timer.start()
-    return timer
-
-
-def _delete_shooting_schedule(schedule_id: str) -> dict[str, Any]:
-    """Drop one stored schedule. A missing id is success; a busy telescope is not."""
-    from dwarf_python_api.lib.dwarf_utils import perform_delete_shooting_schedule
-
-    from .device_schedule import SCHEDULE_BUSY_CODES, schedule_error_text
-    from .device_telemetry import CMD_DELETE_SHOOTING_SCHEDULE
-
-    since = time.monotonic()
-    timer = _schedule_deadline(8.0, "delete shooting schedule")
-    try:
-        result = perform_delete_shooting_schedule(schedule_id)
-    finally:
-        timer.cancel()
-    reply = _tap.schedule_reply_after(CMD_DELETE_SHOOTING_SCHEDULE, since) if _tap is not None else None
-    code = int(reply["code"]) if reply and reply.get("code") is not None else (0 if result else None)
-    if result or code == 0:
-        return {"ok": True, "code": 0}
-    if code in SCHEDULE_BUSY_CODES:
-        return {"ok": False, "blocked": True, "code": code, "error": schedule_error_text(code)}
-    return {"ok": True, "absent": True, "code": code}
-
-
-def _sync_shooting_schedule_once(schedule: dict[str, Any]) -> dict[str, Any]:
-    from dwarf_python_api.lib.dwarf_utils import perform_sync_shooting_schedule
-
-    from .device_schedule import schedule_error_text
-    from .device_telemetry import CMD_SYNC_SHOOTING_SCHEDULE
-
-    since = time.monotonic()
-    timer = _schedule_deadline(20.0, "sync shooting schedule")
-    try:
-        result = perform_sync_shooting_schedule(schedule)
-    finally:
-        timer.cancel()
-    reply = _tap.schedule_reply_after(CMD_SYNC_SHOOTING_SCHEDULE, since) if _tap is not None else None
-    code = 0 if result else None
-    if reply and reply.get("code") is not None:
-        try:
-            code = int(reply["code"])
-        except (TypeError, ValueError):
-            code = 0 if result else None
-    if result or code == 0:
-        count = len(schedule.get("shooting_tasks") or [])
-        log(f"Shooting schedule synced ({count} target{'s' if count != 1 else ''})", "success")
-        return {"ok": True, "code": 0, "conflict_ids": [], "can_replace": False}
-    if code is None:
-        log("Shooting schedule sync did not answer", "warning")
-        return {"ok": False, "code": None, "error": "The telescope did not answer", "conflict_ids": [], "can_replace": False}
-    conflict_ids = list(reply.get("conflict_ids") or []) if reply else []
-    can_replace = bool(reply.get("can_replace")) if reply else False
-    log(f"Shooting schedule sync rejected ({code})", "warning")
-    return {
-        "ok": False,
-        "code": code,
-        "error": schedule_error_text(code),
-        "conflict_ids": conflict_ids,
-        "can_replace": can_replace,
-    }
-
-
-def sync_shooting_schedule(
-    schedule: dict[str, Any] | None,
-    replace_ids: list[str] | None = None,
-    schedule_id: str = "",
-) -> dict[str, Any]:
-    """Replace this app's schedule, then push the new one. ``None`` only deletes it."""
-    if not _connected.is_set():
-        return {"ok": False, "error": "The telescope is not connected"}
-    our_id = str(schedule_id or "")
-    if isinstance(schedule, dict):
-        our_id = str(schedule.get("scheduleId") or our_id)
-    ids = [str(item) for item in (replace_ids or []) if str(item or "").strip()]
-    if our_id:
-        ids.insert(0, our_id)
-    seen: set[str] = set()
-    for schedule_id in ids:
-        if not schedule_id or schedule_id in seen:
-            continue
-        seen.add(schedule_id)
-        deleted = _delete_shooting_schedule(schedule_id)
-        if not deleted.get("ok"):
-            return deleted
-    if not isinstance(schedule, dict) or not schedule.get("shooting_tasks"):
-        return {"ok": True, "deleted": True, "code": 0}
-    return _sync_shooting_schedule_once(schedule)
-
-
-def get_shooting_schedules() -> dict[str, Any]:
-    """Read the schedules stored on the telescope. A miss is not a connection error."""
-    from dwarf_python_api.lib.dwarf_utils import perform_get_all_shooting_schedule_full
-
-    if not _connected.is_set():
-        return {"ok": False, "schedules": [], "error": "The telescope is not connected"}
-    timer = _schedule_deadline(8.0, "read shooting schedule")
-    try:
-        message = perform_get_all_shooting_schedule_full()
-    except Exception as exc:
-        log(f"Shooting schedule read failed: {exc}", "warning")
-        return {"ok": False, "schedules": [], "error": "The telescope did not answer"}
-    finally:
-        timer.cancel()
-    if message is None:
-        log("Shooting schedule read did not answer", "info")
-        return {"ok": False, "schedules": [], "error": "The telescope did not answer"}
-    schedules: list[dict[str, Any]] = []
-    for item in getattr(message, "shooting_schedule", []) or []:
-        tasks = []
-        for task in getattr(item, "shooting_tasks", []) or []:
-            tasks.append({
-                "schedule_task_id": str(getattr(task, "schedule_task_id", "") or ""),
-                "state": int(getattr(task, "state", 0) or 0),
-                "code": int(getattr(task, "code", 0) or 0),
-            })
-        schedules.append({
-            "schedule_id": str(getattr(item, "schedule_id", "") or ""),
-            "state": int(getattr(item, "state", 0) or 0),
-            "result": int(getattr(item, "result", 0) or 0),
-            "tasks": tasks,
-        })
-    return {"ok": True, "schedules": schedules}
-
-
 def dispatch(message: dict[str, Any]) -> Any:
     command = message["command"]
     if command == "configure":
         return configure(message["device"])
-    if command == "sync_shooting_schedule":
-        schedule = message.get("schedule")
-        replace_ids = message.get("replace_ids")
-        if replace_ids is not None and not isinstance(replace_ids, list):
-            replace_ids = []
-        return sync_shooting_schedule(
-            schedule if isinstance(schedule, dict) else None,
-            replace_ids,
-            str(message.get("schedule_id") or ""),
-        )
-    if command == "get_shooting_schedules":
-        return get_shooting_schedules()
     if command == "connect":
         claimed = message.get("claimed_ips")
         if claimed is not None:
@@ -6650,7 +6204,7 @@ def dispatch(message: dict[str, Any]) -> Any:
         return serializable_state(sdk_call("read_camera", mode_id))
     if command == "set_auto_params":
         args = list(message.get("args") or [])
-        if not message.get("force") and camera_param_unchanged(
+        if camera_param_unchanged(
             "set_auto_params",
             args,
             _tap.snapshot() if _tap is not None else {},
@@ -6730,7 +6284,7 @@ def dispatch(message: dict[str, Any]) -> Any:
         if command in _CAPTURE_TECHNIQUES:
             if _ensure_capture_technique(_CAPTURE_TECHNIQUES[command]) is False:
                 return False
-        result = sdk_call(command, *message.get("args", []), force=bool(message.get("force")))
+        result = sdk_call(command, *message.get("args", []))
         if result is not False:
             if command == "photo_mode":
                 _remember_shooting(_PHOTO_SHOOTING_MODE, _PHOTO_STILL_TECH)

@@ -51,8 +51,6 @@ CMD_NOTIFY_WIDE_BURST_PROGRESS = 15220
 CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING = 15236
 CMD_NOTIFY_PROGRASS_WIDE_CAPTURE_RAW_LIVE_STACKING = 15237
 CMD_NOTIFY_STATE_CAPTURE_WIDE_RAW_DARK = 15247
-CMD_NOTIFY_SHOOTING_SCHEDULE_RESULT_AND_STATE = 15248
-CMD_NOTIFY_SHOOTING_TASK_STATE = 15249
 CMD_NOTIFY_EQ_SOLVING_STATE = 15239
 CMD_NOTIFY_TELE_LONG_EXP_PROGRESS = 15241
 CMD_NOTIFY_WIDE_LONG_EXP_PROGRESS = 15242
@@ -73,18 +71,14 @@ CMD_NOTIFY_PANORAMA_PROGRESS = 15219
 CMD_NOTIFY_PANO_FRAMING_RECT = 15297
 CMD_NOTIFY_PANO_FRAMING_THUMBNAIL = 15298
 CMD_NOTIFY_PANO_FRAMING_STATE = 15299
-CMD_PANORAMA_START_GRID = 15500
 CMD_PANORAMA_STOP = 15501
-CMD_PANORAMA_START_EULER_RANGE = 15502
 CMD_PANORAMA_START_FRAMING = 15509
 CMD_PANORAMA_STOP_FRAMING = 15510
 CMD_PANORAMA_RESET_FRAMING = 15511
 CMD_PANORAMA_UPDATE_FRAMING_RECT = 15512
 CMD_PANORAMA_STOP_FRAMING_AND_START_GRID = 15513
 _PANORAMA_COMMANDS = frozenset({
-    CMD_PANORAMA_START_GRID,
     CMD_PANORAMA_STOP,
-    CMD_PANORAMA_START_EULER_RANGE,
     CMD_PANORAMA_START_FRAMING,
     CMD_PANORAMA_STOP_FRAMING,
     CMD_PANORAMA_RESET_FRAMING,
@@ -119,14 +113,6 @@ CMD_ASTRO_START_CAPTURE_RAW_DARK_WITH_PARAM = 11021
 CMD_ASTRO_START_CAPTURE_WIDE_RAW_DARK_WITH_PARAM = 11025
 CMD_ASTRO_GET_DARK_FRAME_LIST = 11023
 CMD_ASTRO_GET_WIDE_DARK_FRAME_LIST = 11027
-CMD_SYNC_SHOOTING_SCHEDULE = 16100
-CMD_CANCEL_SHOOTING_SCHEDULE = 16101
-CMD_DELETE_SHOOTING_SCHEDULE = 16108
-_SCHEDULE_REPLY_CMDS = frozenset({
-    CMD_SYNC_SHOOTING_SCHEDULE,
-    CMD_CANCEL_SHOOTING_SCHEDULE,
-    CMD_DELETE_SHOOTING_SCHEDULE,
-})
 # Commands whose reply code the worker needs: long-running operations whose
 # reply only arrives once the operation ends, and capture starts whose reply
 # carries firmware warnings (missing darks, engine busy) the SDK only logs.
@@ -225,19 +211,7 @@ def settle_goto_changes(
     released["goto_state"] = "idle"
     released["goto_released"] = True
     return released, False, 0.0
-def charging_notify_changes(value: int) -> dict[str, Any]:
-    """Charge flag from ``CMD_NOTIFY_CHARGE`` (``ComResWithInt``).
-
-    Confirmed on a Mini plug-in (dwarf_python_api, Sep 2026): 1 is not
-    charging and 2 is charging. The same integers are applied to the
-    device-state ``ChargingState`` poll so a later snapshot cannot undo
-    a notify. Firmware does not push this packet again while it stays put.
-    """
-    if int(value) == 2:
-        return {"charging_state": "charging", "charging": True}
-    if int(value) in (0, 1):
-        return {"charging_state": "discharging", "charging": False}
-    return {"charging_state": str(value), "charging": False}
+CHARGING_STATES = {0: "discharging", 1: "charging", 2: "full"}
 STREAM_TYPES = {0: "OFF", 1: "RTSP", 2: "JPEG"}
 BODY_STATUS = {1: "EQ", 2: "AZ"}
 _PHOTO_FUNCTION_KEYS = ("photo_state", "burst_state", "record_state", "timelapse_state")
@@ -316,8 +290,6 @@ PARAM_ID_PHOTO_TELE_EXPOSURE = 0x0101000000000001
 PARAM_ID_PHOTO_TELE_GAIN = 0x0101000000000002
 PARAM_ID_ASTRO_EXPOSURE = 0x0201000000000001
 PARAM_ID_ASTRO_GAIN = 0x0201000000000002
-# Tele astro IR filter. Official app sets this with CMD_PARAM_SET_GENERAL_INT_PARAM.
-PARAM_ID_ASTRO_IR_FILTER_TELE = 0x020100000000000d
 PARAM_ID_PHOTO_WIDE_EXPOSURE = 0x0101100000000001
 PARAM_ID_PHOTO_WIDE_GAIN = 0x0101100000000002
 PARAM_ID_ASTRO_WIDE_EXPOSURE = 0x0201100000000001
@@ -331,13 +303,6 @@ _PHOTO_WIDE_EXPOSURE_PARAMS = {PARAM_ID_PHOTO_WIDE_EXPOSURE}
 _ASTRO_WIDE_EXPOSURE_PARAMS = {PARAM_ID_ASTRO_WIDE_EXPOSURE}
 _PHOTO_WIDE_GAIN_PARAMS = {PARAM_ID_PHOTO_WIDE_GAIN}
 _ASTRO_WIDE_GAIN_PARAMS = {PARAM_ID_ASTRO_WIDE_GAIN}
-
-
-def _ir_filter_param_changes(value: int, model_id: str = "3") -> dict[str, Any]:
-    from .domain import ir_filter_name_from_index
-
-    name = ir_filter_name_from_index(value, mini=str(model_id) in {"5", "mini"})
-    return {"ir_filter": name} if name else {}
 
 
 class _ModuleProxy:
@@ -636,7 +601,6 @@ class TelemetryTap:
         self._status_signature: dict[str, Any] = {}
         self._astro = None
         self._responses: dict[int, tuple[int, float]] = {}
-        self._schedule_replies: dict[int, tuple[dict[str, Any], float]] = {}
         # cmd -> (status, frames, monotonic). status is "ready" or "failed".
         self._dark_libraries: dict[int, tuple[str, list[dict[str, Any]], float]] = {}
         # After a new session starts, leftover stacking packets / SDK cache
@@ -749,7 +713,6 @@ class TelemetryTap:
             self._pending.clear()
             self._status_signature.clear()
             self._responses.clear()
-            self._schedule_replies.clear()
             self._dark_libraries.clear()
             self._hold_stale_capture = False
             self._accept_sdk_capture_counts = True
@@ -862,36 +825,6 @@ class TelemetryTap:
         if item is None or item[1] < since:
             return None
         return item[0]
-
-    def schedule_reply_after(self, cmd: int, since: float) -> dict[str, Any] | None:
-        """Return a shooting-schedule reply received after monotonic time ``since``."""
-        with self._lock:
-            item = self._schedule_replies.get(cmd)
-        if item is None or item[1] < since:
-            return None
-        return dict(item[0])
-
-    def _record_schedule_reply(self, cmd: int, data: bytes) -> None:
-        try:
-            from dwarf_python_api.proto import shooting_schedule_pb2 as schedule_pb2
-
-            if cmd == CMD_SYNC_SHOOTING_SCHEDULE:
-                message = schedule_pb2.ResSyncShootingSchedule()
-            elif cmd == CMD_CANCEL_SHOOTING_SCHEDULE:
-                message = schedule_pb2.ResCancelShootingSchedule()
-            else:
-                message = schedule_pb2.ResDeleteShootingSchedule()
-            message.ParseFromString(data)
-            payload = {
-                "cmd": int(cmd),
-                "code": int(message.code),
-                "conflict_ids": [str(item) for item in getattr(message, "time_conflict_schedule_ids", [])],
-                "can_replace": bool(getattr(message, "can_replace", False)),
-            }
-        except Exception:
-            return
-        with self._lock:
-            self._schedule_replies[cmd] = (payload, time.monotonic())
 
     def dark_library_after(self, cmd: int, since: float) -> tuple[str, list[dict[str, Any]]]:
         """Return ('pending'|'failed'|'ready', frames) for a dark-library reply."""
@@ -1023,29 +956,19 @@ class TelemetryTap:
         message = self._parse("PanoFramingRectUpdateNotify", data)
         if message is None:
             return {}
-        x1 = float(message.norm_x_tl)
-        y1 = float(message.norm_y_tl)
-        x2 = float(message.norm_x_br)
-        y2 = float(message.norm_y_br)
-        limit_left = float(message.norm_limit_x_left)
-        limit_top = float(message.norm_limit_y_top)
-        limit_right = float(message.norm_limit_x_right)
-        limit_bottom = float(message.norm_limit_y_bottom)
-        rect_fov_h = float(message.rect_hor_fov)
-        rect_fov_v = float(message.rect_ver_fov)
         changes = {
             "panorama_has_rect": True,
             "panorama_framing_state": "running",
-            "panorama_x1": x1,
-            "panorama_y1": y1,
-            "panorama_x2": x2,
-            "panorama_y2": y2,
-            "panorama_limit_left": limit_left,
-            "panorama_limit_top": limit_top,
-            "panorama_limit_right": limit_right,
-            "panorama_limit_bottom": limit_bottom,
-            "panorama_rect_fov_h": rect_fov_h,
-            "panorama_rect_fov_v": rect_fov_v,
+            "panorama_x1": float(message.norm_x_tl),
+            "panorama_y1": float(message.norm_y_tl),
+            "panorama_x2": float(message.norm_x_br),
+            "panorama_y2": float(message.norm_y_br),
+            "panorama_limit_left": float(message.norm_limit_x_left),
+            "panorama_limit_top": float(message.norm_limit_y_top),
+            "panorama_limit_right": float(message.norm_limit_x_right),
+            "panorama_limit_bottom": float(message.norm_limit_y_bottom),
+            "panorama_rect_fov_h": float(message.rect_hor_fov),
+            "panorama_rect_fov_v": float(message.rect_ver_fov),
             "panorama_rect_error": int(message.error_code),
         }
         from .device_worker import log
@@ -1245,8 +1168,6 @@ class TelemetryTap:
         """Decode one incoming packet into telemetry changes (never raises)."""
         if kind in _RESPONSE_TYPES and cmd in _DARK_LIBRARY_CMDS:
             self._record_dark_library(cmd, data)
-        elif kind in _RESPONSE_TYPES and cmd in _SCHEDULE_REPLY_CMDS:
-            self._record_schedule_reply(cmd, data)
         elif kind in _RESPONSE_TYPES and (cmd in _TRACKED_RESPONSES or cmd in _PANORAMA_COMMANDS):
             self._record_response(cmd, data)
         try:
@@ -1266,8 +1187,6 @@ class TelemetryTap:
                 CMD_NOTIFY_PANO_FRAMING_RECT,
                 CMD_NOTIFY_PANO_FRAMING_THUMBNAIL,
                 CMD_NOTIFY_PANO_FRAMING_STATE,
-                CMD_NOTIFY_SHOOTING_SCHEDULE_RESULT_AND_STATE,
-                CMD_NOTIFY_SHOOTING_TASK_STATE,
             ) or cmd in _PHOTO_FUNCTION_FORCE)
 
     def _record_dark_library(self, cmd: int, data: bytes) -> None:
@@ -1394,28 +1313,6 @@ class TelemetryTap:
             return changes
         if kind != TYPE_NOTIFICATION and cmd >= CMD_NOTIFY_ELE:
             return {}
-        if cmd == CMD_NOTIFY_SHOOTING_SCHEDULE_RESULT_AND_STATE:
-            message = self._parse("ShootingScheduleResultAndState", data)
-            if message is None:
-                return {}
-            from .device_schedule import schedule_result_name, schedule_state_name
-
-            return {
-                "device_schedule_id": str(message.schedule_id or ""),
-                "device_schedule_state": schedule_state_name(message.state),
-                "device_schedule_result": schedule_result_name(message.result),
-            }
-        if cmd == CMD_NOTIFY_SHOOTING_TASK_STATE:
-            message = self._parse("ShootingTaskState", data)
-            if message is None:
-                return {}
-            from .device_schedule import task_state_name
-
-            return {
-                "device_schedule_task_id": str(message.schedule_task_id or ""),
-                "device_schedule_task_state": task_state_name(message.state),
-                "device_schedule_task_code": int(message.code),
-            }
         if cmd == CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING:
             message = self._parse("PictureMatching", data)
             if message is None:
@@ -1436,15 +1333,9 @@ class TelemetryTap:
                 return {}
             return {"battery_percent": percent}
         if cmd == CMD_NOTIFY_CHARGE:
-            if self._base is None:
-                return {}
-            message = self._base.ComResWithInt()
-            message.ParseFromString(data)
-            try:
-                value = int(message.value)
-            except (TypeError, ValueError):
-                return {}
-            return charging_notify_changes(value)
+            message = self._parse("ChargingState", data)
+            state = int(message.state)
+            return {"charging_state": CHARGING_STATES.get(state, str(state)), "charging": state == 1}
         if cmd == CMD_NOTIFY_SDCARD_INFO:
             message = self._parse("StorageInfo", data)
             return {
@@ -1704,8 +1595,6 @@ class TelemetryTap:
                 return {"photo_wide_gain": value}
             if param_id in _ASTRO_WIDE_GAIN_PARAMS:
                 return {"astro_wide_gain": value}
-            if param_id == PARAM_ID_ASTRO_IR_FILTER_TELE:
-                return _ir_filter_param_changes(value, self._model_id)
             return {}
         return {}
 
@@ -1747,7 +1636,9 @@ class TelemetryTap:
                 if battery.HasField("soh"):
                     changes["battery_soh"] = int(battery.soh)
             if info.HasField("charging_state"):
-                changes.update(charging_notify_changes(int(info.charging_state.state)))
+                state = int(info.charging_state.state)
+                changes["charging_state"] = CHARGING_STATES.get(state, str(state))
+                changes["charging"] = state == 1
             if info.HasField("storage_info"):
                 storage = info.storage_info
                 changes["storage_free_gb"] = int(storage.available_size)
@@ -1953,16 +1844,11 @@ def normalize_client_status(full: dict[str, Any], model_id: str = "3") -> dict[s
         put("indicator_on", int(full["PowerIndicatorDwarf"]) == 1)
     if full.get("RgbIndicatorDwarf") is not None:
         put("lights_on", int(full["RgbIndicatorDwarf"]) == 1)
-    if full.get("IsCharging") is not None:
-        changes.update(charging_notify_changes(2 if full.get("IsCharging") else 1))
     # Do not map SDK HostMode. That flag is InitHostReceived: it starts
     # False on every websocket init and only becomes True after a host
     # notify. Polling it as slave overwrites a real host reading and
     # raises a false "controlled by another client" warning.
-    # A known-bad socket can still be holding the previous stack's counts.
-    capturing = False if full.get("ErrorConnection") else (
-        bool(full.get("AstroCapture")) or bool(full.get("AstroWideCapture"))
-    )
+    capturing = bool(full.get("AstroCapture")) or bool(full.get("AstroWideCapture"))
     if capturing:
         # The SDK sets AstroCapture as soon as START_CAPTURE is *sent*, even when
         # the device rejects it as busy. Frame counts are still useful; activity
@@ -1998,8 +1884,6 @@ def normalize_client_status(full: dict[str, Any], model_id: str = "3") -> dict[s
                 put("photo_wide_gain", value)
             elif param_id in _ASTRO_WIDE_GAIN_PARAMS:
                 put("astro_wide_gain", value)
-            elif param_id == PARAM_ID_ASTRO_IR_FILTER_TELE:
-                changes.update(_ir_filter_param_changes(value, model_id))
     return changes
 
 
@@ -2065,22 +1949,7 @@ _DEMOTE_PREFIXES = (
     "websocketclient terminated",
     "websocket terminated",
     "disconnected",  # the app logs its own "Disconnected" line
-    # Codec and full-state polls. The HUD already tracks stream type.
-    "dwarf stream video type is",
-    "streamtypebycamera from get_device_state_info:",
-    # Charge packets repeat while nothing changed. Plug and unplug are logged
-    # from telemetry ("Charging" / "Charger disconnected").
-    "charging:",
-    # GOTO state names repeat the HUD lines (started, plate-solving, complete, failed).
-    "goto: state:",
-    # Focus steps during a move. Vitals show the position; autofocus complete logs it.
-    "focus position is ",
-    # One line per subframe. The stack counter on the HUD is the progress.
-    "current_count >>",
-    # Parameter-push receipts. The values are applied as telemetry, not log events.
-    "cmd_notify_tele_set_param received",
-    "cmd_notify_wide_set_param received",
-    "cmd_notify_set_feature_param received",
+    "dwarf stream video type is unknown",  # stream_type 0 = camera not streaming yet
     "skipping malformed astrogotostate",
     # Pointing reads probe the encoders; an unhomed mount answers NEED_RESET.
     "error motor need reset",
@@ -2097,12 +1966,6 @@ _DEMOTE_PREFIXES = (
 # Firmware reply code 0 means success. The SDK logs "SET EXPOSURE (V3) -> 0"
 # as if 0 were the value; the worker already logs the real arguments.
 _SET_OK_RE = re.compile(r"^set \S.+(?: \(v3\))?(?: 0x[0-9a-f]+)? -> 0$", re.IGNORECASE)
-# "SET IMAGE PARAM (V3) 0x… -> value=N, result_code=0" is the same OK echo.
-# A non-zero result_code stays visible.
-_PARAM_OK_RE = re.compile(
-    r"^set image param \(v3\) 0x[0-9a-f]+ -> value=-?\d+, result_code=0$",
-    re.IGNORECASE,
-)
 _MAX_LOG_CHARS = 400
 
 
@@ -2132,7 +1995,7 @@ def is_chatter(text: str) -> bool:
     # The HUD modal is the prompt. This SDK line stays out of the log.
     if "code_astro_dark_not_found" in lowered or "code_astro_dark_temp_mismatch" in lowered:
         return True
-    return bool(_SET_OK_RE.match(lowered) or _PARAM_OK_RE.match(lowered))
+    return bool(_SET_OK_RE.match(lowered))
 
 
 # Close code 4409 is the telescope refusing a second client. The SDK logs it

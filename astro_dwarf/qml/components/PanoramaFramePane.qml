@@ -3,9 +3,7 @@ import AstroDwarf 1.0
 import ".."
 
 // Device framing canvas. The blank area is the mount's reachable panorama.
-// Firmware draws the first yellow box (usually one wide frame). A resize
-// asks the telescope to scan that crop. Tele stamps stay the full-canvas
-// cell size; they only walk the yellow box.
+// The box starts as one wide frame. A resize asks the telescope to scan.
 Item {
     id: pane
     property bool active: false
@@ -45,14 +43,10 @@ Item {
     readonly property real fitH: canvasAspect > 0 ? fitW / canvasAspect : 0
     readonly property real fitX: (width - fitW) / 2
     readonly property real fitY: (height - fitH) / 2
-    function numOr(value, fallback) {
-        const n = Number(value)
-        return isFinite(n) ? n : fallback
-    }
-    readonly property real boxX1: numOr(telemetry.panorama_x1, limitLeft)
-    readonly property real boxY1: numOr(telemetry.panorama_y1, limitTop)
-    readonly property real boxX2: numOr(telemetry.panorama_x2, limitRight)
-    readonly property real boxY2: numOr(telemetry.panorama_y2, limitBottom)
+    readonly property real boxX1: Number(telemetry.panorama_x1 || limitLeft)
+    readonly property real boxY1: Number(telemetry.panorama_y1 || limitTop)
+    readonly property real boxX2: Number(telemetry.panorama_x2 || limitRight)
+    readonly property real boxY2: Number(telemetry.panorama_y2 || limitBottom)
     readonly property bool wideSized: {
         const h = Number(telemetry.panorama_rect_fov_h || 0)
         const v = Number(telemetry.panorama_rect_fov_v || 0)
@@ -63,6 +57,7 @@ Item {
         return Math.abs(h - wh) / wh < 0.2 && Math.abs(v - wv) / wv < 0.2
     }
     property bool userEnlarged: false
+    property bool seeded: false
     property bool holding: false
     property real heldX1: 0
     property real heldY1: 0
@@ -83,55 +78,44 @@ Item {
     readonly property bool shooting: String(telemetry.panorama_state || "") === "running"
     readonly property int tileDone: Math.max(0, Number(telemetry.panorama_completed || 0))
     readonly property int tileTotal: Math.max(0, Number(telemetry.panorama_total || 0))
-    // Same 1800-on-canvas factoring as before the FOV-fill change. Cell size
-    // is span/fullGrid, never the yellow box divided by that grid.
-    readonly property int fullColCount: {
-        const total = 1800
-        const teleH = Number(telemetry.tele_fov_h || 0)
-        const teleV = Number(telemetry.tele_fov_v || 0)
-        const teleAspect = (teleH > 0.5 && teleV > 0.3) ? teleH / teleV : 2.95 / 1.66
-        const view = (fitW > 2 && fitH > 2) ? (fitW / fitH) : canvasAspect
-        const target = (view > 0.2 ? view : 32 / 9) / teleAspect
-        let bestCols = 1
-        let bestErr = 1e9
-        for (let cols = 1; cols <= total; cols++) {
-            if (total % cols)
-                continue
-            const rowCount = total / cols
-            const err = Math.abs(cols / rowCount - target)
-            if (err < bestErr) {
-                bestErr = err
-                bestCols = cols
-            }
-        }
-        return Math.max(1, bestCols)
-    }
-    readonly property int fullRowCount: Math.max(1, Math.round(1800 / Math.max(1, fullColCount)))
-    readonly property real stampNw: spanX / Math.max(1, fullColCount)
-    readonly property real stampNh: spanY / Math.max(1, fullRowCount)
-    readonly property real frameLeft: Math.min(showX1, showX2)
-    readonly property real frameTop: Math.min(showY1, showY2)
+    readonly property int tileIndex: tileTotal > 0 ? Math.min(tileTotal - 1, tileDone) : 0
     // Do not name these `rows`/`columns` or return `{rows: …}`. QML treats
     // `.rows` as a recursive lookup of a property named `rows` and blows the
     // JS stack (RangeError, fake line ~8e8).
     readonly property int tileColCount: {
-        const bw = Math.abs(showX2 - showX1)
-        if (!(stampNw > 0.001) || !(bw > 0.001) || fitW < 2)
+        const total = tileTotal
+        if (total < 2 || fitW < 2 || fitH < 2)
             return 1
-        return Math.max(1, Math.round(bw / stampNw))
+        const teleH = Number(telemetry.tele_fov_h || 0)
+        const teleV = Number(telemetry.tele_fov_v || 0)
+        const teleAspect = (teleH > 0.5 && teleV > 0.3) ? teleH / teleV : 2.95 / 1.66
+        const target = (fitW / fitH) / teleAspect
+        let count = 1
+        let err = 1e9
+        for (let c = 1; c <= total; ++c) {
+            if (total % c !== 0)
+                continue
+            const across = total / c
+            const delta = Math.abs(c / across - target)
+            if (delta < err) {
+                err = delta
+                count = c
+            }
+        }
+        return count
     }
     readonly property int tileRowCount: {
-        const bh = Math.abs(showY2 - showY1)
-        if (!(stampNh > 0.001) || !(bh > 0.001) || fitH < 2)
+        const across = Math.max(1, tileColCount)
+        const total = tileTotal
+        if (total < 2)
             return 1
-        return Math.max(1, Math.round(bh / stampNh))
+        return Math.max(1, Math.round(total / across))
     }
-    readonly property int tileCap: Math.max(1, tileColCount * tileRowCount)
-    readonly property int tileIndex: Math.max(0, Math.min(tileCap - 1, tileDone))
 
     onActiveChanged: {
         if (!active && !shooting) {
             userEnlarged = false
+            seeded = false
             holding = false
             shownScanRev = -1
             lockedAspect = 0
@@ -140,6 +124,7 @@ Item {
             frontScan = scanA
         }
     }
+    onHasRectChanged: seedFrame()
     onTelemetryChanged: reloadScan()
 
     function noteScanAspect(image) {
@@ -191,9 +176,22 @@ Item {
         holding = true
     }
 
-    function releaseFrame() {
-        userEnlarged = false
-        holding = false
+    // The telescope opens framing on the full reachable area. Start at half
+    // that width and keep the box there while the quick scan updates the rect.
+    function seedFrame() {
+        if (!active || !hasRect || seeded || dragging || userEnlarged)
+            return
+        seeded = true
+        const w = spanX * 0.5
+        const h = Math.min(spanY, spanY * w / spanX * canvasAspect / wideAspect)
+        const cx = (limitLeft + limitRight) / 2
+        const cy = (limitTop + limitBottom) / 2
+        const x1 = cx - w / 2
+        const y1 = cy - h / 2
+        const x2 = cx + w / 2
+        const y2 = cy + h / 2
+        holdBox(x1, y1, x2, y2)
+        backend.updatePanoramaFrame(x1, y1, x2, y2)
     }
 
     function unitPxX(nx) {
@@ -412,7 +410,7 @@ Item {
         visible: pane.active
         active: pane.active
         shooting: pane.shooting
-        playing: pane.telePlaying && pane.shooting && pane.tileCap > 1
+        playing: pane.telePlaying && pane.tileTotal > 1
         tileIndex: pane.tileIndex
         gridColumns: pane.tileColCount
         gridRows: pane.tileRowCount
@@ -420,10 +418,10 @@ Item {
         fitY: pane.fitY // C++ name; do not bind `.rows` on a JS object
         fitW: pane.fitW
         fitH: pane.fitH
-        boxX1: pane.frameLeft
-        boxY1: pane.frameTop
-        boxX2: pane.frameLeft + pane.tileColCount * pane.stampNw
-        boxY2: pane.frameTop + pane.tileRowCount * pane.stampNh
+        boxX1: pane.showX1
+        boxY1: pane.showY1
+        boxX2: pane.showX2
+        boxY2: pane.showY2
         limitLeft: pane.limitLeft
         limitTop: pane.limitTop
         spanX: pane.spanX
@@ -433,20 +431,22 @@ Item {
     Rectangle {
         id: tileBox
         z: 5
-        visible: pane.active && pane.shooting && pane.tileCap > 1 && pane.fitW > 0
+        visible: pane.active && pane.shooting && pane.tileTotal > 1 && pane.fitW > 0
         readonly property int shotCols: Math.max(1, pane.tileColCount)
         readonly property int shotRowCount: Math.max(1, pane.tileRowCount)
-        readonly property real tileLeft: pane.frameLeft
-        readonly property real tileTop: pane.frameTop
+        readonly property real tileLeft: Math.min(pane.showX1, pane.showX2)
+        readonly property real tileTop: Math.min(pane.showY1, pane.showY2)
+        readonly property real spanW: Math.abs(pane.showX2 - pane.showX1)
+        readonly property real spanH: Math.abs(pane.showY2 - pane.showY1)
         readonly property int shotRow: Math.floor(pane.tileIndex / shotCols)
         readonly property int shotCol: {
             const c = pane.tileIndex % shotCols
             return (shotRow % 2) ? (shotCols - 1 - c) : c
         }
-        readonly property real shotNw: pane.stampNw
-        readonly property real shotNh: pane.stampNh
-        readonly property real shotNx: tileLeft + (shotCol + 0.5) * shotNw
-        readonly property real shotNy: tileTop + (shotRow + 0.5) * shotNh
+        readonly property real shotNx: tileLeft + (shotCol + 0.5) * spanW / shotCols
+        readonly property real shotNy: tileTop + (shotRow + 0.5) * spanH / shotRowCount
+        readonly property real shotNw: spanW / shotCols
+        readonly property real shotNh: spanH / shotRowCount
         x: pane.unitPxX(shotNx - shotNw / 2)
         y: pane.unitPxY(shotNy - shotNh / 2)
         width: Math.max(1, pane.unitPxX(shotNx + shotNw / 2) - pane.unitPxX(shotNx - shotNw / 2))
