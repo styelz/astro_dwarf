@@ -219,6 +219,8 @@ Item {
         }
         else if (action === "import")
             backend.importStellariumSmart(raw)
+        else if (action === "importDesktop")
+            backend.importStellariumDesktop(raw)
         else if (action === "push")
             backend.pushSkyToDesktop(raw)
         else if (action === "track") {

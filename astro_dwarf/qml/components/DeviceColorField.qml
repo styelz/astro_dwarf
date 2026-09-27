@@ -49,6 +49,9 @@ Item {
 
     function openPicker() {
         colourPick.roleName = field.roleName
+        const h = field.currentColor.hsvHue
+        if (h >= 0)
+            colourPick.hue = Theme.wrapHue(h)
         colourPick.selectedColor = field.currentColor
         colourPick.open()
     }

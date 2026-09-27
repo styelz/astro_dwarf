@@ -31,6 +31,8 @@ Dialog {
             backend.deleteHistoryRecords(confirmDialog.pendingIds)
         else if (confirmDialog.kind === "deleteDevice")
             backend.deleteDevice((confirmDialog.pendingIds && confirmDialog.pendingIds[0]) || backend.selectedDeviceId)
+        else if (confirmDialog.kind === "replaceDeviceSchedule")
+            backend.replaceDeviceSchedule((confirmDialog.pendingIds && confirmDialog.pendingIds[0]) || "")
         else if (confirmDialog.kind === "deleteMedia") {
             confirmDialog.viewerCloseRequested()
             backend.deleteMedia(confirmDialog.pendingIds)

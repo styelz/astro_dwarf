@@ -478,7 +478,7 @@ ColumnLayout {
                 anchors.verticalCenter: parent.verticalCenter
             },
             HudChip {
-                label: iface.tintFixed ? "FIXED" : (iface.tintLinked ? "FOLLOWS" : (Theme.roleCustom(iface.tintRole) ? "UNLOCKED" : "STOCK"))
+                label: iface.tintFixed ? "FIXED" : (iface.tintLinked ? "FOLLOWS" : (Theme.roleCustom(iface.tintRole) ? "UNLOCKED" : "THEME"))
                 tone: iface.tintFixed ? Theme.textSecondary : (iface.tintLinked ? Theme.accent : (Theme.roleCustom(iface.tintRole) ? Theme.warning : Theme.textSecondary))
                 dim: iface.tintFixed || (!iface.tintLinked && !Theme.roleCustom(iface.tintRole))
                 anchors.verticalCenter: parent.verticalCenter
@@ -532,8 +532,8 @@ ColumnLayout {
                     text: iface.tintFixed
                         ? iface.tintRoleName + " — " + iface.tintRoleHint + " Click the preview or a swatch to inspect it. Status colours stay fixed."
                         : iface.tintRoleHint
-                            ? iface.tintRoleName + " — " + iface.tintRoleHint + " Click the preview or a swatch. WINDOW tints unedited colours. Double-click restores one colour."
-                            : "Click a swatch or the preview to edit that colour. WINDOW tints unedited colours. Double-click restores one colour."
+                            ? iface.tintRoleName + " — " + iface.tintRoleHint + " Click the preview or a swatch. WINDOW tints unedited colours. Double-click restores that colour on this theme."
+                            : "Click a swatch or the preview to edit that colour. WINDOW tints unedited colours. Double-click restores that colour on this theme."
                 }
             }
 
@@ -577,6 +577,7 @@ ColumnLayout {
                         accessibleDescription: "Open a colour picker for the selected swatch"
                         onClicked: {
                             colourPick.roleName = iface.tintRoleName
+                            colourPick.hue = Theme.effectiveHue(iface.tintRole)
                             colourPick.selectedColor = Theme.colorFor(iface.tintRole)
                             colourPick.open()
                         }
@@ -592,6 +593,7 @@ ColumnLayout {
                         accessibleDescription: "Eyedropper. Sample a colour from the screen."
                         onClicked: {
                             colourPick.roleName = iface.tintRoleName
+                            colourPick.hue = Theme.effectiveHue(iface.tintRole)
                             colourPick.selectedColor = Theme.colorFor(iface.tintRole)
                             colourPick.open()
                             Qt.callLater(colourPick.beginDrop)
@@ -608,12 +610,12 @@ ColumnLayout {
                     to: 1
                     stepSize: 0.001
                     onMoved: Theme.setRole(iface.tintRole, value, iface.tintBrightness)
-                    markerPosition: iface.seedRole ? Theme.defaultHue : Theme.stockHue(iface.tintRole)
+                    markerPosition: Theme.baselineHue(iface.tintRole)
                     valueText: Math.round(iface.tintHue * 360) + "°"
                     accessibleName: iface.tintRoleName + " hue"
                     tooltip: iface.seedRole
-                        ? "Seed hue. Unedited swatches, washes and the title bar follow this. The tick is cyan."
-                        : "Hue of the selected swatch. The tick is its stock position. Locked swatches stay put when WINDOW moves."
+                        ? "Seed hue. Unedited swatches, washes and the title bar follow this. The tick is this theme's seed."
+                        : "Hue of the selected swatch. The tick is this theme's colour. Locked swatches stay put when WINDOW moves."
                     trackGradient: Gradient {
                         orientation: Gradient.Horizontal
                         GradientStop { position: 0.000; color: Qt.hsla(0.000, 0.9, 0.55, 1) }
@@ -640,7 +642,7 @@ ColumnLayout {
                     to: 1
                     stepSize: 0.01
                     onMoved: Theme.setRoleSat(iface.tintRole, value)
-                    markerPosition: Theme.stockSat(iface.tintRole)
+                    markerPosition: Theme.baselineSat(iface.tintRole)
                     valueText: Math.round(iface.tintSat * 100) + "%"
                     accessibleName: iface.tintRoleName + " saturation"
                     tooltip: "How strong the selected colour is. 0% is grey at the same lightness; 100% is full tint."
@@ -670,14 +672,14 @@ ColumnLayout {
                         else
                             Theme.setRoleLight(iface.tintRole, value)
                     }
-                    markerPosition: iface.seedRole ? 0.5 : (Theme.stockLight(iface.tintRole) - 0.02) / 0.95
+                    markerPosition: iface.seedRole ? (Theme.baselineBrightness() + 1) / 2 : (Theme.baselineLight(iface.tintRole) - 0.02) / 0.95
                     valueText: iface.seedRole
                         ? ((iface.tintBrightness > 0 ? "+" : "") + Math.round(iface.tintBrightness * 100))
                         : Math.round(iface.tintLight * 100) + "%"
                     accessibleName: iface.seedRole ? "Palette brightness lift" : iface.tintRoleName + " lightness"
                     tooltip: iface.seedRole
-                        ? "Seed lift for unedited swatches. 0 is stock; negative deepens the HUD, positive raises it."
-                        : "Lightness of the selected swatch. The tick is stock."
+                        ? "Seed lift for unedited swatches. The tick is this theme's lift. Negative deepens the HUD, positive raises it."
+                        : "Lightness of the selected swatch. The tick is this theme's colour."
                     trackGradient: Gradient {
                         orientation: Gradient.Horizontal
                         GradientStop { position: 0.0; color: Qt.hsla(iface.tintHue, iface.tintSat, 0.10, 1) }
@@ -749,7 +751,7 @@ ColumnLayout {
                         implicitHeight: Theme.px(28)
                         visible: iface.tintParentKey === ""
                         enabled: Theme.roleCustom(iface.tintRole)
-                        accessibleDescription: "Restore the selected colour to stock"
+                        accessibleDescription: "Restore the selected colour to this theme"
                         onClicked: Theme.clearRole(iface.tintRole)
                     }
                     Text {

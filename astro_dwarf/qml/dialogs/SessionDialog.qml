@@ -472,7 +472,8 @@ Dialog {
         sessionDialog.storedRotation = Number(data.mosaic.rotation_degrees) || 0
         waitBefore.text = data.workflow.wait_before_seconds
         waitAfter.text = data.workflow.wait_after_seconds
-        notes.text = data.notes || ""
+        notes.text = String(data.notes || "")
+        notes.cursorPosition = 0
         sessionDialog.applyWorkflowChecks(data.workflow)
         saveTemplate.checked = false
         exposure.placeholderText = ""
@@ -1071,8 +1072,16 @@ Dialog {
                     onTextEdited: sessionDialog.markDirty("wait_after")
                 }
             }
-            FieldLabel { text: "NOTES"; visible: sessionDialog.mosaicVisible }
-            HudField { id: notes; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.mosaicVisible }
+            FieldLabel { text: "NOTES"; visible: sessionDialog.mosaicVisible; Layout.alignment: Qt.AlignTop; Layout.topMargin: Theme.s2 }
+            HudField {
+                id: notes
+                Layout.fillWidth: true
+                Layout.columnSpan: 2
+                Layout.preferredHeight: Theme.px(52)
+                visible: sessionDialog.mosaicVisible
+                wrapMode: Text.Wrap
+                verticalAlignment: TextInput.AlignTop
+            }
             FieldLabel { text: "WORKFLOW"; Layout.alignment: Qt.AlignTop; Layout.topMargin: Theme.s2 }
             Flow {
                 Layout.fillWidth: true

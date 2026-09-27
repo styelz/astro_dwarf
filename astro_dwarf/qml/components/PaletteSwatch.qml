@@ -3,7 +3,7 @@ import ".."
 
 // Clickable theme-role sample. Hue/saturation/lightness sliders edit the
 // selected swatch; WINDOW writes the palette seed so unedited colours follow.
-// Double-click restores that role to stock. A hue strip stays readable on
+// Double-click restores that role to the selected theme. A hue strip stays readable on
 // near-black fills. Tooltip names the on-screen use so the chip is not a code token.
 Item {
     id: swatch
@@ -47,10 +47,10 @@ Item {
         const hex = swatch.hex
         const use = swatch.roleHint ? " " + swatch.roleHint : ""
         if (selected)
-            return "Selected " + hex + "." + use + " Sliders edit this colour. Double-click restores it."
+            return "Selected " + hex + "." + use + " Sliders edit this colour. Double-click restores this theme's colour."
         if (linked)
-            return hex + "." + use + " Follows " + Theme.roleName(Theme.parentOf(roleKey)) + ". Click to edit. Double-click restores it."
-        return hex + "." + use + " Click to edit this colour. Double-click restores it."
+            return hex + "." + use + " Follows " + Theme.roleName(Theme.parentOf(roleKey)) + ". Click to edit. Double-click restores this theme's colour."
+        return hex + "." + use + " Click to edit this colour. Double-click restores this theme's colour."
     }
     Accessible.checkable: true
     Accessible.checked: selected
@@ -139,12 +139,12 @@ Item {
         wrapWidth: Theme.px(280)
         text: {
             const parentName = Theme.parentOf(swatch.roleKey) ? Theme.roleName(Theme.parentOf(swatch.roleKey)) : ""
-            let line = (selected ? "Editing " : "Edit ") + roleName + "  " + swatch.hex + "."
+            let line = (swatch.selected ? "Editing " : "Edit ") + swatch.roleName + "  " + swatch.hex + "."
             if (swatch.roleHint)
                 line += " " + swatch.roleHint
             if (parentName)
-                line += linked ? " Follows " + parentName + "." : " Unlocked from " + parentName + "."
-            line += " Double-click restores this colour."
+                line += swatch.linked ? " Follows " + parentName + "." : " Unlocked from " + parentName + "."
+            line += " Double-click restores this theme's colour."
             return line
         }
     }

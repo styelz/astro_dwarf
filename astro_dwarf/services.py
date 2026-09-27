@@ -3151,6 +3151,243 @@ def sky_web_template_notes(raw: Any) -> str:
     return "  ·  ".join(lines)
 
 
+_IAU_CONSTELLATIONS = {
+    "And": "Andromeda",
+    "Ant": "Antlia",
+    "Aps": "Apus",
+    "Aql": "Aquila",
+    "Aqr": "Aquarius",
+    "Ara": "Ara",
+    "Ari": "Aries",
+    "Aur": "Auriga",
+    "Boo": "Boötes",
+    "Cae": "Caelum",
+    "Cam": "Camelopardalis",
+    "Cap": "Capricornus",
+    "Car": "Carina",
+    "Cas": "Cassiopeia",
+    "Cen": "Centaurus",
+    "Cep": "Cepheus",
+    "Cet": "Cetus",
+    "Cha": "Chamaeleon",
+    "Cir": "Circinus",
+    "CMa": "Canis Major",
+    "CMi": "Canis Minor",
+    "Cnc": "Cancer",
+    "Col": "Columba",
+    "Com": "Coma Berenices",
+    "CrA": "Corona Australis",
+    "CrB": "Corona Borealis",
+    "Crt": "Crater",
+    "Cru": "Crux",
+    "Crv": "Corvus",
+    "CVn": "Canes Venatici",
+    "Cyg": "Cygnus",
+    "Del": "Delphinus",
+    "Dor": "Dorado",
+    "Dra": "Draco",
+    "Equ": "Equuleus",
+    "Eri": "Eridanus",
+    "For": "Fornax",
+    "Gem": "Gemini",
+    "Gru": "Grus",
+    "Her": "Hercules",
+    "Hor": "Horologium",
+    "Hya": "Hydra",
+    "Hyi": "Hydrus",
+    "Ind": "Indus",
+    "Lac": "Lacerta",
+    "Leo": "Leo",
+    "LMi": "Leo Minor",
+    "Lep": "Lepus",
+    "Lib": "Libra",
+    "Lup": "Lupus",
+    "Lyn": "Lynx",
+    "Lyr": "Lyra",
+    "Men": "Mensa",
+    "Mic": "Microscopium",
+    "Mon": "Monoceros",
+    "Mus": "Musca",
+    "Nor": "Norma",
+    "Oct": "Octans",
+    "Oph": "Ophiuchus",
+    "Ori": "Orion",
+    "Pav": "Pavo",
+    "Peg": "Pegasus",
+    "Per": "Perseus",
+    "Phe": "Phoenix",
+    "Pic": "Pictor",
+    "PsA": "Piscis Austrinus",
+    "Psc": "Pisces",
+    "Pup": "Puppis",
+    "Pyx": "Pyxis",
+    "Ret": "Reticulum",
+    "Scl": "Sculptor",
+    "Sco": "Scorpius",
+    "Sct": "Scutum",
+    "Ser": "Serpens",
+    "Sex": "Sextans",
+    "Sge": "Sagitta",
+    "Sgr": "Sagittarius",
+    "Tau": "Taurus",
+    "Tel": "Telescopium",
+    "TrA": "Triangulum Australe",
+    "Tri": "Triangulum",
+    "Tuc": "Tucana",
+    "UMa": "Ursa Major",
+    "UMi": "Ursa Minor",
+    "Vel": "Vela",
+    "Vir": "Virgo",
+    "Vol": "Volans",
+    "Vul": "Vulpecula",
+}
+
+
+def _note_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in {float("inf"), float("-inf")}:
+        return None
+    return number
+
+
+def _note_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.islower():
+        return text[:1].upper() + text[1:]
+    return text
+
+
+def _format_light_years(light_years: float) -> str:
+    if light_years >= 1_000_000:
+        return f"{light_years / 1_000_000:.2f} Mly"
+    if light_years >= 10_000:
+        return f"{light_years / 1_000:.1f} kly"
+    if light_years >= 100:
+        return f"{light_years:.0f} ly"
+    return f"{light_years:.1f} ly"
+
+
+def _ra_hms(ra_hours: float) -> str:
+    _sign, units, minutes, seconds = _sexagesimal_parts(ra_hours, wrap_hours=True)
+    return f"{units}h {minutes:02d}m {seconds:02d}s"
+
+
+def _dec_dms(dec_degrees: float) -> str:
+    sign, units, minutes, seconds = _sexagesimal_parts(dec_degrees)
+    prefix = "-" if sign < 0 else "+"
+    return f"{prefix}{units}° {minutes:02d}' {seconds:02d}\""
+
+
+def _stellarium_size_text(data: dict[str, Any]) -> str:
+    major_dd = _note_number(data.get("axis-major-dd"))
+    major = str(data.get("axis-major-dms") or "").strip()
+    minor = str(data.get("axis-minor-dms") or "").strip()
+    if major and minor and major_dd is not None and major_dd >= 1 / 3600:
+        return f"{major} × {minor}"
+    size_dd = _note_number(data.get("size-dd"))
+    if size_dd is None or size_dd < 1 / 3600:
+        return ""
+    return str(data.get("size-dms") or data.get("size-deg") or "").strip()
+
+
+def stellarium_template_notes(data: Any) -> str:
+    """Catalog line for a desktop Stellarium object, matching Sky-page import notes."""
+    if not isinstance(data, dict):
+        return ""
+    lines: list[str] = []
+    variable = str(data.get("variable-star") or "").strip().lower()
+    variable_labels = {
+        "eruptive": "Eruptive variable",
+        "pulsating": "Pulsating variable",
+        "rotating": "Rotating variable",
+        "cataclysmic": "Cataclysmic variable",
+        "eclipsing-binary": "Eclipsing binary",
+        "variable": "Variable star",
+    }
+    if variable in variable_labels:
+        lines.append(variable_labels[variable])
+    elif str(data.get("star-type") or "").strip().lower() == "double-star":
+        lines.append("Double star")
+    else:
+        kind = _note_label(data.get("type") or data.get("object-type"))
+        if kind and kind.lower() not in {"unknown", "none"}:
+            lines.append(kind)
+
+    primary = str(data.get("localized-name") or data.get("name") or "").strip().lower()
+    raw_aliases: list[str] = []
+    english = str(data.get("name") or "").strip()
+    local = str(data.get("localized-name") or "").strip()
+    if english and local and english.lower() != local.lower():
+        raw_aliases.append(english)
+    designations = data.get("designations")
+    if isinstance(designations, str):
+        raw_aliases.extend(part.strip() for part in designations.split(" - "))
+    elif isinstance(designations, list):
+        raw_aliases.extend(str(item).strip() for item in designations)
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for item in raw_aliases:
+        key = item.lower()
+        if not item or key == primary or key in seen:
+            continue
+        seen.add(key)
+        aliases.append(item)
+        if len(aliases) >= 12:
+            break
+    if aliases:
+        lines.append("Also known as: " + ", ".join(aliases))
+
+    magnitude = _note_number(data.get("vmag"))
+    if magnitude is None:
+        magnitude = _note_number(data.get("magnitude"))
+    if magnitude is not None and abs(magnitude) < 50:
+        lines.append(f"Magnitude: {magnitude:.2f}")
+    absolute = _note_number(data.get("absolute-mag"))
+    if absolute is not None and abs(absolute) < 40:
+        lines.append(f"Absolute magnitude: {absolute:.2f}")
+
+    distance_ly = _note_number(data.get("distance-ly"))
+    distance_au = _note_number(data.get("distance"))
+    if distance_ly is not None and distance_ly > 0:
+        lines.append(f"Distance: {_format_light_years(distance_ly)}")
+    elif distance_au is not None and distance_au > 0:
+        lines.append(f"Distance: {distance_au:.3f} AU")
+
+    spectral = str(data.get("spectral-class") or data.get("spectral-type") or "").strip()
+    if spectral:
+        lines.append(f"Spectral type: {spectral}")
+    color = _note_number(data.get("bV"))
+    if color is not None and abs(color) < 10:
+        lines.append(f"B−V: {color:.2f}")
+    morph = str(data.get("morpho") or data.get("morphology") or "").strip()
+    if morph:
+        lines.append(f"Morphology: {morph}")
+    size = _stellarium_size_text(data)
+    if size:
+        lines.append(f"Size: {size}")
+    brightness = _note_number(data.get("surface-brightness"))
+    if brightness is not None and abs(brightness) < 50:
+        lines.append(f"Surface brightness: {brightness:.2f}")
+    redshift = _note_number(data.get("redshift"))
+    if redshift is not None and abs(redshift) < 20:
+        lines.append(f"Redshift: {redshift:.4g}")
+
+    constellation = str(data.get("iauConstellation") or "").strip()
+    if constellation:
+        lines.append("Constellation: " + _IAU_CONSTELLATIONS.get(constellation, constellation))
+
+    ra = _note_number(data.get("raJ2000"))
+    dec = _note_number(data.get("decJ2000"))
+    if ra is not None and dec is not None:
+        # Stellarium's raJ2000 is degrees from atan2, so it is often negative.
+        ra_hours = (float(ra) % 360.0) / 15.0
+        lines.append(f"Ra/Dec: {_ra_hms(ra_hours)}  /  {_dec_dms(dec)}")
+    return "  ·  ".join(lines)
+
+
 PANE_INDEX_RE = re.compile(r"pane\s+(\d+)(?:\s+of\s+(\d+))?", re.I)
 PANE_TITLE_RE = re.compile(r"\s*[-–:]?\s*pane\s+\d+(?:\s+of\s+\d+)?\s*$", re.I)
 
@@ -4803,6 +5040,32 @@ class DurationEngine:
         return round(setup + imaging + profile.pane_slew_seconds * max(0, panes - 1), 1)
 
 
+def choose_session_stellarium_target(
+    desktop: Target | None,
+    sky_map: Target | None,
+    sky_locked: Target | None,
+) -> tuple[Target, str]:
+    """Sessions import: desktop Stellarium selection, else the Sky page target."""
+
+    def usable(target: Target | None) -> bool:
+        if target is None or target.ra_hours is None or target.dec_degrees is None:
+            return False
+        try:
+            ra = float(target.ra_hours)
+            dec = float(target.dec_degrees)
+        except (TypeError, ValueError):
+            return False
+        return ra == ra and dec == dec
+
+    if usable(desktop) and desktop is not None:
+        return desktop, "desktop"
+    if usable(sky_map) and sky_map is not None:
+        return sky_map, "sky"
+    if usable(sky_locked) and sky_locked is not None:
+        return sky_locked, "sky"
+    raise ValueError("Select a target in Stellarium, or select one on the Sky page")
+
+
 class StellariumClient:
     def __init__(self, base_url: str = "http://localhost:8090"):
         self.base_url = base_url.rstrip("/")
@@ -4822,16 +5085,26 @@ class StellariumClient:
         except Exception:
             return False
 
-    def current_target(self) -> Target:
+    def _object_info(self) -> dict[str, Any]:
         response = self._get("/api/objects/info", params={"format": "json"}, timeout=3)
         response.raise_for_status()
         data = response.json()
+        if not isinstance(data, dict):
+            raise ValueError("Select a target in Stellarium before importing")
+        return data
+
+    def current_selection(self) -> tuple[Target, str]:
+        data = self._object_info()
         name = data.get("localized-name") or data.get("name") or "Stellarium target"
         ra_degrees = data.get("raJ2000")
         dec = data.get("decJ2000")
         if ra_degrees is None or dec is None:
             raise ValueError("Select a target in Stellarium before importing")
-        return Target(name=name, ra_hours=(float(ra_degrees) % 360) / 15, dec_degrees=float(dec))
+        target = Target(name=name, ra_hours=(float(ra_degrees) % 360) / 15, dec_degrees=float(dec))
+        return target, stellarium_template_notes(data)
+
+    def current_target(self) -> Target:
+        return self.current_selection()[0]
 
     def set_location(self, latitude: float, longitude: float, name: str = "", altitude: float = 0) -> None:
         data: dict[str, Any] = {

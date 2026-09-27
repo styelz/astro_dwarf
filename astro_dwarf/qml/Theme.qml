@@ -11,6 +11,8 @@ import QtCore
 QtObject {
     id: theme
 
+    // Recipe origin for the original cyan HUD. Named themes store their own seed
+    // and overrides; this is not the selected theme.
     readonly property real defaultHue: 0.521
     readonly property int maxSavedThemes: 32
 
@@ -35,24 +37,26 @@ QtObject {
         property string fontSizePref: "default"
         property real zoom: 1
     }
-    property real hue: appearanceStore.hue
-    // -1 … 1; 0 is the stock look. Negative gives deep, saturated tints; positive lifts them.
-    property real brightness: appearanceStore.brightness
-    property string paletteJson: appearanceStore.paletteJson
-    property string savedThemesJson: appearanceStore.savedThemesJson
-    property string themeNamesJson: appearanceStore.themeNamesJson
-    property string deletedExampleThemesJson: appearanceStore.deletedExampleThemesJson
-    property string activeThemeId: appearanceStore.activeThemeId
-    property bool previewChromeHintSeen: appearanceStore.previewChromeHintSeen
-    property bool enhanceImages: appearanceStore.enhanceImages
-    property bool deepCleanImages: appearanceStore.deepCleanImages
-    property real enhanceDenoise: appearanceStore.enhanceDenoise
-    property real enhanceSkyCrush: appearanceStore.enhanceSkyCrush
-    property bool hudBackground: appearanceStore.hudBackground
-    property real hudBackgroundOpacity: appearanceStore.hudBackgroundOpacity
-    property string uiScalePref: appearanceStore.uiScalePref
-    property string fontSizePref: appearanceStore.fontSizePref
-    property real zoom: appearanceStore.zoom
+    // Aliases write straight through to Settings. A one-way copy breaks on the
+    // first edit and leaves the previous theme id (often Cyan) in charge of later saves.
+    property alias hue: appearanceStore.hue
+    // -1 … 1; 0 is the cyan-recipe lift. Negative gives deep, saturated tints; positive lifts them.
+    property alias brightness: appearanceStore.brightness
+    property alias paletteJson: appearanceStore.paletteJson
+    property alias savedThemesJson: appearanceStore.savedThemesJson
+    property alias themeNamesJson: appearanceStore.themeNamesJson
+    property alias deletedExampleThemesJson: appearanceStore.deletedExampleThemesJson
+    property alias activeThemeId: appearanceStore.activeThemeId
+    property alias previewChromeHintSeen: appearanceStore.previewChromeHintSeen
+    property alias enhanceImages: appearanceStore.enhanceImages
+    property alias deepCleanImages: appearanceStore.deepCleanImages
+    property alias enhanceDenoise: appearanceStore.enhanceDenoise
+    property alias enhanceSkyCrush: appearanceStore.enhanceSkyCrush
+    property alias hudBackground: appearanceStore.hudBackground
+    property alias hudBackgroundOpacity: appearanceStore.hudBackgroundOpacity
+    property alias uiScalePref: appearanceStore.uiScalePref
+    property alias fontSizePref: appearanceStore.fontSizePref
+    property alias zoom: appearanceStore.zoom
 
     // Main binds this to the window's Screen.height so Auto follows the monitor.
     property int screenHeight: 1080
@@ -225,6 +229,7 @@ QtObject {
         tmu1ajuuh1ow9: "custom1",
         tmu2hmuu46gnv: "custom2",
         tmu54ynn0863o: "astro",
+        custom3: "astro",
         custom4: "astro"
     })
 
@@ -333,25 +338,15 @@ QtObject {
         void theme.brightness
         void theme.savedThemesJson
         void theme.activeThemeId
-        const current = theme.activeTheme
+        const current = theme.activeTheme || theme.themeById("astro")
         if (!current)
-            return theme.paletteCustom
+            return false
         return theme.fingerprint() !== theme.fingerprintOf(current)
     }
 
-    readonly property bool paletteCustom: {
-        if (Math.abs(theme.hue - theme.defaultHue) > 0.002 || Math.abs(theme.brightness) > 0.002)
-            return true
-        const ov = theme.parsedOverrides
-        for (const key in ov) {
-            if (!ov[key] || typeof ov[key] !== "object")
-                continue
-            if (ov[key].hue !== undefined || ov[key].brightness !== undefined
-                    || ov[key].sat !== undefined || ov[key].light !== undefined)
-                return true
-        }
-        return false
-    }
+    // True when the live look differs from the selected theme. A pristine ASTRO
+    // palette is not "custom" just because it is not the cyan recipe.
+    readonly property bool paletteCustom: theme.themeEdited
 
     // How far the seed hue is from stock (0 … 0.5). The original palette leans its
     // surfaces and outlines ~35° toward blue; the same lean turns a red accent orange,
@@ -426,14 +421,78 @@ QtObject {
         return out
     }
 
-    function roleCustom(key) {
+    function hueDelta(a, b) {
+        const d = Math.abs(theme.wrapHue(a) - theme.wrapHue(b))
+        return Math.min(d, 1 - d)
+    }
+
+    function baselineTheme() {
+        return theme.themeById(theme.activeThemeId) || theme.themeById("astro")
+    }
+
+    function baselineParams(key) {
+        const base = theme.baselineTheme()
+        if (!base)
+            return theme.paramsFromSnapshot(key, theme.defaultHue, 0, {})
+        return theme.paramsFromSnapshot(key, base.hue, base.brightness, base.palette || {})
+    }
+
+    function baselineHue(key) {
         if (key === "windowBase") {
-            if (Math.abs(theme.hue - theme.defaultHue) > 0.002 || Math.abs(theme.brightness) > 0.002)
-                return true
+            const base = theme.baselineTheme()
+            return theme.roundHue(base && base.hue !== undefined ? base.hue : theme.defaultHue)
         }
-        const ov = theme.roleOverride(key)
-        return !!(ov && (ov.hue !== undefined || ov.brightness !== undefined
-                         || ov.sat !== undefined || ov.light !== undefined))
+        if (key === "fov") {
+            const base = theme.baselineTheme()
+            if (!base || !theme.roleHasInk(base.palette, "fov")) {
+                const h = theme.fovDefault.hslHue
+                return h >= 0 ? h : 0
+            }
+        }
+        return theme.baselineParams(key).h
+    }
+
+    function baselineSat(key) {
+        if (key === "fov") {
+            const base = theme.baselineTheme()
+            if (!base || !theme.roleHasInk(base.palette, "fov"))
+                return theme.fovDefault.hslSaturation
+        }
+        return theme.baselineParams(key).sat
+    }
+
+    function baselineLight(key) {
+        if (key === "fov") {
+            const base = theme.baselineTheme()
+            if (!base || !theme.roleHasInk(base.palette, "fov"))
+                return theme.fovDefault.hslLightness
+        }
+        const p = theme.baselineParams(key)
+        return theme.bakedLight(p.light, p.weight, p.brightness)
+    }
+
+    function baselineBrightness() {
+        const base = theme.baselineTheme()
+        return theme.roundBright(base && base.brightness !== undefined ? base.brightness : 0)
+    }
+
+    function roleCustom(key) {
+        if (theme.roleFixed(key) || !theme.recipes[key])
+            return false
+        if (key === "fov") {
+            const ov = theme.roleOverride("fov")
+            return !!(ov && (ov.hue !== undefined || ov.brightness !== undefined
+                             || ov.sat !== undefined || ov.light !== undefined))
+        }
+        const base = theme.baselineTheme()
+        if (!base)
+            return false
+        const live = theme.paramsFor(key)
+        const shipped = theme.paramsFromSnapshot(key, base.hue, base.brightness, base.palette || {})
+        return theme.hueDelta(live.h, shipped.h) > 0.0005
+            || Math.abs(live.brightness - shipped.brightness) > 0.005
+            || Math.abs(live.sat - shipped.sat) > 0.002
+            || Math.abs(live.light - shipped.light) > 0.002
     }
 
     function roleLinked(key) {
@@ -537,7 +596,7 @@ QtObject {
         theme.hue = theme.roundHue(hue === undefined || hue === null ? theme.defaultHue : hue)
         theme.brightness = theme.roundBright(brightness === undefined || brightness === null ? 0 : brightness)
         theme.paletteJson = paletteJson === undefined || paletteJson === null ? "" : String(paletteJson)
-        theme.activeThemeId = id || "stock"
+        theme.activeThemeId = id || "astro"
     }
 
     function readsPaintedColor(key) {
@@ -569,27 +628,6 @@ QtObject {
             return theme.colorFor(key).hslLightness
         const p = theme.paramsFor(key)
         return theme.bakedLight(p.light, p.weight, p.brightness)
-    }
-
-    function stockHue(key) {
-        if (key === "fov") {
-            const h = theme.fovDefault.hslHue
-            return h >= 0 ? h : 0
-        }
-        return theme.wrapHue(theme.defaultHue + theme.recipeOf(key).offset)
-    }
-
-    function stockSat(key) {
-        if (key === "fov")
-            return theme.fovDefault.hslSaturation
-        return theme.recipeOf(key).sat
-    }
-
-    function stockLight(key) {
-        if (key === "fov")
-            return theme.fovDefault.hslLightness
-        const recipe = theme.recipeOf(key)
-        return theme.bakedLight(recipe.light, recipe.weight, 0)
     }
 
     function bakedLight(light, weight, brightness) {
@@ -700,24 +738,49 @@ QtObject {
         theme.applyHsl(key, p.h, p.sat, targetLight)
     }
 
+    function paintedLeaf(key, entry) {
+        const p = theme.paramsFromSnapshot(key, entry.hue, entry.brightness, entry.palette || {})
+        const recipe = theme.recipeOf(key)
+        const out = { hue: theme.roundHue(p.h), brightness: theme.roundBright(p.brightness) }
+        if (Math.abs(p.sat - recipe.sat) > 0.002)
+            out.sat = theme.roundUnit(p.sat)
+        const light = Math.round(theme.clamp(p.light, 0.02, 0.97) * 1000) / 1000
+        if (Math.abs(light - recipe.light) > 0.002)
+            out.light = light
+        return out
+    }
+
     function clearRole(key) {
         if (theme.roleFixed(key) || !theme.recipes[key])
             return
+        const base = theme.baselineTheme()
+        if (!base)
+            return
         if (key === "windowBase") {
-            theme.hue = theme.defaultHue
-            theme.brightness = 0
-            if (theme.roleOverride("windowBase"))
-                theme.paletteJson = theme.overridesJson("windowBase")
+            theme.hue = theme.roundHue(base.hue === undefined ? theme.defaultHue : base.hue)
+            theme.brightness = theme.roundBright(base.brightness === undefined ? 0 : base.brightness)
+            const leaf = theme.copyLeaf((base.palette || {}).windowBase)
+            const ov = JSON.parse(theme.overridesJson("windowBase") || "{}")
+            if (leaf)
+                ov.windowBase = leaf
+            theme.paletteJson = Object.keys(ov).length ? JSON.stringify(ov) : ""
             return
         }
-        theme.paletteJson = theme.overridesJson(key)
+        const leaf = theme.copyLeaf((base.palette || {})[key])
+        const ov = JSON.parse(theme.overridesJson(key) || "{}")
+        const seedHue = base.hue === undefined ? theme.defaultHue : base.hue
+        const seedBright = base.brightness === undefined ? 0 : base.brightness
+        const seedSame = theme.hueDelta(theme.hue, seedHue) <= 0.002
+            && Math.abs(theme.brightness - seedBright) <= 0.005
+        if (leaf)
+            ov[key] = leaf
+        else if (!seedSame)
+            ov[key] = theme.paintedLeaf(key, base)
+        theme.paletteJson = Object.keys(ov).length ? JSON.stringify(ov) : ""
     }
 
     function resetPalette() {
-        theme.paletteJson = ""
-        theme.hue = theme.defaultHue
-        theme.brightness = 0
-        theme.activeThemeId = "stock"
+        theme.applyTheme("astro")
     }
 
     function colorToHex(col) {
@@ -1070,7 +1133,7 @@ QtObject {
                 theme.deletedExampleThemesJson = JSON.stringify(deleted)
             }
             if (theme.activeThemeId === id)
-                theme.activeThemeId = "stock"
+                theme.applyTheme("astro")
             return true
         }
         const saved = theme.parsedSavedThemes.filter(item => item.id !== id)
@@ -1078,35 +1141,53 @@ QtObject {
             return false
         theme.savedThemesJson = JSON.stringify(saved)
         if (theme.activeThemeId === id)
-            theme.activeThemeId = "stock"
+            theme.applyTheme("astro")
         return true
+    }
+
+    // The selected id can lag the colours: ASTRO used to be example "custom3", and
+    // a missing id fell through to Cyan while the live palette stayed ASTRO.
+    // Edits then saved onto Cyan. If the live look matches some other theme, select that.
+    function reconcileActiveTheme() {
+        const live = theme.fingerprint()
+        const current = theme.themeById(theme.activeThemeId)
+        if (current && theme.fingerprintOf(current) === live)
+            return
+        const list = theme.listedThemes
+        for (let i = 0; i < list.length; i++) {
+            if (list[i] && theme.fingerprintOf(list[i]) === live) {
+                theme.activeThemeId = list[i].id
+                return
+            }
+        }
+        if (!current)
+            theme.activeThemeId = "astro"
     }
 
     // Older builds stored BASE as a leaf override, which left Theme.hsl() and
     // unedited swatches on the old seed. Fold that override back into the seed.
     Component.onCompleted: {
         theme.adoptPromotedThemes()
-        if (!theme.themeById(theme.activeThemeId))
-            theme.activeThemeId = "stock"
         const ov = theme.roleOverride("windowBase")
-        if (!ov)
-            return
-        if (typeof ov.hue === "number")
-            theme.hue = Math.round(theme.wrapHue(ov.hue - theme.recipeOf("windowBase").offset * theme.spread) * 1000) / 1000
-        if (typeof ov.brightness === "number")
-            theme.brightness = ov.brightness
-        const sat = typeof ov.sat === "number" ? ov.sat : undefined
-        const light = typeof ov.light === "number" ? ov.light : undefined
-        const rest = JSON.parse(theme.overridesJson("windowBase") || "{}")
-        if (sat !== undefined || light !== undefined) {
-            const extra = {}
-            if (sat !== undefined)
-                extra.sat = sat
-            if (light !== undefined)
-                extra.light = light
-            rest.windowBase = extra
+        if (ov) {
+            if (typeof ov.hue === "number")
+                theme.hue = Math.round(theme.wrapHue(ov.hue - theme.recipeOf("windowBase").offset * theme.spread) * 1000) / 1000
+            if (typeof ov.brightness === "number")
+                theme.brightness = ov.brightness
+            const sat = typeof ov.sat === "number" ? ov.sat : undefined
+            const light = typeof ov.light === "number" ? ov.light : undefined
+            const rest = JSON.parse(theme.overridesJson("windowBase") || "{}")
+            if (sat !== undefined || light !== undefined) {
+                const extra = {}
+                if (sat !== undefined)
+                    extra.sat = sat
+                if (light !== undefined)
+                    extra.light = light
+                rest.windowBase = extra
+            }
+            theme.paletteJson = Object.keys(rest).length ? JSON.stringify(rest) : ""
         }
-        theme.paletteJson = Object.keys(rest).length ? JSON.stringify(rest) : ""
+        theme.reconcileActiveTheme()
     }
 
     // weight: how strongly the brightness slider moves this token (0 = fixed).

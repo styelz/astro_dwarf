@@ -94,7 +94,12 @@ class JsonRepository(Generic[T]):
 
 class SessionStore:
     VALID_TRANSITIONS = {
-        SessionStatus.PLANNED: {SessionStatus.RUNNING, SessionStatus.SKIPPED},
+        SessionStatus.PLANNED: {
+            SessionStatus.RUNNING,
+            SessionStatus.SKIPPED,
+            SessionStatus.DONE,
+            SessionStatus.ERROR,
+        },
         SessionStatus.RUNNING: {SessionStatus.DONE, SessionStatus.ERROR, SessionStatus.PLANNED},
         SessionStatus.ERROR: {SessionStatus.PLANNED},
         SessionStatus.SKIPPED: {SessionStatus.PLANNED},

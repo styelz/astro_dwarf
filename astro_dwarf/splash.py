@@ -18,14 +18,12 @@ import threading
 READY_MARKER = "ASTRO_DWARF_READY"
 _FALLBACK_MS = 25_000
 
-# Theme.qml's stock cyan HUD palette (hue=0.521, brightness=0), computed by
-# hand from the theme's HSL recipes so this plain-QtWidgets splash matches
-# the real app exactly without pulling in the QML engine. See
-# astro_dwarf-splash-loader repo memory for the derivation.
-_SURFACE = "#0B1520"
-_OUTLINE_STRONG = "#34597A"
-_ACCENT = "#4DE8FF"
-_TEXT_SECONDARY = "#7FA4B8"
+# ASTRO theme colours from Theme.qml (hue 0.506, brightness -0.12), so the
+# splash matches the default HUD without pulling in the QML engine.
+_SURFACE = "#0B171F"
+_OUTLINE_STRONG = "#315A73"
+_ACCENT = "#8C905A"
+_TEXT_SECONDARY = "#74A2B2"
 _TITLE = "#8C905A"
 
 
@@ -265,7 +263,7 @@ def _make_progress_bar(parent):
         "QProgressBar::chunk {"
         "  border-radius: 3px;"
         "  background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
-        f"    stop:0 rgba(77, 232, 255, 0), stop:0.5 {_ACCENT}, stop:1 rgba(77, 232, 255, 0));"
+        f"    stop:0 rgba(140, 144, 90, 0), stop:0.5 {_ACCENT}, stop:1 rgba(140, 144, 90, 0));"
         "}"
     )
     return progress

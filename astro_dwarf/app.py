@@ -162,7 +162,7 @@ def _apply_native_window_icon(window, icon: QIcon) -> None:
         pass
 
 
-def _apply_windows_frame(window, caption_hex: str = "#0B1520", border_hex: str = "#3F6E82", text_hex: str = "#4DE8FF") -> None:
+def _apply_windows_frame(window, caption_hex: str = "#0B171F", border_hex: str = "#315A73", text_hex: str = "#8C905A") -> None:
     """Color the native caption to match the HUD chrome. QML re-calls this when the theme hue changes."""
     if sys.platform != "win32":
         return

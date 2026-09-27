@@ -7,7 +7,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PySide6.QtCore import QObject, QUrl
+from PySide6.QtCore import QCoreApplication, QObject, QUrl
+
+# Keep theme tests off the real "Astro Dwarf" settings hive.
+QCoreApplication.setOrganizationName("AstroDwarfThemeTests")
+QCoreApplication.setApplicationName("ThemeTests")
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 
@@ -273,7 +277,159 @@ def test_builtin_theme_update_keeps_one_chip() -> None:
         host.restore()
 
 
+def _create_theme_audit_probe():
+    app = _app()
+    engine = QQmlEngine()
+    engine.addImportPath(str(QML_DIR))
+    source = r"""
+import QtQuick
+import "."
+QtObject {
+    id: root
+    property string astroAccent: ""
+    property string astroSurface: ""
+    property string astroOutline: ""
+    property string astroText: ""
+    property string cyanAccent: ""
+    property bool astroEdited: true
+    property bool accentCustom: true
+    property bool windowCustom: true
+    property string accentAfterReset: ""
+    property real hueAfterReset: -1
+    property bool editedAfterReset: true
+    property string reconciledId: ""
+    property bool reconciledEdited: true
+    property real cyanHue: -1
+    property bool cyanSaved: true
+    property real storeHue: -1
+    property string promotedId: ""
+    property real astroMarker: -1
+    property real cyanMarker: -1
+    property string savedSnapshot: ""
+    property string namesSnapshot: ""
+    property string deletedSnapshot: ""
+    property string paletteSnapshot: ""
+    property real hueSnapshot: 0
+    property real brightSnapshot: 0
+    property string activeSnapshot: ""
+
+    function capture() {
+        root.savedSnapshot = Theme.savedThemesJson
+        root.namesSnapshot = Theme.themeNamesJson
+        root.deletedSnapshot = Theme.deletedExampleThemesJson
+        root.paletteSnapshot = Theme.paletteJson
+        root.hueSnapshot = Theme.hue
+        root.brightSnapshot = Theme.brightness
+        root.activeSnapshot = Theme.activeThemeId
+    }
+
+    function run() {
+        Theme.applyTheme("astro")
+        root.astroAccent = Theme.colorToHex(Theme.colorFor("accent"))
+        root.astroSurface = Theme.colorToHex(Theme.colorFor("surface"))
+        root.astroOutline = Theme.colorToHex(Theme.colorFor("outlineStrong"))
+        root.astroText = Theme.colorToHex(Theme.colorFor("textSecondary"))
+        root.astroEdited = Theme.themeEdited
+        root.accentCustom = Theme.roleCustom("accent")
+        root.windowCustom = Theme.roleCustom("windowBase")
+        root.astroMarker = Theme.baselineHue("accent")
+        Theme.setRole("accent", 0.08, Theme.effectiveBrightness("accent"))
+        Theme.clearRole("accent")
+        root.accentAfterReset = Theme.colorToHex(Theme.colorFor("accent"))
+        Theme.clearRole("windowBase")
+        root.hueAfterReset = Theme.hue
+        root.editedAfterReset = Theme.themeEdited
+        Theme.applyTheme("astro")
+        Theme.activeThemeId = "stock"
+        Theme.reconcileActiveTheme()
+        root.reconciledId = Theme.activeThemeId
+        root.reconciledEdited = Theme.themeEdited
+        const stock = Theme.themeById("stock")
+        root.cyanSaved = Theme.hasSavedCopy("stock")
+        root.cyanHue = stock ? stock.hue : -1
+        Theme.applyTheme("stock")
+        root.cyanAccent = Theme.colorToHex(Theme.colorFor("accent"))
+        root.cyanMarker = Theme.baselineHue("accent")
+        Theme.setRole("accent", 0.08, 0)
+        Theme.clearRole("accent")
+        root.cyanAccent = Theme.colorToHex(Theme.colorFor("accent")) === root.cyanAccent
+            ? root.cyanAccent : ("reset-failed:" + Theme.colorToHex(Theme.colorFor("accent")))
+        Theme.applyTheme("astro")
+        Theme.hue = 0.44
+        root.storeHue = Theme.store.hue
+        Theme.activeThemeId = "custom3"
+        Theme.adoptPromotedThemes()
+        root.promotedId = Theme.activeThemeId
+    }
+
+    function restore() {
+        Theme.savedThemesJson = root.savedSnapshot
+        Theme.themeNamesJson = root.namesSnapshot
+        Theme.deletedExampleThemesJson = root.deletedSnapshot
+        Theme.paletteJson = root.paletteSnapshot
+        Theme.hue = root.hueSnapshot
+        Theme.brightness = root.brightSnapshot
+        Theme.activeThemeId = root.activeSnapshot
+    }
+
+    Component.onCompleted: root.capture()
+}
+"""
+    component = QQmlComponent(engine)
+    component.setData(source.encode("utf-8"), QUrl.fromLocalFile(str(QML_DIR / "theme_audit_probe.qml")))
+    item = component.create()
+    errors = [err.toString() for err in component.errors()]
+    _assert(component.status() == QQmlComponent.Status.Ready and item is not None,
+            "theme audit probe failed: " + "; ".join(errors))
+    app.processEvents()
+    return engine, component, item
+
+
+def test_astro_edits_stay_on_astro() -> None:
+    from astro_dwarf.splash import _ACCENT, _OUTLINE_STRONG, _SURFACE, _TEXT_SECONDARY
+
+    _engine, _component, host = _create_theme_audit_probe()
+    try:
+        host.run()
+        accent = str(host.property("astroAccent") or "")
+        _assert(accent == "#8C905A", "astro accent " + accent)
+        _assert(accent == _ACCENT, "splash accent " + _ACCENT)
+        _assert(str(host.property("astroSurface") or "") == _SURFACE, "splash surface " + _SURFACE)
+        _assert(str(host.property("astroOutline") or "") == _OUTLINE_STRONG, "splash outline " + _OUTLINE_STRONG)
+        _assert(str(host.property("astroText") or "") == _TEXT_SECONDARY, "splash text " + _TEXT_SECONDARY)
+        _assert(host.property("astroEdited") is False, "pristine astro looked edited")
+        _assert(host.property("accentCustom") is False, "astro accent looked unlocked from cyan")
+        _assert(host.property("windowCustom") is False, "astro window looked unlocked from cyan")
+        _assert(str(host.property("accentAfterReset") or "") == "#8C905A",
+                "accent reset became " + str(host.property("accentAfterReset")))
+        hue_after = float(host.property("hueAfterReset") or -1)
+        _assert(abs(hue_after - 0.506) < 0.002, "window reset hue " + str(hue_after))
+        _assert(host.property("editedAfterReset") is False, "reset marked astro edited")
+        _assert(str(host.property("reconciledId") or "") == "astro",
+                "stock id kept astro colours as " + str(host.property("reconciledId")))
+        _assert(host.property("reconciledEdited") is False, "reconciled astro still edited")
+        _assert(host.property("cyanSaved") is False, "cyan received a saved copy")
+        cyan_hue = float(host.property("cyanHue") or -1)
+        _assert(abs(cyan_hue - 0.521) < 0.002, "cyan hue " + str(cyan_hue))
+        cyan_accent = str(host.property("cyanAccent") or "")
+        _assert(cyan_accent == "#4DE9FF", "cyan accent reset " + cyan_accent)
+        marker = float(host.property("astroMarker") or -1)
+        _assert(abs(marker - 0.181) < 0.002, "astro accent tick " + str(marker))
+        cyan_marker = float(host.property("cyanMarker") or -1)
+        _assert(abs(cyan_marker - 0.521) < 0.002, "cyan accent tick " + str(cyan_marker))
+        store_hue = float(host.property("storeHue") or -1)
+        _assert(abs(store_hue - 0.44) < 0.002, "hue did not reach settings, store " + str(store_hue))
+        _assert(str(host.property("promotedId") or "") == "astro",
+                "custom3 promoted to " + str(host.property("promotedId")))
+        page = (QML_DIR / "pages" / "InterfaceSettings.qml").read_text(encoding="utf-8")
+        _assert("The tick is cyan." not in page, "hue tick still described as cyan")
+        _assert("Theme.baselineHue" in page, "hue tick is not the active theme")
+    finally:
+        host.restore()
+
+
 if __name__ == "__main__":
     test_preview_samples_select_their_colours()
     test_builtin_theme_update_keeps_one_chip()
+    test_astro_edits_stay_on_astro()
     print("ok")

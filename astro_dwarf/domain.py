@@ -1695,6 +1695,37 @@ def normalize_ir_filter(value: Any) -> str:
     return aliases.get(key, next((name for name in IR_FILTER_NAMES if name.lower() == text.lower()), text))
 
 
+def ir_filter_index(value: Any) -> int | None:
+    """Tele filter index shared by the legacy IR-cut command and the V3 param.
+
+    0 is VIS on DWARF 3, IR_CUT on DWARF II, and the dark-frame slot on Mini.
+    1 is Astro (IR_PASS on DWARF II). 2 is Duo-Band, which DWARF II does not have.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    key = text.lower().replace(" filter", "").replace("_", "").replace("-", "").replace(" ", "")
+    if key in {"vis", "0", "ircut", "dark"}:
+        return 0
+    if key in {"astro", "1", "irpass"}:
+        return 1
+    if key in {"duo", "duoband", "2"}:
+        return 2
+    name = normalize_ir_filter(value)
+    return {"VIS Filter": 0, "Astro Filter": 1, "Duo-Band Filter": 2}.get(name)
+
+
+def ir_filter_name_from_index(value: Any, *, mini: bool = False) -> str:
+    """HUD name for param ``0x020100000000000d``. Mini slot 0 is Take Dark only."""
+    try:
+        index = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if mini and index == 0:
+        return ""
+    return {0: "VIS Filter", 1: "Astro Filter", 2: "Duo-Band Filter"}.get(index, "")
+
+
 def wb_preset_name(value: Any) -> str:
     if isinstance(value, str) and value.strip() and not value.strip().isdigit():
         text = value.strip()
@@ -2330,6 +2361,8 @@ class Session:
     outcome: str = ""
     notes: str = ""
     created_at: str = field(default_factory=utc_now)
+    device_schedule_id: str = ""
+    device_schedule_state: str = ""
 
 
 @dataclass(slots=True)
@@ -2574,7 +2607,10 @@ def session_from_dict(data: dict[str, Any]) -> Session:
     data["workflow"] = Workflow(**data.get("workflow", {}))
     data["mosaic"] = Mosaic(**data.get("mosaic", {}))
     data["status"] = SessionStatus(data.get("status", SessionStatus.PLANNED))
-    return Session(**data)
+    data["device_schedule_id"] = str(data.get("device_schedule_id") or "")
+    data["device_schedule_state"] = str(data.get("device_schedule_state") or "")
+    allowed = set(Session.__dataclass_fields__)
+    return Session(**{key: value for key, value in data.items() if key in allowed})
 
 
 def _float_map(data: Any) -> dict[str, float]:

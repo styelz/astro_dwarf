@@ -79,7 +79,15 @@ Item {
                 const running = backend.sessions.filter(item => item.status === "running").length
                 return planned + " planned · " + (running > 0 ? running + " running · " : "") + backend.templates.length + " template" + (backend.templates.length === 1 ? "" : "s")
             }
-            HudButton { text: "IMPORT STELLARIUM"; busy: backend.uiBusy === "stellarium"; busyText: "IMPORTING…"; busyMs: 0; enabled: backend.uiBusy === ""; onClicked: root.harvestStellarium("import") }
+            HudButton {
+                text: "IMPORT STELLARIUM"
+                busy: backend.uiBusy === "stellarium"
+                busyText: "IMPORTING…"
+                busyMs: 0
+                enabled: backend.uiBusy === ""
+                tooltip: "Imports the object selected in the Stellarium app. If Stellarium has no selection, uses the target selected on the Sky page."
+                onClicked: root.harvestStellarium("importDesktop")
+            }
             HudButton { text: "IMPORT TELESCOPIUS"; busy: backend.uiBusy === "telescopius"; busyText: backend.uiBusy === "telescopius" ? "IMPORTING…" : "OPENING…"; enabled: backend.uiBusy === ""; onClicked: telescopiusDialog.open() }
             HudButton { text: "+ MANUAL SESSION"; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: sessionDialog.openForDate(Qt.formatDate(new Date(), "yyyy-MM-dd")) }
         }
@@ -314,6 +322,32 @@ Item {
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: Theme.s1
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: scheduledPage.rowInset
+                        Layout.rightMargin: scheduledPage.rowInset
+                        spacing: Theme.s2
+                        Text {
+                            text: "Deep-sky sessions can run on the telescope after disconnect"
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.fontSm
+                            font.letterSpacing: 0.4
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                        }
+                        HudButton {
+                            objectName: "sync-scope"
+                            text: "SYNC SCOPE"
+                            tooltip: "Copy eligible deep-sky sessions onto the telescope"
+                            accessibleDescription: "Copy eligible deep-sky sessions onto the telescope"
+                            busy: backend.uiBusy === "device-schedule"
+                            busyText: "SYNCING…"
+                            busyMs: 0
+                            enabled: backend.uiBusy === "" && !!(backend.selectedDevice && backend.selectedDevice.connected)
+                            onClicked: backend.syncDeviceSchedule(backend.selectedDeviceId)
+                        }
+                    }
                     ListFilterBar {
                         id: scheduledFilter
                         Layout.fillWidth: true
@@ -619,25 +653,30 @@ Item {
                                             Text {
                                                 width: parent.width
                                                 text: {
+                                                    let base = ""
                                                     if (scheduledWrap.collapsedGroup) {
                                                         const action = scheduledRow.actionSession
                                                         if (action && action.status === "running") {
                                                             const step = Util.sessionStepLabel(action, backend.localNow.epoch_ms)
                                                             if (step)
-                                                                return step
+                                                                base = step
                                                         }
-                                                        return scheduledRow.modelData.group_summary || ""
-                                                    }
-                                                    if (scheduledRow.modelData.status === "running") {
+                                                        if (!base)
+                                                            base = scheduledRow.modelData.group_summary || ""
+                                                    } else if (scheduledRow.modelData.status === "running") {
                                                         const step = Util.sessionStepLabel(scheduledRow.modelData, backend.localNow.epoch_ms)
-                                                        if (step)
-                                                            return step
+                                                        base = step || ""
                                                     }
-                                                    const pos = scheduledRow.modelData.pane_position || ""
-                                                    const summary = scheduledRow.modelData.summary || ""
-                                                    if (pos && summary)
-                                                        return pos + " · " + summary
-                                                    return pos || scheduledRow.modelData.subtitle || summary
+                                                    if (!base) {
+                                                        const pos = scheduledRow.modelData.pane_position || ""
+                                                        const summary = scheduledRow.modelData.summary || ""
+                                                        if (pos && summary)
+                                                            base = pos + " · " + summary
+                                                        else
+                                                            base = pos || scheduledRow.modelData.subtitle || summary
+                                                    }
+                                                    const mark = Util.scopeScheduleMark(scheduledRow.modelData)
+                                                    return mark ? (base ? base + "  ·  " + mark : mark) : base
                                                 }
                                                 color: Theme.textSecondary
                                                 font.pixelSize: Theme.fontPx(11)

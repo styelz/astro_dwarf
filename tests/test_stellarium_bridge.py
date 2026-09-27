@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from astro_dwarf.domain import Target
-from astro_dwarf.services import StellariumClient
+from astro_dwarf.services import StellariumClient, choose_session_stellarium_target, stellarium_template_notes
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -80,10 +80,123 @@ def test_location_and_fov_and_push() -> None:
         _assert(any(item.endswith("/api/main/fov") for item in paths), str(paths))
 
 
+def test_current_target_reads_selection() -> None:
+    client = StellariumClient("http://localhost:8090")
+    payload = {"localized-name": "M 31", "raJ2000": 10.684708, "decJ2000": 41.26875}
+    with patch("astro_dwarf.services.requests.get", return_value=_response(True, payload)) as get:
+        target = client.current_target()
+        _assert(get.call_args.args[0].endswith("/api/objects/info"), str(get.call_args))
+        _assert(target.name == "M 31", target.name)
+        _assert(abs(float(target.ra_hours) - (10.684708 / 15.0)) < 1e-9, target.ra_hours)
+        _assert(abs(float(target.dec_degrees) - 41.26875) < 1e-9, target.dec_degrees)
+
+
+def test_current_target_without_selection() -> None:
+    client = StellariumClient("http://localhost:8090")
+    missing = _response(False, text="no current selection, and no name parameter given")
+    with patch("astro_dwarf.services.requests.get", return_value=missing):
+        try:
+            client.current_target()
+        except Exception:
+            return
+    raise AssertionError("a Stellarium response with no selection must not import")
+
+
+def test_desktop_notes_include_catalog_fields() -> None:
+    star = {
+        "localized-name": "Gaia DR3 5932576208005295872",
+        "name": "Gaia DR3 5932576208005295872",
+        "type": "star",
+        "vmag": 12.34,
+        "absolute-mag": 5.2,
+        "spectral-class": "K3V",
+        "bV": 0.85,
+        "distance-ly": 842.4,
+        "iauConstellation": "Ara",
+        "raJ2000": 16.21595308009155 * 15,
+        "decJ2000": -54.06888549290931,
+        "size-dd": 1e-6,
+    }
+    notes = stellarium_template_notes(star)
+    for part in (
+        "Star",
+        "Magnitude: 12.34",
+        "Absolute magnitude: 5.20",
+        "Distance: 842 ly",
+        "Spectral type: K3V",
+        "B−V: 0.85",
+        "Constellation: Ara",
+        "Ra/Dec:",
+    ):
+        _assert(part in notes, notes)
+    _assert("Size:" not in notes, notes)
+
+    galaxy = {
+        "type": "Galaxy",
+        "localized-name": "Andromeda Galaxy",
+        "name": "Andromeda Galaxy",
+        "designations": "M 31 - NGC 224 - Andromeda Galaxy",
+        "vmag": 3.44,
+        "morpho": "SA(s)b",
+        "axis-major-dd": 3.16,
+        "axis-major-dms": "+3°10'",
+        "axis-minor-dd": 1.0,
+        "axis-minor-dms": "+1°00'",
+        "iauConstellation": "And",
+        "raJ2000": 10.6847,
+        "decJ2000": 41.2687,
+    }
+    notes = stellarium_template_notes(galaxy)
+    _assert(notes.startswith("Galaxy"), notes)
+    _assert("Also known as: M 31, NGC 224" in notes, notes)
+    alias = notes.split("Also known as: ", 1)[1].split("  ·  ")[0]
+    _assert("Andromeda Galaxy" not in alias, alias)
+    _assert("Morphology: SA(s)b" in notes, notes)
+    _assert("Size: +3°10' × +1°00'" in notes, notes)
+    _assert("Constellation: Andromeda" in notes, notes)
+
+    # Stellarium raJ2000 is atan2 degrees and is negative for this Gaia star.
+    western = {
+        "type": "Star",
+        "localized-name": "Gaia DR3 5932576208005295872",
+        "raJ2000": -116.76070766221582,
+        "decJ2000": -54.068884454407026,
+        "vmag": 8.81,
+    }
+    notes = stellarium_template_notes(western)
+    _assert("16h 12m 57s" in notes, notes)
+    _assert("7h 47m" not in notes, notes)
+    _assert("-54° 04' 08\"" in notes, notes)
+
+
+def test_session_import_prefers_desktop_then_sky() -> None:
+    desktop = Target(name="M 31", ra_hours=0.7, dec_degrees=41.3)
+    sky_map = Target(name="M 42", ra_hours=5.6, dec_degrees=-5.4)
+    locked = Target(name="M 45", ra_hours=3.8, dec_degrees=24.1)
+    chosen, source = choose_session_stellarium_target(desktop, sky_map, locked)
+    _assert(chosen.name == "M 31" and source == "desktop", f"{chosen.name} {source}")
+    chosen, source = choose_session_stellarium_target(None, sky_map, locked)
+    _assert(chosen.name == "M 42" and source == "sky", f"{chosen.name} {source}")
+    chosen, source = choose_session_stellarium_target(
+        Target(name="empty", ra_hours=None, dec_degrees=None), None, locked
+    )
+    _assert(chosen.name == "M 45" and source == "sky", f"{chosen.name} {source}")
+    try:
+        choose_session_stellarium_target(None, None, None)
+    except ValueError as exc:
+        _assert("Sky page" in str(exc), str(exc))
+        return
+    raise AssertionError("missing desktop and sky targets must fail")
+
+
 def main() -> int:
     test_available_ok_and_fail()
     test_focus_name_and_j2000()
     test_location_and_fov_and_push()
+    test_current_target_reads_selection()
+    test_current_target_without_selection()
+    test_desktop_notes_include_catalog_fields()
+    test_session_import_prefers_desktop_then_sky()
     print("stellarium client tests ok")
     return 0
 

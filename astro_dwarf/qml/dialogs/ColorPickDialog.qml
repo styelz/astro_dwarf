@@ -16,7 +16,7 @@ Dialog {
     property color _original: Theme.accent
     property color _dropSaved: Theme.accent
     property var screenPicker: null
-    property real hue: Theme.defaultHue
+    property real hue: 0
     property real sat: 0.8
     property real val: 0.8
     readonly property color currentColor: Qt.hsva(Theme.wrapHue(pick.hue), pick.sat, pick.val, 1)
@@ -44,7 +44,10 @@ Dialog {
     function syncFrom(col) {
         pick._original = col
         const h = col.hsvHue
-        pick.hue = h >= 0 ? Theme.wrapHue(h) : Theme.defaultHue
+        // Grey has no hue. Keep the hue already set for this swatch; the cyan
+        // recipe is not a stand-in for every theme.
+        if (h >= 0)
+            pick.hue = Theme.wrapHue(h)
         pick.sat = Math.max(0, Math.min(1, col.hsvSaturation))
         pick.val = Math.max(0, Math.min(1, col.hsvValue))
         hexField.text = Theme.colorToHex(pick.currentColor)
