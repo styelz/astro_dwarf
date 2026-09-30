@@ -1305,6 +1305,27 @@ def sdk_call(operation: str, *args: Any) -> Any:
     return _invoke_sdk(operation, function, *args)
 
 
+def _send_panorama_rect(args: tuple[Any, ...]) -> bool:
+    """Send ReqUpdatePanoramaFramingRect. Does not start a capture."""
+    from dwarf_python_api.proto import panorama_pb2
+
+    from .device_telemetry import CMD_PANORAMA_UPDATE_FRAMING_RECT
+
+    if len(args) < 4:
+        raise RuntimeError("Panorama framing needs four normalized corners")
+    message = panorama_pb2.ReqUpdatePanoramaFramingRect()
+    message.norm_x_tl = float(args[0])
+    message.norm_y_tl = float(args[1])
+    message.norm_x_br = float(args[2])
+    message.norm_y_br = float(args[3])
+    log(
+        "Panorama frame "
+        f"{message.norm_x_tl:.3f},{message.norm_y_tl:.3f} "
+        f"{message.norm_x_br:.3f},{message.norm_y_br:.3f}"
+    )
+    return send_without_response(message, CMD_PANORAMA_UPDATE_FRAMING_RECT, 10)
+
+
 def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
     """Panorama framing and grid capture. Command ids are not in the installed protocol enum."""
     from dwarf_python_api.proto import panorama_pb2
@@ -1315,26 +1336,13 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
         CMD_PANORAMA_STOP,
         CMD_PANORAMA_STOP_FRAMING,
         CMD_PANORAMA_STOP_FRAMING_AND_START_GRID,
-        CMD_PANORAMA_UPDATE_FRAMING_RECT,
     )
 
     module_id = 10
     if operation == "panorama_frame_update" or (
         operation == "panorama_shoot" and len(args) >= 4
     ):
-        if len(args) < 4:
-            raise RuntimeError("Panorama framing needs four normalized corners")
-        message = panorama_pb2.ReqUpdatePanoramaFramingRect()
-        message.norm_x_tl = float(args[0])
-        message.norm_y_tl = float(args[1])
-        message.norm_x_br = float(args[2])
-        message.norm_y_br = float(args[3])
-        log(
-            "Panorama frame "
-            f"{message.norm_x_tl:.3f},{message.norm_y_tl:.3f} "
-            f"{message.norm_x_br:.3f},{message.norm_y_br:.3f}"
-        )
-        updated = send_without_response(message, CMD_PANORAMA_UPDATE_FRAMING_RECT, module_id)
+        updated = _send_panorama_rect(args)
         if operation != "panorama_shoot":
             return updated
     messages = {

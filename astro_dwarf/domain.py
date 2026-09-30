@@ -1140,20 +1140,6 @@ def panorama_rect_matches(
     return all(abs(left - right) <= float(tol) for left, right in zip(have, want))
 
 
-def panorama_shoot_needs_rect_update(current: Any, intended: Any) -> bool:
-    """Send UpdateFramingRect before StartGrid only when the device box differs."""
-    try:
-        want = tuple(intended)[:4]
-        if len(want) < 4:
-            return False
-        float(want[0]); float(want[1]); float(want[2]); float(want[3])
-    except (TypeError, ValueError):
-        return False
-    if current is None:
-        return True
-    return not panorama_rect_matches(current, want)
-
-
 PANORAMA_FULL_SHOT_TOTAL = 1800
 
 
@@ -1203,6 +1189,44 @@ def panorama_fov_grid(
     if width < 0.001 or height < 0.001 or cell_w < 0.001 or cell_h < 0.001:
         return (1, 1)
     return (max(1, int(round(width / cell_w))), max(1, int(round(height / cell_h))))
+
+
+def panorama_snap_rect(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    *,
+    limit_left: float = 0.0,
+    limit_top: float = 0.0,
+    span_x: float = 1.0,
+    span_y: float = 1.0,
+    col_count: int = 60,
+    row_count: int = 30,
+) -> tuple[float, float, float, float]:
+    """Snap a frame onto a whole number of tele cells. Never a fractional grid."""
+    grid_cols = max(1, int(col_count or 1))
+    grid_rows = max(1, int(row_count or 1))
+    cell_w = float(span_x) / grid_cols
+    cell_h = float(span_y) / grid_rows
+    if cell_w <= 0 or cell_h <= 0:
+        return (float(x1), float(y1), float(x2), float(y2))
+    left = min(float(x1), float(x2))
+    right = max(float(x1), float(x2))
+    top = min(float(y1), float(y2))
+    bottom = max(float(y1), float(y2))
+    cols = max(1, min(grid_cols, int(round((right - left) / cell_w))))
+    rows = max(1, min(grid_rows, int(round((bottom - top) / cell_h))))
+
+    def _start(center: float, origin: float, cell: float, count: int, grid: int) -> float:
+        start = ((center - origin) / cell) - (count / 2.0)
+        start = round(start * 2.0) / 2.0
+        start = max(0.0, min(float(grid - count), start))
+        return origin + start * cell
+
+    snapped_left = _start((left + right) / 2.0, float(limit_left), cell_w, cols, grid_cols)
+    snapped_top = _start((top + bottom) / 2.0, float(limit_top), cell_h, rows, grid_rows)
+    return (snapped_left, snapped_top, snapped_left + cols * cell_w, snapped_top + rows * cell_h)
 
 
 def panorama_shot_grid(

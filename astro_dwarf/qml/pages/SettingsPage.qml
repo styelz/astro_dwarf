@@ -340,6 +340,7 @@ Item {
                                 }
                                 Item {
                                     id: railButton
+                                    objectName: "settingsRail_" + (railRow.modelData.key || "")
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: Theme.controlHeight + Theme.s1
                                     Accessible.role: Accessible.Button

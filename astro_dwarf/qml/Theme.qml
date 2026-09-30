@@ -192,6 +192,8 @@ QtObject {
         return out
     }
 
+    // Shipped looks. Colour writes are refused while one of these is active.
+    // saveThemeAs copies the look onto a new id; that copy can be edited.
     readonly property var builtinThemes: [
         { id: "astro", name: "ASTRO", hue: 0.506, brightness: -0.12, palette: ({
             accent: { hue: 0.181, brightness: -0.39, sat: 0.23 },
@@ -321,6 +323,28 @@ QtObject {
         void theme.themeNamesJson
         void theme.deletedExampleThemesJson
         return theme.listThemes()
+    }
+
+    readonly property bool themeLocked: theme.isBuiltinId(theme.activeThemeId)
+
+    readonly property var builtinThemeList: {
+        const all = theme.listedThemes
+        const out = []
+        for (let i = 0; i < all.length; i++) {
+            if (all[i] && theme.isBuiltinId(all[i].id))
+                out.push(all[i])
+        }
+        return out
+    }
+
+    readonly property var customThemeList: {
+        const all = theme.listedThemes
+        const out = []
+        for (let i = 0; i < all.length; i++) {
+            if (all[i] && !theme.isBuiltinId(all[i].id))
+                out.push(all[i])
+        }
+        return out
     }
 
     readonly property int savedThemeCount: theme.parsedSavedThemes.length
@@ -699,7 +723,7 @@ QtObject {
     }
 
     function setRole(key, hue, brightness, sat, light) {
-        if (theme.roleFixed(key) || !theme.recipes[key])
+        if (theme.themeLocked || theme.roleFixed(key) || !theme.recipes[key])
             return
         const h = theme.roundHue(hue)
         const b = theme.roundBright(brightness)
@@ -751,7 +775,7 @@ QtObject {
     }
 
     function clearRole(key) {
-        if (theme.roleFixed(key) || !theme.recipes[key])
+        if (theme.themeLocked || theme.roleFixed(key) || !theme.recipes[key])
             return
         const base = theme.baselineTheme()
         if (!base)
@@ -825,7 +849,7 @@ QtObject {
     }
 
     function applyHsl(key, h, s, l) {
-        if (!theme.recipes[key])
+        if (theme.themeLocked || !theme.recipes[key])
             return false
         const recipe = theme.recipeOf(key)
         const targetL = theme.clamp(l, 0.02, 0.97)
@@ -854,7 +878,7 @@ QtObject {
     }
 
     function matchHue(targetKey, sourceKey) {
-        if (theme.roleFixed(targetKey) || !theme.recipes[targetKey])
+        if (theme.themeLocked || theme.roleFixed(targetKey) || !theme.recipes[targetKey])
             return false
         if (!theme.recipes[sourceKey] && !theme.roleFixed(sourceKey))
             return false
@@ -928,10 +952,8 @@ QtObject {
                 savedById[saved[i].id] = saved[i]
         }
         const builtins = theme.builtinThemes
-        for (let i = 0; i < builtins.length; i++) {
-            const id = builtins[i].id
-            out.push(theme.withDisplayName(savedById[id] || builtins[i]))
-        }
+        for (let i = 0; i < builtins.length; i++)
+            out.push(theme.withDisplayName(builtins[i]))
         const examples = theme.exampleUserThemes
         for (let i = 0; i < examples.length; i++) {
             const id = examples[i] && examples[i].id
@@ -973,6 +995,55 @@ QtObject {
                 return true
         }
         return false
+    }
+
+    function builtinById(id) {
+        const builtins = theme.builtinThemes
+        for (let i = 0; i < builtins.length; i++) {
+            if (builtins[i].id === id)
+                return builtins[i]
+        }
+        return null
+    }
+
+    // Older builds stored colour edits on the built-in id itself. Move those
+    // slots onto new ids so the seven shipped looks stay unchanged.
+    function detachBuiltinSaves() {
+        const saved = theme.parsedSavedThemes.slice()
+        const forks = {}
+        let changed = false
+        for (let i = 0; i < saved.length; i++) {
+            const item = saved[i]
+            if (!item || !theme.isBuiltinId(item.id))
+                continue
+            const builtin = theme.builtinById(item.id)
+            const builtinName = builtin && builtin.name ? String(builtin.name) : "Theme"
+            let name = String(item.name || builtinName).trim() || builtinName
+            if (name.toLowerCase() === builtinName.toLowerCase())
+                name = (builtinName + " copy").slice(0, 40)
+            else
+                name = name.slice(0, 40)
+            const copy = {
+                id: theme.newThemeId() + i.toString(36),
+                name: name,
+                hue: item.hue,
+                brightness: item.brightness,
+                palette: item.palette && typeof item.palette === "object" && !Array.isArray(item.palette) ? item.palette : {}
+            }
+            forks[item.id] = copy
+            saved[i] = copy
+            changed = true
+        }
+        if (!changed)
+            return
+        const previousId = theme.activeThemeId
+        theme.savedThemesJson = JSON.stringify(saved)
+        const fork = forks[previousId]
+        if (!fork)
+            return
+        const builtin = theme.builtinById(previousId)
+        if (!builtin || theme.fingerprint() !== theme.fingerprintOf(builtin))
+            theme.activeThemeId = fork.id
     }
 
     function isShippedCustomId(id) {
@@ -1054,7 +1125,7 @@ QtObject {
     }
 
     function updateTheme(id) {
-        if (!id || !theme.themeById(id))
+        if (!id || theme.isBuiltinId(id) || !theme.themeById(id))
             return false
         const saved = theme.parsedSavedThemes.slice()
         const snap = theme.snapshot()
@@ -1187,6 +1258,7 @@ QtObject {
             }
             theme.paletteJson = Object.keys(rest).length ? JSON.stringify(rest) : ""
         }
+        theme.detachBuiltinSaves()
         theme.reconcileActiveTheme()
     }
 

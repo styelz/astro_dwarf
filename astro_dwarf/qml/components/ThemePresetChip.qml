@@ -7,6 +7,7 @@ Item {
     id: chip
     property var themeEntry: ({})
     property bool selected: false
+    property bool locked: false
     readonly property string themeId: chip.themeEntry && chip.themeEntry.id ? String(chip.themeEntry.id) : ""
     readonly property string themeLabel: chip.themeEntry && chip.themeEntry.name ? String(chip.themeEntry.name) : ""
     readonly property color panelTint: Theme.previewColor(chip.themeEntry, "surface")
@@ -17,9 +18,12 @@ Item {
 
     implicitWidth: Theme.px(88)
     implicitHeight: Theme.px(40)
+    objectName: "themeChip_" + chip.themeId
     Accessible.role: Accessible.Button
     Accessible.name: chip.themeLabel
-    Accessible.description: chip.selected ? "Current theme" : "Apply " + chip.themeLabel
+    Accessible.description: chip.locked
+        ? (chip.selected ? "Current built-in theme. Save a copy to change colours." : "Apply " + chip.themeLabel + ". Built in. Save a copy to change colours.")
+        : (chip.selected ? "Current theme" : "Apply " + chip.themeLabel)
     Accessible.checkable: true
     Accessible.checked: chip.selected
     activeFocusOnTab: true
@@ -70,6 +74,8 @@ Item {
 
     HudToolTip {
         visible: hover.hovered
-        text: chip.selected ? chip.themeLabel + " is active." : "Apply " + chip.themeLabel + "."
+        text: chip.locked
+            ? chip.themeLabel + " is built in. Save a copy to change its colours."
+            : (chip.selected ? chip.themeLabel + " is active." : "Apply " + chip.themeLabel + ".")
     }
 }

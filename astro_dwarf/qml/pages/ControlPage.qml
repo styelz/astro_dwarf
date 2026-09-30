@@ -2679,6 +2679,8 @@ Item {
                             foregroundColor: Theme.accent
                             onHoveredChanged: previewHost.holdControls(hovered)
                             onClicked: {
+                                if (!panoramaFramePane.hasRect)
+                                    return
                                 const x1 = Math.min(panoramaFramePane.showX1, panoramaFramePane.showX2)
                                 const y1 = Math.min(panoramaFramePane.showY1, panoramaFramePane.showY2)
                                 const x2 = Math.max(panoramaFramePane.showX1, panoramaFramePane.showX2)
@@ -3234,7 +3236,9 @@ Item {
                                 if (root.scopeActivity === "panorama")
                                     return liveClockText ? "PANO · " + liveClockText : "SHOOTING · STOP"
                                 if (root.scopeActivity === "panorama_frame")
-                                    return t.panorama_has_rect ? "FRAME · SHOOT ON PREVIEW" : "FRAME"
+                                    return t.panorama_has_rect
+                                        ? (panoramaFramePane.tileColCount + "×" + panoramaFramePane.tileRowCount + " · SHOOT ON PREVIEW")
+                                        : "FRAME"
                                 return "CAPTURE"
                             }
                             if (firmwareSettling && (activeForState || root.scopeActivity === "" || root.scopeActivity === modelData.state || (trackingPad && root.scopeActivity === "goto")))

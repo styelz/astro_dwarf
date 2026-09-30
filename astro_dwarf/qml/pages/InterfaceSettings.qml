@@ -103,16 +103,7 @@ ColumnLayout {
     readonly property bool tintFixed: Theme.roleFixed(iface.tintRole)
     readonly property bool savedSlot: !Theme.isBuiltinId(Theme.activeThemeId)
     readonly property bool exampleSlot: Theme.isShippedCustomId(Theme.activeThemeId) && !Theme.hasSavedCopy(Theme.activeThemeId)
-    readonly property bool builtinDefault: {
-        void Theme.savedThemesJson
-        void Theme.activeThemeId
-        void Theme.paletteJson
-        void Theme.hue
-        void Theme.brightness
-        if (!Theme.isBuiltinId(Theme.activeThemeId))
-            return false
-        return Theme.hasSavedCopy(Theme.activeThemeId) || Theme.themeEdited
-    }
+    readonly property bool themeLocked: Theme.themeLocked
     readonly property bool renameable: Theme.canRenameTheme(Theme.activeThemeId)
     readonly property bool colourSplit: iface.width >= Theme.px(620)
     readonly property string probeThemeId: Theme.activeThemeId
@@ -325,24 +316,47 @@ ColumnLayout {
             HudChip {
                 label: iface.themeStatus
                 tone: Theme.themeEdited ? Theme.warning : Theme.accent
-                dim: !Theme.themeEdited && Theme.isBuiltinId(Theme.activeThemeId)
+                dim: !Theme.themeEdited && iface.themeLocked
                 anchors.verticalCenter: parent.verticalCenter
             },
             HudChip {
                 label: iface.exampleSlot ? "EXAMPLE" : (iface.savedSlot ? "SAVED" : "BUILT-IN")
-                tone: iface.exampleSlot || iface.savedSlot ? Theme.success : Theme.textSecondary
-                dim: !iface.exampleSlot && !iface.savedSlot
+                tone: iface.themeLocked ? Theme.textSecondary : Theme.success
+                dim: iface.themeLocked
                 anchors.verticalCenter: parent.verticalCenter
             }
         ]
-        FieldLabel { text: "PRESETS" }
+        FieldLabel { text: "BUILT-IN" }
         Flow {
+            objectName: "themeBuiltinFlow"
             Layout.columnSpan: 2
             Layout.fillWidth: true
             Layout.minimumWidth: Theme.px(240)
             spacing: Theme.px(6)
             Repeater {
-                model: Theme.listedThemes
+                model: Theme.builtinThemeList
+                delegate: ThemePresetChip {
+                    required property var modelData
+                    themeEntry: modelData
+                    locked: true
+                    selected: Theme.activeThemeId === modelData.id
+                    onClicked: iface.applyListedTheme(modelData.id)
+                }
+            }
+        }
+        FieldHint {
+            Layout.columnSpan: 3
+            text: "Seven shipped looks. Their colours stay fixed. Save a copy to change them."
+        }
+        FieldLabel { text: "YOURS" }
+        Flow {
+            objectName: "themeCustomFlow"
+            Layout.columnSpan: 2
+            Layout.fillWidth: true
+            Layout.minimumWidth: Theme.px(240)
+            spacing: Theme.px(6)
+            Repeater {
+                model: Theme.customThemeList
                 delegate: ThemePresetChip {
                     required property var modelData
                     themeEntry: modelData
@@ -351,12 +365,17 @@ ColumnLayout {
                 }
             }
             HudButton {
+                objectName: "themeSaveAs"
                 text: iface.naming ? "CANCEL" : "SAVE AS"
                 implicitHeight: Theme.px(40)
                 enabled: iface.naming || Theme.savedThemeCount < Theme.maxSavedThemes
                 accessibleDescription: iface.naming ? "Cancel saving a new theme" : "Save the current palette as a new theme"
                 onClicked: iface.naming ? iface.naming = false : iface.startSaveAs()
             }
+        }
+        FieldHint {
+            Layout.columnSpan: 3
+            text: "Example looks and copies you can edit. " + Theme.savedThemeCount + "/" + Theme.maxSavedThemes + " saved."
         }
         FieldLabel {
             visible: iface.naming || iface.renameable
@@ -367,7 +386,7 @@ ColumnLayout {
             visible: iface.naming || iface.renameable
             Layout.preferredWidth: iface.controlWidth
             enabled: iface.naming || iface.renameable
-            placeholderText: iface.naming ? "Theme name" : "Theme name"
+            placeholderText: "Theme name"
             accessibleName: iface.naming ? "New theme name" : "Theme name"
             maximumLength: 40
             onEditingFinished: {
@@ -385,16 +404,14 @@ ColumnLayout {
         }
         FieldHint {
             visible: iface.naming || iface.renameable
-            text: iface.naming
-                ? "Name this look, then confirm. " + Theme.savedThemeCount + "/" + Theme.maxSavedThemes + " saved."
-                : "Rename this theme."
+            text: iface.naming ? "Name this look, then confirm." : "Rename this theme."
         }
         FieldLabel {
-            visible: iface.naming || (Theme.themeEdited && !!Theme.activeTheme) || iface.savedSlot || iface.builtinDefault
+            visible: iface.naming || iface.savedSlot || (Theme.themeEdited && !!Theme.activeTheme)
             text: "ACTIONS"
         }
         RowLayout {
-            visible: iface.naming || (Theme.themeEdited && !!Theme.activeTheme) || iface.savedSlot || iface.builtinDefault
+            visible: iface.naming || iface.savedSlot || (Theme.themeEdited && !!Theme.activeTheme)
             Layout.fillWidth: true
             Layout.minimumWidth: Theme.px(240)
             spacing: Theme.px(6)
@@ -410,21 +427,11 @@ ColumnLayout {
                 text: "REVERT"
                 implicitHeight: Theme.px(28)
                 visible: Theme.themeEdited && !!Theme.activeTheme && !iface.naming
-                        && (!Theme.isBuiltinId(Theme.activeThemeId) || Theme.hasSavedCopy(Theme.activeThemeId))
-                accessibleDescription: "Reload the selected theme and discard edits"
+                accessibleDescription: iface.themeLocked
+                    ? "Restore this built-in theme's shipped colours"
+                    : "Reload the selected theme and discard edits"
                 onClicked: {
                     Theme.applyTheme(Theme.activeThemeId)
-                    iface.naming = false
-                }
-            }
-            HudButton {
-                objectName: "themeDefaultButton"
-                text: "DEFAULT"
-                implicitHeight: Theme.px(28)
-                visible: iface.builtinDefault && !iface.naming
-                accessibleDescription: "Restore this theme to its shipped colours"
-                onClicked: {
-                    Theme.revertBuiltinTheme(Theme.activeThemeId)
                     iface.naming = false
                 }
             }
@@ -432,7 +439,7 @@ ColumnLayout {
                 objectName: "themeUpdateButton"
                 text: "UPDATE"
                 implicitHeight: Theme.px(28)
-                visible: Theme.themeEdited && !!Theme.activeTheme && !iface.naming
+                visible: Theme.themeEdited && !!Theme.activeTheme && !iface.naming && !iface.themeLocked
                 accessibleDescription: "Store the current palette on the selected theme"
                 onClicked: Theme.updateTheme(Theme.activeThemeId)
             }
@@ -446,20 +453,16 @@ ColumnLayout {
             Item { Layout.fillWidth: true }
         }
         FieldHint {
-            visible: iface.naming || Theme.themeEdited || iface.savedSlot || iface.builtinDefault
+            visible: iface.naming || iface.savedSlot || Theme.themeEdited
             text: iface.naming
                 ? "Confirm writes a new saved look. Cancel drops the name field."
-                : Theme.themeEdited && iface.builtinDefault && Theme.hasSavedCopy(Theme.activeThemeId)
-                    ? "Edits are live. Revert reloads your saved colours. Update stores this look. Default restores the shipped theme."
-                    : Theme.themeEdited && Theme.isBuiltinId(Theme.activeThemeId)
-                        ? "Edits are live. Default restores the shipped colours. Update stores this look on the theme."
-                        : Theme.themeEdited
-                            ? "Edits are live. Revert reloads this look. Update stores it on the selected theme."
-                            : iface.builtinDefault
-                                ? "Default restores this theme's shipped colours."
-                                : iface.exampleSlot
-                                    ? "Delete removes this example theme."
-                                    : "Delete removes this saved look."
+                : iface.themeLocked && Theme.themeEdited
+                    ? "These colour changes are not stored on the built-in look. Revert restores it, or save a copy to keep them."
+                    : Theme.themeEdited
+                        ? "Edits are live. Revert reloads this look. Update stores it."
+                        : iface.exampleSlot
+                            ? "Delete hides this example look."
+                            : "Delete removes this saved look."
         }
         ThemePreview {
             Layout.columnSpan: 3
@@ -478,16 +481,22 @@ ColumnLayout {
                 anchors.verticalCenter: parent.verticalCenter
             },
             HudChip {
-                label: iface.tintFixed ? "FIXED" : (iface.tintLinked ? "FOLLOWS" : (Theme.roleCustom(iface.tintRole) ? "UNLOCKED" : "THEME"))
-                tone: iface.tintFixed ? Theme.textSecondary : (iface.tintLinked ? Theme.accent : (Theme.roleCustom(iface.tintRole) ? Theme.warning : Theme.textSecondary))
-                dim: iface.tintFixed || (!iface.tintLinked && !Theme.roleCustom(iface.tintRole))
+                label: iface.tintFixed ? "FIXED" : (iface.themeLocked ? "LOCKED" : (iface.tintLinked ? "FOLLOWS" : (Theme.roleCustom(iface.tintRole) ? "UNLOCKED" : "THEME")))
+                tone: iface.tintFixed || iface.themeLocked ? Theme.textSecondary : (iface.tintLinked ? Theme.accent : (Theme.roleCustom(iface.tintRole) ? Theme.warning : Theme.textSecondary))
+                dim: iface.tintFixed || iface.themeLocked || (!iface.tintLinked && !Theme.roleCustom(iface.tintRole))
                 anchors.verticalCenter: parent.verticalCenter
             }
         ]
+        FieldHint {
+            visible: iface.themeLocked
+            Layout.columnSpan: 3
+            emphasis: true
+            text: (Theme.activeTheme && Theme.activeTheme.name ? Theme.activeTheme.name : "This look") + " is built in. Save a copy to change its colours."
+        }
         GridLayout {
             Layout.columnSpan: 3
             Layout.fillWidth: true
-            columns: iface.colourSplit ? 2 : 1
+            columns: iface.colourSplit && !iface.themeLocked ? 2 : 1
             columnSpacing: Theme.s4
             rowSpacing: Theme.s3
 
@@ -520,6 +529,7 @@ ColumnLayout {
                                     width: Theme.px(76)
                                     roleKey: modelData.key
                                     roleName: modelData.name
+                                    editable: !iface.themeLocked
                                     selected: iface.tintRole === modelData.key
                                     onClicked: iface.tintRole = modelData.key
                                     onResetRequested: Theme.clearRole(modelData.key)
@@ -529,15 +539,18 @@ ColumnLayout {
                     }
                 }
                 FieldHint {
-                    text: iface.tintFixed
-                        ? iface.tintRoleName + " — " + iface.tintRoleHint + " Click the preview or a swatch to inspect it. Status colours stay fixed."
-                        : iface.tintRoleHint
-                            ? iface.tintRoleName + " — " + iface.tintRoleHint + " Click the preview or a swatch. WINDOW tints unedited colours. Double-click restores that colour on this theme."
-                            : "Click a swatch or the preview to edit that colour. WINDOW tints unedited colours. Double-click restores that colour on this theme."
+                    text: iface.themeLocked
+                        ? iface.tintRoleName + (iface.tintRoleHint ? " — " + iface.tintRoleHint : "")
+                        : iface.tintFixed
+                            ? iface.tintRoleName + " — " + iface.tintRoleHint + " Click the preview or a swatch to inspect it. Status colours stay fixed."
+                            : iface.tintRoleHint
+                                ? iface.tintRoleName + " — " + iface.tintRoleHint + " Click the preview or a swatch. WINDOW tints unedited colours. Double-click restores that colour on this theme."
+                                : "Click a swatch or the preview to edit that colour. WINDOW tints unedited colours. Double-click restores that colour on this theme."
                 }
             }
 
             GridLayout {
+                visible: !iface.themeLocked
                 Layout.fillWidth: true
                 Layout.preferredWidth: iface.colourSplit ? Theme.px(420) : -1
                 Layout.minimumWidth: Theme.px(240)
@@ -778,6 +791,7 @@ ColumnLayout {
                             Layout.preferredWidth: Theme.px(40)
                             roleKey: modelData
                             roleName: Theme.roleName(modelData)
+                            editable: !iface.themeLocked
                             selected: iface.tintRole === modelData
                             onClicked: iface.tintRole = modelData
                             onResetRequested: Theme.clearRole(modelData)

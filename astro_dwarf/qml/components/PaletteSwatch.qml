@@ -10,6 +10,7 @@ Item {
     property string roleKey: ""
     property string roleName: ""
     property bool selected: false
+    property bool editable: true
     readonly property string roleHint: {
         void Theme.paletteJson
         return roleKey ? Theme.roleHint(roleKey) : ""
@@ -46,6 +47,8 @@ Item {
     Accessible.description: {
         const hex = swatch.hex
         const use = swatch.roleHint ? " " + swatch.roleHint : ""
+        if (!swatch.editable)
+            return (selected ? "Selected " : "") + hex + "." + use + " Built-in theme. Save a copy to change this colour."
         if (selected)
             return "Selected " + hex + "." + use + " Sliders edit this colour. Double-click restores this theme's colour."
         if (linked)
@@ -65,7 +68,7 @@ Item {
     TapHandler {
         id: tap
         onTapped: {
-            if (tap.tapCount > 1)
+            if (swatch.editable && tap.tapCount > 1)
                 swatch.resetRequested()
             else
                 swatch.clicked()
@@ -139,6 +142,8 @@ Item {
         wrapWidth: Theme.px(280)
         text: {
             const parentName = Theme.parentOf(swatch.roleKey) ? Theme.roleName(Theme.parentOf(swatch.roleKey)) : ""
+            if (!swatch.editable)
+                return swatch.roleName + "  " + swatch.hex + ". Built-in theme. Save a copy to change this colour."
             let line = (swatch.selected ? "Editing " : "Edit ") + swatch.roleName + "  " + swatch.hex + "."
             if (swatch.roleHint)
                 line += " " + swatch.roleHint

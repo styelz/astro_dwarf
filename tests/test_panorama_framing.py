@@ -25,11 +25,11 @@ from astro_dwarf.domain import (
     panorama_fov_grid,
     panorama_leave_index,
     panorama_rect_matches,
+    panorama_snap_rect,
     panorama_shot_cell,
     panorama_shot_cell_norm,
     panorama_shot_cell_px,
     panorama_shot_grid,
-    panorama_shoot_needs_rect_update,
     panorama_stamp_live_ready,
     panorama_tele_overlay,
 )
@@ -230,13 +230,66 @@ def test_panorama_stamp_size_is_full_canvas_cell() -> None:
     _assert(abs(full_cols * stamp["nw"] - 1.0) < 1e-9, stamp)
 
 
-def test_panorama_shoot_skips_redundant_rect_update() -> None:
+def test_panorama_rect_keeps_a_zero_corner() -> None:
     box = (0.2, 0.3, 0.5, 0.7)
     _assert(panorama_rect_matches(box, (0.20, 0.30, 0.50, 0.70)), box)
     _assert(panorama_rect_matches((0.0, 0.0, 1.0, 1.0), (0.0, 0.0, 1.0, 1.0)), "zero origin is a real corner")
-    _assert(not panorama_shoot_needs_rect_update(box, box), "already framed")
-    _assert(panorama_shoot_needs_rect_update(None, box), "seed never reached the device")
-    _assert(panorama_shoot_needs_rect_update((0.0, 0.0, 1.0, 1.0), box), "full canvas is not the yellow box")
+    _assert(not panorama_rect_matches((0.467, 0.383, 0.533, 0.617), (0.386, 0.383, 0.533, 0.665)), "a resize is a different frame")
+
+
+def _framing_rect(x1: float, y1: float, x2: float, y2: float) -> bytes:
+    message = notify_pb2.PanoFramingRectUpdateNotify()
+    message.norm_x_tl = x1
+    message.norm_y_tl = y1
+    message.norm_x_br = x2
+    message.norm_y_br = y2
+    message.norm_limit_x_right = 1
+    message.norm_limit_y_bottom = 1
+    message.rect_hor_fov = 45.06
+    message.rect_ver_fov = 25.94
+    return message.SerializeToString()
+
+
+def test_latest_device_rect_is_kept() -> None:
+    tap = _tap()
+    wide = _framing_rect(0.341, 0.175, 0.659, 0.825)
+    opening = _framing_rect(0.467, 0.383, 0.533, 0.617)
+    tap.on_packet(CMD_NOTIFY_PANO_FRAMING_RECT, TYPE_NOTIFICATION, opening)
+    tap.on_packet(CMD_NOTIFY_PANO_FRAMING_RECT, TYPE_NOTIFICATION, wide)
+    tap.on_packet(CMD_NOTIFY_PANO_FRAMING_RECT, TYPE_NOTIFICATION, opening)
+    snap = tap.snapshot()
+    _assert(abs(float(snap["panorama_x1"]) - 0.467) < 1e-6, snap)
+    _assert(abs(float(snap["panorama_y1"]) - 0.383) < 1e-6, snap)
+    _assert(abs(float(snap["panorama_x2"]) - 0.533) < 1e-6, snap)
+    _assert(abs(float(snap["panorama_y2"]) - 0.617) < 1e-6, snap)
+
+
+def test_panorama_frame_snaps_to_whole_cells() -> None:
+    opening = panorama_snap_rect(0.467, 0.383, 0.533, 0.617)
+    cols, rows = panorama_fov_grid(opening[2] - opening[0], opening[3] - opening[1], 1 / 60, 1 / 30)
+    _assert((cols, rows) == (4, 7), (cols, rows, opening))
+    messy = panorama_snap_rect(0.420, 0.370, 0.590, 0.640)
+    cols, rows = panorama_fov_grid(messy[2] - messy[0], messy[3] - messy[1], 1 / 60, 1 / 30)
+    _assert((cols, rows) == (10, 8), (cols, rows, messy))
+    full = panorama_snap_rect(0.250, 0.000, 0.750, 1.000)
+    cols, rows = panorama_fov_grid(full[2] - full[0], full[3] - full[1], 1 / 60, 1 / 30)
+    _assert((cols, rows) == (30, 30), (cols, rows, full))
+
+
+def test_framed_area_uses_the_full_grid_cell() -> None:
+    # A full panorama is 1800 tele fields, 60×30 on the 32:9 scan.
+    # The opening frame is about 4×7 of those cells (28 shots). The cell
+    # stays 1/60 × 1/30, which paints as the tele rectangle, not a square.
+    stamp = panorama_canvas_stamp_norm(1.0, 1.0, 32 / 9, 2.95, 1.66)
+    _assert(stamp is not None, stamp)
+    opening_cols, opening_rows = panorama_fov_grid(0.066, 0.234, stamp["nw"], stamp["nh"])
+    _assert((opening_cols, opening_rows) == (4, 7), (opening_cols, opening_rows))
+    _assert(opening_cols * opening_rows == 28, (opening_cols, opening_rows))
+    painted = (stamp["nw"] / stamp["nh"]) * (32 / 9)
+    _assert(abs(painted - (2.95 / 1.66)) < 0.02, painted)
+    wide_cols, wide_rows = panorama_fov_grid(0.318, 0.650, stamp["nw"], stamp["nh"])
+    _assert(abs(stamp["nw"] - 1 / 60) < 1e-9, stamp)
+    _assert(wide_cols * wide_rows != 28, (wide_cols, wide_rows))
 
 
 def test_panorama_pointing_tracks_motor_and_unwraps_az() -> None:
@@ -264,6 +317,9 @@ if __name__ == "__main__":
     test_panorama_shot_cell_matches_tracker_box()
     test_panorama_tele_overlay_from_motor_span()
     test_panorama_stamp_size_is_full_canvas_cell()
-    test_panorama_shoot_skips_redundant_rect_update()
+    test_panorama_rect_keeps_a_zero_corner()
+    test_latest_device_rect_is_kept()
+    test_panorama_frame_snaps_to_whole_cells()
+    test_framed_area_uses_the_full_grid_cell()
     test_panorama_pointing_tracks_motor_and_unwraps_az()
     print("ok")

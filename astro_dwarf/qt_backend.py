@@ -9821,7 +9821,7 @@ class AppBackend(QObject):
 
     @Slot(float, float, float, float)
     def updatePanoramaFrame(self, x1: float, y1: float, x2: float, y2: float) -> None:
-        """Send a resized framing box. Ignored until this session has a device rect."""
+        """Send the resized framing corners. Ignored until this session has a device rect."""
         device_id = self._selected_device_id
         telemetry = self._device_telemetry.get(device_id) or {}
         if not telemetry.get("panorama_has_rect"):
@@ -10102,6 +10102,7 @@ class AppBackend(QObject):
         }:
             self._panorama_frame_rect.pop(device_id, None)
         if operation == "panorama_shoot":
+            # StartGrid has no corners. Send the on-screen frame with it.
             framed = self._panorama_frame_rect.get(device_id) or self._telemetry_panorama_rect(device_id)
             if framed:
                 payload = {"args": list(framed)}
