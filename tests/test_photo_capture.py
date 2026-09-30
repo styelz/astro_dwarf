@@ -283,6 +283,82 @@ def test_tap_stamps_record_start_clock() -> None:
     _assert(later.get("record_started_at") == snap.get("record_started_at"), later)
 
 
+def test_device_state_keeps_wide_record_clock_and_clears_finished_functions() -> None:
+    from dwarf_python_api.proto import task_center_pb2 as tc
+
+    started = 1_800_000_000
+    tap = TelemetryTap(lambda _payload: None, flush_interval=0)
+    tap.update(
+        {
+            "record_state": "running",
+            "record_seconds": 40,
+            "record_started_at": started,
+            "burst_state": "running",
+            "burst_completed": 2,
+        },
+        force=True,
+    )
+    wide = tc.ResGetDeviceStateInfo()
+    wide.tele_camera_state_info.exclusive_state.SetInParent()
+    wide.wide_camera_state_info.exclusive_state.record_state.state = 1
+    changes = tap.decode_device_state(wide)
+    _assert(changes.get("record_state") == "running", changes)
+    _assert("record_seconds" not in changes, changes)
+    _assert("record_started_at" not in changes, changes)
+    _assert(changes.get("burst_state") == "idle", changes)
+    _assert(changes.get("burst_completed") == 0, changes)
+    tap.update(changes, force=True)
+    snap = tap.snapshot()
+    _assert(snap.get("record_seconds") == 40, snap)
+    _assert(snap.get("record_started_at") == started, snap)
+    activity, detail = derive_activity(snap, started + 40)
+    _assert((activity, detail) == ("record", "00:40"), (activity, detail))
+
+    stopped = tc.ResGetDeviceStateInfo()
+    stopped.tele_camera_state_info.exclusive_state.SetInParent()
+    stopped.wide_camera_state_info.exclusive_state.SetInParent()
+    tap.update({"record_state": "stopping"}, force=True)
+    changes = tap.decode_device_state(stopped)
+    _assert(changes.get("record_state") == "idle", changes)
+    _assert(changes.get("record_seconds") == 0, changes)
+
+    sibling = tc.ResGetDeviceStateInfo()
+    sibling.tele_camera_state_info.exclusive_state.record_state.state = 1
+    sibling.wide_camera_state_info.exclusive_state.SetInParent()
+    tap.update({"burst_state": "running", "burst_completed": 3, "timelapse_state": "stopping"}, force=True)
+    changes = tap.decode_device_state(sibling)
+    _assert(changes.get("record_state") == "running", changes)
+    _assert(changes.get("burst_state") == "idle", changes)
+    _assert(changes.get("burst_completed") == 0, changes)
+    _assert(changes.get("timelapse_state") == "idle", changes)
+
+    holding = tc.ResGetDeviceStateInfo()
+    holding.tele_camera_state_info.exclusive_state.SetInParent()
+    holding.wide_camera_state_info.exclusive_state.SetInParent()
+    tap.update(
+        {
+            "capture_state": "running",
+            "capture_active": True,
+            "record_state": "running",
+            "record_seconds": 12,
+            "record_started_at": started,
+        },
+        force=True,
+    )
+    changes = tap.decode_device_state(holding)
+    _assert("record_state" not in changes, changes)
+    _assert("record_seconds" not in changes, changes)
+
+    stacking = tc.ResGetDeviceStateInfo()
+    stacking.tele_camera_state_info.exclusive_state.capture_raw_state.state = 1
+    stacking.wide_camera_state_info.exclusive_state.SetInParent()
+    tap.update({"capture_state": "idle", "capture_active": False, "record_state": "running", "record_seconds": 5}, force=True)
+    changes = tap.decode_device_state(stacking)
+    _assert(changes.get("capture_state") == "running", changes)
+    _assert(changes.get("record_state") == "idle", changes)
+    _assert(changes.get("record_seconds") == 0, changes)
+
+
 def test_wide_tap_autofocus_follows_firmware_state_not_focus_position() -> None:
     import time
 
@@ -352,6 +428,7 @@ def main() -> None:
     test_record_and_timelapse_clocks_tick_from_start_stamp()
     test_record_activity_beats_stale_stack()
     test_tap_stamps_record_start_clock()
+    test_device_state_keeps_wide_record_clock_and_clears_finished_functions()
     test_camera_param_skips_matching_timelapse_duration()
     test_cancel_prime_clears_stills_and_flags_burst_reset()
     test_burst_start_packet_is_empty()

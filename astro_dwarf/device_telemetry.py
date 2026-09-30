@@ -433,20 +433,8 @@ def _message_fields(message: Any) -> set[str]:
     return set()
 
 
-def _photo_function_idle_changes(snapshot: dict[str, Any]) -> dict[str, Any]:
-    changes: dict[str, Any] = {}
-    for key in _PHOTO_FUNCTION_KEYS:
-        if snapshot.get(key) == "running":
-            changes[key] = "idle"
-            if key == "record_state":
-                changes["record_seconds"] = 0
-                changes["record_started_at"] = 0
-            elif key == "timelapse_state":
-                changes["timelapse_elapsed_s"] = 0
-                changes["timelapse_started_at"] = 0
-            elif key == "burst_state":
-                changes["burst_completed"] = 0
-    return changes
+_PHOTO_FUNCTION_BUSY = frozenset({"running", "stopping", "stopped"})
+_PHOTO_FUNCTION_RANK = {"idle": 0, "stopped": 1, "stopping": 2, "running": 3}
 
 
 def _photo_function_state_changes(key: str, state: str) -> dict[str, Any]:
@@ -460,6 +448,25 @@ def _photo_function_state_changes(key: str, state: str) -> dict[str, Any]:
             changes["timelapse_started_at"] = 0
         elif key == "burst_state":
             changes["burst_completed"] = 0
+    return changes
+
+
+def _photo_function_idle_changes(
+    snapshot: dict[str, Any],
+    *,
+    keep: set[str] | None = None,
+) -> dict[str, Any]:
+    """Idle photo functions the snapshot no longer shows as current.
+
+    ``keep`` names functions a camera exclusive oneof still reports, so a
+    wide recording keeps the clock already published by its time notify.
+    """
+    held = keep or set()
+    changes: dict[str, Any] = {}
+    for key in _PHOTO_FUNCTION_KEYS:
+        if key in held or snapshot.get(key) not in _PHOTO_FUNCTION_BUSY:
+            continue
+        changes.update(_photo_function_state_changes(key, "idle"))
     return changes
 
 
@@ -1661,6 +1668,11 @@ class TelemetryTap:
                 changes["lens_defog"] = int(info.lens_defog.state) == 1
             if info.HasField("auto_cooling"):
                 changes["auto_cooling"] = int(info.auto_cooling.state) == 1
+        photo_preempt = False
+        photo_release = False
+        photo_live: dict[str, str] = {}
+        saw_tele_exclusive = False
+        saw_wide_exclusive = False
         for prefix, field in (("tele", "tele_camera_state_info"), ("wide", "wide_camera_state_info")):
             camera = getattr(message, field, None)
             if camera is None or not message.HasField(field):
@@ -1682,6 +1694,10 @@ class TelemetryTap:
                 changes["stream_type" if prefix == "tele" else "stream_type_wide"] = STREAM_TYPES.get(value, str(value))
             exclusive = camera.exclusive_state if camera.HasField("exclusive_state") else None
             if exclusive is not None:
+                if prefix == "tele":
+                    saw_tele_exclusive = True
+                else:
+                    saw_wide_exclusive = True
                 which = exclusive.WhichOneof("current_state")
                 if which == "capture_raw_state":
                     state = OPERATION_STATES.get(int(exclusive.capture_raw_state.state), "idle")
@@ -1691,24 +1707,36 @@ class TelemetryTap:
                         changes["capture_state"] = state
                         changes["capture_active"] = state == "running"
                     if state == "running":
-                        changes.update(_photo_function_idle_changes(self.snapshot()))
+                        photo_preempt = True
                 elif which == "panorama_state":
                     state = OPERATION_STATES.get(int(exclusive.panorama_state.state), "idle")
                     changes["panorama_state"] = state
                     if state != "running":
                         changes["panorama_completed"] = 0
                     if state == "running":
-                        changes.update(_photo_function_idle_changes(self.snapshot()))
+                        photo_preempt = True
                 elif which in _PHOTO_FUNCTION_KEYS:
                     state = OPERATION_STATES.get(int(getattr(exclusive, which).state), "idle")
-                    changes.update(_photo_function_state_changes(which, state))
+                    # Running on either camera outranks idle from the other head.
+                    if _PHOTO_FUNCTION_RANK.get(state, 0) >= _PHOTO_FUNCTION_RANK.get(photo_live.get(which, ""), 0):
+                        photo_live[which] = state
                 elif which is None and prefix == "tele":
                     # Tracking owns the motors during stacking, so this oneof
                     # can be empty while capture notifications are still live.
                     snapshot = self.snapshot()
                     if snapshot.get("capture_state") != "running" and not snapshot.get("capture_active"):
                         changes["capture_active"] = False
-                        changes.update(_photo_function_idle_changes(snapshot))
+                        photo_release = True
+        if saw_tele_exclusive or saw_wide_exclusive:
+            snapshot = self.snapshot()
+            capture_holding = snapshot.get("capture_state") == "running" or bool(snapshot.get("capture_active"))
+            # Both heads are in this packet. A function neither oneof names is
+            # finished, including one stuck on stopping. An empty oneof during
+            # a live stack is not that signal.
+            if photo_preempt or photo_release or (saw_tele_exclusive and saw_wide_exclusive and not capture_holding):
+                changes.update(_photo_function_idle_changes(snapshot, keep=set(photo_live)))
+            for key, state in photo_live.items():
+                changes.update(_photo_function_state_changes(key, state))
         focus = getattr(message, "focus_motor_state_info", None)
         if focus is not None and message.HasField("focus_motor_state_info"):
             if focus.HasField("focus_position"):
