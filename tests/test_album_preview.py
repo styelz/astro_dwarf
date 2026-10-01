@@ -116,6 +116,76 @@ def test_listing_preview_skips_missing_stack_files() -> None:
     _assert(updated.get("thumbnailPath") == "", updated.get("thumbnailPath"))
 
 
+def test_listing_preview_frames_keep_their_own_sidecars() -> None:
+    first = "CD-68 1128_15s50_Astro_20260928-211951731_26C.fits"
+    second = "CD-68 1128_15s50_Astro_20260928-212006744_26C.fits"
+    failed = "failed_CD-68 1128_15s50_Astro_20260928-221651757_28C.fits"
+    names = [
+        "stacked.jpg",
+        "stacked_thumbnail.jpg",
+        "stacked-16_CD-68 1128_15s50_Astro_20260928-211937510.png",
+        "stacked-16_CD-68 1128_15s50_Astro_20260928-211937510.fits",
+        "img_reference.png",
+        "img_stacked_counter.png",
+        first,
+        second,
+        failed,
+    ]
+    previews = []
+    for frame in (first, second, failed):
+        updated = album_apply_listing_preview(
+            {
+                "fileName": frame,
+                "filePath": f"{SESSION}/{frame}",
+                "thumbnailPath": STACKED_THUMB,
+                "isDir": False,
+                "mediaType": 4,
+            },
+            names,
+        )
+        preview = str(updated.get("thumbnailPath") or "")
+        _assert(preview == f"{SESSION}/Thumbnail/{Path(frame).stem}.jpg", preview)
+        _assert(updated.get("fileAvailable") is True, frame)
+        previews.append(preview)
+    _assert(len(set(previews)) == 3, previews)
+
+
+def test_listing_preview_stack_products_share_session_thumbnail() -> None:
+    names = [
+        "stacked.jpg",
+        "stacked_thumbnail.jpg",
+        "stacked-16_target.png",
+        "stacked-16_target.fits",
+        "img_reference.png",
+        "img_stacked_counter.png",
+    ]
+    for frame in ("stacked.jpg", "stacked-16_target.png", "stacked-16_target.fits", "img_reference.png"):
+        updated = album_apply_listing_preview(
+            {
+                "fileName": frame,
+                "filePath": f"{SESSION}/{frame}",
+                "thumbnailPath": "",
+                "isDir": False,
+                "mediaType": 4,
+            },
+            names,
+        )
+        _assert(updated.get("thumbnailPath") == STACKED_THUMB, f"{frame} -> {updated.get('thumbnailPath')}")
+    counter = album_apply_listing_preview(
+        {
+            "fileName": "img_stacked_counter.png",
+            "filePath": f"{SESSION}/img_stacked_counter.png",
+            "isDir": False,
+            "mediaType": 4,
+        },
+        names,
+    )
+    _assert(
+        counter.get("thumbnailPath") == f"{SESSION}/img_stacked_counter.png",
+        counter.get("thumbnailPath"),
+    )
+
+
 def test_listing_preview_uses_existing_stack_thumbnail() -> None:
     updated = album_apply_listing_preview(
         {
@@ -141,6 +211,8 @@ def main() -> None:
     test_album_http_url_encodes_spaces()
     test_stacked_fits_uses_session_thumbnail()
     test_listing_preview_skips_missing_stack_files()
+    test_listing_preview_frames_keep_their_own_sidecars()
+    test_listing_preview_stack_products_share_session_thumbnail()
     test_listing_preview_uses_existing_stack_thumbnail()
     print("test_album_preview: ok")
 

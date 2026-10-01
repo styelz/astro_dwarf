@@ -111,6 +111,7 @@ ApplicationWindow {
         || duplicateSessionDialog.visible
         || sessionDialog.visible
         || helpDialog.visible
+        || panoramaNoticeDialog.visible
     property bool macKeyboardReady: false
     property real joySpeed: 1
     readonly property real joyMin: 0.004
@@ -309,6 +310,10 @@ ApplicationWindow {
 
     function openEqSetup() {
         eqSetupDialog.openSetup()
+    }
+
+    function openPanoramaNotice() {
+        panoramaNoticeDialog.open()
     }
 
     function requestDeviceAction(operation, label) {
@@ -1699,6 +1704,11 @@ ApplicationWindow {
         id: eqSetupDialog
         canRun: function(op) { return root.commandEnabled(op) }
         runAction: function(op, label) { root.requestDeviceAction(op, label) }
+    }
+    PanoramaNoticeDialog {
+        id: panoramaNoticeDialog
+        continueEnabled: root.commandEnabled("panorama_frame_start")
+        continueAction: function() { root.requestDeviceAction("panorama_frame_start", "PANO") }
     }
     ScheduleTemplateDialog { id: scheduleTemplateDialog }
     DuplicateSessionDialog { id: duplicateSessionDialog }

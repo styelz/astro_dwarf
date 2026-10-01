@@ -3392,6 +3392,10 @@ Item {
                                 root.openEqSetup()
                                 return
                             }
+                            if (panoramaPad && effectiveOperation === "panorama_frame_start") {
+                                root.openPanoramaNotice()
+                                return
+                            }
                             if (effectiveOperation === "stack")
                                 cameraPanel.applyPendingStackParams()
                             root.requestDeviceAction(effectiveOperation, padLabel)

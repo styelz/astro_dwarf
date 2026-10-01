@@ -455,7 +455,7 @@ Item {
                                     Layout.fillHeight: true
                                     Rectangle {
                                         anchors.fill: parent
-                                        visible: !previewImage.visible
+                                        visible: !previewImage.visible && !fallbackImage.visible
                                         color: Theme.surface
                                         MediaKindIcon {
                                             anchors.centerIn: parent
@@ -470,15 +470,18 @@ Item {
                                         fillMode: Image.PreserveAspectCrop
                                         asynchronous: true
                                         cache: true
-                                        readonly property string primarySource: mediaPage.tileImageSource(tile.modelData)
-                                        readonly property string fallbackSource: mediaPage.tileImageFallback(tile.modelData)
-                                        source: ""
-                                        onPrimarySourceChanged: source = primarySource
-                                        Component.onCompleted: source = primarySource
-                                        onStatusChanged: {
-                                            if (status === Image.Error && fallbackSource !== "" && source !== fallbackSource)
-                                                source = fallbackSource
-                                        }
+                                        source: mediaPage.tileImageSource(tile.modelData)
+                                        visible: source !== "" && status === Image.Ready
+                                    }
+                                    Image {
+                                        id: fallbackImage
+                                        anchors.fill: parent
+                                        fillMode: Image.PreserveAspectCrop
+                                        asynchronous: true
+                                        cache: true
+                                        source: previewImage.status === Image.Error
+                                            ? mediaPage.tileImageFallback(tile.modelData)
+                                            : ""
                                         visible: source !== "" && status === Image.Ready
                                     }
                                     Rectangle {
@@ -501,7 +504,7 @@ Item {
                                         }
                                     }
                                     Rectangle {
-                                        visible: Util.isVideoMedia(tile.modelData) && previewImage.visible
+                                        visible: Util.isVideoMedia(tile.modelData) && (previewImage.visible || fallbackImage.visible)
                                         anchors.centerIn: parent
                                         width: Theme.s5 + Theme.s3
                                         height: Theme.s5 + Theme.s3

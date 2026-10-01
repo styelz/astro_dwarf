@@ -62,6 +62,7 @@ Change the sign of `up` or `right` only when `mosaic_pane_footprints` places the
 - Screen-grid fallback for EQ and the celestial default uses `south_up` and PA (`col1OnRight = (pa>90 && pa<270) === south_up`) plus chart tilt. Do not invent `northIsDown` row flips on top of that.
 - Alt-az with `pa_source` `parallactic` is already zenith-up. That screen-grid fallback and the contact sheet keep pane 1 top-right, and the JPEGs are not flipped, even when the parallactic angle is near 180°. Do not run that path through the S-up chart formula.
 - Control contact sheet (`mosaic_sheet_column` / `mosaic_sheet_row`) matches the zenith-up overlay, not the S-up fallback. EQ / default PA 180: pane 1 bottom-left. Rotate stacked JPEGs 180° when EQ camera-up is south so tiles still meet at centre.
+- Custom mosaics stitch on the host from that contact-sheet layout. A device mosaic is already stitched on the telescope. Contact-sheet JPEGs are already stretched; a second percentile stretch sits in the sky noise and turns the mosaic gray, with the darker pane edges showing as a cross. Linear FITS stay linear until a sky-based stretch.
 
 Published FOV (`camera_fov`), H×V degrees. The 1×1 live box follows the selected camera. Mosaic pane spacing and stacking stay tele (`sky_map_camera` / `mosaic_stack_camera`).
 

@@ -922,7 +922,35 @@ def album_preview_name(names: list[str] | None) -> str:
     return ""
 
 
+def album_listed_file_preview(folder: str, file_name: str, names: list[str] | None) -> str:
+    """Grid image for one file in a session directory listing.
+
+    FITS and TIFF frames use Thumbnail/<stem>.jpg. That folder has one JPEG
+    per exposure, so the grid must not reuse stacked_thumbnail.jpg for them.
+    Stack products stay on the small session thumbnail: stacked.jpg and the
+    stacked-16 PNG are the same picture at a much larger size.
+    """
+    listed = {str(item).lower(): str(item) for item in (names or []) if str(item).strip()}
+    name = PurePosixPath(str(file_name or "").replace("\\", "/")).name
+    lower = name.lower()
+    session_preview = album_preview_name(list(listed.values()))
+    if not name:
+        return album_join_path(folder, session_preview) if session_preview else ""
+    if lower in {item.lower() for item in (*_STACK_THUMB_NAMES, *_STACK_COUNTER_NAMES)} and lower in listed:
+        return album_join_path(folder, listed[lower])
+    if album_is_heavy_preview(name) and not album_is_astro_stack_product("", name):
+        return album_frame_sidecar_path(folder, name)
+    if session_preview and album_is_astro_stack_product("", name):
+        return album_join_path(folder, session_preview)
+    if lower in listed and album_is_stack_display_image(name):
+        return album_join_path(folder, listed[lower])
+    if session_preview and album_is_astro_media(folder, name):
+        return album_join_path(folder, session_preview)
+    return album_item_preview_path(folder, name)
+
+
 def album_apply_listing_preview(entry: dict[str, Any], names: list[str]) -> dict[str, Any]:
+    """Resolve a grid thumbnail from the files actually present in a folder."""
     out = dict(entry)
     remote = str(out.get("filePath") or "").strip()
     thumb = str(out.get("thumbnailPath") or "").strip()
@@ -930,19 +958,15 @@ def album_apply_listing_preview(entry: dict[str, Any], names: list[str]) -> dict
     folder = album_session_dir(thumb or remote or name)
     preview = album_preview_name(names)
     listed = {str(item).lower(): str(item) for item in names if str(item).strip()}
-    remote_name = PurePosixPath(album_http_path(remote)).name.lower()
-    file_name = remote_name or name.lower()
+    remote_name = PurePosixPath(album_http_path(remote)).name
+    file_name = remote_name or name
     out["previewResolved"] = True
     if out.get("isDir") is True:
         out["thumbnailPath"] = album_join_path(folder, preview) if preview else ""
         out["fileAvailable"] = False
         return out
-    if file_name in {item.lower() for item in (*_STACK_THUMB_NAMES, *_STACK_COUNTER_NAMES)} and file_name in listed:
-        out["thumbnailPath"] = album_join_path(folder, listed[file_name])
-        out["fileAvailable"] = True
-        return out
-    out["thumbnailPath"] = album_join_path(folder, preview) if preview else ""
-    out["fileAvailable"] = bool(remote_name and remote_name in listed)
+    out["thumbnailPath"] = album_listed_file_preview(folder, file_name, names)
+    out["fileAvailable"] = bool(file_name and file_name.lower() in listed)
     return out
 
 
