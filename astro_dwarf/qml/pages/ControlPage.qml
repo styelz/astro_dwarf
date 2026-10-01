@@ -1598,14 +1598,27 @@ Item {
                             previewHost.enterFeedFullscreen(camera)
                     }
                     function leaveFullscreenIfStreamGone() {
+                        if (feedFullscreen && previewHost.panoramaResultShown)
+                            return
                         if (feedFullscreen && !previewHost.streamPlaying(feedFullscreenCamera))
                             previewHost.exitFeedFullscreen()
+                    }
+                    function togglePanoramaFullscreen() {
+                        if (!previewHost.panoramaResultShown && !feedFullscreen)
+                            return
+                        if (feedFullscreen) {
+                            previewHost.exitFeedFullscreen()
+                            return
+                        }
+                        feedFullscreen = true
+                        root.enterVideoFullscreen()
+                        previewHost.revealControls()
                     }
                     Shortcut {
                         sequences: ["F"]
                         context: Qt.WindowShortcut
-                        enabled: previewHost.feedFullscreen || (previewHost.feedFullscreenAvailable && previewHost.feedKeysFree())
-                        onActivated: previewHost.toggleFeedFullscreen()
+                        enabled: previewHost.feedFullscreen || (previewHost.panoramaResultShown && previewHost.feedKeysFree()) || (previewHost.feedFullscreenAvailable && previewHost.feedKeysFree())
+                        onActivated: previewHost.panoramaResultShown ? previewHost.togglePanoramaFullscreen() : previewHost.toggleFeedFullscreen()
                     }
                     Shortcut {
                         sequences: ["Escape"]
@@ -1936,6 +1949,7 @@ Item {
                     }
                     Text {
                         z: 7
+                        parent: previewHost.previewChromeParent
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
@@ -1947,16 +1961,30 @@ Item {
                         font.family: Theme.fontMono
                         elide: Text.ElideRight
                     }
+                    MouseArea {
+                        z: 6
+                        anchors.fill: parent
+                        enabled: previewHost.panoramaResultShown || previewHost.panoramaResultBusy || (backend.panoramaLive && backend.panoramaStatus === "failed")
+                        onDoubleClicked: {
+                            if (previewHost.panoramaResultShown)
+                                previewHost.togglePanoramaFullscreen()
+                        }
+                    }
                     HudButton {
                         objectName: "panoramaLiveDismiss"
                         z: 8
+                        parent: previewHost.previewChromeParent
                         anchors.right: parent.right
                         anchors.top: parent.top
                         anchors.margins: Theme.s3
                         visible: backend.panoramaLive && !previewHost.panoramaShooting && !previewHost.panoramaFrame
-                        text: "LIVE"
-                        tooltip: "Return to the live stream"
-                        onClicked: backend.dismissPanoramaLive()
+                        text: "CLOSE"
+                        tooltip: "Close this panorama preview"
+                        onClicked: {
+                            if (previewHost.feedFullscreen)
+                                previewHost.exitFeedFullscreen()
+                            backend.dismissPanoramaLive()
+                        }
                     }
                     Text {
                         anchors.left: parent.left
@@ -2203,6 +2231,7 @@ Item {
                         anchors.bottom: parent.bottom
                         anchors.margins: Theme.px(14)
                         height: Theme.px(24)
+                        visible: !backend.panoramaLive
                         // status stays up while streaming; it just recedes when the controls are away
                         opacity: previewHost.chromeShown ? 1 : 0.62
                         Behavior on opacity { NumberAnimation { duration: Theme.slow } }
@@ -2586,6 +2615,7 @@ Item {
                         anchors.top: parent.top
                         anchors.margins: Theme.px(14)
                         spacing: Theme.px(6)
+                        visible: !backend.panoramaLive
                         opacity: previewHost.chromeShown ? 1 : 0.75
                         Behavior on opacity { NumberAnimation { duration: Theme.slow } }
                         Rectangle {
@@ -2722,8 +2752,9 @@ Item {
                         anchors.top: parent.top
                         anchors.margins: Theme.px(14)
                         spacing: Theme.s2
-                        opacity: previewHost.panoramaFrame || previewHost.mosaicActive || backend.stitchStatus !== "" || ((backend.previewActive || backend.previewResult) && previewHost.chromeShown) ? 1 : 0
-                        visible: opacity > 0
+                        opacity: backend.panoramaLive ? 0 : (previewHost.panoramaFrame || previewHost.mosaicActive || backend.stitchStatus !== "" || ((backend.previewActive || backend.previewResult) && previewHost.chromeShown) ? 1 : 0)
+                        visible: opacity > 0 && !backend.panoramaLive
+                        enabled: !backend.panoramaLive
                         Behavior on opacity { NumberAnimation { duration: Theme.normal } }
                         HudButton {
                             objectName: "panoramaShoot"
@@ -2945,13 +2976,15 @@ Item {
                             text: previewHost.feedFullscreenMenuText
                             glyph: "\uE9A6"
                             trailingText: "F"
-                            enabled: previewHost.feedFullscreen || previewHost.feedFullscreenAvailable
+                            enabled: previewHost.feedFullscreen || previewHost.panoramaResultShown || previewHost.feedFullscreenAvailable
                             accessibleDescription: previewHost.feedFullscreen
                                 ? "Leave full screen"
-                                : previewHost.feedFullscreenAvailable
+                                : previewHost.panoramaResultShown
+                                    ? "Fill the screen with the panorama. F and double-click do the same."
+                                    : previewHost.feedFullscreenAvailable
                                     ? "Fill the screen with the tele stream. F and double-click do the same."
                                     : "Start the live stream first"
-                            onTriggered: previewHost.toggleFeedFullscreen()
+                            onTriggered: previewHost.panoramaResultShown ? previewHost.togglePanoramaFullscreen() : previewHost.toggleFeedFullscreen()
                         }
                         HudMenuItem {
                             text: "Copy stream URL"
@@ -2997,7 +3030,8 @@ Item {
                         }
                         LiveViewPane {
                             anchors.fill: parent
-                            playing: previewHost.feedFullscreen
+                            visible: !previewHost.panoramaResultShown
+                            playing: previewHost.feedFullscreen && !previewHost.panoramaResultShown
                             wideView: previewHost.chromeWide
                             camera: previewHost.liveCamera(wideView)
                             centerEnabled: playing && root.motionEnabled && !backend.previewResult && !backend.centerTapBusy
@@ -3012,6 +3046,21 @@ Item {
                             footprintNw: previewHost.teleMatchNw
                             footprintNh: previewHost.teleMatchNh
                             onCenterRequested: (nx, ny, diag) => backend.centerOnTap(backend.selectedDeviceId, nx, ny, diag)
+                        }
+                        Image {
+                            objectName: "panoramaResultFullscreen"
+                            anchors.fill: parent
+                            anchors.margins: Theme.s3
+                            visible: previewHost.panoramaResultShown
+                            source: previewHost.panoramaResultShown ? backend.panoramaImage : ""
+                            fillMode: Image.PreserveAspectFit
+                            cache: false
+                            asynchronous: true
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: previewHost.panoramaResultShown
+                            onDoubleClicked: previewHost.exitFeedFullscreen()
                         }
                         HoverHandler {
                             id: feedFullscreenHover
@@ -3115,6 +3164,9 @@ Item {
                         readonly property string blockedReason: {
                             if (pad.enabled)
                                 return ""
+                            const primeBlock = Util.capturePrimeBlock(pad.effectiveOperation, root.scopeTelemetry)
+                            if (primeBlock)
+                                return primeBlock
                             if (pad.trackingPad && root.scopeStacking)
                                 return "Tracking stays on while stacking. Press STACK to end the capture."
                             if (root.scopeStacking)
@@ -3270,7 +3322,14 @@ Item {
                         }
                         readonly property bool polarRunning: modelData.start === "polar_position" && activeForState && root.scopePending === modelData.start
                         readonly property bool isPending: root.scopePending !== "" && ((root.scopePending === modelData.start && !polarRunning) || root.scopePending === modelData.stop || (root.scopePending === "cancel_prime" && primeMode))
-                        readonly property bool canStopNow: primeMode && root.commandEnabled("cancel_prime")
+                        readonly property bool primeCancel: primeMode && root.commandEnabled("cancel_prime")
+                        readonly property bool togglePad: modelData.state === "lights" || modelData.state === "indicator"
+                        readonly property bool runningStop: !togglePad && activeForState && (
+                            panoramaPad
+                                ? ((effectiveOperation === "panorama_stop" || effectiveOperation === "panorama_frame_stop") && root.commandEnabled(effectiveOperation))
+                                : (modelData.stop !== "" && effectiveOperation === modelData.stop && root.commandEnabled(effectiveOperation))
+                        )
+                        readonly property bool canStopNow: primeCancel || runningStop
                         property bool awaitingPrimeCancel: false
                         readonly property string padLabel: {
                             if (panoramaPad)
@@ -3411,7 +3470,7 @@ Item {
                         pending: isPending
                         primed: capturePrimed || stackPrimed
                         canStop: canStopNow
-                        stopTooltip: activeForState ? "Stop and cancel prime" : "Cancel primed capture"
+                        stopTooltip: primeMode ? (activeForState ? "Stop and cancel prime" : "Cancel primed capture") : "Stop"
                         destructive: !!modelData.destructive
                         stopsOnClick: panoramaPad
                             ? (pad.enabled && (effectiveOperation === "panorama_frame_stop" || effectiveOperation === "panorama_stop"))
@@ -3457,10 +3516,14 @@ Item {
                             root.requestDeviceAction(effectiveOperation, padLabel)
                         }
                         onStopClicked: {
-                            if (!root.commandEnabled("cancel_prime"))
+                            if (primeCancel) {
+                                pad.awaitingPrimeCancel = true
+                                root.requestDeviceAction("cancel_prime", padLabel)
                                 return
-                            pad.awaitingPrimeCancel = true
-                            root.requestDeviceAction("cancel_prime", padLabel)
+                            }
+                            if (!runningStop)
+                                return
+                            root.requestDeviceAction(effectiveOperation, padLabel)
                         }
                         Connections {
                             target: backend
@@ -3988,7 +4051,7 @@ Item {
                             clip: true
                             spacing: Theme.s1
                             boundsBehavior: Flickable.StopAtBounds
-                            ScrollBar.vertical: HiddenBar {}
+                            ScrollBar.vertical: HudScrollBar {}
                             ScrollBar.horizontal: HiddenBar {}
                             model: controlPage.clusteredUpcoming
                             delegate: Column {
@@ -4258,12 +4321,8 @@ Item {
                         clip: true
                         spacing: Theme.px(1)
                         boundsBehavior: Flickable.StopAtBounds
-                        ScrollBar.vertical: ScrollBar {
-                            id: logScroll
-                            policy: ScrollBar.AsNeeded
+                        ScrollBar.vertical: HudScrollBar {
                             onPressedChanged: if (pressed && logList.contentHeight > logList.height) logList.followTail = false
-                            contentItem: Rectangle { implicitWidth: Theme.px(3); radius: 1.5; color: Theme.outline; opacity: logScroll.active ? 0.9 : 0.4 }
-                            background: Item {}
                         }
                         ScrollBar.horizontal: HiddenBar {}
                         model: backend.logModel

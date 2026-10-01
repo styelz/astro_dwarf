@@ -235,7 +235,7 @@ Item {
                 boundsBehavior: Flickable.StopAtBounds
                 model: searchCombo.filtered
                 currentIndex: 0
-                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                ScrollBar.vertical: HudScrollBar {}
                 onCurrentIndexChanged: {
                     if (currentIndex >= 0)
                         positionViewAtIndex(currentIndex, ListView.Contain)

@@ -557,6 +557,7 @@ Dialog {
         exposure.text = String(capture.exposure_seconds)
         gain.text = String(capture.gain)
         frames.text = String(capture.frame_count)
+        sessionDialog.applyWorkflowChecks(capture)
     }
     function openForDate(day, minutes) {
         sessionDialog.resetEditorState()
@@ -591,9 +592,6 @@ Dialog {
         frames.placeholderText = ""
         waitBefore.placeholderText = "Before"
         waitAfter.placeholderText = "After"
-        sessionDialog.applyWorkflowChecks({
-            calibrate: true, autofocus: true, infinite_focus: false, polar_align: false, goto: true
-        })
         sessionDialog.syncDeviceCombo()
         open()
     }

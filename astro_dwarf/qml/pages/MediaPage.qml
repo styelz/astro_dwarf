@@ -411,7 +411,7 @@ Item {
                     cellHeight: cellWidth + Theme.px(36)
                     model: backend.mediaItems
                     boundsBehavior: Flickable.StopAtBounds
-                    ScrollBar.vertical: HiddenBar {}
+                    ScrollBar.vertical: HudScrollBar {}
                     Keys.onReturnPressed: (event) => { event.accepted = true; mediaPage.openCurrentTile() }
                     Keys.onSpacePressed: (event) => { event.accepted = true; mediaPage.openCurrentTile() }
                     highlight: Rectangle {

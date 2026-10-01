@@ -460,7 +460,7 @@ Item {
                     clip: true
                     spacing: 0
                     boundsBehavior: Flickable.StopAtBounds
-                    ScrollBar.vertical: HiddenBar {}
+                    ScrollBar.vertical: HudScrollBar {}
                     ScrollBar.horizontal: HiddenBar {}
                     model: historyPage.visibleHistory
                     delegate: Rectangle {

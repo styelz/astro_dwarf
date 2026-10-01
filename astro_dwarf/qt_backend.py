@@ -79,6 +79,8 @@ from .domain import (
     device_mosaic_from_scales,
     device_supports_wide,
     camera_settings_from_capture,
+    coerce_flag,
+    workflow_from_capture,
     device_mosaic_allowed,
     mosaic_stack_camera,
     sky_map_camera,
@@ -2376,7 +2378,7 @@ class AppBackend(QObject):
             worker.availabilityChanged.connect(on_ready)
         return worker
 
-    def _release_worker(self, worker: TelescopeProcess | None) -> None:
+    def _release_worker(self, worker: TelescopeProcess | None, *, wait: bool = True) -> None:
         if worker is None:
             return
         for signal in (
@@ -2385,14 +2387,18 @@ class AppBackend(QObject):
             worker.progressReceived,
             worker.mosaicProgressReceived,
             worker.statusReceived,
+            worker.darkPromptReceived,
             worker.availabilityChanged,
         ):
             try:
                 signal.disconnect()
             except (RuntimeError, TypeError):
                 pass
-        worker.shutdown()
-        worker.deleteLater()
+        if not wait and worker.running:
+            worker.process.finished.connect(lambda *_args, item=worker: item.deleteLater())
+        worker.shutdown(wait=wait)
+        if wait or not worker.running:
+            worker.deleteLater()
 
     def _worker_status_changed(self) -> None:
         selected_offline = False
@@ -9175,38 +9181,90 @@ class AppBackend(QObject):
         self.add_log("warning", f"Stopping session · {name} ({reason})", device_id)
         return True
 
+    def _abandon_worker(self, device_id: str) -> None:
+        """End the worker the way closing the app does.
+
+        The process is killed, so the socket dies with it. No stop commands,
+        host unlock, or websocket task teardown.
+        """
+        worker = self._workers.pop(device_id, None)
+        if worker is None:
+            return
+        worker._reject_link = True
+        worker._stopping = True
+        worker.connected = False
+        worker.busy = False
+        worker.configured = False
+        worker._callbacks.clear()
+        worker._queued_commands.clear()
+        self._release_worker(worker, wait=False)
+
+    def _park_sessions_for_link_drop(self, device_id: str) -> None:
+        """Remember a live run the way an app restart does, without stopping it."""
+        self._active_sessions.pop(device_id, None)
+        parked = self.store.recover_running(device_id)
+        for session in parked:
+            self._recovered_sessions[session.id] = device_id
+            self._command_panel_sessions.discard(session.id)
+            self._stop_requested.discard(session.id)
+            self._session_timing.pop(session.id, None)
+            self._session_capture_base.pop(session.id, None)
+            self._session_capture_peak.pop(session.id, None)
+        live = self._live_mosaic.get(device_id)
+        if live and live.get("phase"):
+            live["worker_running"] = False
+            live["stopping"] = False
+            members: list[Any] = []
+            for member in live.get("members") or []:
+                if isinstance(member, Session):
+                    stored = self.store.sessions.get(member.id)
+                    members.append(stored or member)
+                else:
+                    members.append(member)
+            live["members"] = members
+            current = live.get("current")
+            if isinstance(current, Session):
+                stored = self.store.sessions.get(current.id)
+                if stored is not None:
+                    live["current"] = stored
+            self._persist_live_mosaic(device_id)
+            self.mosaicPreviewChanged.emit()
+        self._resume_attempted.discard(device_id)
+        self._resume_mosaic_attempted.discard(device_id)
+        if parked:
+            self._emit_sessions_changed()
+
     @Slot(str)
     def disconnectDevice(self, device_id: str) -> None:
         if device_id in self._connecting_ids:
             self.cancelConnect(device_id)
             return
+        device = next((item for item in self._devices if item.id == device_id), None)
         worker = self._workers.get(device_id)
-        if not worker or device_id in self._disconnecting_ids:
+        if not device or not worker or not worker.connected or device_id in self._disconnecting_ids:
             return
         self._disconnecting_ids.add(device_id)
+        self._flush_mosaic_pane_cache(device_id)
+        self._park_sessions_for_link_drop(device_id)
         if device_id == self._selected_device_id:
             self.stopPreview()
-        if self._abort_active_session(device_id, "Disconnect"):
-            # Stop what the telescope is doing before dropping the link. Both
-            # commands jump the worker queue ahead of the interrupted session.
-            worker.send("stop_all")
+        self._abandon_worker(device_id)
+        self._disconnecting_ids.discard(device_id)
+        self._set_activity(device_id, "")
+        self._pending_actions.pop(device_id, None)
+        self._pending_details.pop(device_id, None)
+        self._device_telemetry.pop(device_id, None)
+        self._telemetry_updated.pop(device_id, None)
+        self._hold_session_capture.discard(device_id)
+        self._pending_session_finish.pop(device_id, None)
+        self._device_lights.pop(device_id, None)
+        self._device_indicators.pop(device_id, None)
+        self._live_pointing.pop(device_id, None)
+        self.add_log("info", "Disconnected", device_id)
+        self._toast("Telescope disconnected", "info")
+        self._disarm_scheduler_if_offline()
+        self._create_worker(device)
         self._notify_devices()
-
-        def done(ok: bool, result: Any) -> None:
-            self._disconnecting_ids.discard(device_id)
-            self._set_activity(device_id, "")
-            self._device_telemetry.pop(device_id, None)
-            self._telemetry_updated.pop(device_id, None)
-            self._hold_session_capture.discard(device_id)
-            self._pending_session_finish.pop(device_id, None)
-            self._device_lights.pop(device_id, None)
-            self._device_indicators.pop(device_id, None)
-            self.add_log("info" if ok else "error", "Disconnected" if ok else str(result), device_id)
-            self._toast("Telescope disconnected" if ok else "Disconnect failed", "info" if ok else "error", "" if ok else str(result))
-            self._disarm_scheduler_if_offline()
-            self._notify_devices()
-
-        worker.disconnect_device(done)
 
     def _command_stack_target(self, device_id: str) -> Target:
         center = self._live_mosaic_center()
@@ -9977,6 +10035,16 @@ class AppBackend(QObject):
         camera = device.camera.value if device and hasattr(device.camera, "value") else str(device.camera if device else "")
         if operation in {"autofocus", "infinity"} and camera == Camera.WIDE.value:
             self._toast("Focus is only available on the tele camera", "warning")
+            return
+        from .device_worker import capture_prime_blocks_action
+
+        prime_block = capture_prime_blocks_action(
+            operation,
+            self._device_telemetry.get(device_id),
+        )
+        if prime_block:
+            self.add_log("warning", prime_block, device_id)
+            self._toast(prime_block, "warning")
             return
         shooting_mode = self._device_telemetry.get(device_id, {}).get("shooting_mode")
         required_mode = command_required_shooting_mode(operation)
@@ -12373,21 +12441,20 @@ class AppBackend(QObject):
         item = next((entry for entry in self._media_items if entry.get("id") == chosen), None)
         remote = str((item or {}).get("file_path") or chosen)
         if item and item.get("is_dir"):
-            preview = str(item.get("thumbnail_path") or "")
             if album_is_protected_folder(remote, str(item.get("file_name") or item.get("album_name") or "")):
                 self._media_download_failed += 1
                 if self._media_download_batch <= 1:
                     self._toast("Open the folder and download a file from it", "warning")
                 self._continue_media_download(device_id)
                 return
-            if album_is_media_file(preview):
-                remote = preview
-            else:
-                self._media_download_failed += 1
-                if self._media_download_batch <= 1:
-                    self._toast("Open the folder and download a file from it", "warning")
-                self._continue_media_download(device_id)
-                return
+            self._download_media_folder(
+                device_id,
+                chosen,
+                remote,
+                str(item.get("thumbnail_path") or ""),
+                str(item.get("file_name") or ""),
+            )
+            return
         if self._media_source == "stills" and not self._is_device_media_path(remote):
             self.downloadAlbumPhoto(device_id, str((item or {}).get("file_name") or chosen))
             return
@@ -12434,6 +12501,83 @@ class AppBackend(QObject):
             self._continue_media_download(device_id)
 
         worker.send("astro_session_download", {"args": [remote, dest]}, done)
+
+    def _download_media_folder(
+        self,
+        device_id: str,
+        chosen: str,
+        remote: str,
+        preview: str,
+        label: str,
+    ) -> None:
+        worker = self._workers.get(device_id)
+        if not worker or not remote:
+            self._media_download_failed += 1
+            if self._media_download_batch <= 1:
+                self._toast("Nothing to download", "warning")
+            self._continue_media_download(device_id)
+            return
+        dest = str(self._album_dir())
+        request_id = self._media_request_id
+        source = self._media_source
+        self._set_media_busy("download")
+
+        def done(ok: bool, result: Any) -> None:
+            if not self._media_request_current(request_id, device_id, source):
+                return
+            saved: list[str] = []
+            display = ""
+            failed: list[Any] = []
+            if ok and isinstance(result, dict):
+                saved = [str(path) for path in (result.get("paths") or []) if path]
+                if not saved and result.get("path"):
+                    saved = [str(result["path"])]
+                display = str(result.get("path") or "")
+                failed = result.get("failed") if isinstance(result.get("failed"), list) else []
+            if saved:
+                self._album_path = display or saved[-1]
+                show_local = bool(display) and album_is_stack_display_image(display)
+                local_url = self._media_file_url(display) if show_local else ""
+                local_files = self._local_album_paths()
+                updated = []
+                for entry in self._media_items:
+                    if entry.get("id") == chosen or entry.get("file_path") == remote:
+                        entry = dict(entry)
+                        entry["downloaded"] = True
+                        if display:
+                            entry["local_path"] = display
+                        if show_local:
+                            entry["image_url"] = local_url
+                            if entry.get("kind") != "video":
+                                entry["thumbnail_url"] = local_url
+                    elif entry.get("file_name") in local_files:
+                        local = local_files[str(entry.get("file_name"))]
+                        entry = dict(entry)
+                        entry["local_path"] = str(local)
+                        entry["downloaded"] = True
+                    updated.append(entry)
+                self._media_items = updated
+                self._select_media_id(chosen)
+                count = len(saved)
+                folder_name = str(label or Path(remote).name)
+                if failed:
+                    self._media_download_ok += 1
+                    if self._media_download_batch <= 1:
+                        self._toast(
+                            f"Downloaded {count} file{'s' if count != 1 else ''}, {len(failed)} failed",
+                            "warning",
+                            folder_name,
+                        )
+                else:
+                    text = "Downloaded" if count == 1 else f"Downloaded {count} files"
+                    detail = Path(self._album_path).name if count == 1 else folder_name
+                    self._note_media_download(True, text, detail)
+                self._emit_media(items=True)
+            else:
+                self._note_media_download(False, "", str(result))
+            self._continue_media_download(device_id)
+
+        worker.send("album_folder_download", {"args": [remote, dest, preview]}, done)
 
     @Slot(str, str)
     def downloadAlbumPhoto(self, device_id: str, name: str = "") -> None:
@@ -12827,6 +12971,27 @@ class AppBackend(QObject):
         camera = item.camera if item is not None else Camera.TELE
         return camera_settings_from_capture(self._capture_defaults_for(item), camera=camera)
 
+    def _templates_with_capture_defaults(
+        self,
+        templates: list[SessionTemplate],
+        *,
+        tele_only: bool = False,
+    ) -> list[SessionTemplate]:
+        """Fill camera and workflow on templates created for this telescope.
+
+        A multi-pane import calibrates and polar-aligns on the first pane.
+        """
+        camera = self._camera_settings_for()
+        if tele_only:
+            camera = replace(camera, camera=Camera.TELE)
+        workflow = workflow_from_capture(self._capture_defaults_for())
+        stagger = len(templates) > 1
+        prepared: list[SessionTemplate] = []
+        for index, template in enumerate(templates):
+            pane = mosaic_pane_workflow(workflow, index) if stagger else workflow
+            prepared.append(replace(template, camera=camera, workflow=pane))
+        return prepared
+
     def _fields_from_payload(
         self,
         values: dict[str, Any],
@@ -12852,11 +13017,11 @@ class AppBackend(QObject):
                 ir_filter=values.get("ir_filter", "VIS"),
             ),
             Workflow(
-                calibrate=bool(values.get("calibrate", True)),
-                autofocus=bool(values.get("autofocus", True)),
-                infinite_focus=bool(values.get("infinite_focus", False)),
-                polar_align=bool(values.get("polar_align", False)),
-                goto=bool(values.get("goto", True)),
+                calibrate=coerce_flag(values.get("calibrate", capture.calibrate), capture.calibrate),
+                autofocus=coerce_flag(values.get("autofocus", capture.autofocus), capture.autofocus),
+                infinite_focus=coerce_flag(values.get("infinite_focus", capture.infinite_focus), capture.infinite_focus),
+                polar_align=coerce_flag(values.get("polar_align", capture.polar_align), capture.polar_align),
+                goto=coerce_flag(values.get("goto", capture.goto), capture.goto),
                 wait_before_seconds=float(values.get("wait_before", 0)),
                 wait_after_seconds=float(values.get("wait_after", 10)),
             ),
@@ -14342,12 +14507,10 @@ class AppBackend(QObject):
             self._toast(f"{labels.get(operation, operation.title())}: {value}", "error")
             return
         if operation == "telescopius":
-            camera = self._camera_settings_for()
             saved_ids: list[str] = []
-            for template in value:
-                saved = replace(template, camera=camera)
-                self.store.templates.save(saved)
-                saved_ids.append(saved.id)
+            for template in self._templates_with_capture_defaults(list(value)):
+                self.store.templates.save(template)
+                saved_ids.append(template.id)
             self.templatesChanged.emit()
             count = len(saved_ids)
             self._toast_templates(
@@ -14366,12 +14529,13 @@ class AppBackend(QObject):
             if not isinstance(target, Target):
                 self._toast("Stellarium: Select a target in the sky map", "error")
                 return
-            saved = SessionTemplate(
-                name=target.name,
-                target=target,
-                camera=self._camera_settings_for(),
-                notes=notes,
-            )
+            saved = self._templates_with_capture_defaults([
+                SessionTemplate(
+                    name=target.name,
+                    target=target,
+                    notes=notes,
+                )
+            ])[0]
             self.store.templates.save(saved)
             self.templatesChanged.emit()
             if source == "desktop":
@@ -14393,14 +14557,13 @@ class AppBackend(QObject):
             templates = payload.get("templates") or []
             if payload.get("fetched") and payload.get("target") is not None:
                 self._set_sky_target(payload["target"])
-            camera = self._camera_settings_for()
-            if operation == "deviceMosaic":
-                camera = replace(camera, camera=Camera.TELE)
             saved_ids: list[str] = []
-            for template in templates:
-                saved = replace(template, camera=camera)
-                self.store.templates.save(saved)
-                saved_ids.append(saved.id)
+            for template in self._templates_with_capture_defaults(
+                list(templates),
+                tele_only=operation == "deviceMosaic",
+            ):
+                self.store.templates.save(template)
+                saved_ids.append(template.id)
             self.templatesChanged.emit()
             count = len(saved_ids)
             if operation == "deviceMosaic":

@@ -30,6 +30,9 @@ Item {
     readonly property bool dropTarget: dropMode === "swap"
     readonly property bool lit: hot || panelHover.hovered || panel.dropTarget || panel.dropMode === "before" || panel.dropMode === "after"
     readonly property bool dragging: PanelSwap.source === panel
+    // Scrollbars in this frame draw on the right stroke instead of inside the body.
+    readonly property bool frameBorder: true
+    readonly property real frameEdge: frame.o
     HoverHandler { id: panelHover }
 
     function mapPoint(item, x, y) {

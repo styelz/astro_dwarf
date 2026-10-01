@@ -66,7 +66,12 @@ Item {
             capture_defaults: {
                 exposure_seconds: Number(exposureDefaultField.text),
                 gain: Number(gainDefaultField.text),
-                frame_count: Number(framesDefaultField.text)
+                frame_count: Number(framesDefaultField.text),
+                calibrate: calibrateDefault.checked,
+                autofocus: autofocusDefault.checked,
+                infinite_focus: infinityDefault.checked,
+                polar_align: polarDefault.checked,
+                goto: gotoDefault.checked
             }
         }
     }
@@ -192,6 +197,11 @@ Item {
         exposureDefaultField.text = String(capture.exposure_seconds)
         gainDefaultField.text = String(capture.gain)
         framesDefaultField.text = String(capture.frame_count)
+        calibrateDefault.checked = capture.calibrate
+        autofocusDefault.checked = capture.autofocus
+        infinityDefault.checked = capture.infinite_focus
+        polarDefault.checked = capture.polar_align
+        gotoDefault.checked = capture.goto
         loadedSnapshot = JSON.stringify(currentPayload())
     }
     Component.onCompleted: load()
@@ -264,6 +274,22 @@ Item {
                                           + (Number(infinityField.text) || 0) + (Number(polarField.text) || 0)
     readonly property real defaultIntegration: (Number(exposureDefaultField.text) || 0) * (Number(framesDefaultField.text) || 0)
     readonly property real defaultWallClock: settingsPage.defaultIntegration + (Number(readoutField.text) || 0) * (Number(framesDefaultField.text) || 0)
+    function defaultWorkflowSentence() {
+        const steps = []
+        if (calibrateDefault.checked)
+            steps.push("calibrate")
+        if (autofocusDefault.checked)
+            steps.push("auto focus")
+        if (infinityDefault.checked)
+            steps.push("infinity focus")
+        if (polarDefault.checked)
+            steps.push("polar / EQ")
+        if (gotoDefault.checked)
+            steps.push("GOTO")
+        if (!steps.length)
+            return "A new session or template starts imaging with no setup steps."
+        return "A new session or template starts with " + steps.join(", ") + "."
+    }
 
     ColumnLayout {
         anchors.left: parent.left
@@ -794,12 +820,56 @@ Item {
                             }
                             FieldHint { text: "Frames stacked per session. Stock " + Util.stockFrameCount + ". Total integration is exposure × frames." }
                         }
+                        SettingGroup {
+                            title: "WORKFLOW"
+                            FieldLabel { text: "CALIBRATE" }
+                            HudCheck {
+                                id: calibrateDefault
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                text: "Calibrate"
+                                accessibleName: "Calibrate on a new session"
+                            }
+                            FieldHint { text: "Plate-solve before imaging. Stock on. A mosaic runs this on the first pane." }
+                            FieldLabel { text: "AUTO FOCUS" }
+                            HudCheck {
+                                id: autofocusDefault
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                text: "Auto focus"
+                                accessibleName: "Auto focus on a new session"
+                            }
+                            FieldHint { text: "Astronomical autofocus on the telephoto lens. Stock on. Wide has no focus motor." }
+                            FieldLabel { text: "INFINITY" }
+                            HudCheck {
+                                id: infinityDefault
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                text: "Infinity focus"
+                                accessibleName: "Infinity focus on a new session"
+                            }
+                            FieldHint { text: "Move the telephoto to infinity. Stock off. Runs after auto focus when both are ticked." }
+                            FieldLabel { text: "POLAR / EQ" }
+                            HudCheck {
+                                id: polarDefault
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                text: "Polar / EQ"
+                                accessibleName: "Polar alignment on a new session"
+                            }
+                            FieldHint { text: "Polar alignment before imaging. Stock off. A mosaic runs this on the first pane." }
+                            FieldLabel { text: "GOTO" }
+                            HudCheck {
+                                id: gotoDefault
+                                Layout.preferredWidth: settingsPage.controlWidth
+                                text: "GOTO"
+                                accessibleName: "GOTO the target on a new session"
+                            }
+                            FieldHint { text: "Slew to the target before the first frame. Stock on." }
+                        }
                         Text {
                             Layout.fillWidth: true
                             text: "A default session integrates " + framesDefaultField.text + " × " + exposureDefaultField.text + " s = "
                                   + settingsPage.formatSeconds(settingsPage.defaultIntegration)
                                   + "  ·  about " + settingsPage.formatSeconds(settingsPage.defaultWallClock)
-                                  + " of imaging with " + readoutField.text + " s readout per frame (Timing)."
+                                  + " of imaging with " + readoutField.text + " s readout per frame (Timing). "
+                                  + settingsPage.defaultWorkflowSentence()
                             color: Theme.textPrimary
                             font.family: Theme.fontMono
                             font.pixelSize: Theme.fontPx(11)

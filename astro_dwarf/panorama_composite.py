@@ -2,8 +2,12 @@
 
 The session folder holds the full-size tiles, named ``row_col.jpg``. Folders
 ``1`` through ``5`` repeat that grid at smaller sizes. The phone's quick view
-uses a small folder. A sharp view uses the full-size tiles, scaled to fit a
-desktop image.
+uses a small folder and the single overlap written into ``pano_preview.html``.
+A sharp view uses the full-size tiles, scaled to fit a desktop image.
+
+That overlap is one fraction for both axes. On a nearby wall the nod does not
+land on it, and each frame keeps its own exposure. The stitch measures each
+join and evens the exposure. A join with no texture keeps the firmware step.
 """
 
 from __future__ import annotations
@@ -35,6 +39,8 @@ except ImportError:  # pragma: no cover
 DEFAULT_OVERLAP = 0.20
 PREVIEW_MAX_EDGE = 2048
 SHARP_MAX_EDGE = 4096
+_ALIGN_SLACK = 0.10
+_ALIGN_SCORE = 0.50
 PREVIEW_LEVELS = (5, 4, 3, 2, 1, 0)
 SHARP_LEVELS = (0, 1, 2, 3, 4, 5)
 _LEVEL_DIRS = {"1", "2", "3", "4", "5"}
@@ -244,8 +250,13 @@ def composite_grid(
     *,
     overlap: float = DEFAULT_OVERLAP,
     max_edge: int = 0,
+    align: bool = False,
 ) -> Any:
-    """Feather-blend a row/column grid. Missing cells stay black."""
+    """Feather-blend a row/column grid. Missing cells stay black.
+
+    ``align`` measures each join and matches exposure. Joins that are flat
+    stay on the firmware overlap.
+    """
     if not panorama_available():
         raise RuntimeError("numpy and opencv are required to stitch a panorama")
     usable = {coord: image for coord, image in tiles.items() if _image_ok(image)}
@@ -265,27 +276,57 @@ def composite_grid(
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
         prepared[coord] = frame
     _canvas_w, _canvas_h, step_x, step_y = grid_steps(tile_w, tile_h, cols, rows, overlap)
-    canvas_w = tile_w + (cols - 1) * step_x
-    canvas_h = tile_h + (rows - 1) * step_y
-    overlap_x = max(0, tile_w - step_x)
-    overlap_y = max(0, tile_h - step_y)
-    acc = np.zeros((canvas_h, canvas_w, 3), np.float32)
-    weight = np.zeros((canvas_h, canvas_w), np.float32)
-    for (row, col), frame in prepared.items():
-        mask = _feather_mask(
-            tile_h,
-            tile_w,
-            overlap_x,
-            overlap_y,
-            fade_left=col > 0,
-            fade_right=col < cols - 1,
-            fade_top=row > 0,
-            fade_bottom=row < rows - 1,
-        )
-        x = col * step_x
-        y = row * step_y
-        acc[y:y + tile_h, x:x + tile_w] += frame.astype(np.float32) * mask[:, :, None]
-        weight[y:y + tile_h, x:x + tile_w] += mask
+    placement = _aligned_placement(prepared, step_x, step_y) if align else None
+    if placement is None:
+        canvas_w = tile_w + (cols - 1) * step_x
+        canvas_h = tile_h + (rows - 1) * step_y
+        overlap_x = max(0, tile_w - step_x)
+        overlap_y = max(0, tile_h - step_y)
+        acc = np.zeros((canvas_h, canvas_w, 3), np.float32)
+        weight = np.zeros((canvas_h, canvas_w), np.float32)
+        for (row, col), frame in prepared.items():
+            mask = _feather_mask(
+                tile_h,
+                tile_w,
+                overlap_x,
+                overlap_y,
+                fade_left=col > 0,
+                fade_right=col < cols - 1,
+                fade_top=row > 0,
+                fade_bottom=row < rows - 1,
+            )
+            x = col * step_x
+            y = row * step_y
+            acc[y:y + tile_h, x:x + tile_w] += frame.astype(np.float32) * mask[:, :, None]
+            weight[y:y + tile_h, x:x + tile_w] += mask
+    else:
+        positions, gains = placement
+        origin_x = min(point[0] for point in positions.values())
+        origin_y = min(point[1] for point in positions.values())
+        positions = {coord: (point[0] - origin_x, point[1] - origin_y) for coord, point in positions.items()}
+        canvas_w = max(point[0] for point in positions.values()) + tile_w
+        canvas_h = max(point[1] for point in positions.values()) + tile_h
+        acc = np.zeros((canvas_h, canvas_w, 3), np.float32)
+        weight = np.zeros((canvas_h, canvas_w), np.float32)
+        for (row, col), frame in prepared.items():
+            x, y = positions[(row, col)]
+            mask = _feather_mask(
+                tile_h,
+                tile_w,
+                0,
+                0,
+                fade_left=(row, col - 1) in positions,
+                fade_right=(row, col + 1) in positions,
+                fade_top=(row - 1, col) in positions,
+                fade_bottom=(row + 1, col) in positions,
+                left=_pair_overlap(positions, (row, col), (row, col - 1), 0, tile_w),
+                right=_pair_overlap(positions, (row, col), (row, col + 1), 0, tile_w),
+                top=_pair_overlap(positions, (row, col), (row - 1, col), 1, tile_h),
+                bottom=_pair_overlap(positions, (row, col), (row + 1, col), 1, tile_h),
+            )
+            painted_frame = frame.astype(np.float32) * gains[(row, col)][None, None, :]
+            acc[y:y + tile_h, x:x + tile_w] += painted_frame * mask[:, :, None]
+            weight[y:y + tile_h, x:x + tile_w] += mask
     painted = weight > 0
     acc[painted] /= weight[painted, None]
     return np.clip(acc, 0, 255).astype(np.uint8)
@@ -370,7 +411,7 @@ def build_panorama(
         if int(frame.shape[1]) != fitted_w or int(frame.shape[0]) != fitted_h:
             frame = cv2.resize(frame, (fitted_w, fitted_h), interpolation=cv2.INTER_AREA)
         tiles[coord] = frame
-    canvas = composite_grid(tiles, overlap=overlap, max_edge=0)
+    canvas = composite_grid(tiles, overlap=overlap, max_edge=0, align=True)
     ok, encoded = cv2.imencode(".jpg", cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR), [int(cv2.IMWRITE_JPEG_QUALITY), 90])
     if not ok:
         raise RuntimeError("Could not encode the panorama")
@@ -486,17 +527,232 @@ def _feather_mask(
     fade_right: bool,
     fade_top: bool,
     fade_bottom: bool,
+    left: int | None = None,
+    right: int | None = None,
+    top: int | None = None,
+    bottom: int | None = None,
 ) -> Any:
     mask = np.ones((height, width), np.float32)
-    if fade_left and overlap_x > 1:
-        mask[:, :overlap_x] *= np.linspace(0.0, 1.0, overlap_x, dtype=np.float32)[None, :]
-    if fade_right and overlap_x > 1:
-        mask[:, width - overlap_x:] *= np.linspace(1.0, 0.0, overlap_x, dtype=np.float32)[None, :]
-    if fade_top and overlap_y > 1:
-        mask[:overlap_y, :] *= np.linspace(0.0, 1.0, overlap_y, dtype=np.float32)[:, None]
-    if fade_bottom and overlap_y > 1:
-        mask[height - overlap_y:, :] *= np.linspace(1.0, 0.0, overlap_y, dtype=np.float32)[:, None]
+    left_n = overlap_x if left is None else left
+    right_n = overlap_x if right is None else right
+    top_n = overlap_y if top is None else top
+    bottom_n = overlap_y if bottom is None else bottom
+    left_n = min(max(0, int(left_n)), max(0, width // 3))
+    right_n = min(max(0, int(right_n)), max(0, width // 3))
+    top_n = min(max(0, int(top_n)), max(0, height // 3))
+    bottom_n = min(max(0, int(bottom_n)), max(0, height // 3))
+    if fade_left and left_n > 1:
+        mask[:, :left_n] *= np.linspace(0.0, 1.0, left_n, dtype=np.float32)[None, :]
+    if fade_right and right_n > 1:
+        mask[:, width - right_n:] *= np.linspace(1.0, 0.0, right_n, dtype=np.float32)[None, :]
+    if fade_top and top_n > 1:
+        mask[:top_n, :] *= np.linspace(0.0, 1.0, top_n, dtype=np.float32)[:, None]
+    if fade_bottom and bottom_n > 1:
+        mask[height - bottom_n:, :] *= np.linspace(1.0, 0.0, bottom_n, dtype=np.float32)[:, None]
     return mask
+
+
+def _pair_overlap(
+    positions: dict[tuple[int, int], tuple[int, int]],
+    coord: tuple[int, int],
+    neighbor: tuple[int, int],
+    axis: int,
+    size: int,
+) -> int:
+    if coord not in positions or neighbor not in positions:
+        return 0
+    start = positions[coord][axis]
+    other = positions[neighbor][axis]
+    return max(0, min(start + size, other + size) - max(start, other))
+
+
+def _aligned_placement(
+    tiles: dict[tuple[int, int], Any],
+    step_x: int,
+    step_y: int,
+) -> tuple[dict[tuple[int, int], tuple[int, int]], dict[tuple[int, int], Any]] | None:
+    """Tile origins and per-channel gains. None keeps the firmware grid."""
+    sample = next(iter(tiles.values()))
+    height, width = int(sample.shape[0]), int(sample.shape[1])
+    if width < 24 or height < 24 or step_x < 4 or step_y < 4:
+        return None
+    measured: dict[tuple[tuple[int, int], tuple[int, int]], tuple[int, int]] = {}
+    for (row, col), frame in tiles.items():
+        right = (row, col + 1)
+        if right in tiles:
+            shift = _measured_shift(frame, tiles[right], 1, step_x)
+            if shift is not None:
+                measured[((row, col), right)] = shift
+        below = (row + 1, col)
+        if below in tiles:
+            shift = _measured_shift(frame, tiles[below], 0, step_y)
+            if shift is not None:
+                measured[((row, col), below)] = shift
+    positions = _solve_positions(set(tiles), measured, step_x, step_y)
+    gains = _solve_gains(tiles, positions)
+    return positions, gains
+
+
+def _measured_shift(src: Any, dst: Any, axis: int, nominal: int) -> tuple[int, int] | None:
+    """Translation of ``dst`` relative to ``src``.
+
+    ``axis`` 1 is the neighbor to the right, 0 the neighbor below. The search
+    stays near the firmware step so a flat wall cannot lock onto a far peak.
+    """
+    gray_src = cv2.cvtColor(src, cv2.COLOR_RGB2GRAY)
+    gray_dst = cv2.cvtColor(dst, cv2.COLOR_RGB2GRAY)
+    along = int(gray_src.shape[1] if axis == 1 else gray_src.shape[0])
+    cross = int(gray_src.shape[0] if axis == 1 else gray_src.shape[1])
+    slack = max(2, int(round(along * _ALIGN_SLACK)))
+    box = max(6, int(round(along * 0.08)))
+    end = along - max(2, int(round(along * 0.02)))
+    start = end - box
+    if start < along // 2:
+        return None
+    margin = max(2, int(round(cross * 0.08)))
+    if axis == 1:
+        template = gray_src[margin:cross - margin, start:end]
+    else:
+        template = gray_src[start:end, margin:cross - margin]
+    if template.size == 0 or float(template.std()) < 1.5:
+        return None
+    expect = start - int(nominal)
+    search_0 = max(0, expect - slack)
+    search_1 = min(along, expect + box + slack)
+    if axis == 1:
+        search = gray_dst[:, search_0:search_1]
+    else:
+        search = gray_dst[search_0:search_1, :]
+    if search.shape[0] <= template.shape[0] or search.shape[1] <= template.shape[1]:
+        return None
+    result = cv2.matchTemplate(search, template, cv2.TM_CCOEFF_NORMED)
+    _score, score, _where, loc = cv2.minMaxLoc(result)
+    if not np.isfinite(score) or float(score) < _ALIGN_SCORE:
+        return None
+    along_loc = int(loc[0] if axis == 1 else loc[1])
+    along_limit = int(result.shape[1] if axis == 1 else result.shape[0])
+    if along_loc <= 1 or along_loc >= along_limit - 2:
+        return None
+    if axis == 1:
+        found = search_0 + int(loc[0])
+        dx = int(start - found)
+        dy = int(margin - int(loc[1]))
+    else:
+        found = search_0 + int(loc[1])
+        dy = int(start - found)
+        dx = int(margin - int(loc[0]))
+    if abs(dx if axis == 0 else dy) > slack:
+        return None
+    return dx, dy
+
+
+def _solve_positions(
+    coords: set[tuple[int, int]],
+    measured: dict[tuple[tuple[int, int], tuple[int, int]], tuple[int, int]],
+    step_x: int,
+    step_y: int,
+) -> dict[tuple[int, int], tuple[int, int]]:
+    """One step per row boundary and per column boundary.
+
+    The head makes one move for a whole row, so the tiles in that row share a
+    step. The median ignores a single join that locked onto the wrong peak.
+    A boundary with no texture keeps the firmware step.
+    """
+    rows = max(row for row, _col in coords) + 1
+    cols = max(col for _row, col in coords) + 1
+    x_groups: dict[int, list[int]] = {}
+    y_groups: dict[int, list[int]] = {}
+    for (src, dst), (dx, dy) in measured.items():
+        if dst == (src[0], src[1] + 1):
+            x_groups.setdefault(src[1], []).append(dx)
+        elif dst == (src[0] + 1, src[1]):
+            y_groups.setdefault(src[0], []).append(dy)
+    x_steps = [_boundary_step(x_groups.get(col), step_x) for col in range(cols - 1)]
+    y_steps = [_boundary_step(y_groups.get(row), step_y) for row in range(rows - 1)]
+    xs = [0]
+    ys = [0]
+    for step in x_steps:
+        xs.append(xs[-1] + step)
+    for step in y_steps:
+        ys.append(ys[-1] + step)
+    return {(row, col): (xs[col], ys[row]) for row, col in coords}
+
+
+def _boundary_step(values: list[int] | None, nominal: int) -> int:
+    if not values:
+        return int(nominal)
+    return int(round(float(np.median(values))))
+
+
+def _solve_gains(
+    tiles: dict[tuple[int, int], Any],
+    positions: dict[tuple[int, int], tuple[int, int]],
+) -> dict[tuple[int, int], Any]:
+    ordered = sorted(tiles)
+    index = {coord: i for i, coord in enumerate(ordered)}
+    count = len(ordered)
+    equations: list[tuple[int, int, Any]] = []
+    for row, col in ordered:
+        for neighbor in ((row, col + 1), (row + 1, col)):
+            if neighbor not in tiles:
+                continue
+            left, right = _overlap_patches(tiles[(row, col)], tiles[neighbor], positions[(row, col)], positions[neighbor])
+            if left is None or _gray_corr(left, right) < 0.35:
+                continue
+            mean_left = left.reshape(-1, left.shape[-1]).mean(axis=0)
+            mean_right = right.reshape(-1, right.shape[-1]).mean(axis=0)
+            if np.any(mean_left < 3) or np.any(mean_right < 3):
+                continue
+            ratio = mean_left / np.maximum(mean_right, 1e-3)
+            if np.any(ratio < 0.25) or np.any(ratio > 4):
+                continue
+            equations.append((index[(row, col)], index[neighbor], np.log(ratio)))
+    gains = {coord: np.ones(3, np.float32) for coord in ordered}
+    if not equations:
+        return gains
+    for channel in range(3):
+        matrix = []
+        target = []
+        for src, dst, log_ratio in equations:
+            row = np.zeros(count, np.float64)
+            row[dst] = 1.0
+            row[src] = -1.0
+            matrix.append(row)
+            target.append(float(log_ratio[channel]))
+        solved, *_rest = np.linalg.lstsq(np.stack(matrix), np.array(target, np.float64), rcond=None)
+        solved = solved - solved[index[ordered[0]]]
+        for coord, slot in index.items():
+            gains[coord][channel] = float(np.exp(np.clip(solved[slot], np.log(0.4), np.log(2.5))))
+    return gains
+
+
+def _overlap_patches(src: Any, dst: Any, src_at: tuple[int, int], dst_at: tuple[int, int]) -> tuple[Any, Any]:
+    src_x, src_y = src_at
+    dst_x, dst_y = dst_at
+    src_h, src_w = int(src.shape[0]), int(src.shape[1])
+    dst_h, dst_w = int(dst.shape[0]), int(dst.shape[1])
+    x0 = max(src_x, dst_x)
+    y0 = max(src_y, dst_y)
+    x1 = min(src_x + src_w, dst_x + dst_w)
+    y1 = min(src_y + src_h, dst_y + dst_h)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return None, None
+    left = src[y0 - src_y:y1 - src_y, x0 - src_x:x1 - src_x]
+    right = dst[y0 - dst_y:y1 - dst_y, x0 - dst_x:x1 - dst_x]
+    if left.shape != right.shape or left.size == 0:
+        return None, None
+    return left, right
+
+
+def _gray_corr(src: Any, dst: Any) -> float:
+    left = src.astype(np.float32).mean(axis=2)
+    right = dst.astype(np.float32).mean(axis=2)
+    left = left - float(left.mean())
+    right = right - float(right.mean())
+    denom = float(np.sqrt((left * left).sum() * (right * right).sum()))
+    if denom < 1e-3:
+        return 0.0
+    return float((left * right).sum() / denom)
 
 
 def _progress_count(

@@ -143,7 +143,7 @@ Dialog {
             contentWidth: width
             contentHeight: helpColumn.implicitHeight
             interactive: contentHeight > height + Theme.px(1)
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            ScrollBar.vertical: HudScrollBar {}
 
             ColumnLayout {
                 id: helpColumn

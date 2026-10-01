@@ -430,7 +430,7 @@ Item {
                             clip: true
                             spacing: Theme.px(6)
                             boundsBehavior: Flickable.StopAtBounds
-                            ScrollBar.vertical: HiddenBar {}
+                            ScrollBar.vertical: HudScrollBar { pinToWindow: true }
                             ScrollBar.horizontal: HiddenBar {}
                             model: scheduledPage.visibleSessions
                             delegate: Column {
@@ -927,19 +927,31 @@ Item {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    cellWidth: 360
-                    cellHeight: 228
+                    // Stretch the columns already on screen so a short row still meets the right edge.
+                    cellWidth: {
+                        const minCell = Theme.px(360)
+                        const span = Math.max(0, width)
+                        if (span < 1)
+                            return minCell
+                        const columns = Math.max(1, Math.floor(span / minCell))
+                        return Math.floor(span / columns)
+                    }
+                    cellHeight: Theme.px(240)
                     boundsBehavior: Flickable.StopAtBounds
-                    ScrollBar.vertical: HiddenBar {}
+                    ScrollBar.vertical: HudScrollBar { pinToWindow: true }
                     ScrollBar.horizontal: HiddenBar {}
                     model: templatesPage.filteredTemplates
                     delegate: HudPanel {
                         id: templateCard
                         objectName: "template-" + modelData.id
                         required property var modelData
-                        width: Theme.px(344)
-                        height: Theme.px(212)
+                        width: Math.max(0, templatesView.cellWidth - Theme.s2)
+                        height: Math.max(0, templatesView.cellHeight - Theme.s2)
                         title: modelData.name
+                        headerExtra: Item {
+                            implicitWidth: Theme.px(12)
+                            implicitHeight: Theme.px(14)
+                        }
                         readonly property bool grouped: Util.isGrouped(modelData)
                         readonly property bool flashing: Util.idSetHas(templatesPage.flashIds, modelData.id)
                         readonly property color groupTone: Util.sessionTone(modelData)
@@ -1076,6 +1088,7 @@ Item {
                             font.bold: true
                             elide: Text.ElideRight
                             Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                         }
                         Text {
                             visible: !!(modelData.coords_text || modelData.duration_text)
@@ -1090,48 +1103,105 @@ Item {
                             font.pixelSize: Theme.fontMd
                             font.family: Theme.fontMono
                             elide: Text.ElideRight
+                            maximumLineCount: 1
                             Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                         }
-                        GridLayout {
+                        RowLayout {
                             Layout.fillWidth: true
-                            columns: 2
-                            columnSpacing: Theme.px(14)
-                            rowSpacing: Theme.px(2)
-                            Text { text: "CAPTURE"; color: Theme.muted; font.pixelSize: Theme.fontPx(9); font.letterSpacing: 1.1; font.bold: true }
-                            Text { text: "CAMERA"; color: Theme.muted; font.pixelSize: Theme.fontPx(9); font.letterSpacing: 1.1; font.bold: true }
-                            Text {
-                                text: (modelData.capture_text || modelData.summary || "") + (modelData.gain_text ? "  " + modelData.gain_text : "")
-                                color: Theme.textPrimary
-                                font.pixelSize: Theme.fontMd
-                                font.family: Theme.fontMono
-                                elide: Text.ElideRight
+                            Layout.minimumWidth: 0
+                            spacing: Theme.s4
+                            ColumnLayout {
                                 Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                spacing: Theme.px(2)
+                                Text {
+                                    text: "CAPTURE"
+                                    color: Theme.muted
+                                    font.pixelSize: Theme.fontPx(9)
+                                    font.letterSpacing: 1.1
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                }
+                                Text {
+                                    text: (modelData.capture_text || modelData.summary || "") + (modelData.gain_text ? "  " + modelData.gain_text : "")
+                                    color: Theme.textPrimary
+                                    font.pixelSize: Theme.fontMd
+                                    font.family: Theme.fontMono
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                }
+                                Item { Layout.preferredHeight: Theme.s1; Layout.fillWidth: true }
+                                Text {
+                                    text: "MOSAIC"
+                                    color: Theme.muted
+                                    font.pixelSize: Theme.fontPx(9)
+                                    font.letterSpacing: 1.1
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                }
+                                Text {
+                                    text: modelData.mosaic_text || ""
+                                    color: Theme.textPrimary
+                                    font.pixelSize: Theme.fontMd
+                                    font.family: Theme.fontMono
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                }
                             }
-                            Text {
-                                text: modelData.camera_text || ""
-                                color: Theme.textPrimary
-                                font.pixelSize: Theme.fontMd
-                                font.family: Theme.fontMono
-                                elide: Text.ElideRight
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                            }
-                            Text { text: "MOSAIC"; color: Theme.muted; font.pixelSize: Theme.fontPx(9); font.letterSpacing: 1.1; font.bold: true }
-                            Text { text: "WORKFLOW"; color: Theme.muted; font.pixelSize: Theme.fontPx(9); font.letterSpacing: 1.1; font.bold: true }
-                            Text {
-                                text: modelData.mosaic_text || ""
-                                color: Theme.textPrimary
-                                font.pixelSize: Theme.fontMd
-                                font.family: Theme.fontMono
-                                elide: Text.ElideRight
-                                Layout.fillWidth: true
-                            }
-                            Text {
-                                text: modelData.workflow_text || ""
-                                color: Theme.textPrimary
-                                font.pixelSize: Theme.fontMd
-                                font.family: Theme.fontMono
-                                elide: Text.ElideRight
-                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                spacing: Theme.px(2)
+                                Text {
+                                    text: "CAMERA"
+                                    color: Theme.muted
+                                    font.pixelSize: Theme.fontPx(9)
+                                    font.letterSpacing: 1.1
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                }
+                                Text {
+                                    text: modelData.camera_text || ""
+                                    color: Theme.textPrimary
+                                    font.pixelSize: Theme.fontMd
+                                    font.family: Theme.fontMono
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                }
+                                Item { Layout.preferredHeight: Theme.s1; Layout.fillWidth: true }
+                                Text {
+                                    text: "WORKFLOW"
+                                    color: Theme.muted
+                                    font.pixelSize: Theme.fontPx(9)
+                                    font.letterSpacing: 1.1
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                }
+                                Text {
+                                    text: modelData.workflow_text || ""
+                                    color: Theme.textPrimary
+                                    font.pixelSize: Theme.fontMd
+                                    font.family: Theme.fontMono
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                }
                             }
                         }
                         Text {
@@ -1139,12 +1209,17 @@ Item {
                             text: modelData.notes
                             color: Theme.textSecondary
                             font.pixelSize: Theme.fontPx(11)
-                            wrapMode: Text.Wrap
-                            maximumLineCount: 3
+                            wrapMode: Text.WordWrap
+                            maximumLineCount: 2
                             elide: Text.ElideRight
                             Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                         }
-                        Item { Layout.fillWidth: true; Layout.preferredHeight: Theme.px(34) }
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.minimumHeight: Theme.controlHeight
+                            Layout.preferredHeight: Theme.controlHeight
+                        }
                     }
                 }
                 }

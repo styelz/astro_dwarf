@@ -298,6 +298,8 @@ ApplicationWindow {
         }
         if (op === "calibrate" && !!root.scopeTelemetry.tracking_active)
             return false
+        if (Util.capturePrimeBlock(op, root.scopeTelemetry) !== "")
+            return false
         const panoramaBusy = activity === "panorama" || activity === "panorama_frame"
             || String(root.scopeTelemetry.panorama_state || "") === "running"
             || String(root.scopeTelemetry.panorama_framing_state || "") === "running"

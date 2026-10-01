@@ -35,6 +35,7 @@ QtObject {
     property string pending: ""
     property var telemetry: ({})
     readonly property bool locked: Util.commandTransitionLocked(op, pending, telemetry)
+    readonly property string primeBlock: Util.capturePrimeBlock(op, telemetry)
 }
 """
     component = QQmlComponent(engine)
@@ -84,7 +85,53 @@ def test_stop_and_cancel_stay_locked_until_the_state_settles() -> None:
     _assert(_locked(probe, "photo", "", photo_state="stopping"), "photo must stay dark while the shot is stopping")
     _assert(not _locked(probe, "set_gain", "stack"), "camera settings are not command-pad transitions")
 
+    _assert(not _locked(probe, "cancel_prime", "focus_near"), "a focus step must not hide cancel")
+    _assert(not _locked(probe, "cancel_prime", "set_gain"), "an exposure write must not hide cancel")
+    _assert(_locked(probe, "cancel_prime", "photo"), "a photo start must hide cancel")
+    _assert(_locked(probe, "cancel_prime", "astro_mode"), "a mode change must hide cancel")
+    _assert(_locked(probe, "cancel_prime", "shooting_mode"), "a shooting-mode write must hide cancel")
+
+
+def _prime_block(probe, op: str, **telemetry) -> str:
+    probe.setProperty("op", op)
+    probe.setProperty("telemetry", telemetry)
+    return str(probe.property("primeBlock") or "")
+
+
+def test_capture_prime_blocks_other_commands() -> None:
+    _app, _qml_engine, _component, probe = _probe()
+    photo = {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": True}
+    _assert(_prime_block(probe, "track", **photo) == "Cancel the primed PHOTO first", "photo latch blocks track")
+    _assert(_prime_block(probe, "burst_start", **photo) == "Cancel the primed PHOTO first", "photo latch blocks burst")
+    _assert(_prime_block(probe, "photo", **photo) == "", "photo latch keeps its own start")
+    _assert(_prime_block(probe, "wide_photo", **photo) == "", "wide stills are the same photo latch")
+    _assert(_prime_block(probe, "cancel_prime", **photo) == "", "cancel stays available")
+    _assert(_prime_block(probe, "lights_on", **photo) == "", "lights stay available")
+    _assert(_prime_block(probe, "set_gain", **photo) == "", "camera settings stay available")
+    _assert(_prime_block(probe, "focus_near", **photo) == "", "manual focus stays available")
+
+    burst = {"shooting_mode": 1, "shooting_tech": 3, "photo_primed": False}
+    _assert(_prime_block(probe, "photo", **burst) == "Cancel the primed BURST first", "burst latch blocks photo")
+    _assert(_prime_block(probe, "burst_start", **burst) == "", "burst latch keeps its start")
+    _assert(_prime_block(probe, "astro_mode", **burst) == "Cancel the primed BURST first", "a mode change is blocked")
+    _assert(_prime_block(probe, "panorama_shoot", **burst) == "Cancel the primed BURST first", "panorama is blocked")
+
+    record = {"shooting_mode": 1, "shooting_tech": 4}
+    _assert(_prime_block(probe, "calibrate", **record) == "Cancel the primed RECORD first", "record latch blocks calibrate")
+    _assert(_prime_block(probe, "record_start", **record) == "", "record latch keeps its start")
+
+    timelapse = {"shooting_mode": 1, "shooting_tech": 5}
+    _assert(_prime_block(probe, "infinity", **timelapse) == "Cancel the primed TIMELAPSE first", "timelapse latch blocks infinity")
+    _assert(_prime_block(probe, "timelapse_start", **timelapse) == "", "timelapse latch keeps its start")
+
+    _assert(_prime_block(probe, "stack", shooting_mode=2, shooting_tech=0) == "", "DSO is not latched")
+    _assert(
+        _prime_block(probe, "track", shooting_mode=1, shooting_tech=1, photo_primed=False) == "",
+        "photo mode without a latch stays open",
+    )
+
 
 if __name__ == "__main__":
     test_stop_and_cancel_stay_locked_until_the_state_settles()
+    test_capture_prime_blocks_other_commands()
     print("ok")

@@ -181,17 +181,26 @@ class SessionStore:
             key=lambda s: s.scheduled_start,
         )
 
-    def recover_running(self) -> list[Session]:
+    def recover_running(self, device_id: str | None = None) -> list[Session]:
+        """Park a live session the way an app restart does.
+
+        The telescope is left running. The row goes back to planned so a
+        later connect can join it. Pass ``device_id`` to park one telescope.
+        """
+        owner = str(device_id or "").strip()
         recovered: list[Session] = []
         for session in self.sessions.all():
-            if session.status == SessionStatus.RUNNING:
-                recovered.append(
-                    self.transition(
-                        session.id,
-                        SessionStatus.PLANNED,
-                        current_step="Recovered after restart",
-                    )
+            if session.status != SessionStatus.RUNNING:
+                continue
+            if owner and session.device_id != owner:
+                continue
+            recovered.append(
+                self.transition(
+                    session.id,
+                    SessionStatus.PLANNED,
+                    current_step="Recovered after restart",
                 )
+            )
         return recovered
 
     def _live_mosaic_dir(self) -> Path:

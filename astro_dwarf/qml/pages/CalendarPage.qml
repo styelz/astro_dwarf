@@ -1180,7 +1180,7 @@ Item {
                     contentWidth: width
                     contentHeight: nightTimeline.trackHeight
                     boundsBehavior: Flickable.StopAtBounds
-                    ScrollBar.vertical: ScrollBar {}
+                    ScrollBar.vertical: HudScrollBar {}
                     onContentHeightChanged: nightTimeline.applyAnchoredScroll()
                     WheelHandler {
                         acceptedModifiers: Qt.ControlModifier
@@ -1869,7 +1869,7 @@ Item {
                         clip: true
                         spacing: Theme.px(6)
                         boundsBehavior: Flickable.StopAtBounds
-                        ScrollBar.vertical: HiddenBar {}
+                        ScrollBar.vertical: HudScrollBar {}
                         ScrollBar.horizontal: HiddenBar {}
                         model: nightPanel.nightSessions
                         delegate: Rectangle {

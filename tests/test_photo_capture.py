@@ -22,6 +22,7 @@ from astro_dwarf.device_telemetry import (
 )
 from astro_dwarf.device_worker import (
     camera_param_unchanged,
+    capture_prime_blocks_action,
     capture_prime_needs_mode_reset,
     running_photo_capture_stop,
     shooting_state_changes,
@@ -261,6 +262,51 @@ def test_cancel_prime_clears_stills_and_flags_burst_reset() -> None:
     _assert(running_photo_capture_stop({"capture_active": True}, "imaging") == "", "stack is not a capture prime")
 
 
+def test_capture_prime_blocks_competing_starts() -> None:
+    photo = {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": True}
+    _assert(
+        capture_prime_blocks_action("track", photo) == "Cancel the primed PHOTO first",
+        "photo latch blocks track",
+    )
+    _assert(capture_prime_blocks_action("photo", photo) == "", "photo latch keeps its own start")
+    _assert(capture_prime_blocks_action("wide_photo", photo) == "", "wide stills share the photo latch")
+    _assert(capture_prime_blocks_action("cancel_prime", photo) == "", "cancel stays available")
+    _assert(capture_prime_blocks_action("lights_on", photo) == "", "lights stay available")
+    _assert(capture_prime_blocks_action("set_gain", photo) == "", "camera settings stay available")
+    _assert(capture_prime_blocks_action("focus_near", photo) == "", "manual focus stays available")
+
+    burst = {"shooting_mode": 1, "shooting_tech": 3}
+    _assert(
+        capture_prime_blocks_action("photo", burst) == "Cancel the primed BURST first",
+        "burst latch blocks photo",
+    )
+    _assert(capture_prime_blocks_action("burst_start", burst) == "", "burst latch keeps its start")
+    _assert(capture_prime_blocks_action("burst_stop", burst) == "", "a running burst can still stop")
+
+    record = {"shooting_mode": 1, "shooting_tech": 4}
+    _assert(
+        capture_prime_blocks_action("calibrate", record) == "Cancel the primed RECORD first",
+        "record latch blocks calibrate",
+    )
+    _assert(capture_prime_blocks_action("record_start", record) == "", "record latch keeps its start")
+
+    timelapse = {"shooting_mode": 1, "shooting_tech": 5}
+    _assert(
+        capture_prime_blocks_action("astro_mode", timelapse) == "Cancel the primed TIMELAPSE first",
+        "timelapse latch blocks a mode change",
+    )
+    _assert(capture_prime_blocks_action("timelapse_start", timelapse) == "", "timelapse latch keeps its start")
+
+    _assert(
+        capture_prime_blocks_action("stack", {"shooting_mode": 2, "shooting_tech": 0}) == "",
+        "DSO is not latched",
+    )
+    _assert(
+        capture_prime_blocks_action("track", {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": False}) == "",
+        "photo mode without a latch stays open",
+    )
+
+
 def test_burst_start_packet_is_empty() -> None:
     from dwarf_python_api.proto import camera_pb2
 
@@ -431,6 +477,7 @@ def main() -> None:
     test_device_state_keeps_wide_record_clock_and_clears_finished_functions()
     test_camera_param_skips_matching_timelapse_duration()
     test_cancel_prime_clears_stills_and_flags_burst_reset()
+    test_capture_prime_blocks_competing_starts()
     test_burst_start_packet_is_empty()
     test_wide_tap_autofocus_follows_firmware_state_not_focus_position()
     print("test_photo_capture: ok")

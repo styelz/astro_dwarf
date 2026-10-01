@@ -55,8 +55,10 @@ from .domain import (
     album_is_astro_type,
     album_entry_key,
     album_entry_preview_path,
+    album_folder_download_paths,
     album_folder_parent,
     album_folder_preview_path,
+    album_sharpest_tile_folder,
     album_model_prefix_candidates,
     album_root_from_entries,
     album_unindexed_listing,
@@ -4629,6 +4631,70 @@ def capture_prime_needs_mode_reset(snapshot: dict[str, Any] | None) -> bool:
     return mode == _PHOTO_SHOOTING_MODE and tech in {3, 4, 5}
 
 
+_CAPTURE_PRIME_LABELS = {
+    "photo": "PHOTO",
+    "burst_start": "BURST",
+    "record_start": "RECORD",
+    "timelapse_start": "TIMELAPSE",
+}
+# Starts that would replace the latched technique or leave PHOTO mode.
+# Stops, cancel, lights, camera settings, and manual focus stay available.
+_CAPTURE_PRIME_EXCLUSIVE = frozenset({
+    "photo",
+    "wide_photo",
+    "burst_start",
+    "record_start",
+    "timelapse_start",
+    "panorama_frame_start",
+    "panorama_frame_reset",
+    "panorama_shoot",
+    "calibrate",
+    "autofocus",
+    "infinity",
+    "polar",
+    "polar_position",
+    "track",
+    "sky_track",
+    "stack",
+    "photo_mode",
+    "astro_mode",
+})
+
+
+def latched_capture_operation(snapshot: dict[str, Any] | None) -> str:
+    """PHOTO still, burst, record, or timelapse technique currently latched.
+
+    Technique 1 without ``photo_primed`` is ordinary photo mode, not a latch.
+    """
+    snap = snapshot or {}
+    if _shooting_int(snap.get("shooting_mode")) != _PHOTO_SHOOTING_MODE:
+        return ""
+    tech = _shooting_int(snap.get("shooting_tech"))
+    if tech == 3:
+        return "burst_start"
+    if tech == 4:
+        return "record_start"
+    if tech == 5:
+        return "timelapse_start"
+    if snap.get("photo_primed"):
+        return "photo"
+    return ""
+
+
+def capture_prime_blocks_action(operation: str, snapshot: dict[str, Any] | None) -> str:
+    """Refuse a command that would drop a latched capture before it is cancelled."""
+    latched = latched_capture_operation(snapshot)
+    if not latched:
+        return ""
+    name = str(operation or "")
+    if not name or name == latched or name not in _CAPTURE_PRIME_EXCLUSIVE:
+        return ""
+    if name == "wide_photo" and latched == "photo":
+        return ""
+    label = _CAPTURE_PRIME_LABELS.get(latched, "capture")
+    return f"Cancel the primed {label} first"
+
+
 def running_photo_capture_stop(snapshot: dict[str, Any] | None, activity: str = "") -> str:
     """Stop command for a burst, record, or timelapse that is still running."""
     snap = snapshot or {}
@@ -5460,6 +5526,66 @@ def album_delete(items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {"ip": ip, **outcome}
 
 
+def album_folder_download(folder: str = "", dest_dir: str = "", preview: str = "") -> dict[str, Any]:
+    """Save the files in a session folder, not only its grid thumbnail."""
+    remote_folder = album_http_path(folder).rstrip("/")
+    if not remote_folder:
+        raise RuntimeError("No session folder to download")
+    listing = album_folder_list(remote_folder)
+    entries = listing.get("sessions") if isinstance(listing, dict) else None
+    listed = entries if isinstance(entries, list) else []
+    paths = album_folder_download_paths(listed)
+    if not paths:
+        child = album_sharpest_tile_folder(listed)
+        if child and album_http_path(child).rstrip("/") != remote_folder:
+            nested = album_folder_list(child)
+            nested_entries = nested.get("sessions") if isinstance(nested, dict) else None
+            nested_listed = nested_entries if isinstance(nested_entries, list) else []
+            paths = album_folder_download_paths(nested_listed) or album_folder_download_paths(
+                nested_listed,
+                include_previews=True,
+            )
+    if not paths:
+        paths = album_folder_download_paths(listed, include_previews=True)
+    preview_path = album_http_path(preview)
+    if not paths and preview_path and album_is_media_file(preview_path):
+        paths = [preview_path]
+    if not paths:
+        raise RuntimeError("This folder has no files to download")
+    saved: list[dict[str, Any]] = []
+    failed: list[str] = []
+    for remote in paths:
+        try:
+            saved.append(astro_session_download(remote, dest_dir))
+        except Exception as exc:
+            failed.append(f"{Path(str(remote)).name}: {exc}")
+    if not saved:
+        raise RuntimeError(failed[0] if failed else "This folder has no files to download")
+    display = _folder_download_display(saved)
+    log(f"Downloaded {len(saved)} file{'s' if len(saved) != 1 else ''} from {remote_folder}")
+    return {
+        "path": str(display.get("path") or "") if display else "",
+        "file": str(display.get("file") or "") if display else "",
+        "paths": [str(item.get("path") or "") for item in saved if item.get("path")],
+        "files": [str(item.get("file") or "") for item in saved],
+        "failed": failed,
+        "count": len(saved),
+        "file_path": remote_folder,
+    }
+
+
+def _folder_download_display(saved: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """One JPEG that can stand in for the folder. A tile set keeps its preview."""
+    for item in saved:
+        name = Path(str(item.get("file") or "")).name.lower()
+        if name.endswith("_stacked.jpg") or name.endswith("_stacked.jpeg") or name in {"stacked.jpg", "stacked.jpeg"}:
+            if "thumbnail" not in name:
+                return item
+    if len(saved) == 1 and album_is_stack_display_image(str(saved[0].get("file") or "")):
+        return saved[0]
+    return None
+
+
 def astro_session_download(file_path: str = "", dest_dir: str = "") -> dict[str, Any]:
     ip = _device_ip()
     remote = str(file_path or "").strip()
@@ -6248,6 +6374,13 @@ def dispatch(message: dict[str, Any]) -> Any:
         if not isinstance(items, list):
             items = []
         return album_delete(items)
+    if command == "album_folder_download":
+        args = list(message.get("args") or [])
+        return album_folder_download(
+            str(args[0] if args else ""),
+            str(args[1] if len(args) > 1 else ""),
+            str(args[2] if len(args) > 2 else ""),
+        )
     if command == "astro_session_download":
         args = list(message.get("args") or [])
         return astro_session_download(

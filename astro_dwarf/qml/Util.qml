@@ -210,7 +210,16 @@ QtObject {
             return true
         if (operation === "stop_goto" && (inflight === "track" || inflight === "sky_track"))
             return true
-        if (operation === "cancel_prime" && inflight !== "")
+        // Cancel stays up during focus, exposure, and other unrelated commands.
+        // A capture start or stop, or a shooting-mode change, still owns the latch.
+        if (operation === "cancel_prime" && (
+            inflight === "cancel_prime"
+            || inflight === "photo" || inflight === "wide_photo"
+            || inflight === "burst_start" || inflight === "burst_stop"
+            || inflight === "record_start" || inflight === "record_stop"
+            || inflight === "timelapse_start" || inflight === "timelapse_stop"
+            || inflight === "photo_mode" || inflight === "astro_mode" || inflight === "shooting_mode"
+        ))
             return true
         if (inflight === "cancel_prime" && (
             operation === "photo"
@@ -253,6 +262,62 @@ QtObject {
                 || String(t.timelapse_state || "") === "stopping"
         }
         return false
+    }
+    function latchedCaptureOperation(telemetry) {
+        // PHOTO stills, burst, record, and timelapse leave a technique latched
+        // after the handshake. Tech 1 alone is just photo mode, not a latch.
+        const t = telemetry || ({})
+        if (Number(t.shooting_mode || 0) !== 1)
+            return ""
+        const tech = Number(t.shooting_tech || 0)
+        if (tech === 3)
+            return "burst_start"
+        if (tech === 4)
+            return "record_start"
+        if (tech === 5)
+            return "timelapse_start"
+        if (t.photo_primed)
+            return "photo"
+        return ""
+    }
+    function capturePrimeBlock(op, telemetry) {
+        const latched = latchedCaptureOperation(telemetry)
+        if (!latched)
+            return ""
+        const operation = String(op || "")
+        if (!operation || operation === latched)
+            return ""
+        if (operation === "wide_photo" && latched === "photo")
+            return ""
+        const competing = {
+            photo: true,
+            wide_photo: true,
+            burst_start: true,
+            record_start: true,
+            timelapse_start: true,
+            panorama_frame_start: true,
+            panorama_frame_reset: true,
+            panorama_shoot: true,
+            calibrate: true,
+            autofocus: true,
+            infinity: true,
+            polar: true,
+            polar_position: true,
+            track: true,
+            sky_track: true,
+            stack: true,
+            photo_mode: true,
+            astro_mode: true
+        }
+        if (!competing[operation])
+            return ""
+        const labels = {
+            photo: "PHOTO",
+            burst_start: "BURST",
+            record_start: "RECORD",
+            timelapse_start: "TIMELAPSE"
+        }
+        return "Cancel the primed " + (labels[latched] || "capture") + " first"
     }
     function statusFill(status) {
         switch (String(status || "").toLowerCase()) {
@@ -524,6 +589,19 @@ QtObject {
         default: return item && item.source === "stills" ? "▣" : "◈"
         }
     }
+    function captureFlag(value, fallback) {
+        if (value === undefined || value === null || value === "")
+            return fallback
+        if (typeof value === "string") {
+            const text = value.trim().toLowerCase()
+            if (text === "true" || text === "1" || text === "yes" || text === "on")
+                return true
+            if (text === "false" || text === "0" || text === "no" || text === "off")
+                return false
+            return fallback
+        }
+        return !!value
+    }
     function captureDefaults(device) {
         const cap = (device && device.capture_defaults) || {}
         const exposure = Number(cap.exposure_seconds)
@@ -532,7 +610,12 @@ QtObject {
         return {
             exposure_seconds: Number.isFinite(exposure) && exposure > 0 ? exposure : stockExposureSeconds,
             gain: Number.isFinite(gain) && gain >= 0 ? gain : stockGain,
-            frame_count: Number.isFinite(frames) && frames >= 1 ? frames : stockFrameCount
+            frame_count: Number.isFinite(frames) && frames >= 1 ? frames : stockFrameCount,
+            calibrate: Util.captureFlag(cap.calibrate, true),
+            autofocus: Util.captureFlag(cap.autofocus, true),
+            infinite_focus: Util.captureFlag(cap.infinite_focus, false),
+            polar_align: Util.captureFlag(cap.polar_align, false),
+            goto: Util.captureFlag(cap.goto, true)
         }
     }
     function deviceById(devices, id) {

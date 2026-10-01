@@ -970,6 +970,88 @@ def album_apply_listing_preview(entry: dict[str, Any], names: list[str]) -> dict
     return out
 
 
+def album_is_preview_only_name(path: str = "", name: str = "") -> bool:
+    """Small album thumbnails. These are not the session's frames or stack."""
+    token = str(name or PurePosixPath(album_http_path(path)).name).strip().lower()
+    if not token:
+        return False
+    preview_names = (
+        *_STACK_THUMB_NAMES,
+        *_SESSION_THUMB_NAMES,
+        *_STACK_COUNTER_NAMES,
+    )
+    return token in {item.lower() for item in preview_names}
+
+
+def album_folder_download_paths(
+    entries: list[dict[str, Any]] | None,
+    *,
+    include_previews: bool = False,
+) -> list[str]:
+    """Media files to save from one session folder.
+
+    The grid thumbnail (stacked_thumbnail.jpg, burst_thumbnail.jpg,
+    pano_thumbnail.jpg) is skipped when the folder has the real files.
+    Thumbnail/ sidecars are previews of those files and are left out.
+    Pass include_previews when that thumbnail is the only file available.
+    """
+    media: list[str] = []
+    seen: set[str] = set()
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("isDir") is True or entry.get("is_dir") is True:
+            continue
+        remote = str(entry.get("filePath") or entry.get("file_path") or "").strip()
+        name = str(entry.get("fileName") or entry.get("name") or "").strip()
+        if not remote:
+            remote = name
+        if not remote or album_is_inside_thumbnail_dir(remote):
+            continue
+        if not album_is_media_file(remote, name):
+            continue
+        path = album_http_path(remote)
+        key = path.upper()
+        if not path or key in seen:
+            continue
+        seen.add(key)
+        media.append(path)
+    real = [path for path in media if not album_is_preview_only_name(path)]
+    chosen = real or (media if include_previews else [])
+    return sorted(chosen, key=_album_download_rank)
+
+
+def album_sharpest_tile_folder(entries: list[dict[str, Any]] | None) -> str:
+    """Largest panorama tile folder when the session root has no full-size tiles.
+
+    Folders ``1`` through ``5`` repeat the grid smaller. ``1`` is the largest.
+    """
+    found: list[tuple[int, str]] = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("isDir") is not True and entry.get("is_dir") is not True:
+            continue
+        remote = str(entry.get("filePath") or entry.get("file_path") or "").strip()
+        name = str(entry.get("fileName") or entry.get("name") or PurePosixPath(album_http_path(remote)).name).strip()
+        if name not in {"1", "2", "3", "4", "5"} or not remote:
+            continue
+        found.append((int(name), album_http_path(remote)))
+    if not found:
+        return ""
+    found.sort()
+    return found[0][1]
+
+
+def _album_download_rank(path: str) -> tuple[int, str]:
+    name = PurePosixPath(path).name.lower()
+    if name in {item.lower() for item in _STACK_JPEG_NAMES}:
+        return (0, name)
+    if name in {"0.jpg", "0.jpeg"}:
+        return (1, name)
+    return (2, name)
+
+
 def album_is_stack_display_image(path: str = "", name: str = "") -> bool:
     """JPEG/PNG that the live preview can paint. Skip FITS/TIFF."""
     return _album_suffix(path, name) in ALBUM_STACK_DISPLAY_SUFFIXES
@@ -1667,6 +1749,12 @@ class CaptureDefaults:
     exposure_seconds: float = DEFAULT_EXPOSURE_SECONDS
     gain: int = DEFAULT_GAIN
     frame_count: int = DEFAULT_FRAME_COUNT
+    # Same stock steps as Workflow: calibrate and autofocus and GOTO on.
+    calibrate: bool = True
+    autofocus: bool = True
+    infinite_focus: bool = False
+    polar_align: bool = False
+    goto: bool = True
 
 
 DEVICE_COLORS: tuple[str, ...] = (
@@ -2503,12 +2591,45 @@ def _int_at_least(value: Any, default: int, minimum: int) -> int:
     return number if number >= minimum else default
 
 
+def coerce_flag(value: Any, default: bool) -> bool:
+    """Read a stored or payload flag. A missing value keeps ``default``."""
+    if isinstance(value, bool):
+        return value
+    if value is None or value == "":
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def capture_defaults_from_dict(data: dict[str, Any]) -> CaptureDefaults:
     raw = dict(data) if isinstance(data, dict) else {}
     return CaptureDefaults(
         exposure_seconds=_positive_float(raw.get("exposure_seconds"), DEFAULT_EXPOSURE_SECONDS),
         gain=_int_at_least(raw.get("gain"), DEFAULT_GAIN, 0),
         frame_count=_int_at_least(raw.get("frame_count"), DEFAULT_FRAME_COUNT, 1),
+        calibrate=coerce_flag(raw.get("calibrate"), True),
+        autofocus=coerce_flag(raw.get("autofocus"), True),
+        infinite_focus=coerce_flag(raw.get("infinite_focus"), False),
+        polar_align=coerce_flag(raw.get("polar_align"), False),
+        goto=coerce_flag(raw.get("goto"), True),
+    )
+
+
+def workflow_from_capture(defaults: CaptureDefaults | None = None) -> Workflow:
+    """Setup steps stored on this telescope's capture defaults."""
+    capture = defaults or CaptureDefaults()
+    return Workflow(
+        calibrate=bool(capture.calibrate),
+        autofocus=bool(capture.autofocus),
+        infinite_focus=bool(capture.infinite_focus),
+        polar_align=bool(capture.polar_align),
+        goto=bool(capture.goto),
     )
 
 
