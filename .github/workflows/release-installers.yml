@@ -279,8 +279,12 @@ jobs:
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
-          ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir \
-            "release/AstroDwarf-${VERSION}-linux-x86_64.AppImage"
+          # Omit "linux" from the filename: every AppImage is for Linux.
+          # -u embeds GitHub release update info and writes the .zsync beside the image.
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run \
+            -u "gh-releases-zsync|styelz|astro_dwarf|latest|AstroDwarf-*-x86_64.AppImage.zsync" \
+            AppDir \
+            "release/AstroDwarf-${VERSION}-x86_64.AppImage"
 
       - name: Build Debian, RPM, and Arch packages
         shell: bash
@@ -316,6 +320,7 @@ jobs:
           name: linux-installers
           path: |
             release/*.AppImage
+            release/*.AppImage.zsync
             release/*.deb
             release/*.rpm
             release/*.pkg.tar.zst

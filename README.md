@@ -34,8 +34,8 @@ Unsigned builds are on [GitHub Releases](https://github.com/styelz/astro_dwarf/r
 - **Linux:** use the `.AppImage`, or the package for your system (`.deb`, `.rpm`, or `.pkg.tar.zst`).
 
 ```bash
-chmod +x AstroDwarf-*-linux-x86_64.AppImage
-./AstroDwarf-*-linux-x86_64.AppImage
+chmod +x AstroDwarf-*-x86_64.AppImage
+./AstroDwarf-*-x86_64.AppImage
 ```
 
 Set each telescope’s IP, model, and location in Settings. Start the scheduler from Control when you are ready to run the night.
