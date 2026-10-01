@@ -1478,6 +1478,8 @@ Item {
                     readonly property bool panoramaShooting: root.scopeActivity === "panorama"
                         || String(root.scopeTelemetry.panorama_state || "") === "running"
                     readonly property bool panoramaCanvas: panoramaFrame || panoramaShooting || panoramaKeep
+                    readonly property bool panoramaResultShown: backend.panoramaLive && backend.panoramaStatus === "done" && backend.panoramaImage !== ""
+                    readonly property bool panoramaResultBusy: backend.panoramaLive && backend.panoramaStatus === "working"
                     readonly property bool mosaicActive: !!(backend.mosaicPreview && backend.mosaicPreview.active)
                     // A finished device mosaic is already stitched on the live feed.
                     readonly property bool deviceMosaicFinished: !!(backend.mosaicPreview && backend.mosaicPreview.live_feed)
@@ -1901,6 +1903,60 @@ Item {
                         fillMode: Image.PreserveAspectFit
                         cache: false
                         asynchronous: true
+                    }
+                    Rectangle {
+                        anchors.fill: parent
+                        z: 6
+                        visible: previewHost.panoramaResultShown || previewHost.panoramaResultBusy || (backend.panoramaLive && backend.panoramaStatus === "failed")
+                        color: Theme.windowBase
+                    }
+                    Image {
+                        id: panoramaResultImage
+                        objectName: "panoramaResult"
+                        anchors.fill: parent
+                        anchors.margins: Theme.s3
+                        z: 6
+                        visible: previewHost.panoramaResultShown && status === Image.Ready
+                        source: previewHost.panoramaResultShown ? backend.panoramaImage : ""
+                        fillMode: Image.PreserveAspectFit
+                        cache: false
+                        asynchronous: true
+                    }
+                    Column {
+                        z: 6
+                        anchors.centerIn: parent
+                        width: Math.min(parent.width - Theme.s5 * 2, 280)
+                        visible: previewHost.panoramaResultBusy && !panoramaResultImage.visible
+                        HudMeter {
+                            width: parent.width
+                            running: previewHost.panoramaResultBusy
+                            progress: backend.panoramaTotal > 0 ? backend.panoramaDone / backend.panoramaTotal : -1
+                            text: backend.panoramaDetail || "STITCHING"
+                        }
+                    }
+                    Text {
+                        z: 7
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: Theme.px(14)
+                        visible: backend.panoramaLive && !previewHost.panoramaShooting && (previewHost.panoramaResultBusy || previewHost.panoramaResultShown || backend.panoramaStatus === "failed")
+                        text: backend.panoramaDetail || ""
+                        color: backend.panoramaStatus === "failed" ? Theme.danger : Theme.textPrimary
+                        font.pixelSize: Theme.fontSm
+                        font.family: Theme.fontMono
+                        elide: Text.ElideRight
+                    }
+                    HudButton {
+                        objectName: "panoramaLiveDismiss"
+                        z: 8
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Theme.s3
+                        visible: backend.panoramaLive && !previewHost.panoramaShooting && !previewHost.panoramaFrame
+                        text: "LIVE"
+                        tooltip: "Return to the live stream"
+                        onClicked: backend.dismissPanoramaLive()
                     }
                     Text {
                         anchors.left: parent.left

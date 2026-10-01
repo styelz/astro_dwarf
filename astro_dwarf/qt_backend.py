@@ -250,6 +250,14 @@ from .image_enhance import (
     set_enhance_levels,
 )
 from .mosaic_stitch import StitchJob, StitchPane, StitchSignals, overlap_warning, qimage_rgb, stitch_available
+from .panorama_composite import (
+    PanoramaJob,
+    PanoramaSignals,
+    panorama_geometry,
+    panorama_output_path,
+    panorama_progress_update,
+    panorama_session_folder,
+)
 from .media_preview import (
     DEFAULT_BLACK_PCT,
     DEFAULT_MID,
@@ -2021,6 +2029,7 @@ class AppBackend(QObject):
     centerTapBusyChanged = Signal()
     mosaicPreviewChanged = Signal()
     stitchChanged = Signal()
+    panoramaChanged = Signal()
     skyMosaicGridChanged = Signal()
     mosaicPaChanged = Signal()
     enhanceImagesChanged = Signal()
@@ -2296,6 +2305,22 @@ class AppBackend(QObject):
         self._stitch_warning = ""
         self._stitch_path = ""
         self._stitch_source = ""
+        self._panorama_pool = QThreadPool(self)
+        self._panorama_pool.setMaxThreadCount(1)
+        self._panorama_signals = PanoramaSignals(self)
+        self._panorama_signals.progress.connect(self._on_panorama_progress)
+        self._panorama_signals.finished.connect(self._on_panorama_finished)
+        self._panorama_token = 0
+        self._panorama_status = ""
+        self._panorama_detail = ""
+        self._panorama_path = ""
+        self._panorama_quality = ""
+        self._panorama_session = ""
+        self._panorama_folder = ""
+        self._panorama_live = False
+        self._panorama_shot_progress: dict[str, tuple[int, int]] = {}
+        self._panorama_done = 0
+        self._panorama_total = 0
         self._shut_down = False
         self._preview_thread = QThread(self)
         self._tele_player = StreamPlayer()
@@ -2637,6 +2662,7 @@ class AppBackend(QObject):
             self._device_lights[device_id] = bool(data["lights_on"])
         if "indicator_on" in data:
             self._device_indicators[device_id] = bool(data["indicator_on"])
+        self._consider_panorama_preview(device_id, previous, current)
         for alert in self._alerts.evaluate(previous, current):
             self.add_log(alert["level"], alert["message"] + (f" — {alert['detail']}" if alert["detail"] else ""), device_id)
             if alert["toast"]:
@@ -5968,6 +5994,95 @@ class AppBackend(QObject):
         if self._stitch_status != "done" or not self._stitch_path:
             return ""
         return QUrl.fromLocalFile(self._stitch_path).toString()
+
+    @Property(str, notify=panoramaChanged)
+    def panoramaStatus(self) -> str:
+        return self._panorama_status
+
+    @Property(str, notify=panoramaChanged)
+    def panoramaDetail(self) -> str:
+        return self._panorama_detail
+
+    @Property(str, notify=panoramaChanged)
+    def panoramaQuality(self) -> str:
+        return self._panorama_quality
+
+    @Property(str, notify=panoramaChanged)
+    def panoramaSession(self) -> str:
+        return self._panorama_session
+
+    @Property(int, notify=panoramaChanged)
+    def panoramaDone(self) -> int:
+        return self._panorama_done
+
+    @Property(int, notify=panoramaChanged)
+    def panoramaTotal(self) -> int:
+        return self._panorama_total
+
+    @Property(bool, notify=panoramaChanged)
+    def panoramaLive(self) -> bool:
+        return self._panorama_live
+
+    @Property(str, notify=panoramaChanged)
+    def panoramaImage(self) -> str:
+        if self._panorama_status != "done" or not self._panorama_path:
+            return ""
+        return QUrl.fromLocalFile(self._panorama_path).toString()
+
+    def _panorama_cache_dir(self) -> Path:
+        folder = self.store.root / "panorama-cache"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def _set_panorama(
+        self,
+        status: str,
+        detail: str = "",
+        path: str = "",
+        quality: str = "",
+        session: str = "",
+        folder: str = "",
+        done: int = 0,
+        total: int = 0,
+        *,
+        live: bool | None = None,
+    ) -> None:
+        self._panorama_status = status
+        self._panorama_detail = detail
+        self._panorama_path = path
+        self._panorama_quality = quality
+        self._panorama_session = session
+        if folder:
+            self._panorama_folder = folder
+        self._panorama_done = int(done)
+        self._panorama_total = int(total)
+        if live is not None:
+            self._panorama_live = bool(live)
+        self.panoramaChanged.emit()
+        if status == "failed" and detail:
+            self._toast(detail, "error")
+
+    def _on_panorama_progress(self, token: int, done: int, total: int) -> None:
+        if token != self._panorama_token or self._shut_down:
+            return
+        self._panorama_done = int(done)
+        self._panorama_total = int(total)
+        self._panorama_detail = f"Fetching {int(done)}/{int(total)}"
+        self.panoramaChanged.emit()
+
+    def _on_panorama_finished(self, token: int, status: str, detail: str, path: str) -> None:
+        if token != self._panorama_token or self._shut_down:
+            return
+        self._set_panorama(
+            status,
+            detail,
+            path,
+            self._panorama_quality,
+            self._panorama_session,
+            self._panorama_folder,
+            self._panorama_total,
+            self._panorama_total,
+        )
 
     def _stitch_cache_dir(self) -> Path:
         folder = self.store.root / "stitch-cache"
@@ -11508,6 +11623,7 @@ class AppBackend(QObject):
             "sub_type": sub_type,
             "duration": duration,
             "is_dir": is_dir,
+            **panorama_geometry(entry),
         }
 
     def _normalize_astro_item(self, entry: dict[str, Any], ip: str, local_files: dict[str, Path]) -> dict[str, Any] | None:
@@ -11783,6 +11899,124 @@ class AppBackend(QObject):
         self._select_media_id(str(item_id or ""))
         if previous != self._media_selected_id:
             self._emit_media()
+
+    @Slot(str)
+    def stitchSelectedPanorama(self, quality: str) -> None:
+        """Stitch the open panorama. preview uses the small tiles; sharp uses the full-size tiles."""
+        choice = "sharp" if str(quality or "") == "sharp" else "preview"
+        item = self.selectedMedia
+        if str(item.get("kind") or "") != "panorama":
+            return
+        session_id = str(item.get("id") or "")
+        session = panorama_session_folder(str(item.get("file_path") or item.get("thumbnail_path") or ""))
+        if (
+            session
+            and self._panorama_folder == session
+            and self._panorama_quality == choice
+            and self._panorama_status in {"working", "done"}
+            and (self._panorama_status != "done" or Path(self._panorama_path).is_file())
+        ):
+            if self._panorama_session != session_id:
+                self._set_panorama(
+                    self._panorama_status,
+                    self._panorama_detail,
+                    self._panorama_path,
+                    choice,
+                    session_id,
+                    session,
+                    self._panorama_done,
+                    self._panorama_total,
+                )
+            return
+        device = next((entry for entry in self._devices if entry.id == self._selected_device_id), None)
+        ip = str(getattr(device, "ip_address", "") or "").strip()
+        if not ip or not session:
+            self._panorama_token += 1
+            self._set_panorama("failed", "Connect the telescope to stitch this panorama", "", choice, session_id, session)
+            return
+        self._panorama_token += 1
+        token = self._panorama_token
+        dest = panorama_output_path(self._panorama_cache_dir(), session, choice)
+        label = "sharp panorama" if choice == "sharp" else "panorama preview"
+        self._set_panorama("working", f"Stitching {label}", "", choice, session_id, session, 0, 0, live=False)
+        job = PanoramaJob(
+            token,
+            ip,
+            session,
+            choice,
+            int(item.get("pano_rows") or 0),
+            int(item.get("pano_cols") or 0),
+            str(item.get("pano_preview_path") or ""),
+            dest,
+            self._panorama_signals,
+            lambda token=token: token != self._panorama_token or self._shut_down,
+        )
+        self._panorama_pool.start(job)
+
+    def _consider_panorama_preview(self, device_id: str, previous: dict[str, Any], current: dict[str, Any]) -> None:
+        remembered = self._panorama_shot_progress.get(device_id)
+        updated, finished = panorama_progress_update(previous, current, remembered)
+        if updated is None:
+            self._panorama_shot_progress.pop(device_id, None)
+        else:
+            self._panorama_shot_progress[device_id] = updated
+        state = str(current.get("panorama_state") or previous.get("panorama_state") or "")
+        prev_state = str(previous.get("panorama_state") or "")
+        if (
+            state == "running"
+            and prev_state != "running"
+            and device_id == self._selected_device_id
+            and self._panorama_live
+        ):
+            self._panorama_live = False
+            self.panoramaChanged.emit()
+        if finished is None or device_id != self._selected_device_id:
+            return
+        _done, total = finished
+        self._start_live_panorama_preview(device_id, total)
+
+    def _start_live_panorama_preview(self, device_id: str, total: int) -> None:
+        device = next((entry for entry in self._devices if entry.id == device_id), None)
+        ip = str(getattr(device, "ip_address", "") or "").strip()
+        self._panorama_token += 1
+        token = self._panorama_token
+        if not ip:
+            self._set_panorama(
+                "failed",
+                "Connect the telescope to show the panorama",
+                "",
+                "preview",
+                "",
+                "",
+                0,
+                0,
+                live=True,
+            )
+            return
+        self._set_panorama("working", "Stitching panorama preview", "", "preview", "", "", 0, int(total or 0), live=True)
+        job = PanoramaJob(
+            token,
+            ip,
+            "",
+            "preview",
+            0,
+            0,
+            "",
+            self._panorama_cache_dir(),
+            self._panorama_signals,
+            lambda token=token: token != self._panorama_token or self._shut_down,
+            discover=True,
+            expect_count=int(total or 0),
+        )
+        self._panorama_pool.start(job)
+
+    @Slot()
+    def dismissPanoramaLive(self) -> None:
+        if not self._panorama_live:
+            return
+        self._panorama_token += 1
+        self._panorama_live = False
+        self.panoramaChanged.emit()
 
     @Slot(str)
     @Slot(str, bool)

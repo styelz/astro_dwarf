@@ -211,7 +211,41 @@ def settle_goto_changes(
     released["goto_state"] = "idle"
     released["goto_released"] = True
     return released, False, 0.0
-CHARGING_STATES = {0: "discharging", 1: "charging", 2: "full"}
+def charging_notify_changes(value: Any) -> dict[str, Any]:
+    """Map ``CMD_NOTIFY_CHARGE``.
+
+    The packet is ``ComResWithInt``. Confirmed on hardware: ``1`` is not
+    charging and ``2`` is charging, including when the pack is only partly
+    charged. ``0`` is the same idle reading as the device-state dump.
+    """
+    try:
+        state = int(value)
+    except (TypeError, ValueError):
+        return {}
+    if state == 2:
+        return {"charging_state": "charging", "charging": True}
+    if state in (0, 1):
+        return {"charging_state": "discharging", "charging": False}
+    return {"charging_state": str(state), "charging": False}
+
+
+def charging_snapshot_changes(value: Any) -> dict[str, Any]:
+    """Map ``ResGetDeviceStateInfo.charging_state``.
+
+    ``0`` is not charging. Any other known value means a charger is present.
+    ``2`` is that plug-in reading, not a full battery.
+    """
+    try:
+        state = int(value)
+    except (TypeError, ValueError):
+        return {}
+    if state == 0:
+        return {"charging_state": "discharging", "charging": False}
+    if state in (1, 2):
+        return {"charging_state": "charging", "charging": True}
+    return {"charging_state": str(state), "charging": False}
+
+
 STREAM_TYPES = {0: "OFF", 1: "RTSP", 2: "JPEG"}
 BODY_STATUS = {1: "EQ", 2: "AZ"}
 _PHOTO_FUNCTION_KEYS = ("photo_state", "burst_state", "record_state", "timelapse_state")
@@ -616,6 +650,9 @@ class TelemetryTap:
         self._accept_sdk_capture_counts = True
         self._stale_capture_peak = 0
         self._battery_source = ""
+        # CMD_NOTIFY_CHARGE is the live plug-in event. A later state dump
+        # must not replace it with a stale idle reading.
+        self._charge_notify = False
         self._hold_photo_autofocus = False
         # SDK InitHostReceived starts False on every websocket init. Hold
         # host/slave until the handshake claims master so a default False
@@ -725,6 +762,7 @@ class TelemetryTap:
             self._accept_sdk_capture_counts = True
             self._stale_capture_peak = 0
             self._battery_source = ""
+            self._charge_notify = False
             self._publish_host_mode = False
             self._accept_power_off = False
             self._goto_stop_owned = False
@@ -1340,9 +1378,11 @@ class TelemetryTap:
                 return {}
             return {"battery_percent": percent}
         if cmd == CMD_NOTIFY_CHARGE:
-            message = self._parse("ChargingState", data)
-            state = int(message.state)
-            return {"charging_state": CHARGING_STATES.get(state, str(state)), "charging": state == 1}
+            message = self._base.ComResWithInt()
+            message.ParseFromString(data)
+            with self._lock:
+                self._charge_notify = True
+            return charging_notify_changes(message.value)
         if cmd == CMD_NOTIFY_SDCARD_INFO:
             message = self._parse("StorageInfo", data)
             return {
@@ -1620,6 +1660,11 @@ class TelemetryTap:
             else:
                 if not self._should_apply_battery(percent, "state"):
                     changes.pop("battery_percent", None)
+        with self._lock:
+            charge_notify = self._charge_notify
+        if charge_notify:
+            changes.pop("charging", None)
+            changes.pop("charging_state", None)
         if changes:
             changes["state_snapshot_at"] = time.time()
             self.update(changes, force=True)
@@ -1643,9 +1688,7 @@ class TelemetryTap:
                 if battery.HasField("soh"):
                     changes["battery_soh"] = int(battery.soh)
             if info.HasField("charging_state"):
-                state = int(info.charging_state.state)
-                changes["charging_state"] = CHARGING_STATES.get(state, str(state))
-                changes["charging"] = state == 1
+                changes.update(charging_snapshot_changes(info.charging_state.state))
             if info.HasField("storage_info"):
                 storage = info.storage_info
                 changes["storage_free_gb"] = int(storage.available_size)

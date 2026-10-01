@@ -101,7 +101,7 @@ Item {
     function openSelected() {
         if (!backend.selectedMedia || !backend.selectedMedia.id)
             return
-        if (Util.isFolderMedia(backend.selectedMedia)) {
+        if (Util.isFolderMedia(backend.selectedMedia) && Util.mediaKind(backend.selectedMedia) !== "panorama") {
             mediaPage.clearSelection()
             lightbox.close()
             backend.openMediaFolder(String(backend.selectedMedia.file_path || backend.selectedMedia.id || ""))
@@ -237,7 +237,7 @@ Item {
         const list = mediaPage.items || []
         const out = []
         for (let i = 0; i < list.length; i++) {
-            if (list[i] && list[i].id && !Util.isFolderMedia(list[i]))
+            if (list[i] && list[i].id && (!Util.isFolderMedia(list[i]) || Util.mediaKind(list[i]) === "panorama"))
                 out.push(list[i])
         }
         return out
@@ -612,6 +612,12 @@ Item {
         property real appliedWhite: 99.8
         property real appliedMid: 0.32
         readonly property bool isVideo: Util.isVideoMedia(mediaPage.selected)
+        readonly property bool isPanorama: Util.mediaKind(mediaPage.selected) === "panorama"
+        readonly property bool panoramaForSelection: lightbox.isPanorama && backend.panoramaSession === lightbox.selectedKey
+        readonly property string panoramaUrl: lightbox.panoramaForSelection && backend.panoramaStatus === "done" ? backend.panoramaImage : ""
+        readonly property bool panoramaWorking: lightbox.panoramaForSelection && backend.panoramaStatus === "working"
+        readonly property bool panoramaFailed: lightbox.panoramaForSelection && backend.panoramaStatus === "failed"
+        readonly property real panoramaProgress: backend.panoramaTotal > 0 ? backend.panoramaDone / backend.panoramaTotal : -1
         readonly property bool isFits: Util.isFitsMedia(mediaPage.selected)
         readonly property bool canStretch: !lightbox.isVideo && (lightbox.isFits || Util.isTiffMedia(mediaPage.selected) || (lightbox.imageFailed && Util.isHeavyPreviewName(lightbox.rawUrl)) || (!!lightbox.rawUrl && backend.mediaNeedsStretch(lightbox.rawUrl)))
         readonly property var viewerImage: canStretch ? stretchImage : (enhanceOn ? cleanImage : rawImage)
@@ -640,7 +646,7 @@ Item {
         readonly property string viewerLoadText: isVideo ? "LOADING VIDEO"
             : (canStretch ? (isFits ? "STRETCHING FITS" : "STRETCHING")
                : (enhanceOn ? (viewDeep ? "DEEP CLEAN" : "SMOOTHING") : "LOADING"))
-        readonly property bool enhanceOn: lightbox.viewEnhance && !lightbox.canStretch && Util.shouldEnhanceMedia(mediaPage.selected)
+        readonly property bool enhanceOn: lightbox.viewEnhance && !lightbox.canStretch && !lightbox.isPanorama && Util.shouldEnhanceMedia(mediaPage.selected)
         readonly property string selectedKey: String((mediaPage.selected && mediaPage.selected.id) || "")
         readonly property string enhanceProfile: lightbox.viewDeep ? "deep" : "std"
         readonly property var viewable: {
@@ -669,7 +675,11 @@ Item {
         }
         readonly property string rawUrl: {
             const item = mediaPage.selected
-            if (!item || Util.isFolderMedia(item))
+            if (!item)
+                return ""
+            if (lightbox.isPanorama)
+                return String(item.thumbnail_url || item.image_url || "")
+            if (Util.isFolderMedia(item))
                 return ""
             if (item.local_path)
                 return backend.mediaFileUrl(String(item.local_path))
@@ -752,11 +762,28 @@ Item {
                 lightbox.appliedMid = lightbox.stretchMid
             }
         }
+        function viewerBadge() {
+            if (lightbox.isVideo)
+                return "VIDEO"
+            if (lightbox.isPanorama)
+                return lightbox.panoramaWorking ? "STITCHING" : (backend.panoramaQuality === "sharp" ? "PANO SHARP" : "PANO")
+            if (lightbox.canStretch)
+                return lightbox.stretchFailed ? "STRETCH FAILED" : (lightbox.isFits ? "FITS" : "STRETCH")
+            if (lightbox.enhanceFailed)
+                return "ENHANCE FAILED"
+            return lightbox.enhanceOn ? "SMOOTHED" : "RAW"
+        }
+        function ensurePanorama() {
+            if (!lightbox.visible || !lightbox.isPanorama)
+                return
+            backend.stitchSelectedPanorama("preview")
+        }
         onSelectedKeyChanged: {
             heldCleanUrl = ""
             imageFailed = false
             lightbox.resetStretch()
             clipPlayer.stop()
+            lightbox.ensurePanorama()
         }
         onClosed: clipPlayer.stop()
         onOpened: {
@@ -764,6 +791,7 @@ Item {
             lightboxBody.forceActiveFocus()
             if (lightbox.isVideo && clipPlayer.source !== "")
                 clipPlayer.play()
+            lightbox.ensurePanorama()
         }
         onEnhanceOnChanged: if (!enhanceOn) heldCleanUrl = ""
         onCleanUrlChanged: if (cleanUrl !== "") heldCleanUrl = cleanUrl
@@ -795,6 +823,17 @@ Item {
                 Layout.fillHeight: true
                 color: Theme.windowBase
                 Image {
+                    id: panoramaImage
+                    objectName: "panoramaImage"
+                    anchors.fill: parent
+                    anchors.margins: Theme.s2
+                    fillMode: Image.PreserveAspectFit
+                    asynchronous: true
+                    cache: false
+                    visible: lightbox.isPanorama && source !== "" && status === Image.Ready
+                    source: lightbox.panoramaUrl
+                }
+                Image {
                     id: rawImage
                     objectName: "rawImage"
                     anchors.fill: parent
@@ -802,7 +841,7 @@ Item {
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                     cache: false
-                    visible: !lightbox.isVideo && !lightbox.canStretch && !lightbox.enhanceOn && source !== "" && status === Image.Ready
+                    visible: !lightbox.isVideo && !lightbox.canStretch && !lightbox.enhanceOn && !panoramaImage.visible && source !== "" && status === Image.Ready
                     source: lightbox.enhanceOn || lightbox.isVideo || lightbox.canStretch ? "" : lightbox.rawUrl
                     onStatusChanged: {
                         if (status === Image.Error && source !== "" && !lightbox.isVideo)
@@ -873,7 +912,7 @@ Item {
                     anchors.left: parent.left
                     anchors.top: parent.top
                     anchors.margins: Theme.s4
-                    visible: rawImage.visible || cleanImage.visible || stretchImage.visible || videoOut.visible
+                    visible: rawImage.visible || cleanImage.visible || stretchImage.visible || videoOut.visible || panoramaImage.visible
                     color: Theme.surface
                     border.color: Theme.outline
                     radius: Theme.radius
@@ -882,9 +921,7 @@ Item {
                     Text {
                         id: modeLabel
                         anchors.centerIn: parent
-                        text: lightbox.isVideo ? "VIDEO"
-                              : (lightbox.canStretch ? (lightbox.stretchFailed ? "STRETCH FAILED" : (lightbox.isFits ? "FITS" : "STRETCH"))
-                                 : (lightbox.enhanceFailed ? "ENHANCE FAILED" : (lightbox.enhanceOn ? "SMOOTHED" : "RAW")))
+                        text: lightbox.viewerBadge()
                         color: (lightbox.enhanceOn && !lightbox.isVideo) || lightbox.canStretch ? Theme.accent : Theme.textSecondary
                         font.pixelSize: Theme.fontSm
                         font.letterSpacing: Theme.tracking2
@@ -895,23 +932,24 @@ Item {
                     anchors.centerIn: parent
                     spacing: Theme.s2
                     width: Math.min(parent.width - Theme.s5 * 2, 220)
-                    visible: lightbox.viewerFailed || lightbox.viewerLoading || (!lightbox.isVideo && !rawImage.visible && !cleanImage.visible && !stretchImage.visible)
+                    visible: lightbox.panoramaWorking || lightbox.viewerFailed || lightbox.viewerLoading || (!lightbox.isVideo && !rawImage.visible && !cleanImage.visible && !stretchImage.visible && !panoramaImage.visible)
                     HudMeter {
                         anchors.horizontalCenter: parent.horizontalCenter
                         width: parent.width
-                        visible: lightbox.viewerLoading && !lightbox.viewerFailed
+                        visible: (lightbox.viewerLoading || lightbox.panoramaWorking) && !lightbox.viewerFailed
                         running: visible
-                        progress: lightbox.viewerProgress
-                        text: lightbox.viewerLoadText
+                        progress: lightbox.panoramaWorking ? lightbox.panoramaProgress : lightbox.viewerProgress
+                        text: lightbox.panoramaWorking ? (backend.panoramaDetail || "STITCHING") : lightbox.viewerLoadText
                     }
                     Text {
                         width: parent.width
-                        visible: !lightbox.viewerLoading || lightbox.viewerFailed
+                        visible: !lightbox.panoramaWorking && (!lightbox.viewerLoading || lightbox.viewerFailed)
                         horizontalAlignment: Text.AlignHCenter
                         wrapMode: Text.Wrap
                         text: lightbox.isVideo ? (clipPlayer.errorString || "NO PREVIEW")
-                              : (lightbox.stretchFailed ? "COULD NOT STRETCH"
-                                 : (lightbox.enhanceFailed ? "COULD NOT ENHANCE" : "NO PREVIEW"))
+                              : (lightbox.panoramaFailed ? (backend.panoramaDetail || "COULD NOT STITCH")
+                                 : (lightbox.stretchFailed ? "COULD NOT STRETCH"
+                                 : (lightbox.enhanceFailed ? "COULD NOT ENHANCE" : "NO PREVIEW")))
                         color: lightbox.viewerFailed ? Theme.warning : Theme.muted
                         font.pixelSize: Theme.fontMd
                         font.letterSpacing: Theme.tracking2
@@ -1006,6 +1044,47 @@ Item {
                             text: lightbox.videoMuted ? "UNMUTE" : "MUTE"
                             tooltip: lightbox.videoMuted ? "Unmute video" : "Mute video"
                             onClicked: lightbox.videoMuted = !lightbox.videoMuted
+                        }
+                    }
+                }
+                Rectangle {
+                    objectName: "mediaPanoramaControls"
+                    visible: lightbox.isPanorama
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: Theme.s3
+                    height: Theme.controlHeight + Theme.s2
+                    color: Theme.panelFill
+                    border.color: Theme.outline
+                    radius: Theme.radius
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: Theme.s2
+                        anchors.rightMargin: Theme.s2
+                        spacing: Theme.s2
+                        HudButton {
+                            objectName: "panoramaPreviewButton"
+                            text: "PREVIEW"
+                            tooltip: "Stitch the small tiles into a quick panorama"
+                            enabled: !(lightbox.panoramaForSelection && backend.panoramaQuality === "preview" && (backend.panoramaStatus === "working" || backend.panoramaStatus === "done"))
+                            busy: lightbox.panoramaWorking && backend.panoramaQuality === "preview"
+                            onClicked: backend.stitchSelectedPanorama("preview")
+                        }
+                        HudButton {
+                            objectName: "panoramaSharpButton"
+                            text: "SHARP"
+                            tooltip: "Stitch the full-size tiles into a sharper panorama"
+                            enabled: !(lightbox.panoramaForSelection && backend.panoramaQuality === "sharp" && (backend.panoramaStatus === "working" || backend.panoramaStatus === "done"))
+                            busy: lightbox.panoramaWorking && backend.panoramaQuality === "sharp"
+                            onClicked: backend.stitchSelectedPanorama("sharp")
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: lightbox.panoramaForSelection ? (backend.panoramaDetail || "") : ""
+                            color: lightbox.panoramaFailed ? Theme.warning : Theme.textSecondary
+                            font.pixelSize: Theme.fontSm
+                            elide: Text.ElideRight
                         }
                     }
                 }
@@ -1143,7 +1222,7 @@ Item {
                         HudButton {
                             objectName: "lightboxEnhanceButton"
                             text: lightbox.viewEnhance ? "ENHANCE ON" : "ENHANCE OFF"
-                            visible: Util.shouldEnhanceMedia(mediaPage.selected) && !lightbox.canStretch
+                            visible: Util.shouldEnhanceMedia(mediaPage.selected) && !lightbox.canStretch && !lightbox.isPanorama
                             buttonColor: lightbox.viewEnhance ? Theme.fillActive : Theme.inputBg
                             foregroundColor: lightbox.viewEnhance ? Theme.accent : Theme.textSecondary
                             onClicked: lightbox.viewEnhance = !lightbox.viewEnhance
@@ -1151,7 +1230,7 @@ Item {
                         HudButton {
                             objectName: "lightboxDeepButton"
                             text: lightbox.viewDeep ? "DEEP ON" : "DEEP CLEAN"
-                            visible: Util.shouldEnhanceMedia(mediaPage.selected) && !lightbox.canStretch && lightbox.viewEnhance
+                            visible: Util.shouldEnhanceMedia(mediaPage.selected) && !lightbox.canStretch && lightbox.viewEnhance && !lightbox.isPanorama
                             buttonColor: lightbox.viewDeep ? Theme.fillActive : Theme.inputBg
                             foregroundColor: lightbox.viewDeep ? Theme.accent : Theme.textSecondary
                             onClicked: lightbox.viewDeep = !lightbox.viewDeep
