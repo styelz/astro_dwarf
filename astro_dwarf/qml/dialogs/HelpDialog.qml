@@ -13,7 +13,7 @@ Dialog {
     height: Math.min(root.height - Theme.px(80), Math.max(Theme.px(240), helpColumn.implicitHeight + padding * 2 + Theme.px(92)))
     padding: Theme.s4
     onOpened: helpClose.forceActiveFocus()
-    background: DialogFrame {}
+    background: DialogFrame { id: helpFrame }
 
     property int activeTab: 0
     readonly property int labelWidth: Theme.px(168)
@@ -36,21 +36,21 @@ Dialog {
         {
             title: "SKY",
             rows: [
-                { gesture: "RIGHT-CLICK", detail: "Go to coordinates, show the live view, or track the target." },
-                { gesture: "DOUBLE-CLICK", detail: "Centers the map. The menu can also slew and start tracking." },
-                { gesture: "CTRL + SCROLL", detail: "Changes how bright the live view is on the map." }
+                { gesture: "RIGHT-CLICK", detail: "Center the map on clipboard or typed coordinates, overlay the live stream, or track the selected target." },
+                { gesture: "DOUBLE-CLICK", detail: "Centers the map. The menu can make that double-click slew and start tracking instead." },
+                { gesture: "CTRL + SCROLL", detail: "Changes the opacity of the live stream on the map." }
             ]
         },
         {
             title: "EVERYWHERE ELSE",
             rows: [
-                { gesture: "DOUBLE-CLICK", detail: "Opens that session in the editor." },
+                { gesture: "DOUBLE-CLICK", detail: "On SESSIONS, opens that session in the editor. On CALENDAR, opens the night." },
                 { gesture: "RIGHT-CLICK", detail: "Menu for a session, device, photo, history row, or the log." },
                 { gesture: "DRAG SESSION", detail: "Moves it to another night or a new start time." },
                 { gesture: "EMPTY DAY", detail: "Right-click to add a session." },
                 { gesture: "DRAG PANEL", detail: "Rearranges Control. Right-click a panel to reset the layout." },
                 { gesture: "SCHEDULER", detail: "Title-bar switch. On, planned sessions run by themselves." },
-                { gesture: "SYNC SCOPE", detail: "Copies simple deep-sky sessions onto the telescope so they can run after this app disconnects. Polar alignment, wide camera, and custom mosaics stay here." }
+                { gesture: "SYNC SCOPE", detail: "Copies planned telephoto deep-sky sessions onto the telescope so they can run after this app disconnects. Solar targets, the wide camera, 2K binning, polar alignment, infinity focus, a wait, and custom mosaics stay here." }
             ]
         }
     ]
@@ -66,7 +66,7 @@ Dialog {
             title: "PLAN A STACK",
             rows: [
                 { gesture: "STEP 1", detail: "On SKY, search or click a catalog object, or right-click and choose Enter RA / Dec." },
-                { gesture: "STEP 2", detail: "Choose Tele or Wide and set exposure, gain, and frame count — the frames you want stacked." },
+                { gesture: "STEP 2", detail: "On CONTROL, set exposure, gain, and frame count. A scheduled stack uses the telephoto camera." },
                 { gesture: "STEP 3", detail: "Leave Calibrate, Auto focus, and GOTO on for an unattended run. Add Polar / EQ if the mount needs it." },
                 { gesture: "STEP 4", detail: "Press CREATE SINGLE SESSION on SKY, or + MANUAL SESSION on SESSIONS." }
             ]
@@ -74,9 +74,9 @@ Dialog {
         {
             title: "PLAN A MOSAIC",
             rows: [
-                { gesture: "STEP 1", detail: "On SKY, pick CUSTOM (host-planned columns, rows, and overlap — each pane is its own GOTO and stack) or DEVICE (the telescope frames up to 2×2 panes itself)." },
+                { gesture: "STEP 1", detail: "On SKY, pick CUSTOM (this computer plans columns, rows, and overlap — each pane is its own GOTO and stack) or DEVICE (telephoto only). DEVICE shoots one pane at 1.0× and two panes on an axis above that, four at most. Equatorial mode keeps those panes from rotating." },
                 { gesture: "STEP 2", detail: "Size the grid. CUSTOM: set COL, ROW, and OVL. DEVICE: set H and V from 1.0× to 1.8×." },
-                { gesture: "STEP 3", detail: "Optional: set PA to rotate an equatorial camera. Alt-az mounts follow the zenith automatically." },
+                { gesture: "STEP 3", detail: "On an equatorial mount, PA is camera-up, east of north. Unset is 0° N-up north of the equator and 180° S-up south of it. Alt-az hides PA and follows the zenith." },
                 { gesture: "STEP 4", detail: "Pick the centre target the same way as a single session." },
                 { gesture: "STEP 5", detail: "Press CREATE MOSAIC SESSION (custom, one session per pane) or CREATE DEVICE MOSAIC (one session, the telescope frames the grid)." }
             ]
@@ -85,7 +85,7 @@ Dialog {
             title: "RUN IT",
             rows: [
                 { gesture: "LATER", detail: "New sessions appear on SESSIONS and CALENDAR. Turn on the title-bar SCHEDULER switch and they start themselves." },
-                { gesture: "NOW", detail: "Track or GOTO the target, then press STACK on CONTROL. It reads MOSAIC STACK when a grid is armed." },
+                { gesture: "NOW", detail: "On CONTROL, press TRACK until the target is held, then press STACK. It reads MOSAIC STACK when a grid is armed, and TRACK FIRST until tracking is on." },
                 { gesture: "PROGRESS", detail: "CONTROL shows live stacked-frame counts and mosaic pane progress. STOP SESSION ends it early." }
             ]
         },
@@ -93,7 +93,7 @@ Dialog {
             title: "GOOD TO KNOW",
             rows: [
                 { gesture: "IMPORTED PLANS", detail: "A Stellarium or Telescopius pane list also creates one session per pane. Edit them with THIS PANE / ALL PANES in the session editor." },
-                { gesture: "EDITING", detail: "Double-click a session to reopen this same editor and adjust camera, workflow, or mosaic settings." },
+                { gesture: "EDITING", detail: "On SESSIONS, double-click a session to reopen this editor and adjust camera, workflow, or mosaic settings." },
                 { gesture: "TEMPLATES", detail: "Tick Save template on a session to reuse its target and settings later without retyping them." }
             ]
         }
@@ -143,11 +143,12 @@ Dialog {
             contentWidth: width
             contentHeight: helpColumn.implicitHeight
             interactive: contentHeight > height + Theme.px(1)
-            ScrollBar.vertical: HudScrollBar {}
+            ScrollBar.horizontal: HiddenBar {}
+            ScrollBar.vertical: HudScrollBar { frameHost: helpFrame }
 
             ColumnLayout {
                 id: helpColumn
-                width: scroller.width - Theme.s3
+                width: scroller.width
                 spacing: Theme.s4
                 Repeater {
                     model: helpDialog.activeSections

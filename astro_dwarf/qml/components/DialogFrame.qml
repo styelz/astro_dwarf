@@ -2,9 +2,12 @@ import QtQuick
 import ".."
 
 // Background for dialogs: notched surface with corner ticks in the dialog's tone.
+// frameBorder lets a HudScrollBar draw its thumb on this stroke.
 Item {
     id: dialogFrame
     property color tone: Theme.accent
+    readonly property bool frameBorder: true
+    readonly property real frameEdge: frame.o
     MouseArea {
         anchors.fill: parent
         z: -1
@@ -17,6 +20,7 @@ Item {
         }
     }
     HudFrame {
+        id: frame
         anchors.fill: parent
         topLeft: Theme.notch
         topRight: Theme.notch

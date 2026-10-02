@@ -1,9 +1,12 @@
-"""Stitch a DWARF panorama session into one JPEG.
+"""Stitch a DWARF panorama session into one image.
 
 The session folder holds the full-size tiles, named ``row_col.jpg``. Folders
 ``1`` through ``5`` repeat that grid at smaller sizes. The phone's quick view
 uses a small folder and the single overlap written into ``pano_preview.html``.
 A sharp view uses the full-size tiles, scaled to fit a desktop image.
+
+The viewer keeps a JPEG. Downloading that panorama saves the constructed
+image as a TIFF, not the tile folder.
 
 That overlap is one fraction for both axes. On a nearby wall the nod does not
 land on it, and each frame keeps its own exposure. The stitch measures each
@@ -74,10 +77,47 @@ class PanoramaBuild:
 class PanoramaSignals(QObject):
     progress = Signal(int, int, int)
     finished = Signal(int, str, str, str)
+    exported = Signal(int, bool, str, str)
 
 
 def panorama_available() -> bool:
     return np is not None and cv2 is not None
+
+
+def panorama_result_caption(
+    cols: int,
+    rows: int,
+    *,
+    quality: str,
+    overlap: float,
+    saved: int,
+    tele_fov_h: float = 0.0,
+    tele_fov_v: float = 0.0,
+) -> str:
+    """One line under a finished panorama: grid, field, overlap, and stitch."""
+    cols_n = max(1, int(cols or 1))
+    rows_n = max(1, int(rows or 1))
+    shots = cols_n * rows_n
+    label = "sharp" if str(quality) == "sharp" else "preview"
+    parts = [f"{cols_n}×{rows_n}"]
+    try:
+        fov_h = float(tele_fov_h)
+        fov_v = float(tele_fov_v)
+        overlap_n = float(overlap)
+    except (TypeError, ValueError):
+        fov_h = fov_v = overlap_n = 0.0
+    if fov_h > 0.5 and fov_v > 0.3:
+        step = (1.0 - overlap_n) if 0.0 < overlap_n < 1.0 else 1.0
+        span_h = fov_h * (1.0 + max(0, cols_n - 1) * step)
+        span_v = fov_v * (1.0 + max(0, rows_n - 1) * step)
+        parts.append(f"{span_h:.1f}°×{span_v:.1f}°")
+    if 0.02 <= overlap_n <= 0.8:
+        parts.append(f"{round(overlap_n * 100)}% overlap")
+    kept = max(0, int(saved or 0))
+    if kept != shots:
+        parts.append(f"{kept}/{shots} shots")
+    parts.append(label)
+    return " · ".join(parts)
 
 
 def panorama_geometry(entry: dict[str, Any] | None) -> dict[str, Any]:
@@ -176,6 +216,100 @@ def panorama_output_path(cache_dir: Path, session: str, quality: str) -> Path:
     digest = hashlib.sha256(album_http_path(session).encode("utf-8")).hexdigest()[:16]
     label = "sharp" if str(quality) == "sharp" else "preview"
     return Path(cache_dir) / digest / f"{label}.jpg"
+
+
+def panorama_album_tiff_name(session: str) -> str:
+    """Local album file for one constructed panorama."""
+    folder = panorama_session_folder(session) or album_http_path(session).rstrip("/")
+    label = PurePosixPath(folder).name if folder else ""
+    cleaned = "".join(ch if ch not in '<>:"/\\|?*' else "_" for ch in label).strip(" .")
+    if not cleaned or cleaned in {".", ".."}:
+        cleaned = "panorama"
+    return f"{cleaned}.tif"
+
+
+def panorama_download_action(
+    *,
+    kind: str,
+    is_dir: bool,
+    protected: bool,
+    session: str,
+    item_id: str,
+    built_folder: str,
+    built_item_id: str,
+    built_quality: str,
+    status: str,
+    has_image: bool,
+) -> str:
+    """How a media download should treat this row.
+
+    ``tiff`` copies the constructed image, ``wait`` finishes the stitch already
+    on screen, ``stitch`` builds the sharp image, and ``folder`` keeps a
+    normal download. Preview and sharp are both the constructed image.
+    """
+    if str(kind or "") != "panorama" or not is_dir or protected or not session:
+        return "folder"
+    if str(built_quality or "") not in {"", "preview", "sharp"}:
+        return "stitch"
+    same = (
+        built_folder == session
+        and str(built_item_id or "") == str(item_id or "")
+        and bool(item_id)
+    )
+    if same and status == "done" and has_image:
+        return "tiff"
+    if same and status == "working":
+        return "wait"
+    return "stitch"
+
+
+def write_panorama_tiff(image_bgr: Any, dest: Path) -> None:
+    """Write the constructed panorama. ``image_bgr`` is an 8-bit OpenCV image."""
+    if cv2 is None:
+        raise RuntimeError("opencv is required to save the panorama")
+    ok, encoded = cv2.imencode(".tif", image_bgr)
+    if not ok:
+        raise RuntimeError("Could not encode the panorama TIFF")
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".part.tif")
+    tmp.write_bytes(encoded.tobytes())
+    tmp.replace(dest)
+
+
+def export_panorama_tiff(source: Path, dest: Path) -> Path:
+    """Copy the constructed panorama into the album as a TIFF."""
+    source = Path(source)
+    dest = Path(dest)
+    if dest.suffix.lower() not in {".tif", ".tiff"}:
+        dest = dest.with_suffix(".tif")
+    sibling = source.with_suffix(".tif")
+    origin = sibling if sibling.is_file() and sibling.stat().st_size > 0 else source
+    if not origin.is_file() or origin.stat().st_size <= 0:
+        raise RuntimeError("The constructed panorama is not ready")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(".part.tif")
+    try:
+        if origin.suffix.lower() in {".tif", ".tiff"}:
+            tmp.write_bytes(origin.read_bytes())
+        else:
+            if cv2 is None or np is None:
+                raise RuntimeError("opencv is required to save the panorama")
+            encoded_src = np.frombuffer(origin.read_bytes(), dtype=np.uint8).copy()
+            image = cv2.imdecode(encoded_src, cv2.IMREAD_COLOR)
+            if image is None or getattr(image, "size", 0) == 0:
+                raise RuntimeError("Could not read the constructed panorama")
+            ok, encoded = cv2.imencode(".tif", image)
+            if not ok:
+                raise RuntimeError("Could not encode the panorama TIFF")
+            tmp.write_bytes(encoded.tobytes())
+        tmp.replace(dest)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    if not dest.is_file() or dest.stat().st_size <= 0:
+        raise RuntimeError("Could not save the panorama TIFF")
+    return dest
 
 
 def tile_coord(name: str) -> tuple[int, int] | None:
@@ -343,6 +477,8 @@ def build_panorama(
     preview_path: str = "",
     progress: Callable[[int, int], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
+    tele_fov_h: float = 0.0,
+    tele_fov_v: float = 0.0,
 ) -> PanoramaBuild:
     """Download one resolution of a session and write a stitched JPEG."""
     if not panorama_available():
@@ -412,19 +548,27 @@ def build_panorama(
             frame = cv2.resize(frame, (fitted_w, fitted_h), interpolation=cv2.INTER_AREA)
         tiles[coord] = frame
     canvas = composite_grid(tiles, overlap=overlap, max_edge=0, align=True)
-    ok, encoded = cv2.imencode(".jpg", cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR), [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+    bgr = cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR)
+    ok, encoded = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
     if not ok:
         raise RuntimeError("Could not encode the panorama")
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part.jpg")
     tmp.write_bytes(encoded.tobytes())
     tmp.replace(dest)
-    label = "sharp" if str(quality) == "sharp" else "preview"
-    detail = f"{rows}×{cols} {label} · {tile_w}×{tile_h} tiles"
-    if fitted_w != tile_w or fitted_h != tile_h:
-        detail += f" · fit {int(canvas.shape[1])}×{int(canvas.shape[0])}"
-    if len(saved) != rows * cols:
-        detail += f" · {len(saved)}/{rows * cols} tiles"
+    try:
+        write_panorama_tiff(bgr, dest.with_suffix(".tif"))
+    except (OSError, RuntimeError):
+        pass
+    detail = panorama_result_caption(
+        cols,
+        rows,
+        quality=quality,
+        overlap=overlap,
+        saved=len(saved),
+        tele_fov_h=tele_fov_h,
+        tele_fov_v=tele_fov_v,
+    )
     return PanoramaBuild(
         path=str(dest),
         detail=detail,
@@ -454,6 +598,8 @@ class PanoramaJob(QRunnable):
         cancelled: Callable[[], bool],
         discover: bool = False,
         expect_count: int = 0,
+        tele_fov_h: float = 0.0,
+        tele_fov_v: float = 0.0,
     ):
         super().__init__()
         self._token = int(token)
@@ -468,6 +614,8 @@ class PanoramaJob(QRunnable):
         self._cancelled = cancelled
         self._discover = bool(discover)
         self._expect_count = int(expect_count or 0)
+        self._tele_fov_h = float(tele_fov_h or 0)
+        self._tele_fov_v = float(tele_fov_v or 0)
         self.setAutoDelete(True)
 
     def run(self) -> None:
@@ -496,6 +644,8 @@ class PanoramaJob(QRunnable):
                 preview_path=self._preview_path,
                 progress=lambda done, total: self._signals.progress.emit(self._token, done, total),
                 cancelled=self._cancelled,
+                tele_fov_h=self._tele_fov_h,
+                tele_fov_v=self._tele_fov_v,
             )
             status, detail, path = "done", result.detail, result.path
         except _Cancelled:
@@ -505,12 +655,49 @@ class PanoramaJob(QRunnable):
             try:
                 if self._dest.suffix:
                     self._dest.with_suffix(".part.jpg").unlink(missing_ok=True)
+                    self._dest.with_suffix(".part.tif").unlink(missing_ok=True)
             except OSError:
                 pass
         try:
             self._signals.finished.emit(self._token, status, detail, path)
         except RuntimeError:
             pass
+
+
+class PanoramaTiffExport(QRunnable):
+    """Copy a constructed panorama into the album as a TIFF."""
+
+    def __init__(
+        self,
+        token: int,
+        source: Path,
+        dest: Path,
+        signals: PanoramaSignals,
+        cancelled: Callable[[], bool],
+    ):
+        super().__init__()
+        self._token = int(token)
+        self._source = Path(source)
+        self._dest = Path(dest)
+        self._signals = signals
+        self._cancelled = cancelled
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        if self._cancelled():
+            return
+        try:
+            path = export_panorama_tiff(self._source, self._dest)
+            if self._cancelled():
+                return
+            self._signals.exported.emit(self._token, True, str(path), "")
+        except Exception as exc:
+            if self._cancelled():
+                return
+            try:
+                self._signals.exported.emit(self._token, False, "", str(exc) or "Could not save the panorama")
+            except RuntimeError:
+                pass
 
 
 def _image_ok(image: Any) -> bool:

@@ -255,6 +255,9 @@ from .mosaic_stitch import StitchJob, StitchPane, StitchSignals, overlap_warning
 from .panorama_composite import (
     PanoramaJob,
     PanoramaSignals,
+    PanoramaTiffExport,
+    panorama_album_tiff_name,
+    panorama_download_action,
     panorama_geometry,
     panorama_output_path,
     panorama_progress_update,
@@ -295,6 +298,10 @@ from .telemetry_view import (
     TRACKING_NEEDS_CALIBRATION_TOAST,
     camera_params_to_telemetry,
     derive_activity,
+    reconnect_holds_device,
+    reconnect_join_label,
+    recovery_should_drop,
+    telemetry_operation_live,
     apply_mode_exposure_fields,
     exposure_seconds_from_text,
     eq_pose_steps,
@@ -807,12 +814,6 @@ _PHOTO_REQUIRED_ACTIONS = frozenset({
     "burst_start",
     "record_start",
     "timelapse_start",
-    "panorama_frame_start",
-    "panorama_frame_update",
-    "panorama_frame_reset",
-    "panorama_frame_stop",
-    "panorama_shoot",
-    "panorama_stop",
 })
 _DSO_REQUIRED_ACTIONS = frozenset({"calibrate", "polar", "track", "sky_track", "stack", "infinity"})
 _DSO_AUTO_SWITCH_ACTIONS = frozenset({"track", "sky_track"})
@@ -907,10 +908,14 @@ def preview_should_preserve_shooting_mode(
     persisted_mode: int = 0,
 ) -> bool:
     """True when live view must not force PHOTO just to open the cameras."""
-    if preview_needs_rtsp_restart(telemetry):
-        return False
     snap = telemetry or {}
     mode = _shooting_mode_int(snap.get("shooting_mode"))
+    # A live job, an open panorama, or solar mode stays as the telescope left it.
+    # Unhomed steppers mean the head was powered off, so a leftover mode 7 does not.
+    if telemetry_operation_live(snap) or (mode in {7, 8, 9, 10} and not snap.get("motors_unhomed")):
+        return True
+    if preview_needs_rtsp_restart(telemetry):
+        return False
     if mode in _ASTRO_SHOOTING_MODES:
         return True
     if snap.get("tracking_state") == "running":
@@ -933,6 +938,11 @@ def preview_should_skip_go_live(
     snap = telemetry or {}
     if snap.get("capture_active") or snap.get("capture_state") == "running":
         return False
+    if telemetry_operation_live(snap):
+        return True
+    mode = _shooting_mode_int(snap.get("shooting_mode"))
+    if mode in {7, 8, 9, 10} and not snap.get("motors_unhomed"):
+        return True
     return preview_should_preserve_shooting_mode(telemetry, persisted_mode)
 
 
@@ -1766,9 +1776,16 @@ def control_restore_should_apply_mode(
     *,
     preview_active: bool,
     tracking: bool,
+    telemetry: dict[str, Any] | None = None,
 ) -> bool:
     """Decide whether reconnect should switch PHOTO/DSO to a persisted value."""
     if wanted_mode not in {1, 2} or wanted_mode == current_mode:
+        return False
+    snap = dict(telemetry or {})
+    snap["shooting_mode"] = current_mode
+    if tracking:
+        snap["tracking_state"] = "running"
+    if reconnect_holds_device(snap):
         return False
     if current_mode in _ASTRO_SHOOTING_MODES or tracking:
         return False
@@ -1784,14 +1801,18 @@ def control_restore_should_defer(
     worker_busy: bool,
     mosaic_running: bool,
     capturing: bool,
+    device_live: bool = False,
 ) -> bool:
     """True when CONTROL restore would rewrite exposure/gain onto a live run.
 
     Mosaic STOP uses ``stop_astro``, which is not a ``_STOP_ACTIONS`` pending
     value. Firmware can still be stacking when the mosaic worker has already
     gone idle, and a 500 ms restore would then set count/exposure mid-stack.
+    Panorama, recording, and the other live jobs defer the same way.
     """
-    return bool(session_active or stopping or worker_busy or mosaic_running or capturing)
+    return bool(
+        session_active or stopping or worker_busy or mosaic_running or capturing or device_live
+    )
 
 
 class LogListModel(QAbstractListModel):
@@ -2106,6 +2127,7 @@ class AppBackend(QObject):
         self._last_toast: tuple[str, str, float] = ("", "", 0.0)
         self._device_lights: dict[str, bool] = {}
         self._panorama_frame_rect: dict[str, tuple[float, float, float, float]] = {}
+        self._panorama_frame_grid: dict[str, tuple[int, int]] = {}
         self._device_indicators: dict[str, bool] = {}
         self._control_dirty: set[str] = set()
         self._control_restoring: set[str] = set()
@@ -2312,7 +2334,10 @@ class AppBackend(QObject):
         self._panorama_signals = PanoramaSignals(self)
         self._panorama_signals.progress.connect(self._on_panorama_progress)
         self._panorama_signals.finished.connect(self._on_panorama_finished)
+        self._panorama_signals.exported.connect(self._on_panorama_exported)
         self._panorama_token = 0
+        self._panorama_export_token = 0
+        self._panorama_download: dict[str, Any] | None = None
         self._panorama_status = ""
         self._panorama_detail = ""
         self._panorama_path = ""
@@ -6052,6 +6077,7 @@ class AppBackend(QObject):
         total: int = 0,
         *,
         live: bool | None = None,
+        quiet: bool = False,
     ) -> None:
         self._panorama_status = status
         self._panorama_detail = detail
@@ -6065,7 +6091,7 @@ class AppBackend(QObject):
         if live is not None:
             self._panorama_live = bool(live)
         self.panoramaChanged.emit()
-        if status == "failed" and detail:
+        if status == "failed" and detail and not quiet:
             self._toast(detail, "error")
 
     def _on_panorama_progress(self, token: int, done: int, total: int) -> None:
@@ -6079,6 +6105,12 @@ class AppBackend(QObject):
     def _on_panorama_finished(self, token: int, status: str, detail: str, path: str) -> None:
         if token != self._panorama_token or self._shut_down:
             return
+        pending = self._panorama_download
+        owned = bool(
+            pending
+            and not pending.get("export_token")
+            and int(pending.get("token") or 0) == int(token)
+        )
         self._set_panorama(
             status,
             detail,
@@ -6088,7 +6120,14 @@ class AppBackend(QObject):
             self._panorama_folder,
             self._panorama_total,
             self._panorama_total,
+            quiet=owned and status == "failed",
         )
+        if not owned:
+            return
+        if status == "done" and path and Path(path).is_file():
+            self._start_panorama_tiff_export(path)
+            return
+        self._abandon_panorama_download(detail or "Could not stitch the panorama")
 
     def _stitch_cache_dir(self) -> Path:
         folder = self.store.root / "stitch-cache"
@@ -7400,8 +7439,13 @@ class AppBackend(QObject):
         if self._device_is_stopping(device_id):
             self.add_log("info", "Live view stays paused while the telescope stops", device_id)
             return
-        if self._preview_should_attach_only(device_id) and not preview_needs_rtsp_restart(
-            self._device_telemetry.get(device_id)
+        attach_telemetry = self._device_telemetry.get(device_id) or {}
+        attach_mode = _shooting_mode_int(attach_telemetry.get("shooting_mode"))
+        join_live = telemetry_operation_live(attach_telemetry) or (
+            attach_mode in {7, 8, 9, 10} and not attach_telemetry.get("motors_unhomed")
+        )
+        if self._preview_should_attach_only(device_id) and (
+            join_live or not preview_needs_rtsp_restart(attach_telemetry)
         ):
             self._clear_preview_hold()
             stacking = self._preview_stacking(device_id)
@@ -8422,6 +8466,11 @@ class AppBackend(QObject):
         telemetry = self._device_telemetry.get(device_id) or {}
         if telemetry.get("capture_active") or telemetry.get("capture_state") == "running":
             return True
+        if telemetry_operation_live(telemetry):
+            return True
+        mode = _shooting_mode_int(telemetry.get("shooting_mode"))
+        if mode in {7, 8, 9, 10} and not telemetry.get("motors_unhomed"):
+            return True
         for item in self._ensure_sessions_view():
             if item.get("device_id") == device_id and item.get("status") == SessionStatus.RUNNING:
                 return True
@@ -9112,6 +9161,9 @@ class AppBackend(QObject):
             telemetry = link_telemetry(telemetry if isinstance(telemetry, dict) else None)
             if telemetry:
                 self._on_telemetry(device_id, telemetry)
+                joined = reconnect_join_label(telemetry)
+                if joined:
+                    self.add_log("notice", f"Joined {joined}", device_id)
             self._maybe_resume_interrupted_session(device_id)
             self._maybe_resume_interrupted_mosaic(device_id)
             self._maybe_auto_start_preview(device_id)
@@ -9992,9 +10044,17 @@ class AppBackend(QObject):
         self._panorama_frame_rect[device_id] = framed
         return framed
 
+    def _store_panorama_frame_grid(self, device_id: str, columns: int, rows: int) -> tuple[int, int]:
+        grid = (max(0, int(columns or 0)), max(0, int(rows or 0)))
+        self._panorama_frame_grid[device_id] = grid
+        return grid
+
     @Slot(float, float, float, float)
-    def updatePanoramaFrame(self, x1: float, y1: float, x2: float, y2: float) -> None:
-        """Send the resized framing corners. Ignored until this session has a device rect."""
+    @Slot(float, float, float, float, int, int)
+    def updatePanoramaFrame(
+        self, x1: float, y1: float, x2: float, y2: float, columns: int = 0, rows: int = 0
+    ) -> None:
+        """Send the resized framing corners and the telephoto grid they cover."""
         device_id = self._selected_device_id
         telemetry = self._device_telemetry.get(device_id) or {}
         if not telemetry.get("panorama_has_rect"):
@@ -10005,15 +10065,20 @@ class AppBackend(QObject):
         if not worker or not worker.connected:
             return
         framed = self._store_panorama_frame_rect(device_id, x1, y1, x2, y2)
-        worker.send("panorama_frame_update", {"args": list(framed)})
+        grid = self._store_panorama_frame_grid(device_id, columns, rows)
+        worker.send("panorama_frame_update", {"args": [*framed, *grid]})
 
     @Slot(float, float, float, float)
-    def shootPanorama(self, x1: float, y1: float, x2: float, y2: float) -> None:
+    @Slot(float, float, float, float, int, int)
+    def shootPanorama(
+        self, x1: float, y1: float, x2: float, y2: float, columns: int = 0, rows: int = 0
+    ) -> None:
         """Start the tele grid using the on-screen frame, even if it was never resized."""
         device_id = self._selected_device_id
         if not device_id:
             return
         self._store_panorama_frame_rect(device_id, x1, y1, x2, y2)
+        self._store_panorama_frame_grid(device_id, columns, rows)
         self.deviceAction(device_id, "panorama_shoot")
 
     @Slot(float, result="QVariant")
@@ -10284,11 +10349,13 @@ class AppBackend(QObject):
             "panorama_stop",
         }:
             self._panorama_frame_rect.pop(device_id, None)
+            self._panorama_frame_grid.pop(device_id, None)
         if operation == "panorama_shoot":
-            # StartGrid has no corners. Send the on-screen frame with it.
+            # StartGrid has no corners. Send the on-screen frame and its grid.
             framed = self._panorama_frame_rect.get(device_id) or self._telemetry_panorama_rect(device_id)
             if framed:
-                payload = {"args": list(framed)}
+                columns, rows = self._panorama_frame_grid.get(device_id) or (0, 0)
+                payload = {"args": [*framed, int(columns or 0), int(rows or 0)]}
         worker.send(worker_operation, payload, callback=self._with_pending(device_id, operation, done))
         if dropping:
             self._drop_device_link(device_id)
@@ -11045,6 +11112,7 @@ class AppBackend(QObject):
             worker_busy=bool(worker.busy),
             mosaic_running=self._live_mosaic_running(device_id, live),
             capturing=self._telemetry_capturing(device_id),
+            device_live=reconnect_holds_device(self._device_telemetry.get(device_id)),
         ):
             self._schedule_control_restore(device_id, 2000)
             return
@@ -11071,6 +11139,7 @@ class AppBackend(QObject):
                 worker_busy=bool(worker.busy),
                 mosaic_running=self._live_mosaic_running(device_id, current_live),
                 capturing=self._telemetry_capturing(device_id),
+                device_live=reconnect_holds_device(self._device_telemetry.get(device_id)),
             )
 
         def apply_from_telemetry() -> None:
@@ -11090,6 +11159,7 @@ class AppBackend(QObject):
                 current_mode,
                 preview_active=self._preview_active or self._preview_playing,
                 tracking=telemetry.get("tracking_state") == "running",
+                telemetry=telemetry,
             )
             if not need_mode and not steps:
                 finish()
@@ -11620,6 +11690,8 @@ class AppBackend(QObject):
             or "Untitled"
         )
         local = self._match_local_album_file(display_name or name, remote or thumb, local_files)
+        if local is None and kind == "panorama":
+            local = local_files.get(panorama_album_tiff_name(remote or thumb or name))
         local_url = self._media_file_url(str(local)) if local else ""
         preview_resolved = entry.get("previewResolved") is True
         if preview_resolved:
@@ -11645,9 +11717,11 @@ class AppBackend(QObject):
         if not image_url and not is_dir and not is_video:
             image_url = thumb_url
         if local_url and not is_video:
-            if album_is_stack_display_image(str(local) if local else display_name):
+            displayable = album_is_stack_display_image(str(local) if local else display_name)
+            if displayable:
                 thumb_url = local_url
-            image_url = local_url
+            if kind != "panorama" or displayable:
+                image_url = local_url
         elif local_url:
             image_url = local_url
         try:
@@ -11812,6 +11886,7 @@ class AppBackend(QObject):
         self._media_download_batch = 0
         self._media_download_ok = 0
         self._media_download_failed = 0
+        self._cancel_panorama_download()
         self._media_status = str(status or "")
         self._emit_media(items=True)
 
@@ -11821,6 +11896,7 @@ class AppBackend(QObject):
         self._media_download_batch = 0
         self._media_download_ok = 0
         self._media_download_failed = 0
+        self._cancel_panorama_download()
         if self._media_device_id != device_id:
             self._media_album_root = ""
         self._media_device_id = device_id
@@ -11973,12 +12049,38 @@ class AppBackend(QObject):
     @Slot(str)
     def stitchSelectedPanorama(self, quality: str) -> None:
         """Stitch the open panorama. preview uses the small tiles; sharp uses the full-size tiles."""
+        self._stitch_panorama_item(self.selectedMedia, quality, self._selected_device_id)
+
+    def _advance_panorama_token(self, session: str = "", *, replace: bool = False, abandon_detail: str = "") -> int:
+        """Cancel the stitch in flight. A download of ``session`` follows the replacement."""
+        self._panorama_token += 1
+        token = self._panorama_token
+        pending = self._panorama_download
+        if pending and not pending.get("export_token"):
+            if replace and session and pending.get("session") == session:
+                pending["token"] = token
+            else:
+                self._abandon_panorama_download(abandon_detail or "Panorama download was interrupted")
+        return token
+
+    def _stitch_panorama_item(self, item: dict[str, Any], quality: str, device_id: str) -> str:
+        """Start a stitch for one album panorama. Returns ready, working, started, failed, or ignored."""
         choice = "sharp" if str(quality or "") == "sharp" else "preview"
-        item = self.selectedMedia
-        if str(item.get("kind") or "") != "panorama":
-            return
+        if str((item or {}).get("kind") or "") != "panorama":
+            return "ignored"
         session_id = str(item.get("id") or "")
         session = panorama_session_folder(str(item.get("file_path") or item.get("thumbnail_path") or ""))
+        pending = self._panorama_download
+        if (
+            pending
+            and not pending.get("export_token")
+            and choice != "sharp"
+            and session
+            and pending.get("session") == session
+            and self._panorama_folder == session
+            and self._panorama_status == "working"
+        ):
+            return "working"
         if (
             session
             and self._panorama_folder == session
@@ -11997,18 +12099,20 @@ class AppBackend(QObject):
                     self._panorama_done,
                     self._panorama_total,
                 )
-            return
-        device = next((entry for entry in self._devices if entry.id == self._selected_device_id), None)
+            return "ready" if self._panorama_status == "done" else "working"
+        device = next((entry for entry in self._devices if entry.id == device_id), None)
         ip = str(getattr(device, "ip_address", "") or "").strip()
         if not ip or not session:
-            self._panorama_token += 1
-            self._set_panorama("failed", "Connect the telescope to stitch this panorama", "", choice, session_id, session)
-            return
-        self._panorama_token += 1
-        token = self._panorama_token
+            message = "Connect the telescope to stitch this panorama"
+            had_download = bool(self._panorama_download and not (self._panorama_download or {}).get("export_token"))
+            self._advance_panorama_token(abandon_detail=message)
+            self._set_panorama("failed", message, "", choice, session_id, session, quiet=had_download)
+            return "failed"
+        token = self._advance_panorama_token(session, replace=True)
         dest = panorama_output_path(self._panorama_cache_dir(), session, choice)
         label = "sharp panorama" if choice == "sharp" else "panorama preview"
         self._set_panorama("working", f"Stitching {label}", "", choice, session_id, session, 0, 0, live=False)
+        fov_h, fov_v, _lens = self._device_fov(device_id, camera="tele")
         job = PanoramaJob(
             token,
             ip,
@@ -12020,8 +12124,11 @@ class AppBackend(QObject):
             dest,
             self._panorama_signals,
             lambda token=token: token != self._panorama_token or self._shut_down,
+            tele_fov_h=fov_h,
+            tele_fov_v=fov_v,
         )
         self._panorama_pool.start(job)
+        return "started"
 
     def _consider_panorama_preview(self, device_id: str, previous: dict[str, Any], current: dict[str, Any]) -> None:
         remembered = self._panorama_shot_progress.get(device_id)
@@ -12048,8 +12155,7 @@ class AppBackend(QObject):
     def _start_live_panorama_preview(self, device_id: str, total: int) -> None:
         device = next((entry for entry in self._devices if entry.id == device_id), None)
         ip = str(getattr(device, "ip_address", "") or "").strip()
-        self._panorama_token += 1
-        token = self._panorama_token
+        token = self._advance_panorama_token()
         if not ip:
             self._set_panorama(
                 "failed",
@@ -12064,6 +12170,7 @@ class AppBackend(QObject):
             )
             return
         self._set_panorama("working", "Stitching panorama preview", "", "preview", "", "", 0, int(total or 0), live=True)
+        fov_h, fov_v, _lens = self._device_fov(device_id, camera="tele")
         job = PanoramaJob(
             token,
             ip,
@@ -12077,6 +12184,8 @@ class AppBackend(QObject):
             lambda token=token: token != self._panorama_token or self._shut_down,
             discover=True,
             expect_count=int(total or 0),
+            tele_fov_h=fov_h,
+            tele_fov_v=fov_v,
         )
         self._panorama_pool.start(job)
 
@@ -12084,7 +12193,7 @@ class AppBackend(QObject):
     def dismissPanoramaLive(self) -> None:
         if not self._panorama_live:
             return
-        self._panorama_token += 1
+        self._advance_panorama_token()
         self._panorama_live = False
         self.panoramaChanged.emit()
 
@@ -12120,6 +12229,7 @@ class AppBackend(QObject):
         self._media_download_batch = 0
         self._media_download_ok = 0
         self._media_download_failed = 0
+        self._cancel_panorama_download()
         self._media_source = "local"
         self._media_device_id = ""
         self._set_media_busy("")
@@ -12432,6 +12542,142 @@ class AppBackend(QObject):
         if self._media_download_batch <= 1:
             self._toast("Download failed", "error", detail)
 
+    def _cancel_panorama_download(self) -> None:
+        """Drop a panorama TIFF save when the album listing moves on."""
+        self._panorama_download = None
+        self._panorama_export_token += 1
+
+    def _abandon_panorama_download(self, detail: str = "") -> None:
+        pending = self._panorama_download
+        if not pending or pending.get("export_token"):
+            return
+        self._panorama_download = None
+        device_id = str(pending.get("device_id") or "")
+        request_id = int(pending.get("request_id") or 0)
+        source = str(pending.get("source") or "")
+        message = detail or "Panorama download was interrupted"
+
+        def finish() -> None:
+            if self._shut_down:
+                return
+            if device_id and self._media_request_current(request_id, device_id, source):
+                self._note_media_download(False, "", message)
+                self._continue_media_download(device_id)
+                return
+            if self._album_busy == "download" and self._panorama_download is None:
+                self._set_media_busy("")
+
+        QTimer.singleShot(0, finish)
+
+    def _download_constructed_panorama(
+        self,
+        device_id: str,
+        chosen: str,
+        item: dict[str, Any],
+        remote: str,
+    ) -> bool:
+        """Save the stitched panorama as a TIFF. False leaves the normal folder download."""
+        label = str(item.get("file_name") or item.get("album_name") or "")
+        if album_is_protected_folder(remote, label):
+            return False
+        session = panorama_session_folder(str(item.get("file_path") or item.get("thumbnail_path") or remote))
+        if not session:
+            self._media_download_failed += 1
+            if self._media_download_batch <= 1:
+                self._toast("Nothing to download", "warning")
+            self._continue_media_download(device_id)
+            return True
+        action = panorama_download_action(
+            kind="panorama",
+            is_dir=True,
+            protected=False,
+            session=session,
+            item_id=str(item.get("id") or chosen),
+            built_folder=self._panorama_folder,
+            built_item_id=self._panorama_session,
+            built_quality=self._panorama_quality,
+            status=self._panorama_status,
+            has_image=Path(self._panorama_path).is_file(),
+        )
+        self._panorama_download = {
+            "device_id": device_id,
+            "item_id": chosen,
+            "remote": remote,
+            "request_id": self._media_request_id,
+            "source": self._media_source,
+            "session": session,
+            "token": self._panorama_token if action == "wait" else 0,
+            "export_token": 0,
+        }
+        self._set_media_busy("download")
+        if action == "tiff":
+            self._start_panorama_tiff_export(self._panorama_path)
+            return True
+        if action == "wait":
+            return True
+        result = self._stitch_panorama_item(item, "sharp", device_id)
+        pending = self._panorama_download
+        if pending and result in {"ready", "working", "started"}:
+            pending["token"] = self._panorama_token
+        if result == "ready" and Path(self._panorama_path).is_file():
+            self._start_panorama_tiff_export(self._panorama_path)
+        return True
+
+    def _start_panorama_tiff_export(self, source: str) -> None:
+        pending = self._panorama_download
+        if not pending or not source:
+            self._abandon_panorama_download("The constructed panorama is not ready")
+            return
+        self._panorama_export_token += 1
+        token = self._panorama_export_token
+        pending["export_token"] = token
+        dest = self._album_dir() / panorama_album_tiff_name(str(pending.get("session") or ""))
+        self._set_media_busy("download")
+        job = PanoramaTiffExport(
+            token,
+            Path(source),
+            dest,
+            self._panorama_signals,
+            lambda token=token: token != self._panorama_export_token or self._shut_down,
+        )
+        self._panorama_pool.start(job)
+
+    def _on_panorama_exported(self, token: int, ok: bool, path: str, detail: str) -> None:
+        pending = self._panorama_download
+        if (
+            not pending
+            or int(pending.get("export_token") or 0) != int(token)
+            or self._shut_down
+        ):
+            return
+        self._panorama_download = None
+        device_id = str(pending.get("device_id") or "")
+        request_id = int(pending.get("request_id") or 0)
+        source = str(pending.get("source") or "")
+        if not self._media_request_current(request_id, device_id, source):
+            return
+        if ok and path and Path(path).is_file():
+            self._finish_panorama_tiff_download(pending, path)
+        else:
+            self._note_media_download(False, "", detail or "Could not save the panorama")
+        self._continue_media_download(device_id)
+
+    def _finish_panorama_tiff_download(self, pending: dict[str, Any], path: str) -> None:
+        chosen = str(pending.get("item_id") or "")
+        remote = str(pending.get("remote") or "")
+        self._album_path = path
+        updated = []
+        for entry in self._media_items:
+            if entry.get("id") == chosen or entry.get("file_path") == remote:
+                entry = dict(entry)
+                entry["local_path"] = path
+                entry["downloaded"] = True
+            updated.append(entry)
+        self._media_items = updated
+        self._select_media_id(chosen)
+        self._note_media_download(True, "Downloaded", Path(path).name)
+        self._emit_media(items=True)
+
     def _download_media_item(self, device_id: str, item_id: str) -> None:
         chosen = str(item_id or "").strip()
         if self._session_is_capturing(device_id):
@@ -12442,6 +12688,9 @@ class AppBackend(QObject):
             return
         item = next((entry for entry in self._media_items if entry.get("id") == chosen), None)
         remote = str((item or {}).get("file_path") or chosen)
+        if item and str(item.get("kind") or "") == "panorama" and item.get("is_dir"):
+            if self._download_constructed_panorama(device_id, chosen, item, remote):
+                return
         if item and item.get("is_dir"):
             if album_is_protected_folder(remote, str(item.get("file_name") or item.get("album_name") or "")):
                 self._media_download_failed += 1
@@ -14688,6 +14937,62 @@ class AppBackend(QObject):
         self._resume_attempted.add(device_id)
         self._start_session(worker, session)
 
+    def _recovery_same_night(self, device_id: str) -> bool:
+        """True when a parked run still belongs to the current observing night."""
+        device = self._device_by_id(device_id)
+        tz = self._zone_for(device) if device is not None else zoneinfo_from_name("UTC")
+        cutoff = self._cutoff_hour()
+        today = observing_date(datetime.now(tz).isoformat(), cutoff, tz)
+        stamps: list[str] = []
+        for session_id, owner in self._recovered_sessions.items():
+            if owner != device_id:
+                continue
+            session = self.store.sessions.get(session_id)
+            if session is not None and session.scheduled_start:
+                stamps.append(session.scheduled_start)
+        live = self._live_mosaic.get(device_id) or {}
+        current = live.get("current")
+        if isinstance(current, Session) and current.scheduled_start:
+            stamps.append(current.scheduled_start)
+        if not stamps:
+            return True
+        for stamp in stamps:
+            try:
+                if observing_date(stamp, cutoff, tz) == today:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+    def _drop_restarted_recovery(self, device_id: str) -> None:
+        """Leave a powered-off telescope alone instead of replaying last night."""
+        dropped = self._discard_live_mosaic(device_id)
+        stale = [session_id for session_id, owner in self._recovered_sessions.items() if owner == device_id]
+        skipped = 0
+        for session_id in stale:
+            self._recovered_sessions.pop(session_id, None)
+            session = self.store.sessions.get(session_id)
+            if session is None or session.status != SessionStatus.PLANNED:
+                continue
+            try:
+                self.store.transition(
+                    session_id,
+                    SessionStatus.SKIPPED,
+                    current_step="Telescope restarted",
+                    outcome="The telescope was restarted, so this run was not continued",
+                )
+                skipped += 1
+            except (KeyError, ValueError):
+                continue
+        if dropped or skipped:
+            self.add_log(
+                "notice",
+                "Telescope restarted — continuing from its current state",
+                device_id,
+            )
+            self._emit_sessions_changed()
+            self._notify_devices()
+
     def _release_recovered_if_idle(self, device_id: str) -> None:
         """If reconnect did not find a live stack, let the scheduler own the recovered session."""
         if self._shut_down or self._active_sessions.get(device_id):
@@ -14696,6 +15001,9 @@ class AppBackend(QObject):
         if telemetry.get("capture_active") or telemetry.get("capture_state") == "running":
             self._maybe_resume_interrupted_session(device_id)
             self._maybe_resume_interrupted_mosaic(device_id)
+            return
+        if recovery_should_drop(telemetry, same_night=self._recovery_same_night(device_id)):
+            self._drop_restarted_recovery(device_id)
             return
         self._maybe_resume_interrupted_mosaic(device_id, allow_idle=True)
         stale = [session_id for session_id, owner in self._recovered_sessions.items() if owner == device_id]

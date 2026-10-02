@@ -6,4 +6,3 @@ SessionDialog 1.0 SessionDialog.qml
 DuplicateSessionDialog 1.0 DuplicateSessionDialog.qml
 ColorPickDialog 1.0 ColorPickDialog.qml
 SkyRaDecDialog 1.0 SkyRaDecDialog.qml
-PanoramaNoticeDialog 1.0 PanoramaNoticeDialog.qml

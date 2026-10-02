@@ -12,9 +12,19 @@ from astro_dwarf.device_worker import _capture_running, capture_should_skip_dark
 from astro_dwarf.qt_backend import (
     command_required_shooting_mode,
     command_should_auto_enter_dso,
+    control_restore_should_apply_mode,
     control_restore_should_defer,
+    preview_should_preserve_shooting_mode,
+    preview_should_skip_go_live,
     stacking_blocks_action,
     tracking_blocks_action,
+)
+from astro_dwarf.telemetry_view import (
+    reconnect_holds_device,
+    reconnect_infers_panorama_framing,
+    reconnect_join_label,
+    recovery_should_drop,
+    telemetry_operation_live,
 )
 
 
@@ -139,10 +149,59 @@ def test_missing_darks_hold_is_skipped() -> None:
     )
 
 
+def test_reconnect_joins_live_mode_and_drops_a_restart() -> None:
+    framing = {"shooting_mode": 7}
+    _assert(reconnect_infers_panorama_framing(framing), "mode 7 with homed steppers is framing")
+    _assert(reconnect_holds_device(framing), "open panorama must not be overwritten")
+    _assert(
+        not control_restore_should_apply_mode(2, 7, preview_active=False, tracking=False, telemetry=framing),
+        "saved DSO must not replace panorama framing",
+    )
+    _assert(preview_should_preserve_shooting_mode(framing, 2), "preview must leave panorama mode alone")
+    _assert(preview_should_skip_go_live(framing, 2), "GoLive must not close panorama framing")
+    _assert(reconnect_join_label(framing) == "panorama framing", reconnect_join_label(framing))
+
+    restarted = {"shooting_mode": 7, "motors_unhomed": True}
+    _assert(not reconnect_infers_panorama_framing(restarted), "a power cycle is not an open frame")
+    _assert(not reconnect_holds_device(restarted), "a restarted head accepts the saved setup")
+    _assert(
+        control_restore_should_apply_mode(1, 7, preview_active=False, tracking=False, telemetry=restarted),
+        "saved PHOTO applies after a restart",
+    )
+    _assert(recovery_should_drop(restarted, same_night=True), "same-night power cycle drops the parked run")
+
+    stacking = {"capture_state": "running", "capture_active": True, "shooting_mode": 2}
+    _assert(telemetry_operation_live(stacking), "a stack is a live job")
+    _assert(not recovery_should_drop(stacking, same_night=False), "a live stack is joined even next night")
+    _assert("stack" in reconnect_join_label(stacking), reconnect_join_label(stacking))
+    _assert(
+        control_restore_should_defer(
+            session_active=False,
+            stopping=False,
+            worker_busy=False,
+            mosaic_running=False,
+            capturing=False,
+            device_live=True,
+        ),
+        "recording and panorama defer exposure restore",
+    )
+
+    recording = {"record_state": "running", "shooting_mode": 1}
+    _assert(telemetry_operation_live(recording), "recording is a live job")
+    _assert(preview_should_skip_go_live(recording, 1), "GoLive must not stop a recording")
+
+    idle_next_night = {"shooting_mode": 1}
+    _assert(recovery_should_drop(idle_next_night, same_night=False), "an idle telescope next night is a fresh start")
+    _assert(not recovery_should_drop(idle_next_night, same_night=True), "the same night may continue an idle plan")
+    _assert(reconnect_join_label(idle_next_night) == "", "idle photo has nothing to join")
+
+
 def test_photo_mode_auto_enters_dso_for_tracking() -> None:
     _assert(command_required_shooting_mode("sky_track") == 2, "sky track needs DSO")
     _assert(command_required_shooting_mode("track") == 2, "track needs DSO")
     _assert(command_required_shooting_mode("photo") == 1, "photo stays PHOTO")
+    _assert(command_required_shooting_mode("panorama_shoot") is None, "panorama shoot is not photo-only")
+    _assert(command_required_shooting_mode("panorama_frame_start") is None, "panorama framing is not photo-only")
     _assert(command_should_auto_enter_dso("sky_track", 1), "PHOTO sky track switches to DSO")
     _assert(command_should_auto_enter_dso("track", 1), "PHOTO track switches to DSO")
     _assert(not command_should_auto_enter_dso("sky_track", 2), "already DSO does not switch again")
@@ -160,5 +219,6 @@ if __name__ == "__main__":
     test_capture_running_helper()
     test_control_restore_defers_while_firmware_still_stacking()
     test_missing_darks_hold_is_skipped()
+    test_reconnect_joins_live_mode_and_drops_a_restart()
     test_photo_mode_auto_enters_dso_for_tracking()
     print("ok")

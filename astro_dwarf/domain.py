@@ -1297,6 +1297,57 @@ def panorama_fov_grid(
     return (max(1, int(round(width / cell_w))), max(1, int(round(height / cell_h))))
 
 
+def panorama_frame_counts(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    *,
+    limit_left: float = 0.0,
+    limit_top: float = 0.0,
+    limit_right: float = 1.0,
+    limit_bottom: float = 1.0,
+    view_aspect: float = 32 / 9,
+    tele_fov_h: float = 2.95,
+    tele_fov_v: float = 1.66,
+) -> tuple[int, int]:
+    """Columns and rows of tele cells inside a panorama framing rectangle.
+
+    Same cell size as the framing pane: the full reachable scan is 1800
+    tele fields, painted at ``view_aspect``.
+    """
+    try:
+        span_x = float(limit_right) - float(limit_left)
+        span_y = float(limit_bottom) - float(limit_top)
+    except (TypeError, ValueError):
+        return (1, 1)
+    if span_x <= 0 or span_y <= 0:
+        return (1, 1)
+    grid_cols, grid_rows = panorama_shot_grid(
+        PANORAMA_FULL_SHOT_TOTAL, view_aspect, tele_fov_h, tele_fov_v
+    )
+    if grid_cols < 1 or grid_rows < 1:
+        return (1, 1)
+    snapped = panorama_snap_rect(
+        x1,
+        y1,
+        x2,
+        y2,
+        limit_left=float(limit_left),
+        limit_top=float(limit_top),
+        span_x=span_x,
+        span_y=span_y,
+        col_count=grid_cols,
+        row_count=grid_rows,
+    )
+    return panorama_fov_grid(
+        abs(snapped[2] - snapped[0]),
+        abs(snapped[3] - snapped[1]),
+        span_x / grid_cols,
+        span_y / grid_rows,
+    )
+
+
 def panorama_snap_rect(
     x1: float,
     y1: float,

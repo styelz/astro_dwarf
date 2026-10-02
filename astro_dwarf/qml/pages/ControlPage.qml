@@ -2005,7 +2005,7 @@ Item {
                         z: 3
                         parent: previewHost.previewChromeParent
                         clip: true
-                        visible: previewHost.pipPlaying
+                        visible: previewHost.pipPlaying && !previewHost.panoramaFrame
                         width: Math.round(Math.max(Theme.px(168), Math.min(parent.width * 0.32, parent.height * 0.38, Theme.px(300))))
                         height: Math.round(width * pipAspect)
                         property bool floating: false
@@ -2231,7 +2231,7 @@ Item {
                         anchors.bottom: parent.bottom
                         anchors.margins: Theme.px(14)
                         height: Theme.px(24)
-                        visible: !backend.panoramaLive
+                        visible: !backend.panoramaLive && !previewHost.panoramaCanvas
                         // status stays up while streaming; it just recedes when the controls are away
                         opacity: previewHost.chromeShown ? 1 : 0.62
                         Behavior on opacity { NumberAnimation { duration: Theme.slow } }
@@ -2615,7 +2615,7 @@ Item {
                         anchors.top: parent.top
                         anchors.margins: Theme.px(14)
                         spacing: Theme.px(6)
-                        visible: !backend.panoramaLive
+                        visible: !backend.panoramaLive && !previewHost.panoramaCanvas
                         opacity: previewHost.chromeShown ? 1 : 0.75
                         Behavior on opacity { NumberAnimation { duration: Theme.slow } }
                         Rectangle {
@@ -2772,7 +2772,8 @@ Item {
                                 const y1 = Math.min(panoramaFramePane.showY1, panoramaFramePane.showY2)
                                 const x2 = Math.max(panoramaFramePane.showX1, panoramaFramePane.showX2)
                                 const y2 = Math.max(panoramaFramePane.showY1, panoramaFramePane.showY2)
-                                backend.shootPanorama(x1, y1, x2, y2)
+                                const grid = panoramaFramePane.frameGrid(x1, y1, x2, y2)
+                                backend.shootPanorama(x1, y1, x2, y2, grid[0], grid[1])
                             }
                         }
                         HudButton {
@@ -2841,20 +2842,21 @@ Item {
                             onClicked: previewHost.showMosaicSheet = !previewHost.showMosaicSheet
                         }
                         HudButton {
-                            visible: previewHost.pipAvailable
+                            objectName: "pipToggle"
+                            visible: previewHost.pipAvailable && !previewHost.panoramaCanvas
                             text: previewHost.pipEnabled ? "HIDE PIP" : "SHOW PIP"
                             onHoveredChanged: previewHost.holdControls(hovered)
                             onClicked: previewHost.pipEnabled = !previewHost.pipEnabled
                         }
                         HudButton {
                             objectName: "swapViews"
-                            visible: previewHost.pipAvailable
+                            visible: previewHost.pipAvailable && !previewHost.panoramaCanvas
                             text: "SWAP VIEWS"
                             onHoveredChanged: previewHost.holdControls(hovered)
                             onClicked: previewHost.swapViews()
                         }
                         HudButton {
-                            visible: backend.previewResult && (!previewHost.mosaicActive || previewHost.chromeShown)
+                            visible: backend.previewResult && (!previewHost.mosaicActive || previewHost.chromeShown) && !previewHost.panoramaCanvas
                             text: "START LIVE VIEW"
                             enabled: previewHost.previewStartEnabled
                             buttonColor: Theme.fillActive
@@ -2864,7 +2866,8 @@ Item {
                         }
                         HudButton {
                             id: stopPreviewButton
-                            visible: !previewHost.mosaicActive || previewHost.chromeShown
+                            objectName: "stopPreview"
+                            visible: (!previewHost.mosaicActive || previewHost.chromeShown) && !previewHost.panoramaCanvas
                             text: backend.previewResult ? "DISMISS" : "STOP PREVIEW"
                             busyText: backend.previewResult ? "DISMISSING…" : "STOPPING…"
                             onHoveredChanged: previewHost.holdControls(hovered)
@@ -2941,6 +2944,7 @@ Item {
                         HudMenuItem {
                             text: backend.previewResult ? "Dismiss completed stack" : (backend.previewHeld ? "Don't resume live view" : (backend.previewActive ? "Stop preview" : "Start preview"))
                             glyph: backend.previewActive || backend.previewHeld || backend.previewResult ? "\uE71A" : "\uE768"
+                            visible: !previewHost.panoramaCanvas
                             enabled: backend.previewActive
                                 || backend.previewHeld
                                 || backend.previewResult
@@ -2962,12 +2966,14 @@ Item {
                         HudMenuItem {
                             text: previewHost.pipEnabled ? "Hide picture-in-picture" : "Show picture-in-picture"
                             glyph: "\uE7C4"
+                            visible: !previewHost.panoramaCanvas
                             enabled: previewHost.pipAvailable
                             onTriggered: previewHost.pipEnabled = !previewHost.pipEnabled
                         }
                         HudMenuItem {
                             text: "Swap views"
                             glyph: "\uE8AB"
+                            visible: !previewHost.panoramaCanvas
                             enabled: previewHost.pipAvailable
                             onTriggered: previewHost.swapViews()
                         }
@@ -3188,7 +3194,12 @@ Item {
                         readonly property bool trackingNow: trackingPad && !!t.tracking_active
                         readonly property bool slewingNow: trackingPad && root.scopeActivity === "goto"
                         readonly property bool stopping: effectiveOperation !== modelData.start
-                        readonly property bool panoramaPad: modelData.start === "stack" && cameraPanel.photoMode
+                        readonly property bool panoramaBusy: root.scopeActivity === "panorama"
+                            || root.scopeActivity === "panorama_frame"
+                            || String(t.panorama_state || "") === "running"
+                            || String(t.panorama_framing_state || "") === "running"
+                            || cameraPanel.shootingMode === "PANORAMA"
+                        readonly property bool panoramaPad: modelData.start === "stack" && (cameraPanel.photoMode || panoramaBusy)
                         readonly property bool cameraAllowed: stopping || modelData.camera !== "tele" || cameraPanel.teleSelected
                         readonly property bool modeAllowed: {
                             if (panoramaPad)
@@ -3527,15 +3538,12 @@ Item {
                                 const y1 = Math.min(panoramaFramePane.showY1, panoramaFramePane.showY2)
                                 const x2 = Math.max(panoramaFramePane.showX1, panoramaFramePane.showX2)
                                 const y2 = Math.max(panoramaFramePane.showY1, panoramaFramePane.showY2)
-                                backend.shootPanorama(x1, y1, x2, y2)
+                                const grid = panoramaFramePane.frameGrid(x1, y1, x2, y2)
+                                backend.shootPanorama(x1, y1, x2, y2, grid[0], grid[1])
                                 return
                             }
                             if (panoramaPad && effectiveOperation === "")
                                 return
-                            if (panoramaPad && effectiveOperation === "panorama_frame_start") {
-                                root.openPanoramaNotice()
-                                return
-                            }
                             if (effectiveOperation === "stack")
                                 cameraPanel.applyPendingStackParams()
                             root.requestDeviceAction(effectiveOperation, padLabel)

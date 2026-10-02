@@ -6,7 +6,7 @@ import time
 from fractions import Fraction
 from typing import Any
 
-SHOOTING_MODES = {1: "PHOTO", 2: "DSO", 8: "SUN", 9: "MOON", 10: "PLANET"}
+SHOOTING_MODES = {1: "PHOTO", 2: "DSO", 7: "PANORAMA", 8: "SUN", 9: "MOON", 10: "PLANET"}
 STALE_AFTER_S = 60.0
 _PHOTO_SHOOTING_MODE = 1
 _ASTRO_SHOOTING_MODE = 2
@@ -675,6 +675,138 @@ def eq_pose_steps(latitude: Any) -> dict[str, Any]:
         "tilt_deg": round(tilt, 2),
         "text": "\n".join(lines),
     }
+
+
+def _state_is(raw: dict[str, Any], key: str, expected: str | set[str]) -> bool:
+    value = str(raw.get(key) or "")
+    if isinstance(expected, set):
+        return value in expected
+    return value == expected
+
+
+def telemetry_operation_live(raw: dict[str, Any] | None) -> bool:
+    """True when firmware is in a job the app can rejoin.
+
+    Sidereal tracking alone is not a capture. A power-cycled telescope reports
+    none of these, so a parked stack or panorama must not be started again.
+    """
+    snap = raw or {}
+    if snap.get("capture_active") or _state_is(snap, "capture_state", "running"):
+        return True
+    if _state_is(snap, "panorama_state", "running") or _state_is(snap, "panorama_framing_state", "running"):
+        return True
+    for key in ("burst_state", "record_state", "timelapse_state", "photo_state", "dark_state", "eq_state"):
+        if _state_is(snap, key, "running"):
+            return True
+    if _state_is(snap, "calibration_state", {"running", "solving"}):
+        return True
+    if _state_is(snap, "goto_state", {"running", "solving", "stopping"}):
+        return True
+    if _state_is(snap, "autofocus_state", {"running", "stopping"}):
+        return True
+    return False
+
+
+def reconnect_holds_device(raw: dict[str, Any] | None) -> bool:
+    """True when saved PHOTO/DSO settings must not overwrite the telescope.
+
+    Panorama and solar modes stay put while the steppers are still homed.
+    ``motors_unhomed`` means the head was powered off: mode 7 left behind by
+    firmware is not an open framing session.
+    """
+    snap = raw or {}
+    if telemetry_operation_live(snap):
+        return True
+    if _state_is(snap, "tracking_state", "running"):
+        return True
+    try:
+        mode = int(snap.get("shooting_mode") or 0)
+    except (TypeError, ValueError):
+        mode = 0
+    # A power cycle leaves the steppers unhomed. A shooting mode that survived
+    # that reboot is not a session to rejoin.
+    if mode in {7, 8, 9, 10} and not snap.get("motors_unhomed"):
+        return True
+    return False
+
+
+def reconnect_infers_panorama_framing(raw: dict[str, Any] | None) -> bool:
+    """True when panorama mode is still selected and framing was not closed.
+
+    The framing notify is push-only, so a fresh socket does not receive it.
+    Shooting mode 7 with no grid capture is the framing session. An explicit
+    idle notify, a running shoot, or unhomed steppers are not.
+    """
+    snap = raw or {}
+    if snap.get("motors_unhomed"):
+        return False
+    if _state_is(snap, "panorama_state", "running"):
+        return False
+    framing = str(snap.get("panorama_framing_state") or "")
+    if framing in {"idle", "stopped"}:
+        return False
+    if framing == "running":
+        return True
+    try:
+        mode = int(snap.get("shooting_mode") or 0)
+    except (TypeError, ValueError):
+        mode = 0
+    return mode == 7
+
+
+def recovery_should_drop(raw: dict[str, Any] | None, *, same_night: bool) -> bool:
+    """True when a parked run must not be started again.
+
+    Join anything the telescope is still doing. Drop it after a power cycle,
+    or on a later night once the telescope is idle. The same night, with the
+    head still homed and idle, the scheduler may continue the plan.
+    """
+    snap = raw or {}
+    if telemetry_operation_live(snap):
+        return False
+    if snap.get("motors_unhomed"):
+        return True
+    return not same_night
+
+
+def reconnect_join_label(raw: dict[str, Any] | None) -> str:
+    """Short log line for a job the telescope is still in, or empty."""
+    snap = raw or {}
+    if not reconnect_holds_device(snap):
+        return ""
+    activity, detail = derive_activity(snap)
+    names = {
+        "panorama_frame": "panorama framing",
+        "panorama": "the panorama shoot",
+        "imaging": "the stack",
+        "record": "recording",
+        "burst": "the burst",
+        "timelapse": "the timelapse",
+        "calibrate": "calibration",
+        "goto": "the slew",
+        "polar": "polar alignment",
+        "autofocus": "autofocus",
+        "dark": "dark calibration",
+        "infinity": "infinity focus",
+    }
+    if activity in names:
+        text = names[activity]
+        if detail and activity in {"imaging", "panorama", "burst", "record", "timelapse", "goto"}:
+            return f"{text} · {detail}"
+        return text
+    try:
+        mode = int(snap.get("shooting_mode") or 0)
+    except (TypeError, ValueError):
+        mode = 0
+    if mode == 7:
+        return "panorama framing"
+    label = SHOOTING_MODES.get(mode, "")
+    if label and mode not in {1, 2}:
+        return f"{label.lower()} mode"
+    if _state_is(snap, "tracking_state", "running"):
+        target = str(snap.get("tracking_target") or "").strip()
+        return f"tracking · {target}" if target else "tracking"
+    return ""
 
 
 def derive_activity(raw: dict[str, Any], now: float | None = None) -> tuple[str, str]:

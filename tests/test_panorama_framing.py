@@ -22,6 +22,7 @@ from astro_dwarf.device_telemetry import (
 )
 from astro_dwarf.domain import (
     panorama_canvas_stamp_norm,
+    panorama_frame_counts,
     panorama_fov_grid,
     panorama_leave_index,
     panorama_rect_matches,
@@ -122,10 +123,25 @@ def test_panorama_scan_cache_survives_reconnect() -> None:
             thumb.webp_data = b"RIFF-first"
             tap.update(tap._decode(CMD_NOTIFY_PANO_FRAMING_THUMBNAIL, TYPE_NOTIFICATION, thumb.SerializeToString()), force=True)
 
+            rect = notify_pb2.PanoFramingRectUpdateNotify()
+            rect.norm_x_tl = 0.0
+            rect.norm_y_tl = 0.25
+            rect.norm_x_br = 0.4
+            rect.norm_y_br = 0.8
+            rect.norm_limit_x_left = 0.0
+            rect.norm_limit_y_top = 0.0
+            rect.norm_limit_x_right = 1.0
+            rect.norm_limit_y_bottom = 1.0
+            rect.rect_hor_fov = 12.0
+            rect.rect_ver_fov = 7.0
+            tap.update(tap._decode(CMD_NOTIFY_PANO_FRAMING_RECT, TYPE_NOTIFICATION, rect.SerializeToString()), force=True)
+
             tap.persist_panorama_scan()
             cache_path = Path(tmp) / "panorama-cache" / "dev-1.webp"
+            rect_path = Path(tmp) / "panorama-cache" / "dev-1.json"
             _assert(cache_path.is_file(), "persist_panorama_scan did not write the cache file")
             _assert(cache_path.read_bytes() == b"RIFF-first", cache_path.read_bytes())
+            _assert(rect_path.is_file(), "the framing rect was not saved for the next launch")
 
             # A reconnect (or app restart) creates a brand-new tap with no in-memory state.
             reconnected = _tap(device_id="dev-1")
@@ -133,6 +149,9 @@ def test_panorama_scan_cache_survives_reconnect() -> None:
             snapshot = reconnected.snapshot()
             _assert(snapshot.get("panorama_scan_path") == str(cache_path), snapshot)
             _assert(snapshot.get("panorama_scan_rev") == 1, snapshot)
+            _assert(snapshot.get("panorama_has_rect") is True, snapshot)
+            _assert(snapshot.get("panorama_x1") == 0.0, snapshot)
+            _assert(snapshot.get("panorama_y2") == 0.8, snapshot)
 
             # Loading twice on the same connection must not re-trigger.
             reconnected.update({"panorama_scan_rev": 5}, force=True)
@@ -141,6 +160,7 @@ def test_panorama_scan_cache_survives_reconnect() -> None:
 
             reconnected.clear_panorama_scan_cache()
             _assert(not cache_path.is_file(), "clear_panorama_scan_cache left the file behind")
+            _assert(not rect_path.is_file(), "clear_panorama_scan_cache left the framing rect behind")
         finally:
             if previous_override is None:
                 os.environ.pop("ASTRO_DWARF_DATA", None)
@@ -180,6 +200,19 @@ def test_panorama_leave_index_is_the_cell_being_left() -> None:
     _assert(panorama_leave_index(0, 0) is None, panorama_leave_index(0, 0))
     _assert(panorama_leave_index(0, 1) == 0, panorama_leave_index(0, 1))
     _assert(panorama_leave_index(11, 0) == 11, "progress reset still freezes the last cell")
+
+
+def test_panorama_tracker_stays_on_a_half_cell_frame() -> None:
+    # The opening frame snaps to row 11.5. Rounding that to row 12 parks
+    # the reticle half a tele field below the shot.
+    opening = panorama_snap_rect(0.467, 0.383, 0.533, 0.617)
+    cols, rows = panorama_fov_grid(opening[2] - opening[0], opening[3] - opening[1], 1 / 60, 1 / 30)
+    cell = panorama_shot_cell_norm(0, cols, rows, *opening)
+    _assert(cell is not None, cell)
+    _assert(abs((cell["ny"] - cell["nh"] / 2) - opening[1]) < 1e-9, cell)
+    _assert(abs((cell["nx"] - cell["nw"] / 2) - opening[0]) < 1e-9, cell)
+    rounded_top = round((opening[1] - 0.0) / (1 / 30)) * (1 / 30)
+    _assert(abs(rounded_top - opening[1]) > 0.01, (rounded_top, opening[1]))
 
 
 def test_panorama_shot_cell_matches_tracker_box() -> None:
@@ -292,6 +325,188 @@ def test_framed_area_uses_the_full_grid_cell() -> None:
     _assert(wide_cols * wide_rows != 28, (wide_cols, wide_rows))
 
 
+def test_panorama_frame_counts_match_the_tele_grid() -> None:
+    one = panorama_frame_counts(0, 0, 2 / 60, 1 / 30, view_aspect=32 / 9, tele_fov_h=2.95, tele_fov_v=1.66)
+    _assert(one == (2, 1), one)
+    full = panorama_frame_counts(0, 0, 1, 1, view_aspect=32 / 9, tele_fov_h=2.95, tele_fov_v=1.66)
+    _assert(full == (60, 30), full)
+
+
+def test_panorama_shoot_writes_grid_after_panorama_mode() -> None:
+    import astro_dwarf.device_worker as worker
+    from astro_dwarf.device_telemetry import (
+        CMD_PANORAMA_STOP_FRAMING,
+        CMD_PANORAMA_STOP_FRAMING_AND_START_GRID,
+        CMD_PANORAMA_UPDATE_FRAMING_RECT,
+    )
+
+    sent: list[tuple[int, int, object]] = []
+
+    def fake_send(message, command, module_id, timeout=None):
+        sent.append((int(command), int(module_id), message))
+        return True
+
+    class Tap:
+        def __init__(self) -> None:
+            self.state = {"shooting_mode": 2, "shooting_tech": 2}
+
+        def snapshot(self) -> dict:
+            return dict(self.state)
+
+        def update(self, changes, force=False) -> None:
+            self.state.update(changes)
+
+        def persist_panorama_scan(self) -> None:
+            return None
+
+    previous = (worker.send_without_response, worker._forget_pending_command, worker._tap, worker._device)
+    worker.send_without_response = fake_send
+    worker._forget_pending_command = lambda _command: None
+    worker._tap = Tap()
+    worker._device = {"model": "Dwarf 3"}
+    try:
+        ok = worker._panorama_command("panorama_shoot", (0.1, 0.2, 0.4, 0.5, 3, 4))
+        _assert(ok is True, ok)
+        commands = [item[0] for item in sent]
+        _assert(commands[:2] == [16402, 16403], commands)
+        _assert(int(sent[0][2].mode) == 7, sent[0][2])
+        _assert(int(sent[1][2].tech) == 6, sent[1][2])
+        _assert(commands[2] == CMD_PANORAMA_UPDATE_FRAMING_RECT, commands)
+        _assert(commands[3] == 16703 and int(sent[3][2].value) == 4, sent[3])
+        _assert(int(sent[3][2].param_id) == 0x0702F0000000001C, hex(int(sent[3][2].param_id)))
+        _assert(commands[4] == 16703 and int(sent[4][2].value) == 3, sent[4])
+        _assert(int(sent[4][2].param_id) == 0x0702F0000000001D, hex(int(sent[4][2].param_id)))
+        _assert(commands[5] == CMD_PANORAMA_STOP_FRAMING_AND_START_GRID, commands)
+        _assert(commands[6] == CMD_PANORAMA_STOP_FRAMING, commands)
+        _assert(worker._tap.snapshot().get("shooting_mode") == 7, worker._tap.snapshot())
+        _assert(worker._tap.snapshot().get("shooting_tech") == 6, worker._tap.snapshot())
+        _assert(worker._panorama_return_mode == (2, 2), worker._panorama_return_mode)
+        _assert(len(commands) == 7, commands)
+    finally:
+        worker._panorama_return_mode = None
+        worker._panorama_seen_active = False
+        worker._panorama_shot_seen = False
+        (
+            worker.send_without_response,
+            worker._forget_pending_command,
+            worker._tap,
+            worker._device,
+        ) = previous
+
+
+def test_panorama_cancel_restores_photo_mode() -> None:
+    import astro_dwarf.device_worker as worker
+    from astro_dwarf.device_telemetry import CMD_PANORAMA_START_FRAMING, CMD_PANORAMA_STOP_FRAMING
+
+    sent: list[tuple[int, object]] = []
+
+    def fake_send(message, command, module_id, timeout=None):
+        sent.append((int(command), message))
+        return True
+
+    class Tap:
+        def __init__(self) -> None:
+            self.state = {"shooting_mode": 1, "shooting_tech": 1}
+
+        def snapshot(self) -> dict:
+            return dict(self.state)
+
+        def update(self, changes, force=False) -> None:
+            self.state.update(changes)
+
+    previous = (worker.send_without_response, worker._forget_pending_command, worker._tap, worker._device)
+    worker.send_without_response = fake_send
+    worker._forget_pending_command = lambda _command: None
+    worker._tap = Tap()
+    worker._device = {"model": "Dwarf 3"}
+    worker._panorama_return_mode = None
+    worker._panorama_seen_active = False
+    try:
+        started = worker._panorama_command("panorama_frame_start", ())
+        _assert(started is True, started)
+        _assert(worker._panorama_return_mode == (1, 1), worker._panorama_return_mode)
+        stopped = worker._panorama_command("panorama_frame_stop", ())
+        _assert(stopped is True, stopped)
+        _assert(sent[-2][0] == 16402 and int(sent[-2][1].mode) == 1, sent[-2])
+        _assert(sent[-1][0] == 16403 and int(sent[-1][1].tech) == 1, sent[-1])
+        _assert(CMD_PANORAMA_START_FRAMING in [item[0] for item in sent], sent)
+        _assert(CMD_PANORAMA_STOP_FRAMING in [item[0] for item in sent], sent)
+        _assert(worker._tap.snapshot().get("shooting_mode") == 1, worker._tap.snapshot())
+        _assert(worker._panorama_return_mode is None, worker._panorama_return_mode)
+    finally:
+        worker._panorama_return_mode = None
+        worker._panorama_seen_active = False
+        worker._panorama_shot_seen = False
+        (
+            worker.send_without_response,
+            worker._forget_pending_command,
+            worker._tap,
+            worker._device,
+        ) = previous
+
+
+def test_finished_panorama_returns_to_photo() -> None:
+    import heapq
+
+    import astro_dwarf.device_worker as worker
+
+    sent: list[tuple[int, object]] = []
+
+    def fake_send(message, command, module_id, timeout=None):
+        sent.append((int(command), message))
+        return True
+
+    class Tap:
+        def __init__(self) -> None:
+            self.state = {
+                "shooting_mode": 7,
+                "shooting_tech": 6,
+                "panorama_state": "running",
+                "panorama_framing_state": "running",
+            }
+
+        def snapshot(self) -> dict:
+            return dict(self.state)
+
+        def update(self, changes, force=False) -> None:
+            self.state.update(changes)
+
+    previous = (worker.send_without_response, worker._forget_pending_command, worker._tap)
+    worker.send_without_response = fake_send
+    worker._forget_pending_command = lambda _command: None
+    worker._tap = Tap()
+    worker._panorama_return_mode = (2, 2)
+    worker._panorama_seen_active = False
+    worker._panorama_shot_seen = False
+    try:
+        worker._maybe_restore_after_panorama(worker._tap.snapshot())
+        _assert(worker._panorama_shot_seen is True, "a running shoot must be remembered")
+        _assert(not worker._queued_internal("leave_panorama_mode"), "still shooting")
+        worker._tap.state["panorama_state"] = "idle"
+        worker._maybe_restore_after_panorama(worker._tap.snapshot())
+        _assert(worker._panorama_return_mode == (1, 1), worker._panorama_return_mode)
+        _assert(worker._tap.snapshot().get("panorama_framing_state") == "idle", worker._tap.snapshot())
+        _assert(worker._queued_internal("leave_panorama_mode"), "photo restore was not queued")
+        _assert(worker._leave_panorama_mode() is True, "leave failed")
+        _assert(sent[-2][0] == 16402 and int(sent[-2][1].mode) == 1, sent)
+        _assert(sent[-1][0] == 16403 and int(sent[-1][1].tech) == 1, sent)
+        _assert(worker._tap.snapshot().get("shooting_mode") == 1, worker._tap.snapshot())
+    finally:
+        worker._panorama_return_mode = None
+        worker._panorama_seen_active = False
+        worker._panorama_shot_seen = False
+        with worker._commands.mutex:
+            retained = [item for item in worker._commands.queue if item[2].get("command") != "leave_panorama_mode"]
+            worker._commands.queue.clear()
+            worker._commands.queue.extend(retained)
+            heapq.heapify(worker._commands.queue)
+        (
+            worker.send_without_response,
+            worker._forget_pending_command,
+            worker._tap,
+        ) = previous
+
+
 def test_panorama_pointing_tracks_motor_and_unwraps_az() -> None:
     tap = _tap()
     tap.update({"panorama_state": "running", "motor_pos_1": 350.0, "motor_pos_2": 40.0}, force=True)
@@ -314,6 +529,7 @@ if __name__ == "__main__":
     test_panorama_shot_cell_snakes()
     test_panorama_stamp_live_skips_whole_canvas()
     test_panorama_leave_index_is_the_cell_being_left()
+    test_panorama_tracker_stays_on_a_half_cell_frame()
     test_panorama_shot_cell_matches_tracker_box()
     test_panorama_tele_overlay_from_motor_span()
     test_panorama_stamp_size_is_full_canvas_cell()
@@ -321,5 +537,9 @@ if __name__ == "__main__":
     test_latest_device_rect_is_kept()
     test_panorama_frame_snaps_to_whole_cells()
     test_framed_area_uses_the_full_grid_cell()
+    test_panorama_frame_counts_match_the_tele_grid()
+    test_panorama_shoot_writes_grid_after_panorama_mode()
+    test_panorama_cancel_restores_photo_mode()
+    test_finished_panorama_returns_to_photo()
     test_panorama_pointing_tracks_motor_and_unwraps_az()
     print("ok")

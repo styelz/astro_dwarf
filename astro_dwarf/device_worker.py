@@ -41,6 +41,8 @@ from .telemetry_view import (
     auto_parameter_cameras,
     exposure_seconds_from_text,
     photo_capture_seconds,
+    reconnect_infers_panorama_framing,
+    telemetry_operation_live,
     timelapse_shoot_seconds,
 )
 from .domain import (
@@ -86,8 +88,10 @@ from .domain import (
     choose_latest_astro_stack,
     device_name_model,
     device_supports_wide,
+    camera_fov,
     firmware_binning,
     firmware_exposure_name,
+    panorama_frame_counts,
     solar_system_target_id,
     firmware_stack_format,
     mosaic_stack_camera,
@@ -123,6 +127,11 @@ _PHOTO_AF_SETTLE_S = 2.5
 _PHOTO_AF_TIMEOUT_S = 60.0
 _LINKAGE_AF_WATCH_S = 8.0
 _LINKAGE_AF_POLL_S = 0.75
+# Photo or DSO mode to restore when a panorama framing session ends.
+# A finished shoot always returns to Photo, even if framing is still marked running.
+_panorama_return_mode: tuple[int, int] | None = None
+_panorama_seen_active = False
+_panorama_shot_seen = False
 _autofocus_started = 0.0
 _autofocus_last_move = 0.0
 _autofocus_last_pos: int | None = None
@@ -319,6 +328,7 @@ def _telemetry_loop() -> None:
             if status is not None:
                 tap.poll_client_status(status)
         snapshot = tap.snapshot()
+        _maybe_restore_after_panorama(snapshot)
         _maybe_poll_linkage_autofocus(now, snapshot)
         _maybe_finish_photo_autofocus(snapshot, now)
         # Command-triggered refreshes stamp state_snapshot_at too, so they push the periodic one out.
@@ -372,6 +382,26 @@ def send_without_response(
         _interrupt_sdk_wait("send timed out")
         log(f"Command {command} send timed out after {seconds:.0f}s", "warning")
         return False
+
+
+def _forget_pending_command(command: int) -> None:
+    """Drop a fire-and-forget command so its reply cannot finish the next SDK wait.
+
+    dwarf_python_api 3.1.2 records panorama replies against ``client.command``.
+    This app does not wait on those replies.
+    """
+    client, loop = _sdk_socket()
+    if client is not None and loop is not None and not getattr(loop, "is_closed", lambda: True)():
+
+        async def release() -> None:
+            if getattr(client, "command", None) == command:
+                client.command = None
+
+        try:
+            asyncio.run_coroutine_threadsafe(release(), loop).result(timeout=2)
+        except Exception:
+            pass
+    _drain_result_queue()
 
 
 FUNCTIONS = {
@@ -458,6 +488,15 @@ _ASTRO_SHOOTING_MODE = 2
 _ASTRO_SHOOTING_TECH = 2
 _PHOTO_SHOOTING_MODE = 1
 _PHOTO_STILL_TECH = 1
+# Official app: panorama is shooting mode 7 and technique 6. The stored
+# row/column grid is ignored unless those are set first.
+_PANORAMA_SHOOTING_MODE = 7
+_PANORAMA_SHOOTING_TECH = 6
+_MODULE_DEVICE_CONFIG = 14
+_CMD_SWITCH_SHOOTING_MODE = 16402
+_CMD_SWITCH_SHOOTING_TECH = 16403
+_PARAM_PANORAMA_ROWS = 0x0702F0000000001C
+_PARAM_PANORAMA_COLS = 0x0702F0000000001D
 # PHOTO mode techniques: 1 still, 3 burst, 4 video, 5 timelapse.
 _CAPTURE_TECHNIQUES = {
     "photo": 1,
@@ -562,7 +601,6 @@ def configure(device: dict[str, Any]) -> bool:
     _tap = TelemetryTap(emit, _MODEL_IDS.get(str(device.get("model")), "3"), device_id=str(device.get("id") or ""))
     if not _tap.install(websockets_utils):
         log("Telemetry tap unavailable; only SDK cache values will be shown", "warning")
-    _tap.load_cached_panorama_scan()
     threading.Thread(target=_telemetry_loop, name="telemetry", daemon=True).start()
     log(f"Worker ready for {device.get('name')} at {device.get('ip_address')}")
     return True
@@ -1071,7 +1109,8 @@ def _set_focus_position(target: int) -> bool:
 
 _NUDGE_FULL_SCALE_DEG = 45.0
 # How long a 100% nudge holds the stick, after the move command is on the wire.
-_NUDGE_FULL_HOLD_S = 2.0
+# The stop is sent immediately. 3s is the old 2s hold plus the 1s the stop used to wait.
+_NUDGE_FULL_HOLD_S = 3.0
 _NUDGE_STEP_CAP = 80
 
 
@@ -1590,6 +1629,253 @@ def sdk_call(operation: str, *args: Any) -> Any:
     return _invoke_sdk(operation, function, *args)
 
 
+def _panorama_param_ids() -> tuple[int, int]:
+    """Rows then columns. The installed SDK names win when it has them."""
+    rows = _PARAM_PANORAMA_ROWS
+    cols = _PARAM_PANORAMA_COLS
+    try:
+        from dwarf_python_api.lib import dwarf_utils
+
+        rows = int(getattr(dwarf_utils, "PARAM_ID_PANORAMA_ROWS", rows))
+        cols = int(getattr(dwarf_utils, "PARAM_ID_PANORAMA_COLS", cols))
+    except Exception:
+        pass
+    return rows, cols
+
+
+def _remember_panorama_return(mode: int | None) -> None:
+    """Keep the Photo or DSO mode that was selected before panorama."""
+    global _panorama_return_mode
+    if mode == _PHOTO_SHOOTING_MODE:
+        _panorama_return_mode = (_PHOTO_SHOOTING_MODE, _PHOTO_STILL_TECH)
+    elif mode == _ASTRO_SHOOTING_MODE:
+        _panorama_return_mode = (_ASTRO_SHOOTING_MODE, _ASTRO_SHOOTING_TECH)
+
+
+def _leave_panorama_mode() -> bool:
+    """Return to the Photo or DSO mode saved when panorama started."""
+    global _panorama_return_mode, _panorama_seen_active, _panorama_shot_seen
+    mode_tech = _panorama_return_mode
+    if mode_tech is None:
+        _panorama_seen_active = False
+        _panorama_shot_seen = False
+        return True
+    snap = _tap.snapshot() if _tap is not None else {}
+    if _shooting_int(snap.get("shooting_mode")) != _PANORAMA_SHOOTING_MODE:
+        _panorama_return_mode = None
+        _panorama_seen_active = False
+        _panorama_shot_seen = False
+        return True
+    mode, tech = mode_tech
+    from dwarf_python_api.proto import task_center_pb2
+
+    mode_message = task_center_pb2.ReqSwitchShootingMode()
+    mode_message.mode = int(mode)
+    if send_without_response(mode_message, _CMD_SWITCH_SHOOTING_MODE, _MODULE_DEVICE_CONFIG) is False:
+        log("Could not leave panorama mode", "warning")
+        return False
+    _forget_pending_command(_CMD_SWITCH_SHOOTING_MODE)
+    tech_message = task_center_pb2.ReqSwitchShootingTech()
+    tech_message.tech = int(tech)
+    if send_without_response(tech_message, _CMD_SWITCH_SHOOTING_TECH, _MODULE_DEVICE_CONFIG) is False:
+        log("Could not restore the shooting technique", "warning")
+        return False
+    _forget_pending_command(_CMD_SWITCH_SHOOTING_TECH)
+    _panorama_return_mode = None
+    _panorama_seen_active = False
+    _panorama_shot_seen = False
+    _remember_shooting(int(mode), int(tech))
+    log("PHOTO mode" if mode == _PHOTO_SHOOTING_MODE else "DSO mode")
+    return True
+
+
+def _note_reconnect_pose() -> None:
+    """Remember a power cycle. Unhomed steppers mean the head was restarted.
+
+    A job that is already running is this same power cycle, so the position
+    read is skipped. NEED_RESET is the reboot signal; a timeout is not.
+    """
+    global _motors_unhomed
+    if _tap is None:
+        return
+    snap = _tap.snapshot()
+    if telemetry_operation_live(snap):
+        _motors_unhomed = False
+        _tap.update({"motors_unhomed": False}, force=True)
+        return
+    # Pitch is homed on every model. Mini yaw has no home sensor, so an
+    # azimuth read must not mark a live head as restarted.
+    _motor_position(2)
+    _tap.update({"motors_unhomed": bool(_motors_unhomed)}, force=True)
+
+
+def _adopt_device_activity() -> None:
+    """Rejoin panorama framing or a shoot the telescope is still in.
+
+    The framing state notify is not part of the device snapshot. Mode 7 with
+    homed steppers is that session. The rectangle is push-only, so the last
+    corners saved with the scan are what the canvas draws. A restarted head
+    drops that cache so yesterday's frame is not shown as live.
+    """
+    global _panorama_return_mode, _panorama_seen_active, _panorama_shot_seen
+    if _tap is None:
+        return
+    snap = _tap.snapshot()
+    if str(snap.get("panorama_state") or "") == "running":
+        _panorama_shot_seen = True
+        _panorama_seen_active = True
+        if _panorama_return_mode is None:
+            _panorama_return_mode = (_PHOTO_SHOOTING_MODE, _PHOTO_STILL_TECH)
+        _tap.load_cached_panorama_scan()
+        log("Panorama shoot is still running")
+        return
+    if reconnect_infers_panorama_framing(snap):
+        _panorama_seen_active = True
+        if _panorama_return_mode is None:
+            _panorama_return_mode = (_PHOTO_SHOOTING_MODE, _PHOTO_STILL_TECH)
+        if str(snap.get("panorama_framing_state") or "") != "running":
+            _tap.update({"panorama_framing_state": "running"}, force=True)
+        _tap.load_cached_panorama_scan()
+        log("Panorama framing is still running")
+        return
+    if not snap.get("motors_unhomed"):
+        return
+    cache = _tap._panorama_cache_path()
+    leftover = cache is not None and cache.is_file()
+    if not leftover and _shooting_int(snap.get("shooting_mode")) != _PANORAMA_SHOOTING_MODE:
+        return
+    _tap.clear_panorama_scan_cache()
+    _tap.update(
+        {
+            "panorama_scan_path": "",
+            "panorama_scan_rev": 0,
+            "panorama_framing_state": "idle",
+            "panorama_has_rect": False,
+        },
+        force=True,
+    )
+    log("The telescope restarted, so the previous panorama was cleared")
+
+
+def _maybe_restore_after_panorama(snapshot: dict[str, Any]) -> None:
+    """Return to Photo when a shoot ends. Framing alone restores the prior mode."""
+    global _panorama_seen_active, _panorama_shot_seen, _panorama_return_mode
+    framing = str(snapshot.get("panorama_framing_state") or "")
+    state = str(snapshot.get("panorama_state") or "")
+    if state == "running":
+        _panorama_shot_seen = True
+        _panorama_seen_active = True
+        return
+    if _panorama_shot_seen:
+        if _queued_internal("leave_panorama_mode"):
+            return
+        # The shoot is finished. Framing can still read as running, and the
+        # mode to restore may be DSO. Photo is the mode the operator expects.
+        _panorama_return_mode = (_PHOTO_SHOOTING_MODE, _PHOTO_STILL_TECH)
+        if _tap is not None:
+            _tap.update({"panorama_framing_state": "idle"}, force=True)
+        _put_command({"command": "leave_panorama_mode", "internal": True})
+        return
+    if _panorama_return_mode is None:
+        return
+    if framing == "running":
+        _panorama_seen_active = True
+        return
+    if not _panorama_seen_active:
+        return
+    if _queued_internal("leave_panorama_mode"):
+        return
+    _put_command({"command": "leave_panorama_mode", "internal": True})
+
+
+def _ensure_panorama_mode() -> bool:
+    """Switch to panorama mode 7 and technique 6. No camera re-entry.
+
+    The official app does this before the grid write. A 16703 write while
+    Photo or DSO is still selected leaves the previous grid in place.
+    """
+    snap = _tap.snapshot() if _tap is not None else {}
+    mode = _shooting_int(snap.get("shooting_mode"))
+    _remember_panorama_return(mode)
+    tech = _shooting_int(snap.get("shooting_tech"))
+    if mode == _PANORAMA_SHOOTING_MODE and tech == _PANORAMA_SHOOTING_TECH:
+        return True
+    from dwarf_python_api.proto import task_center_pb2
+
+    mode_message = task_center_pb2.ReqSwitchShootingMode()
+    mode_message.mode = _PANORAMA_SHOOTING_MODE
+    if send_without_response(mode_message, _CMD_SWITCH_SHOOTING_MODE, _MODULE_DEVICE_CONFIG) is False:
+        log("Panorama shooting mode was not sent", "warning")
+        return False
+    _forget_pending_command(_CMD_SWITCH_SHOOTING_MODE)
+    tech_message = task_center_pb2.ReqSwitchShootingTech()
+    tech_message.tech = _PANORAMA_SHOOTING_TECH
+    if send_without_response(tech_message, _CMD_SWITCH_SHOOTING_TECH, _MODULE_DEVICE_CONFIG) is False:
+        log("Panorama shooting technique was not sent", "warning")
+        return False
+    _forget_pending_command(_CMD_SWITCH_SHOOTING_TECH)
+    _remember_shooting(_PANORAMA_SHOOTING_MODE, _PANORAMA_SHOOTING_TECH)
+    log("Panorama mode")
+    return True
+
+
+def _panorama_grid_size(args: tuple[Any, ...]) -> tuple[int, int] | None:
+    """Columns × rows for this frame. HUD counts win; otherwise count tele cells."""
+    columns = _param_int(args[4]) if len(args) > 4 else None
+    rows = _param_int(args[5]) if len(args) > 5 else None
+    if columns is not None and rows is not None and columns >= 1 and rows >= 1:
+        return columns, rows
+    if len(args) < 4:
+        return None
+    snap = _tap.snapshot() if _tap is not None else {}
+
+    def coord(key: str, default: float) -> float:
+        try:
+            value = snap.get(key)
+            if value is None or value == "":
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    tele_h, tele_v = camera_fov(str((_device or {}).get("model") or ""), "tele")
+    return panorama_frame_counts(
+        args[0],
+        args[1],
+        args[2],
+        args[3],
+        limit_left=coord("panorama_limit_left", 0.0),
+        limit_top=coord("panorama_limit_top", 0.0),
+        limit_right=coord("panorama_limit_right", 1.0),
+        limit_bottom=coord("panorama_limit_bottom", 1.0),
+        tele_fov_h=tele_h,
+        tele_fov_v=tele_v,
+    )
+
+
+def _set_panorama_grid(columns: int, rows: int) -> bool:
+    """Store the panorama grid the way the official app does, after mode 7."""
+    from dwarf_python_api.proto import param_pb2
+
+    row_id, col_id = _panorama_param_ids()
+    for value, param_id, label in (
+        (int(rows), row_id, "rows"),
+        (int(columns), col_id, "columns"),
+    ):
+        if value < 1:
+            log(f"Panorama {label} must be at least 1", "warning")
+            return False
+        message = param_pb2.ReqSetGeneralIntParam()
+        message.param_id = param_id
+        message.value = value
+        if send_without_response(message, 16703, 15) is False:
+            log(f"Panorama {label} {value} was not sent", "warning")
+            return False
+        _forget_pending_command(16703)
+    log(f"Panorama grid {int(columns)}×{int(rows)}")
+    return True
+
+
 def _send_panorama_rect(args: tuple[Any, ...]) -> bool:
     """Send ReqUpdatePanoramaFramingRect. Does not start a capture."""
     from dwarf_python_api.proto import panorama_pb2
@@ -1608,11 +1894,32 @@ def _send_panorama_rect(args: tuple[Any, ...]) -> bool:
         f"{message.norm_x_tl:.3f},{message.norm_y_tl:.3f} "
         f"{message.norm_x_br:.3f},{message.norm_y_br:.3f}"
     )
-    return send_without_response(message, CMD_PANORAMA_UPDATE_FRAMING_RECT, 10)
+    sent = send_without_response(message, CMD_PANORAMA_UPDATE_FRAMING_RECT, 10)
+    _forget_pending_command(CMD_PANORAMA_UPDATE_FRAMING_RECT)
+    return sent
+
+
+def _apply_panorama_frame(args: tuple[Any, ...], *, required: bool) -> bool:
+    """Send the rectangle, then the stored row and column counts."""
+    updated = _send_panorama_rect(args)
+    grid = _panorama_grid_size(args)
+    if grid is None:
+        if required:
+            log("Panorama grid size is missing", "warning")
+        return updated if not required else False
+    stored = _set_panorama_grid(*grid)
+    if required:
+        return updated and stored
+    return updated and stored
 
 
 def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
-    """Panorama framing and grid capture. Command ids are not in the installed protocol enum."""
+    """Panorama framing and grid capture.
+
+    Command ids come from the SDK protocol enum. Reset framing is still a
+    local id: protocol.proto does not declare 15511. The grid size is a
+    camera parameter written only after panorama mode is selected.
+    """
     from dwarf_python_api.proto import panorama_pb2
 
     from .device_telemetry import (
@@ -1624,12 +1931,23 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
     )
 
     module_id = 10
+    if operation in {
+        "panorama_frame_start",
+        "panorama_frame_update",
+        "panorama_frame_reset",
+        "panorama_shoot",
+    }:
+        if not _ensure_panorama_mode():
+            return False
     if operation == "panorama_frame_update" or (
         operation == "panorama_shoot" and len(args) >= 4
     ):
-        updated = _send_panorama_rect(args)
+        applied = _apply_panorama_frame(args, required=operation == "panorama_shoot")
         if operation != "panorama_shoot":
-            return updated
+            return applied
+        if not applied:
+            return False
+    global _panorama_seen_active, _panorama_shot_seen
     messages = {
         "panorama_frame_start": (panorama_pb2.ReqStartPanoramaFraming, CMD_PANORAMA_START_FRAMING),
         "panorama_frame_reset": (panorama_pb2.ReqResetPanoramaFraming, CMD_PANORAMA_RESET_FRAMING),
@@ -1639,6 +1957,12 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
     }
     factory, command = messages[operation]
     ok = send_without_response(factory(), command, module_id)
+    _forget_pending_command(command)
+    if ok and operation == "panorama_shoot":
+        closed = send_without_response(panorama_pb2.ReqStopPanoramaFraming(), CMD_PANORAMA_STOP_FRAMING, module_id)
+        _forget_pending_command(CMD_PANORAMA_STOP_FRAMING)
+        if not closed:
+            log("Panorama framing close was not sent", "warning")
     if ok and operation == "panorama_frame_start" and _tap is not None:
         _tap.update(
             {
@@ -1663,6 +1987,12 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
         # Grid capture sends no further framing thumbnails; keep a copy so a
         # reconnect mid-shoot has the background back instead of a blank pane.
         _tap.persist_panorama_scan()
+    if ok and operation in {"panorama_frame_start", "panorama_shoot"}:
+        _panorama_seen_active = True
+    if ok and operation == "panorama_shoot":
+        _panorama_shot_seen = True
+    if not ok and operation == "panorama_frame_start":
+        _leave_panorama_mode()
     if ok and operation == "panorama_stop" and _tap is not None:
         _tap.update(
             {
@@ -1674,6 +2004,10 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
             force=True,
         )
         _tap.clear_panorama_scan_cache()
+    if ok and operation == "panorama_frame_stop" and _tap is not None:
+        _tap.update({"panorama_framing_state": "idle"}, force=True)
+    if ok and operation in {"panorama_frame_stop", "panorama_stop"}:
+        _leave_panorama_mode()
     return ok
 
 
@@ -2458,6 +2792,8 @@ def _handshake() -> dict[str, Any] | None:
         except Exception as exc:
             log(f"device_state skipped: {exc}", "warning")
     _check_connect_cancelled()
+    _note_reconnect_pose()
+    _adopt_device_activity()
     _connected.set()
     # Sessions connect on their own; tell the UI so STOP/DISCONNECT stay usable.
     emit({"event": "connected", "ip_address": str(_device.get("ip_address") or "")})
@@ -6623,6 +6959,8 @@ def dispatch(message: dict[str, Any]) -> Any:
         return stop_all()
     if command == "telemetry":
         return _tap.snapshot() if _tap else {}
+    if command == "leave_panorama_mode":
+        return _leave_panorama_mode()
     if command == "device_state":
         if not _connected.is_set() and message.get("internal"):
             return False

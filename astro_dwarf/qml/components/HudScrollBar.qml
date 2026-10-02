@@ -14,6 +14,8 @@ ScrollBar {
     padding: 0
 
     property bool pinToWindow: false
+    // Set when the frame is the popup background rather than an ancestor.
+    property Item frameHost: null
     property Item borderHost: null
     readonly property bool onFrame: borderHost !== null
     readonly property Item windowEdge: {
@@ -54,6 +56,8 @@ ScrollBar {
     readonly property bool viewShown: !!(parent && parent.visible)
 
     function resolveHost() {
+        if (frameHost && frameHost.frameBorder === true)
+            return frameHost
         let node = parent
         while (node) {
             if (node.frameBorder === true)
@@ -62,6 +66,7 @@ ScrollBar {
         }
         return null
     }
+    onFrameHostChanged: borderHost = resolveHost()
     onParentChanged: borderHost = resolveHost()
     Component.onCompleted: borderHost = resolveHost()
 

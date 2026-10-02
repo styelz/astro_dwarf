@@ -1241,6 +1241,7 @@ Item {
                             enabled: !mediaPage.albumLocked && !mediaPage.busy && mediaPage.scopeOnline && !!(mediaPage.selected.id)
                             busy: backend.mediaBusy === "download"
                             busyText: "SAVING…"
+                            tooltip: lightbox.isPanorama ? "Save the stitched panorama as a TIFF" : ""
                             onClicked: mediaPage.downloadItems(mediaPage.selected.id ? [mediaPage.selected.id] : [])
                         }
                         HudButton {

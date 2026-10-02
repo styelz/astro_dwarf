@@ -34,7 +34,7 @@ device = [
   "filelock>=3.15",
   "protobuf>=7.35.1,<8",
   "websockets>=11.0.3,<12",
-  "dwarf_python_api @ git+https://github.com/stevejcl/dwarf_python_api@multi_V3",
+  "dwarf_python_api @ git+https://github.com/stevejcl/dwarf_python_api@be5ade960781b2dfb5a7210c70f46a8f655b2440",
 ]
 build = [
   "Pillow>=11",

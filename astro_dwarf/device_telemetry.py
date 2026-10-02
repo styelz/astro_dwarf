@@ -18,6 +18,27 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+
+def _protocol_id(name: str, fallback: int) -> int:
+    """Command number from the installed SDK protocol enum, else the firmware id."""
+    try:
+        from dwarf_python_api.proto import protocol_pb2
+    except Exception:
+        return fallback
+    value = getattr(protocol_pb2, name, None)
+    return int(value) if isinstance(value, int) else fallback
+
+
+def _finite_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number
+
+
 # Motor / notification command ids (dwarf_python_api/proto/protocol.proto).
 CMD_STEP_MOTOR_GET_POSITION = 14011
 # Steppers refuse absolute position reads/moves until they have been homed.
@@ -65,18 +86,21 @@ CMD_NOTIFY_RECORD_STATE = 15275
 CMD_NOTIFY_TIMELAPSE_STATE = 15276
 CMD_NOTIFY_ASTRO_AUTO_FOCUS_STATE = 15278
 CMD_NOTIFY_ASTRO_AUTO_FOCUS_FAST_STATE = 15280
-CMD_NOTIFY_PANORAMA_STATE = 15277
+CMD_NOTIFY_PANORAMA_STATE = _protocol_id("CMD_NOTIFY_PANORAMA_STATE", 15277)
 CMD_NOTIFY_BURST_PROGRESS = 15285
-CMD_NOTIFY_PANORAMA_PROGRESS = 15219
-CMD_NOTIFY_PANO_FRAMING_RECT = 15297
-CMD_NOTIFY_PANO_FRAMING_THUMBNAIL = 15298
-CMD_NOTIFY_PANO_FRAMING_STATE = 15299
-CMD_PANORAMA_STOP = 15501
-CMD_PANORAMA_START_FRAMING = 15509
-CMD_PANORAMA_STOP_FRAMING = 15510
-CMD_PANORAMA_RESET_FRAMING = 15511
-CMD_PANORAMA_UPDATE_FRAMING_RECT = 15512
-CMD_PANORAMA_STOP_FRAMING_AND_START_GRID = 15513
+CMD_NOTIFY_PANORAMA_PROGRESS = _protocol_id("CMD_NOTIFY_PANORAMA_PROGRESS", 15219)
+CMD_NOTIFY_PANO_FRAMING_RECT = _protocol_id("CMD_NOTIFY_PANORAMA_FRAMING_RECT", 15297)
+CMD_NOTIFY_PANO_FRAMING_THUMBNAIL = _protocol_id("CMD_NOTIFY_PANORAMA_FRAMING_PREVIEW", 15298)
+CMD_NOTIFY_PANO_FRAMING_STATE = _protocol_id("CMD_NOTIFY_PANORAMA_FRAMING_STATE", 15299)
+CMD_PANORAMA_STOP = _protocol_id("CMD_PANORAMA_STOP", 15501)
+CMD_PANORAMA_START_FRAMING = _protocol_id("CMD_PANORAMA_START_FRAMING", 15509)
+CMD_PANORAMA_STOP_FRAMING = _protocol_id("CMD_PANORAMA_STOP_FRAMING", 15510)
+# Still absent from protocol.proto. Firmware uses 15511 to clear the framing rect.
+CMD_PANORAMA_RESET_FRAMING = _protocol_id("CMD_PANORAMA_RESET_FRAMING", 15511)
+CMD_PANORAMA_UPDATE_FRAMING_RECT = _protocol_id("CMD_PANORAMA_UPDATE_FRAMING_RECT", 15512)
+CMD_PANORAMA_STOP_FRAMING_AND_START_GRID = _protocol_id(
+    "CMD_PANORAMA_STOP_FRAMING_AND_START_GRID", 15513
+)
 _PANORAMA_COMMANDS = frozenset({
     CMD_PANORAMA_STOP,
     CMD_PANORAMA_START_FRAMING,
@@ -1027,6 +1051,9 @@ class TelemetryTap:
             f"fov {changes['panorama_rect_fov_h']:.2f}x{changes['panorama_rect_fov_v']:.2f} "
             f"err {changes['panorama_rect_error']}"
         )
+        # The rect notify does not replay on a new socket. Keep the corners so
+        # the next launch can draw the box the telescope still has.
+        self.persist_panorama_rect(changes)
         return changes
 
     def _store_panorama_scan(self, data: bytes) -> dict[str, Any]:
@@ -1049,6 +1076,8 @@ class TelemetryTap:
                 stale.unlink()
             except OSError:
                 pass
+        # Keep the picture for the next launch. The temp file dies with this process.
+        self.persist_panorama_scan(str(path))
         return {
             "panorama_scan_path": str(path),
             "panorama_scan_rev": self._panorama_scan_rev,
@@ -1141,13 +1170,20 @@ class TelemetryTap:
         folder.mkdir(parents=True, exist_ok=True)
         return folder / f"{device_id}.webp"
 
-    def persist_panorama_scan(self) -> None:
-        """Copy the last framing thumbnail so a shoot can restore its background after a reconnect."""
+    def _panorama_rect_cache_path(self) -> Path | None:
+        scan = self._panorama_cache_path()
+        if scan is None:
+            return None
+        return scan.with_suffix(".json")
+
+    def persist_panorama_scan(self, source: str | None = None) -> None:
+        """Copy the last framing thumbnail so a later launch can show it again."""
         cache_path = self._panorama_cache_path()
         if cache_path is None:
             return
-        with self._lock:
-            source = str(self._pending.get("panorama_scan_path") or self._state.get("panorama_scan_path") or "")
+        if not source:
+            with self._lock:
+                source = str(self._pending.get("panorama_scan_path") or self._state.get("panorama_scan_path") or "")
         if not source or not Path(source).is_file():
             return
         try:
@@ -1155,29 +1191,103 @@ class TelemetryTap:
         except OSError:
             pass
 
-    def clear_panorama_scan_cache(self) -> None:
-        cache_path = self._panorama_cache_path()
-        if cache_path is None:
+    def persist_panorama_rect(self, changes: dict[str, Any]) -> None:
+        """Remember the framing corners. A new socket does not receive them again."""
+        path = self._panorama_rect_cache_path()
+        if path is None:
             return
+        payload: dict[str, Any] = {}
+        for key in (
+            "panorama_x1",
+            "panorama_y1",
+            "panorama_x2",
+            "panorama_y2",
+            "panorama_limit_left",
+            "panorama_limit_top",
+            "panorama_limit_right",
+            "panorama_limit_bottom",
+            "panorama_rect_fov_h",
+            "panorama_rect_fov_v",
+        ):
+            number = _finite_number(changes.get(key))
+            if number is None:
+                return
+            payload[key] = number
         try:
-            cache_path.unlink()
+            payload["panorama_rect_error"] = int(changes.get("panorama_rect_error") or 0)
+        except (TypeError, ValueError):
+            payload["panorama_rect_error"] = 0
+        payload["panorama_has_rect"] = True
+        try:
+            path.write_text(json.dumps(payload), encoding="utf-8")
         except OSError:
             pass
 
+    def clear_panorama_scan_cache(self) -> None:
+        for path in (self._panorama_cache_path(), self._panorama_rect_cache_path()):
+            if path is None:
+                continue
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+    def _read_panorama_rect_cache(self) -> dict[str, Any]:
+        path = self._panorama_rect_cache_path()
+        if path is None or not path.is_file():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        restored: dict[str, Any] = {}
+        for key in (
+            "panorama_x1",
+            "panorama_y1",
+            "panorama_x2",
+            "panorama_y2",
+            "panorama_limit_left",
+            "panorama_limit_top",
+            "panorama_limit_right",
+            "panorama_limit_bottom",
+            "panorama_rect_fov_h",
+            "panorama_rect_fov_v",
+        ):
+            number = _finite_number(payload.get(key))
+            if number is None:
+                return {}
+            restored[key] = number
+        try:
+            restored["panorama_rect_error"] = int(payload.get("panorama_rect_error") or 0)
+        except (TypeError, ValueError):
+            restored["panorama_rect_error"] = 0
+        restored["panorama_has_rect"] = True
+        return restored
+
     def load_cached_panorama_scan(self) -> None:
-        """Restore the persisted background image once per connection, before any live notify arrives."""
+        """Restore the last scan and framing box once per connection.
+
+        Framing thumbnails and the rectangle are push-only. A launch onto a
+        telescope that is already framing would otherwise leave the box blank.
+        """
         with self._lock:
             already_loaded = self._panorama_cache_loaded
             self._panorama_cache_loaded = True
         if already_loaded:
             return
+        changes: dict[str, Any] = {}
         cache_path = self._panorama_cache_path()
-        if cache_path is None or not cache_path.is_file():
-            return
-        with self._lock:
-            self._panorama_scan_rev += 1
-            rev = self._panorama_scan_rev
-        self.update({"panorama_scan_path": str(cache_path), "panorama_scan_rev": rev}, force=True)
+        if cache_path is not None and cache_path.is_file():
+            with self._lock:
+                self._panorama_scan_rev += 1
+                rev = self._panorama_scan_rev
+            changes["panorama_scan_path"] = str(cache_path)
+            changes["panorama_scan_rev"] = rev
+        changes.update(self._read_panorama_rect_cache())
+        if changes:
+            self.update(changes, force=True)
 
     def _parse(self, factory_name: str, data: bytes) -> Any:
         factory = getattr(self._notify, factory_name, None) if self._notify else None

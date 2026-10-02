@@ -103,7 +103,11 @@ Item {
     }
 
     onActiveChanged: {
-        if (!active && !shooting) {
+        if (active) {
+            reloadScan()
+            return
+        }
+        if (!shooting) {
             userEnlarged = false
             holding = false
             shownScanRev = -1
@@ -223,6 +227,12 @@ Item {
         return [snappedLeft, snappedTop, snappedLeft + cols * cw, snappedTop + rows * ch]
     }
 
+    function frameGrid(x1, y1, x2, y2) {
+        const cols = cellNormW > 0 ? Math.max(1, Math.round(Math.abs(x2 - x1) / cellNormW)) : 1
+        const rows = cellNormH > 0 ? Math.max(1, Math.round(Math.abs(y2 - y1) / cellNormH)) : 1
+        return [cols, rows]
+    }
+
     function commitBox() {
         if (!hasRect || !active)
             return
@@ -235,7 +245,8 @@ Item {
             return
         userEnlarged = true
         holdBox(x1, y1, x2, y2)
-        backend.updatePanoramaFrame(x1, y1, x2, y2)
+        const grid = frameGrid(x1, y1, x2, y2)
+        backend.updatePanoramaFrame(x1, y1, x2, y2, grid[0], grid[1])
     }
 
     Rectangle {
@@ -333,10 +344,9 @@ Item {
             property real originX2: 0
             property real originY2: 0
             onPressed: (mouse) => {
+                // Read the frame before dragging is true. showX then
+                // follows dragX, which is still 0,0 on the first move.
                 const local = mapToItem(pane, mouse.x, mouse.y)
-                pane.dragging = true
-                startX = local.x
-                startY = local.y
                 originX1 = pane.showX1
                 originY1 = pane.showY1
                 originX2 = pane.showX2
@@ -345,6 +355,9 @@ Item {
                 pane.dragY1 = originY1
                 pane.dragX2 = originX2
                 pane.dragY2 = originY2
+                startX = local.x
+                startY = local.y
+                pane.dragging = true
             }
             onPositionChanged: (mouse) => {
                 if (!pane.dragging)
@@ -455,25 +468,23 @@ Item {
         z: 5
         visible: pane.active && pane.shooting && pane.tileTotal > 1 && pane.fitW > 0
         readonly property int shotCols: Math.max(1, pane.tileColCount)
+        readonly property int shotRows: Math.max(1, pane.tileRowCount)
         readonly property real tileLeft: Math.min(pane.showX1, pane.showX2)
         readonly property real tileTop: Math.min(pane.showY1, pane.showY2)
-        // Snap onto the full 60×30 grid. Do not divide the frame by the
-        // shot count; that resizes the tele field.
-        readonly property int originCol: pane.cellNormW > 0
-            ? Math.max(0, Math.round((tileLeft - pane.limitLeft) / pane.cellNormW))
-            : 0
-        readonly property int originRow: pane.cellNormH > 0
-            ? Math.max(0, Math.round((tileTop - pane.limitTop) / pane.cellNormH))
-            : 0
+        readonly property real tileW: Math.max(0.001, Math.abs(pane.showX2 - pane.showX1))
+        readonly property real tileH: Math.max(0.001, Math.abs(pane.showY2 - pane.showY1))
+        // The frame can start on a half-step of the 60×30 grid. Rounding
+        // that origin onto the next whole cell shifts this box off the shot.
+        // Dividing the snapped frame keeps each cell one tele field.
         readonly property int shotRow: Math.floor(pane.tileIndex / shotCols)
         readonly property int shotCol: {
             const c = pane.tileIndex % shotCols
             return (shotRow % 2) ? (shotCols - 1 - c) : c
         }
-        readonly property real shotNw: pane.cellNormW
-        readonly property real shotNh: pane.cellNormH
-        readonly property real shotNx: pane.limitLeft + (originCol + shotCol + 0.5) * shotNw
-        readonly property real shotNy: pane.limitTop + (originRow + shotRow + 0.5) * shotNh
+        readonly property real shotNw: tileW / shotCols
+        readonly property real shotNh: tileH / shotRows
+        readonly property real shotNx: tileLeft + (shotCol + 0.5) * shotNw
+        readonly property real shotNy: tileTop + (shotRow + 0.5) * shotNh
         x: pane.unitPxX(shotNx - shotNw / 2)
         y: pane.unitPxY(shotNy - shotNh / 2)
         width: Math.max(1, pane.unitPxX(shotNx + shotNw / 2) - pane.unitPxX(shotNx - shotNw / 2))
