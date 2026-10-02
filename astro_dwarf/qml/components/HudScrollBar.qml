@@ -49,6 +49,9 @@ ScrollBar {
         return view.mapToItem(host, 0, 0).y
     }
     readonly property real viewSpan: parent ? parent.height : 0
+    // Effective visibility: a hidden page, timeline, or popup clears it.
+    // Walking each ancestor's visible flag loops against layouts and popups.
+    readonly property bool viewShown: !!(parent && parent.visible)
 
     function resolveHost() {
         let node = parent
@@ -138,7 +141,7 @@ ScrollBar {
         id: windowRail
         parent: bar.windowEdge || bar
         z: 2100
-        visible: bar.onWindow && !bar.alongX && bar.size < 0.999
+        visible: bar.onWindow && bar.viewShown && !bar.alongX && bar.size < 0.999 && bar.viewSpan > 1
         width: Theme.px(12)
         height: bar.viewSpan
         x: parent ? parent.width - width : 0

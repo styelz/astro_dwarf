@@ -1180,7 +1180,7 @@ Item {
                     contentWidth: width
                     contentHeight: nightTimeline.trackHeight
                     boundsBehavior: Flickable.StopAtBounds
-                    ScrollBar.vertical: HudScrollBar {}
+                    ScrollBar.vertical: HudScrollBar { pinToWindow: true }
                     onContentHeightChanged: nightTimeline.applyAnchoredScroll()
                     WheelHandler {
                         acceptedModifiers: Qt.ControlModifier
