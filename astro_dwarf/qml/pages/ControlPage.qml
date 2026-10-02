@@ -3210,14 +3210,11 @@ Item {
                                     : modelData.start === "stack"
                                         ? root.scopeStacking
                                         : modelData.state !== "" && root.scopeActivity === modelData.state
+                        readonly property string panoramaPress: Util.panoramaPadPress(root.scopeActivity)
+                        readonly property string panoramaStopOp: Util.panoramaPadStop(root.scopeActivity)
                         readonly property string effectiveOperation: {
-                            if (panoramaPad) {
-                                if (root.scopeActivity === "panorama")
-                                    return "panorama_stop"
-                                if (root.scopeActivity === "panorama_frame")
-                                    return "panorama_frame_stop"
-                                return "panorama_frame_start"
-                            }
+                            if (panoramaPad)
+                                return panoramaPress
                             return activeForState && modelData.stop !== "" ? modelData.stop : modelData.start
                         }
                         readonly property bool photoPrimed: modelData.start === "photo" && root.scopeOnline && !!t.photo_primed && cameraPanel.photoMode
@@ -3321,12 +3318,19 @@ Item {
                             return false
                         }
                         readonly property bool polarRunning: modelData.start === "polar_position" && activeForState && root.scopePending === modelData.start
-                        readonly property bool isPending: root.scopePending !== "" && ((root.scopePending === modelData.start && !polarRunning) || root.scopePending === modelData.stop || (root.scopePending === "cancel_prime" && primeMode))
+                        readonly property bool isPending: root.scopePending !== "" && (
+                            panoramaPad
+                                ? (root.scopePending === "panorama_frame_start"
+                                    || root.scopePending === "panorama_shoot"
+                                    || root.scopePending === "panorama_frame_stop"
+                                    || root.scopePending === "panorama_stop")
+                                : ((root.scopePending === modelData.start && !polarRunning) || root.scopePending === modelData.stop || (root.scopePending === "cancel_prime" && primeMode))
+                        )
                         readonly property bool primeCancel: primeMode && root.commandEnabled("cancel_prime")
                         readonly property bool togglePad: modelData.state === "lights" || modelData.state === "indicator"
-                        readonly property bool runningStop: !togglePad && activeForState && (
+                        readonly property bool runningStop: !togglePad && Util.commandShowsStopChip(modelData.state) && activeForState && (
                             panoramaPad
-                                ? ((effectiveOperation === "panorama_stop" || effectiveOperation === "panorama_frame_stop") && root.commandEnabled(effectiveOperation))
+                                ? (panoramaStopOp !== "" && root.commandEnabled(panoramaStopOp))
                                 : (modelData.stop !== "" && effectiveOperation === modelData.stop && root.commandEnabled(effectiveOperation))
                         )
                         readonly property bool canStopNow: primeCancel || runningStop
@@ -3349,10 +3353,10 @@ Item {
                         function deviceDetail() {
                             if (panoramaPad) {
                                 if (root.scopeActivity === "panorama")
-                                    return liveClockText ? "PANO · " + liveClockText : "SHOOTING · STOP"
+                                    return liveClockText ? "PANO · " + liveClockText : "SHOOTING"
                                 if (root.scopeActivity === "panorama_frame")
                                     return t.panorama_has_rect
-                                        ? (panoramaFramePane.tileColCount + "×" + panoramaFramePane.tileRowCount + " · SHOOT ON PREVIEW")
+                                        ? (panoramaFramePane.tileColCount + "×" + panoramaFramePane.tileRowCount + " · SHOOT")
                                         : "FRAME"
                                 return "CAPTURE"
                             }
@@ -3472,10 +3476,13 @@ Item {
                         canStop: canStopNow
                         stopTooltip: primeMode ? (activeForState ? "Stop and cancel prime" : "Cancel primed capture") : "Stop"
                         destructive: !!modelData.destructive
-                        stopsOnClick: panoramaPad
-                            ? (pad.enabled && (effectiveOperation === "panorama_frame_stop" || effectiveOperation === "panorama_stop"))
-                            : (pad.enabled && modelData.stop !== "" && effectiveOperation === modelData.stop)
-                        enabled: cameraAllowed && modeAllowed && root.commandEnabled(effectiveOperation)
+                        stopsOnClick: !panoramaPad && pad.enabled && modelData.stop !== "" && effectiveOperation === modelData.stop
+                        enabled: cameraAllowed && modeAllowed && (
+                            panoramaPad
+                                ? ((effectiveOperation !== "" && root.commandEnabled(effectiveOperation))
+                                    || (panoramaStopOp !== "" && root.commandEnabled(panoramaStopOp)))
+                                : root.commandEnabled(effectiveOperation)
+                        )
                         Accessible.description: trackingPad && root.scopeStacking
                                                            ? "Tracking is required while stacking; press STACK to end the capture"
                                                            : capturePrimed ? (modelData.start === "photo"
@@ -3499,7 +3506,13 @@ Item {
                                                                                  ? "Stop tracking before calibrating"
                                                                                  : (modelData.start === "polar_position" && activeForState)
                                                                                    ? "Polar positioning is running. Press to stop."
-                                                                                   : String(modelData.detail || modelData.label)
+                                                                                   : (panoramaPad && root.scopeActivity === "panorama_frame")
+                                                                                     ? (t.panorama_has_rect
+                                                                                         ? "Panorama frame is set. Press to start the shoot. Use stop to leave framing."
+                                                                                         : "Panorama framing is running. Use stop to leave framing.")
+                                                                                     : (panoramaPad && root.scopeActivity === "panorama")
+                                                                                       ? "Panorama is shooting. Use stop to end it."
+                                                                                       : String(modelData.detail || modelData.label)
                         onClicked: {
                             if (!pad.enabled || pad.stopPressed)
                                 return
@@ -3507,6 +3520,18 @@ Item {
                                 root.openEqSetup()
                                 return
                             }
+                            if (panoramaPad && effectiveOperation === "panorama_shoot") {
+                                if (!root.commandEnabled("panorama_shoot") || !panoramaFramePane.hasRect)
+                                    return
+                                const x1 = Math.min(panoramaFramePane.showX1, panoramaFramePane.showX2)
+                                const y1 = Math.min(panoramaFramePane.showY1, panoramaFramePane.showY2)
+                                const x2 = Math.max(panoramaFramePane.showX1, panoramaFramePane.showX2)
+                                const y2 = Math.max(panoramaFramePane.showY1, panoramaFramePane.showY2)
+                                backend.shootPanorama(x1, y1, x2, y2)
+                                return
+                            }
+                            if (panoramaPad && effectiveOperation === "")
+                                return
                             if (panoramaPad && effectiveOperation === "panorama_frame_start") {
                                 root.openPanoramaNotice()
                                 return
@@ -3523,7 +3548,7 @@ Item {
                             }
                             if (!runningStop)
                                 return
-                            root.requestDeviceAction(effectiveOperation, padLabel)
+                            root.requestDeviceAction(panoramaPad ? panoramaStopOp : effectiveOperation, padLabel)
                         }
                         Connections {
                             target: backend

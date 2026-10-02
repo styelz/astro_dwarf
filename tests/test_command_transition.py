@@ -36,6 +36,9 @@ QtObject {
     property var telemetry: ({})
     readonly property bool locked: Util.commandTransitionLocked(op, pending, telemetry)
     readonly property string primeBlock: Util.capturePrimeBlock(op, telemetry)
+    readonly property bool stopChip: Util.commandShowsStopChip(op)
+    readonly property string panoPress: Util.panoramaPadPress(op)
+    readonly property string panoStop: Util.panoramaPadStop(op)
 }
 """
     component = QQmlComponent(engine)
@@ -98,6 +101,29 @@ def _prime_block(probe, op: str, **telemetry) -> str:
     return str(probe.property("primeBlock") or "")
 
 
+def test_self_finishing_pads_do_not_show_a_stop_chip() -> None:
+    _app, _qml_engine, _component, probe = _probe()
+    for activity in ("autofocus", "infinity", "calibrate", "polar", "polar_position"):
+        probe.setProperty("op", activity)
+        _assert(not probe.property("stopChip"), activity + " must not show a stop chip")
+    for activity in ("imaging", "goto", "record", "burst", "timelapse", "lights", "indicator"):
+        probe.setProperty("op", activity)
+        _assert(bool(probe.property("stopChip")), activity + " may show a stop chip")
+
+
+def test_armed_panorama_press_starts_the_shoot() -> None:
+    _app, _qml_engine, _component, probe = _probe()
+    probe.setProperty("op", "")
+    _assert(probe.property("panoPress") == "panorama_frame_start", "an idle pano pad starts framing")
+    _assert(probe.property("panoStop") == "", "an idle pano pad has no stop")
+    probe.setProperty("op", "panorama_frame")
+    _assert(probe.property("panoPress") == "panorama_shoot", "an armed frame starts the shoot")
+    _assert(probe.property("panoStop") == "panorama_frame_stop", "stop leaves an armed frame")
+    probe.setProperty("op", "panorama")
+    _assert(probe.property("panoPress") == "", "a running shoot is not another press")
+    _assert(probe.property("panoStop") == "panorama_stop", "stop ends a running shoot")
+
+
 def test_capture_prime_blocks_other_commands() -> None:
     _app, _qml_engine, _component, probe = _probe()
     photo = {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": True}
@@ -133,5 +159,7 @@ def test_capture_prime_blocks_other_commands() -> None:
 
 if __name__ == "__main__":
     test_stop_and_cancel_stay_locked_until_the_state_settles()
+    test_self_finishing_pads_do_not_show_a_stop_chip()
+    test_armed_panorama_press_starts_the_shoot()
     test_capture_prime_blocks_other_commands()
     print("ok")

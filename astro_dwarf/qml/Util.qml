@@ -185,6 +185,31 @@ QtObject {
         default: return String(activity).toUpperCase()
         }
     }
+    function commandShowsStopChip(state) {
+        // These runs finish on their own. The pad can still abort them; they
+        // do not grow a separate stop chip.
+        const activity = String(state || "")
+        return activity !== "autofocus" && activity !== "infinity"
+            && activity !== "calibrate" && activity !== "polar" && activity !== "polar_position"
+    }
+    function panoramaPadPress(activity) {
+        // An armed frame starts the grid from the pad. A running shoot stays
+        // on the stop chip.
+        const state = String(activity || "")
+        if (state === "panorama_frame")
+            return "panorama_shoot"
+        if (state === "panorama")
+            return ""
+        return "panorama_frame_start"
+    }
+    function panoramaPadStop(activity) {
+        const state = String(activity || "")
+        if (state === "panorama")
+            return "panorama_stop"
+        if (state === "panorama_frame")
+            return "panorama_frame_stop"
+        return ""
+    }
     function commandTransitionLocked(op, pending, telemetry) {
         // Stop, stop-and-cancel, and a firmware state change are one-shot.
         // The pad stays dark while that command is in flight, and while the
