@@ -3629,13 +3629,17 @@ Item {
                     }
                 }
                 headerExtra: Text {
-                    visible: motionPanel.stacking && stackTimer.target
-                    text: stackTimer.target
-                    color: Theme.textSecondary
+                    readonly property bool showStep: !motionPanel.stacking
+                    visible: showStep || !!stackTimer.target
+                    text: showStep ? ("NUDGE " + root.nudgeDegreesText) : stackTimer.target
+                    color: showStep ? Theme.accent : Theme.textSecondary
+                    opacity: showStep && !(root.motionEnabled && !motionPanel.captureArmed) ? 0.42 : 1
                     font.pixelSize: Theme.fontPx(9)
                     font.letterSpacing: 0.6
+                    font.family: showStep ? Theme.fontMono : Theme.fontUi
                     elide: Text.ElideRight
                     width: Math.min(Theme.px(110), implicitWidth)
+                    Accessible.name: showStep ? ("Nudge step " + root.nudgeDegreesText) : text
                 }
                 Item {
                     id: padHost
@@ -3671,7 +3675,7 @@ Item {
                         activeFocusOnTab: root.motionEnabled && !motionPanel.captureArmed
                         Accessible.name: "Mount joystick"
                         Accessible.role: Accessible.Dial
-                        Accessible.description: "Arrow keys slew the mount. Ring arrows nudge a preset step. Release to stop."
+                        Accessible.description: "Arrow keys slew the mount. Ring arrows nudge " + root.nudgeDegreesText + ". Release to stop."
                         Keys.onPressed: (event) => {
                             if (!root.motionEnabled || motionPanel.captureArmed || event.isAutoRepeat)
                                 return
@@ -3760,7 +3764,7 @@ Item {
                             if (!analogPad.nudgesEnabled)
                                 return
                             analogPad.forceActiveFocus()
-                            backend.joystickNudge(backend.selectedDeviceId, angle, root.mappedJoySpeed)
+                            backend.joystickNudge(backend.selectedDeviceId, angle, root.nudgeDegrees)
                         }
 
                         Rectangle {
@@ -3879,7 +3883,7 @@ Item {
                                 z: 2
                                 Accessible.name: "Nudge " + modelData.name
                                 Accessible.role: Accessible.Button
-                                Accessible.description: "Nudge " + modelData.name + " at " + root.mappedJoySpeedText
+                                Accessible.description: "Nudge " + modelData.name + " " + root.nudgeDegreesText
                                 Canvas {
                                     id: chevron
                                     anchors.centerIn: parent
@@ -3918,7 +3922,7 @@ Item {
                                 }
                                 HudToolTip {
                                     visible: nudgeArea.containsMouse && analogPad.nudgesEnabled
-                                    text: "Nudge " + modelData.name + " · " + root.mappedJoySpeedText
+                                    text: "Nudge " + modelData.name + " · " + root.nudgeDegreesText
                                 }
                             }
                         }

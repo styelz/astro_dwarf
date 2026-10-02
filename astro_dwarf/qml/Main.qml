@@ -125,6 +125,20 @@ ApplicationWindow {
             return pct.toFixed(1) + "%"
         return Math.round(pct) + "%"
     }
+    // Ring arrows turn this far. Full slider (100%) is 45°; the same
+    // exponential curve as the stick, so the low end stays a fine step.
+    readonly property real nudgeDegrees: {
+        const t = Math.max(0, Math.min(1, joySpeed))
+        if (t >= 0.999)
+            return 45
+        return mappedJoySpeed * 45
+    }
+    readonly property string nudgeDegreesText: {
+        const shown = Math.round(nudgeDegrees * 10) / 10
+        if (shown >= 9.95 && Math.abs(shown - Math.round(shown)) < 0.05)
+            return Math.round(shown) + "°"
+        return shown.toFixed(1) + "°"
+    }
     readonly property bool targetLocked: backend.selectedDevice.connected && backend.currentSession.status === "running"
     readonly property bool dataPage: currentPage !== 0
     readonly property bool scopeOnline: !!(backend.selectedDevice && backend.selectedDevice.connected)

@@ -10423,12 +10423,14 @@ class AppBackend(QObject):
             worker.send("stop_motors")
 
     @Slot(str, float, float)
-    def joystickNudge(self, device_id: str, angle: float, speed: float) -> None:
+    def joystickNudge(self, device_id: str, angle: float, degrees: float) -> None:
+        from .device_worker import nudge_step_degrees
+
         self._joystick_pending.pop(device_id, None)
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
             return
-        vector = (float(angle), max(0.0, min(1.0, float(speed))))
+        vector = (float(angle), nudge_step_degrees(degrees))
         worker.send("joystick_nudge", {"args": list(vector)})
 
     @Slot(str, float, float)

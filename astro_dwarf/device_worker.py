@@ -1069,6 +1069,296 @@ def _set_focus_position(target: int) -> bool:
     return True
 
 
+_NUDGE_FULL_SCALE_DEG = 45.0
+# How long a 100% nudge holds the stick, after the move command is on the wire.
+_NUDGE_FULL_HOLD_S = 2.0
+_NUDGE_STEP_CAP = 80
+
+
+def nudge_step_degrees(degrees: float) -> float:
+    """How far one nudge should turn. The slew slider's 100% mark is 45°."""
+    try:
+        value = float(degrees)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return max(0.0, min(_NUDGE_FULL_SCALE_DEG, value))
+
+
+def _shortest_deg(start: float, now: float) -> float | None:
+    try:
+        delta = (float(now) - float(start) + 180.0) % 360.0 - 180.0
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(delta) or abs(delta) > 150.0:
+        return None
+    return delta
+
+
+def _motor_travel(start: tuple[float, float], now: tuple[float, float]) -> float | None:
+    azimuth = _shortest_deg(start[0], now[0])
+    altitude = _shortest_deg(start[1], now[1])
+    if azimuth is None or altitude is None:
+        return None
+    return math.hypot(azimuth, altitude)
+
+
+def _nudge_should_stop() -> bool:
+    if _stop.is_set():
+        return True
+    with _commands.mutex:
+        for item in _commands.queue:
+            command = item[2].get("command")
+            if command in ("stop_motors", "joystick", "joystick_nudge", "stop_all"):
+                return True
+    return False
+
+
+def _send_joystick_vector(angle: float, length: float, *, fixed: bool) -> bool:
+    from dwarf_python_api.proto import motor_control_pb2
+
+    length = max(0.0, min(1.0, float(length)))
+    if fixed:
+        message = motor_control_pb2.ReqMotorServiceJoystickFixedAngle()
+        command = 14007
+    else:
+        message = motor_control_pb2.ReqMotorServiceJoystick()
+        command = 14006
+    message.vector_angle = float(angle)
+    message.vector_length = length
+    return send_without_response(message, command, 6) is not False
+
+
+def _send_joystick_stop() -> None:
+    from dwarf_python_api.proto import motor_control_pb2
+
+    try:
+        send_without_response(motor_control_pb2.ReqMotorServiceJoystickStop(), 14008, 6)
+    except Exception:
+        pass
+
+
+def _read_motor_pair() -> tuple[float, float] | None:
+    """Azimuth and altitude in degrees, or None when the steppers are unhomed."""
+    global _motors_unhomed
+    if _tap is None:
+        return None
+    from dwarf_python_api.proto import motor_control_pb2
+
+    before = time.monotonic()
+    for motor_id in (1, 2):
+        message = motor_control_pb2.ReqMotorGetPosition()
+        message.id = motor_id
+        send_without_response(message, 14011, 6, timeout=0.4)
+    deadline = before + 0.45
+    while True:
+        snap = _tap.snapshot()
+        stamped_code = snap.get("motor_pos_last_at")
+        if isinstance(stamped_code, (int, float)) and float(stamped_code) >= before - 0.05:
+            try:
+                code = int(snap.get("motor_pos_last_code") or 0)
+            except (TypeError, ValueError):
+                code = 0
+            if code == CODE_STEP_MOTOR_NEED_RESET:
+                _motors_unhomed = True
+                return None
+            if code != 0:
+                return None
+        pair: list[float] = []
+        fresh = True
+        for motor_id in (1, 2):
+            stamped = snap.get(f"motor_pos_{motor_id}_at")
+            if not isinstance(stamped, (int, float)) or float(stamped) < before - 0.05:
+                fresh = False
+                break
+            try:
+                pair.append(float(snap[f"motor_pos_{motor_id}"]))
+            except (KeyError, TypeError, ValueError):
+                fresh = False
+                break
+        if fresh and len(pair) == 2:
+            return (pair[0], pair[1])
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.03)
+
+
+def _await_nudge_step(previous: tuple[float, float], timeout: float = 0.8) -> tuple[float, float] | None:
+    """Wait until a fixed-angle step shows up on the encoders and settles."""
+    deadline = time.monotonic() + timeout
+    last = previous
+    stable = 0
+    while time.monotonic() < deadline:
+        if _nudge_should_stop():
+            return None
+        current = _read_motor_pair()
+        if current is None:
+            time.sleep(0.04)
+            continue
+        moved = _motor_travel(previous, current)
+        creep = _motor_travel(last, current)
+        if moved is not None and moved >= 0.2:
+            if creep is not None and creep < 0.2:
+                stable += 1
+                if stable >= 1:
+                    return current
+            else:
+                stable = 0
+            last = current
+        time.sleep(0.04)
+    if (_motor_travel(previous, last) or 0.0) >= 0.2:
+        return last
+    return None
+
+
+def _repeat_fixed_steps(angle: float, degrees: float, origin: tuple[float, float]) -> float | None:
+    """Replay the short firmware step until the encoders have turned `degrees`."""
+    moved = 0.0
+    step_size: float | None = None
+    misses = 0
+    previous = origin
+    limit = time.monotonic() + min(22.0, max(6.0, degrees * 0.45 + 2.0))
+    for _pulse in range(_NUDGE_STEP_CAP):
+        if _nudge_should_stop() or time.monotonic() >= limit or moved >= degrees - 0.3:
+            break
+        remain = max(0.0, degrees - moved)
+        if step_size is not None and step_size > 0.2 and remain < step_size:
+            length = max(0.15, min(1.0, remain / step_size))
+        else:
+            length = 1.0
+        if not _send_joystick_vector(angle, length, fixed=True):
+            break
+        landed = _await_nudge_step(previous)
+        if landed is None:
+            misses += 1
+            if misses >= 2:
+                break
+            continue
+        misses = 0
+        step = _motor_travel(previous, landed)
+        total = _motor_travel(origin, landed)
+        if step is None or total is None or step < 0.2:
+            misses += 1
+            if misses >= 2:
+                break
+            continue
+        step_size = step
+        previous = landed
+        moved = total
+    return moved
+
+
+def nudge_stick_length(degrees: float) -> float:
+    """Stick power for a nudge. 100% is full stick; 50% is half stick."""
+    span = nudge_step_degrees(degrees)
+    if _NUDGE_FULL_SCALE_DEG <= 0:
+        return 0.0
+    return max(0.0, min(1.0, span / _NUDGE_FULL_SCALE_DEG))
+
+
+def nudge_hold_seconds(degrees: float) -> float:
+    """100% holds for the tuned full-stick time. Lower speeds hold for that fraction."""
+    span = nudge_step_degrees(degrees)
+    if span <= 0.0 or _NUDGE_FULL_SCALE_DEG <= 0:
+        return 0.0
+    return _NUDGE_FULL_HOLD_S * (span / _NUDGE_FULL_SCALE_DEG)
+
+
+def _send_motor_packet_immediate(command: int, body: Any) -> bool:
+    """Send a motor packet on the socket, skipping the SDK's 1-second wait."""
+    client, loop = _sdk_socket()
+    websocket = getattr(client, "websocket", None) if client is not None else None
+    if websocket is None or loop is None:
+        return False
+    from dwarf_python_api.proto import base_pb2
+
+    packet = base_pb2.WsPacket()
+    packet.data = body.SerializeToString()
+    packet.major_version = 1
+    packet.minor_version = 20
+    packet.device_id = 4
+    packet.module_id = 6
+    packet.cmd = int(command)
+    packet.type = 0
+    packet.client_id = str(getattr(client, "client_id", "") or "")
+    try:
+        future = asyncio.run_coroutine_threadsafe(websocket.send(packet.SerializeToString()), loop)
+        future.result(timeout=0.5)
+    except Exception:
+        return False
+    return True
+
+
+def _send_joystick_immediate(angle: float, length: float) -> bool:
+    """Send a stick vector without the SDK's 1-second delay before every packet."""
+    from dwarf_python_api.proto import motor_control_pb2
+
+    body = motor_control_pb2.ReqMotorServiceJoystick()
+    body.vector_angle = float(angle)
+    body.vector_length = max(0.0, min(1.0, float(length)))
+    if _send_motor_packet_immediate(14006, body):
+        return True
+    return _send_joystick_vector(angle, length, fixed=False)
+
+
+def _send_nudge_stop() -> None:
+    """Stop a nudge as soon as the hold ends, without the SDK's 1-second wait."""
+    from dwarf_python_api.proto import motor_control_pb2
+
+    if not _send_motor_packet_immediate(14008, motor_control_pb2.ReqMotorServiceJoystickStop()):
+        _send_joystick_stop()
+
+
+def _hold_joystick(angle: float, degrees: float) -> None:
+    """Hold the stick for exactly `nudge_hold_seconds`, then the caller stops it."""
+    seconds = nudge_hold_seconds(degrees)
+    length = nudge_stick_length(degrees)
+    if seconds <= 0.0 or length <= 0.0:
+        return
+    if not _send_joystick_immediate(angle, length):
+        return
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if _nudge_should_stop():
+            break
+        remaining = deadline - time.monotonic()
+        time.sleep(min(0.1, max(0.0, remaining)))
+        if time.monotonic() >= deadline or _nudge_should_stop():
+            break
+        _send_joystick_immediate(angle, length)
+
+
+def _slew_nudge_degrees(angle: float, degrees: float) -> bool:
+    """Turn the head by `degrees` along a joystick heading.
+
+    CMD 14007 ignores a length above 1 and always takes the same short step,
+    so a single packet cannot be a 45° turn. Repeat that step until the
+    encoders show the requested travel. Without encoders, hold the stick at
+    that fraction of full power for the same fraction of the 100% time.
+    """
+    degrees = nudge_step_degrees(degrees)
+    if degrees < 0.05:
+        return True
+    try:
+        heading = float(angle) % 360.0
+    except (TypeError, ValueError):
+        return False
+    _send_nudge_stop()
+    try:
+        origin = _read_motor_pair()
+        if origin is None:
+            log(f"Nudge {heading:.0f}° held for {degrees:.1f}° without encoder position", "info")
+            _hold_joystick(heading, degrees)
+            return True
+        moved = _repeat_fixed_steps(heading, degrees, origin)
+        shown = f"{moved:.1f}°" if isinstance(moved, float) else "unknown"
+        log(f"Nudge {heading:.0f}° moved {shown} (asked {degrees:.1f}°)", "info")
+        return True
+    finally:
+        _send_nudge_stop()
+
+
 def sdk_call(operation: str, *args: Any) -> Any:
     global _motors_unhomed, _photo_capture_camera
     if _api is None:
@@ -1094,16 +1384,9 @@ def sdk_call(operation: str, *args: Any) -> Any:
             message.vector_length = float(args[1])
             return send_without_response(message, 14006, 6)
         if operation == "joystick_nudge":
-            # Official short-press arrows. Stop a held 14006 first so the step is not
-            # blended into a leftover continuous vector.
-            try:
-                send_without_response(motor_control_pb2.ReqMotorServiceJoystickStop(), 14008, 6)
-            except Exception:
-                pass
-            message = motor_control_pb2.ReqMotorServiceJoystickFixedAngle()
-            message.vector_angle = float(args[0]) if args else 0.0
-            message.vector_length = max(0.0, min(1.0, float(args[1]))) if len(args) > 1 else 0.0
-            return send_without_response(message, 14007, 6)
+            heading = float(args[0]) if args else 0.0
+            travel = float(args[1]) if len(args) > 1 else 0.0
+            return _slew_nudge_degrees(heading, travel)
         return send_without_response(motor_control_pb2.ReqMotorServiceJoystickStop(), 14008, 6)
     if operation == "center_tap":
         nx = float(args[0]) if args else 0.5
