@@ -15,6 +15,14 @@ Item {
     property bool inputEnabled: true
     // Tele stream only. Wide double-click still centres.
     property bool feedDoubleClick: false
+    // Drag a rectangle on this frame to lock object tracking. Clicks that
+    // do not move still double-click (wide centre, tele full screen).
+    property bool boxLockEnabled: false
+    property bool boxLockShown: false
+    property real boxNx: 0
+    property real boxNy: 0
+    property real boxNw: 0
+    property real boxNh: 0
     property bool chromeShown: true
     property real fovH: 2.95 / 45.06
     property real fovV: 1.66 / 25.93
@@ -34,6 +42,25 @@ Item {
     readonly property real frameY: frame.paintedY
     signal centerRequested(real nx, real ny, string diag)
     signal feedDoubleClicked()
+    signal boxLockRequested(real nx, real ny, real nw, real nh)
+
+    function commitBox(x0, y0, x1, y1) {
+        const aLocal = tapMouse.mapToItem(frame, x0, y0)
+        const bLocal = tapMouse.mapToItem(frame, x1, y1)
+        const a = frame.mapToFrame(aLocal.x, aLocal.y)
+        const b = frame.mapToFrame(bLocal.x, bLocal.y)
+        if (!a || !b || (!a.inside && !b.inside))
+            return
+        const nx = Math.max(0, Math.min(a.nx, b.nx))
+        const ny = Math.max(0, Math.min(a.ny, b.ny))
+        const farX = Math.min(1, Math.max(a.nx, b.nx))
+        const farY = Math.min(1, Math.max(a.ny, b.ny))
+        const nw = farX - nx
+        const nh = farY - ny
+        if (nw < 0.03 || nh < 0.03)
+            return
+        pane.boxLockRequested(nx, ny, nw, nh)
+    }
 
     LiveFrameItem {
         id: frame
@@ -67,14 +94,81 @@ Item {
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton
         hoverEnabled: false
-        enabled: pane.inputEnabled && (pane.swallowClicks || pane.feedDoubleClick || (pane.centerEnabled && pane.wideView))
+        cursorShape: pane.boxLockEnabled ? Qt.CrossCursor : Qt.ArrowCursor
+        enabled: pane.inputEnabled && (pane.boxLockEnabled || pane.swallowClicks || pane.feedDoubleClick || (pane.centerEnabled && pane.wideView))
+        property real dragX: 0
+        property real dragY: 0
+        property bool dragArmed: false
+        property bool dragMoved: false
+        function cancelDrag() {
+            dragArmed = false
+            dragMoved = false
+            dragRubber.visible = false
+        }
+        onPressed: (mouse) => {
+            if (!pane.boxLockEnabled || mouse.button !== Qt.LeftButton)
+                return
+            dragArmed = true
+            dragMoved = false
+            dragX = mouse.x
+            dragY = mouse.y
+            dragRubber.visible = false
+        }
+        onPositionChanged: (mouse) => {
+            if (!dragArmed)
+                return
+            const dx = mouse.x - dragX
+            const dy = mouse.y - dragY
+            if (!dragMoved && Math.abs(dx) < Theme.px(12) && Math.abs(dy) < Theme.px(12))
+                return
+            dragMoved = true
+            dragRubber.x = Math.min(dragX, mouse.x)
+            dragRubber.y = Math.min(dragY, mouse.y)
+            dragRubber.width = Math.abs(dx)
+            dragRubber.height = Math.abs(dy)
+            dragRubber.visible = dragRubber.width > 2 && dragRubber.height > 2
+        }
+        onReleased: (mouse) => {
+            if (!dragArmed)
+                return
+            const moved = dragMoved
+            const x0 = dragX
+            const y0 = dragY
+            cancelDrag()
+            if (moved && pane.boxLockEnabled)
+                pane.commitBox(x0, y0, mouse.x, mouse.y)
+        }
+        onCanceled: cancelDrag()
         onDoubleClicked: (mouse) => {
+            cancelDrag()
             if (!pane.wideView && pane.feedDoubleClick) {
                 pane.feedDoubleClicked()
                 return
             }
             pane.centerOn(mouse.x, mouse.y)
         }
+    }
+
+    Rectangle {
+        id: dragRubber
+        z: 4
+        visible: false
+        color: "transparent"
+        border.color: Theme.accent
+        border.width: 1
+    }
+
+    Rectangle {
+        id: lockBox
+        z: 2
+        visible: pane.boxLockShown && pane.playing && pane.paintedWidth > 0 && pane.boxNw > 0.02 && pane.boxNh > 0.02
+        x: pane.frameX + pane.paintedWidth * pane.boxNx
+        y: pane.frameY + pane.paintedHeight * pane.boxNy
+        width: pane.paintedWidth * pane.boxNw
+        height: pane.paintedHeight * pane.boxNh
+        color: "transparent"
+        border.color: Theme.accent
+        border.width: 2
     }
 
     Item {

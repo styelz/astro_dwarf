@@ -1898,7 +1898,14 @@ Item {
                         footprintNy: previewHost.teleMatchNy
                         footprintNw: previewHost.teleMatchNw
                         footprintNh: previewHost.teleMatchNh
+                        boxLockEnabled: playing && root.motionEnabled && !backend.previewResult
+                        boxLockShown: root.scopeOnline && !!root.scopeTelemetry.track_box && String(root.scopeTelemetry.track_box_camera || "") === camera
+                        boxNx: Number(root.scopeTelemetry.track_box_nx || 0)
+                        boxNy: Number(root.scopeTelemetry.track_box_ny || 0)
+                        boxNw: Number(root.scopeTelemetry.track_box_nw || 0)
+                        boxNh: Number(root.scopeTelemetry.track_box_nh || 0)
                         onCenterRequested: (nx, ny, diag) => backend.centerOnTap(backend.selectedDeviceId, nx, ny, diag)
+                        onBoxLockRequested: (nx, ny, nw, nh) => backend.lockTrackBox(backend.selectedDeviceId, nx, ny, nw, nh, wideView)
                     }
                     MosaicViewPane {
                         id: mosaicFrame
@@ -2643,6 +2650,37 @@ Item {
                             }
                         }
                         Rectangle {
+                            id: boxLockBadge
+                            visible: root.scopeOnline && !!root.scopeTelemetry.track_box && !previewHost.panoramaCanvas
+                            width: boxLockLabel.implicitWidth + Theme.s4
+                            height: Theme.px(28)
+                            color: Theme.fillActive
+                            border.color: Theme.accent
+                            Accessible.name: "Box lock"
+                            Accessible.description: "Stop the box lock"
+                            Text {
+                                id: boxLockLabel
+                                anchors.centerIn: parent
+                                text: "BOX LOCK"
+                                color: Theme.accent
+                                font.pixelSize: Theme.fontPx(11)
+                                font.bold: true
+                                font.letterSpacing: 1
+                            }
+                            MouseArea {
+                                id: boxLockBadgeMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onContainsMouseChanged: previewHost.holdControls(containsMouse)
+                                onClicked: root.requestDeviceAction("stop_goto", "STOP BOX LOCK")
+                            }
+                            HudToolTip {
+                                text: "Stop the box lock"
+                                visible: boxLockBadgeMouse.containsMouse
+                            }
+                        }
+                        Rectangle {
                             visible: backend.previewPlaying || backend.previewResult || previewBadge.panoramaShooting
                             width: mainCamLabel.implicitWidth + Theme.s4
                             height: Theme.px(28)
@@ -2956,6 +2994,20 @@ Item {
                             }
                         }
                         HudMenuItem {
+                            info: true
+                            visible: backend.previewPlaying && !previewHost.panoramaCanvas && !root.scopeTelemetry.track_box
+                            text: "Drag a box on the picture to lock the mount onto it"
+                        }
+                        HudMenuItem {
+                            objectName: "stopBoxLockMenuItem"
+                            text: "Stop box lock"
+                            glyph: "\uE71A"
+                            visible: !!root.scopeTelemetry.track_box
+                            enabled: root.commandEnabled("stop_goto")
+                            accessibleDescription: "Stop following the box drawn on the live view"
+                            onTriggered: root.requestDeviceAction("stop_goto", "STOP BOX LOCK")
+                        }
+                        HudMenuItem {
                             text: "Start live view"
                             glyph: "\uE768"
                             visible: backend.previewResult
@@ -3050,7 +3102,14 @@ Item {
                             footprintNy: previewHost.teleMatchNy
                             footprintNw: previewHost.teleMatchNw
                             footprintNh: previewHost.teleMatchNh
+                            boxLockEnabled: playing && root.motionEnabled && !backend.previewResult
+                            boxLockShown: root.scopeOnline && !!root.scopeTelemetry.track_box && String(root.scopeTelemetry.track_box_camera || "") === camera
+                            boxNx: Number(root.scopeTelemetry.track_box_nx || 0)
+                            boxNy: Number(root.scopeTelemetry.track_box_ny || 0)
+                            boxNw: Number(root.scopeTelemetry.track_box_nw || 0)
+                            boxNh: Number(root.scopeTelemetry.track_box_nh || 0)
                             onCenterRequested: (nx, ny, diag) => backend.centerOnTap(backend.selectedDeviceId, nx, ny, diag)
+                            onBoxLockRequested: (nx, ny, nw, nh) => backend.lockTrackBox(backend.selectedDeviceId, nx, ny, nw, nh, wideView)
                         }
                         Image {
                             objectName: "panoramaResultFullscreen"
@@ -3190,7 +3249,7 @@ Item {
                         objectName: "pad-" + String(modelData.start || "")
                         readonly property var t: root.scopeTelemetry
                         readonly property bool trackingPad: modelData.start === "track"
-                        readonly property bool trackingNow: trackingPad && !!t.tracking_active
+                        readonly property bool trackingNow: trackingPad && !!t.tracking_active && !t.track_box
                         readonly property bool slewingNow: trackingPad && root.scopeActivity === "goto"
                         readonly property bool stopping: effectiveOperation !== modelData.start
                         readonly property bool panoramaBusy: root.scopeActivity === "panorama"

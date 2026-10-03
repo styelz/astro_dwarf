@@ -34,7 +34,9 @@ Dialog {
     readonly property bool multiPane: paneCount > 1
     readonly property bool commonMulti: bulkMode || (multiPane && applyToAllPanes)
     readonly property bool uniqueVisible: !bulkMode
-    readonly property bool mosaicVisible: !bulkMode
+    readonly property bool mosaicVisible: !bulkMode && !cameraForm
+    property int captureTab: 0
+    readonly property bool cameraForm: captureTab === 1 && !bulkMode && !editingTemplate
     readonly property bool equatorialTarget: targetType.currentIndex === 0
     readonly property bool solarKind: targetType.currentIndex === 1
     readonly property string copiedCoordinates: Util.formatCoordinates(ra.text, dec.text)
@@ -463,6 +465,7 @@ Dialog {
         notes.text = String(data.notes || "")
         notes.cursorPosition = 0
         sessionDialog.applyWorkflowChecks(data.workflow)
+        sessionDialog.loadCaptureFields(data)
         saveTemplate.checked = false
         exposure.placeholderText = ""
         gain.placeholderText = "Gain"
@@ -479,8 +482,69 @@ Dialog {
             }
         }
     }
-    function formPayload() {
+    function selectComboText(combo, value, fallback) {
+        const wanted = String(value)
+        for (let i = 0; i < combo.count; i++) {
+            if (String(combo.textAt(i)) === wanted) {
+                combo.currentIndex = i
+                return
+            }
+        }
+        const fallbackText = String(fallback)
+        for (let i = 0; i < combo.count; i++) {
+            if (String(combo.textAt(i)) === fallbackText) {
+                combo.currentIndex = i
+                return
+            }
+        }
+        combo.currentIndex = 0
+    }
+    function loadCaptureFields(data) {
+        const action = String((data && data.action) || "astro")
+        const actions = ["photo", "video", "burst", "timelapse"]
+        const index = actions.indexOf(action)
+        captureTab = index >= 0 ? 1 : 0
+        captureAction.currentIndex = index >= 0 ? index : 0
+        videoSeconds.text = String((data && data.video_seconds) || 30)
+        burstCount.text = String((data && data.burst_count) || 10)
+        sessionDialog.selectComboText(burstInterval, (data && data.burst_interval_seconds) || 1, 1)
+        sessionDialog.selectComboText(timelapseInterval, (data && data.timelapse_interval_seconds) || 5, 5)
+        sessionDialog.selectComboText(timelapseLength, (data && data.timelapse_video_seconds) || 30, 30)
+    }
+    function cameraPayload() {
+        const actions = ["photo", "video", "burst", "timelapse"]
         return {
+            id: sessionDialog.editingId, anchor_id: sessionDialog.editingAnchorId || sessionDialog.editingId,
+            action: actions[Math.max(0, captureAction.currentIndex)] || "photo",
+            name: sessionName.text,
+            target: sessionName.text,
+            target_kind: "none",
+            ra: "", dec: "",
+            scheduled_start: startTime.text,
+            device_id: sessionDialog.editingDeviceId || backend.selectedDeviceId,
+            camera: camera.currentIndex === 1 ? "wide" : "tele",
+            exposure: Number(exposure.text),
+            gain: Number(gain.text),
+            frame_count: 1,
+            binning: 1,
+            ir_filter: "VIS",
+            rows: 1, columns: 1, rotation: 0,
+            horizontal_scale: 100, vertical_scale: 100,
+            wait_before: 0, wait_after: 0, notes: "",
+            calibrate: false, autofocus: false, infinite_focus: false,
+            polar_align: false, goto: false, save_template: false,
+            burst_count: Number(burstCount.text) || 10,
+            burst_interval_seconds: Number(burstInterval.currentText) || 1,
+            video_seconds: Number(videoSeconds.text) || 30,
+            timelapse_interval_seconds: Number(timelapseInterval.currentText) || 5,
+            timelapse_video_seconds: Number(timelapseLength.currentText) || 30
+        }
+    }
+    function formPayload() {
+        if (sessionDialog.cameraForm)
+            return sessionDialog.cameraPayload()
+        return {
+            action: "astro",
             id: sessionDialog.editingId, anchor_id: sessionDialog.editingAnchorId || sessionDialog.editingId,
             name: sessionName.text, target: sessionDialog.currentTargetName(),
             target_kind: targetType.currentText, ra: ra.text, dec: dec.text,
@@ -538,6 +602,7 @@ Dialog {
         applyToAllPanes = true
         importedPlan = false
         saveTemplate.checked = false
+        captureTab = 0
     }
     function applyCaptureDefaults(deviceId) {
         const device = Util.deviceById(backend.devices, deviceId || sessionDialog.editingDeviceId || backend.selectedDeviceId) || backend.selectedDevice
@@ -580,6 +645,7 @@ Dialog {
         frames.placeholderText = ""
         waitBefore.placeholderText = "Before"
         waitAfter.placeholderText = "After"
+        sessionDialog.loadCaptureFields({})
         sessionDialog.syncDeviceCombo()
         open()
     }
@@ -666,6 +732,15 @@ Dialog {
                 sessionDialog.openExisting(list[0])
             return
         }
+        if (!templates) {
+            for (let i = 0; i < list.length; i++) {
+                const action = String((list[i] && list[i].action) || "astro")
+                if (action !== "astro") {
+                    backend.noteCameraSessionsEditOne()
+                    return
+                }
+            }
+        }
         sessionDialog.openBulk(list, !!templates)
     }
     function openBulk(items, templates) {
@@ -712,7 +787,77 @@ Dialog {
             HudButton { text: "×"; implicitWidth: Theme.px(40); onClicked: sessionDialog.close() }
         }
         RowLayout {
-            visible: sessionDialog.multiPane
+            id: captureTabs
+            visible: !sessionDialog.bulkMode && !sessionDialog.editingTemplate
+            Layout.fillWidth: true
+            Layout.preferredHeight: Theme.controlHeight
+            Layout.maximumHeight: Theme.controlHeight
+            spacing: Theme.s2
+            HudButton {
+                id: astroTab
+                objectName: "session-tab-astro"
+                Layout.fillWidth: true
+                Layout.preferredHeight: Theme.controlHeight
+                text: "ASTRO"
+                font.pixelSize: Theme.fontMd
+                font.letterSpacing: Theme.tracking2
+                buttonColor: sessionDialog.captureTab === 0 ? Theme.fillActive : Theme.inputBg
+                foregroundColor: sessionDialog.captureTab === 0 ? Theme.accent : Theme.textSecondary
+                Accessible.name: "Astro session"
+                accessibleDescription: (sessionDialog.captureTab === 0 ? "Current tab. " : "") + "Deep-sky stack session"
+                onClicked: sessionDialog.captureTab = 0
+                Keys.onLeftPressed: {
+                    cameraTab.forceActiveFocus()
+                    sessionDialog.captureTab = 1
+                }
+                Keys.onRightPressed: {
+                    cameraTab.forceActiveFocus()
+                    sessionDialog.captureTab = 1
+                }
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: Theme.px(1)
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    height: Theme.px(2)
+                    width: sessionDialog.captureTab === 0 ? parent.width - Theme.px(24) : 0
+                    color: Theme.accent
+                    Behavior on width { NumberAnimation { duration: Theme.quick; easing.type: Easing.OutCubic } }
+                }
+            }
+            HudButton {
+                id: cameraTab
+                objectName: "session-tab-camera"
+                Layout.fillWidth: true
+                Layout.preferredHeight: Theme.controlHeight
+                text: "CAMERA"
+                font.pixelSize: Theme.fontMd
+                font.letterSpacing: Theme.tracking2
+                buttonColor: sessionDialog.captureTab === 1 ? Theme.fillActive : Theme.inputBg
+                foregroundColor: sessionDialog.captureTab === 1 ? Theme.accent : Theme.textSecondary
+                Accessible.name: "Camera session"
+                accessibleDescription: (sessionDialog.captureTab === 1 ? "Current tab. " : "") + "Photo, video, burst, or timelapse"
+                onClicked: sessionDialog.captureTab = 1
+                Keys.onLeftPressed: {
+                    astroTab.forceActiveFocus()
+                    sessionDialog.captureTab = 0
+                }
+                Keys.onRightPressed: {
+                    astroTab.forceActiveFocus()
+                    sessionDialog.captureTab = 0
+                }
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: Theme.px(1)
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    height: Theme.px(2)
+                    width: sessionDialog.captureTab === 1 ? parent.width - Theme.px(24) : 0
+                    color: Theme.accent
+                    Behavior on width { NumberAnimation { duration: Theme.quick; easing.type: Easing.OutCubic } }
+                }
+            }
+        }
+        RowLayout {
+            visible: sessionDialog.multiPane && !sessionDialog.cameraForm
             Layout.fillWidth: true
             spacing: Theme.s2
             HudButton {
@@ -749,7 +894,7 @@ Dialog {
             }
         }
         Text {
-            visible: sessionDialog.multiPane || sessionDialog.bulkMode
+            visible: (sessionDialog.multiPane || sessionDialog.bulkMode) && !sessionDialog.cameraForm
             text: {
                 if (sessionDialog.bulkMode)
                     return "Name, coordinates, start time, and device stay unchanged. Camera, wait, and workflow apply to every selected item."
@@ -769,14 +914,14 @@ Dialog {
             rowSpacing: Theme.s2
             FieldLabel { text: "SESSION NAME"; visible: sessionDialog.uniqueVisible }
             HudField { id: sessionName; objectName: "session-name"; accessibleName: "Session name"; Layout.fillWidth: true; Layout.columnSpan: 2; visible: sessionDialog.uniqueVisible }
-            FieldLabel { text: "TARGET TYPE"; visible: sessionDialog.uniqueVisible }
+            FieldLabel { text: "TARGET TYPE"; visible: sessionDialog.uniqueVisible && !sessionDialog.cameraForm }
             HudCombo {
                 id: targetType
                 objectName: "session-target-type"
                 accessibleName: "Target type"
                 model: ["equatorial", "solar", "none"]
                 Layout.fillWidth: true
-                visible: sessionDialog.uniqueVisible
+                visible: sessionDialog.uniqueVisible && !sessionDialog.cameraForm
                 onActivated: {
                     if (sessionDialog.solarKind)
                         sessionDialog.selectSolarName(targetName.text)
@@ -785,7 +930,7 @@ Dialog {
                 }
             }
             Item {
-                visible: sessionDialog.uniqueVisible
+                visible: sessionDialog.uniqueVisible && !sessionDialog.cameraForm
                 Layout.fillWidth: true
                 implicitWidth: Theme.px(160)
                 implicitHeight: Theme.controlHeight
@@ -806,16 +951,16 @@ Dialog {
                     visible: sessionDialog.solarKind
                 }
             }
-            FieldLabel { text: "RA / DEC"; visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget }
+            FieldLabel { text: "RA / DEC"; visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget && !sessionDialog.cameraForm }
             ColumnLayout {
-                visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget
+                visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget && !sessionDialog.cameraForm
                 spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "RA HOURS" }
                 HudField { id: ra; objectName: "session-ra"; accessibleName: "Session RA hours"; Layout.fillWidth: true }
             }
             RowLayout {
-                visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget
+                visible: sessionDialog.uniqueVisible && sessionDialog.equatorialTarget && !sessionDialog.cameraForm
                 spacing: Theme.px(6)
                 Layout.fillWidth: true
                 ColumnLayout {
@@ -883,12 +1028,12 @@ Dialog {
                 }
                 emptyText: "Mixed"
                 Layout.fillWidth: true
-                Layout.columnSpan: currentIndex === 1 ? 2 : 1
+                Layout.columnSpan: currentIndex === 1 || sessionDialog.cameraForm ? 2 : 1
                 onActivated: sessionDialog.markDirty("camera")
             }
             HudCombo {
                 id: irFilter
-                visible: camera.currentIndex !== 1
+                visible: camera.currentIndex !== 1 && !sessionDialog.cameraForm
                 model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
                 emptyText: "Mixed"
                 Layout.fillWidth: true
@@ -919,8 +1064,90 @@ Dialog {
                     onTextEdited: sessionDialog.markDirty("gain")
                 }
             }
-            FieldLabel { text: "FRAMES / BIN" }
+            FieldLabel { text: "CAPTURE"; visible: sessionDialog.cameraForm }
+            HudCombo {
+                id: captureAction
+                objectName: "session-capture-action"
+                accessibleName: "Capture"
+                visible: sessionDialog.cameraForm
+                model: ["Photo", "Video", "Burst", "Timelapse"]
+                Layout.fillWidth: true
+                Layout.columnSpan: 2
+            }
+            FieldLabel { text: "DURATION"; visible: sessionDialog.cameraForm && captureAction.currentIndex === 1 }
             ColumnLayout {
+                visible: sessionDialog.cameraForm && captureAction.currentIndex === 1
+                spacing: Theme.px(2)
+                Layout.fillWidth: true
+                Layout.columnSpan: 2
+                FieldCaption { text: "SECONDS" }
+                HudField {
+                    id: videoSeconds
+                    objectName: "session-video-seconds"
+                    accessibleName: "Video duration"
+                    text: "30"
+                    Layout.fillWidth: true
+                }
+            }
+            FieldLabel { text: "BURST"; visible: sessionDialog.cameraForm && captureAction.currentIndex === 2 }
+            ColumnLayout {
+                visible: sessionDialog.cameraForm && captureAction.currentIndex === 2
+                spacing: Theme.px(2)
+                Layout.fillWidth: true
+                FieldCaption { text: "FRAMES" }
+                HudField {
+                    id: burstCount
+                    objectName: "session-burst-count"
+                    accessibleName: "Burst frames"
+                    text: "10"
+                    Layout.fillWidth: true
+                }
+            }
+            ColumnLayout {
+                visible: sessionDialog.cameraForm && captureAction.currentIndex === 2
+                spacing: Theme.px(2)
+                Layout.fillWidth: true
+                FieldCaption { text: "INTERVAL S" }
+                HudCombo {
+                    id: burstInterval
+                    objectName: "session-burst-interval"
+                    accessibleName: "Burst interval"
+                    model: ["1", "2", "3", "5", "10", "15", "20"]
+                    Layout.fillWidth: true
+                }
+            }
+            FieldLabel { text: "TIMELAPSE"; visible: sessionDialog.cameraForm && captureAction.currentIndex === 3 }
+            ColumnLayout {
+                visible: sessionDialog.cameraForm && captureAction.currentIndex === 3
+                spacing: Theme.px(2)
+                Layout.fillWidth: true
+                FieldCaption { text: "INTERVAL S" }
+                HudCombo {
+                    id: timelapseInterval
+                    objectName: "session-timelapse-interval"
+                    accessibleName: "Timelapse interval"
+                    model: ["1", "2", "5", "10", "15", "30", "60"]
+                    currentIndex: 2
+                    Layout.fillWidth: true
+                }
+            }
+            ColumnLayout {
+                visible: sessionDialog.cameraForm && captureAction.currentIndex === 3
+                spacing: Theme.px(2)
+                Layout.fillWidth: true
+                FieldCaption { text: "VIDEO S" }
+                HudCombo {
+                    id: timelapseLength
+                    objectName: "session-timelapse-length"
+                    accessibleName: "Timelapse video length"
+                    model: ["30", "60", "120", "300", "600"]
+                    Layout.fillWidth: true
+                    tooltip: "Finished video length. The telescope shoots for 30 frames per second of video."
+                }
+            }
+            FieldLabel { text: "FRAMES / BIN"; visible: !sessionDialog.cameraForm }
+            ColumnLayout {
+                visible: !sessionDialog.cameraForm
                 spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "FRAMES" }
@@ -931,6 +1158,7 @@ Dialog {
                 }
             }
             ColumnLayout {
+                visible: !sessionDialog.cameraForm
                 spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "BINNING" }
@@ -1037,8 +1265,9 @@ Dialog {
                 font.pixelSize: Theme.fontMd
                 wrapMode: Text.Wrap
             }
-            FieldLabel { text: "WAIT S" }
+            FieldLabel { text: "WAIT S"; visible: !sessionDialog.cameraForm }
             ColumnLayout {
+                visible: !sessionDialog.cameraForm
                 spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "BEFORE" }
@@ -1049,6 +1278,7 @@ Dialog {
                 }
             }
             ColumnLayout {
+                visible: !sessionDialog.cameraForm
                 spacing: Theme.px(2)
                 Layout.fillWidth: true
                 FieldCaption { text: "AFTER" }
@@ -1068,8 +1298,9 @@ Dialog {
                 wrapMode: Text.Wrap
                 verticalAlignment: TextInput.AlignTop
             }
-            FieldLabel { text: "WORKFLOW"; Layout.alignment: Qt.AlignTop; Layout.topMargin: Theme.s2 }
+            FieldLabel { text: "WORKFLOW"; visible: !sessionDialog.cameraForm; Layout.alignment: Qt.AlignTop; Layout.topMargin: Theme.s2 }
             Flow {
+                visible: !sessionDialog.cameraForm
                 Layout.fillWidth: true
                 Layout.columnSpan: 2
                 Layout.topMargin: Theme.s1

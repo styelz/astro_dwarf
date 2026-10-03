@@ -56,6 +56,8 @@ CMD_NOTIFY_PROGRASS_CAPTURE_RAW_LIVE_STACKING = 15209
 CMD_NOTIFY_STATE_ASTRO_CALIBRATION = 15210
 CMD_NOTIFY_STATE_ASTRO_GOTO = 15211
 CMD_NOTIFY_STATE_ASTRO_TRACKING = 15212
+CMD_NOTIFY_TRACK_RESULT = 15225
+CMD_NOTIFY_WIDE_TRACK_RESULT = 15252
 CMD_NOTIFY_NORMAL_TRACK_STATE = 15284
 CMD_NOTIFY_TELE_FUNCTION_STATE = 15215
 CMD_NOTIFY_WIDE_FUNCTION_STATE = 15216
@@ -113,6 +115,49 @@ CMD_NOTIFY_RECORD_TIME = 15286
 CMD_NOTIFY_TIMELAPSE_OUT_TIME = 15287
 CMD_NOTIFY_LONG_EXP_PROGRESS = 15288
 CMD_NOTIFY_CMOS_TEMPERATURE = 15292
+
+def track_box_norm(
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    frame_w: int,
+    frame_h: int,
+) -> dict[str, float] | None:
+    """Normalize a firmware track box into fractions of the frame it was drawn on.
+
+    The same rectangle sometimes arrives in the doubled still-frame space, the
+    way picture matching does.
+    """
+    if w < 2 or h < 2 or x < 0 or y < 0 or frame_w < 2 or frame_h < 2:
+        return None
+    span_w = frame_w
+    span_h = frame_h
+    if x + w > frame_w or y + h > frame_h:
+        if x + w <= frame_w * 2 and y + h <= frame_h * 2:
+            span_w = frame_w * 2
+            span_h = frame_h * 2
+        else:
+            return None
+    return {
+        "track_box_nx": x / span_w,
+        "track_box_ny": y / span_h,
+        "track_box_nw": min(1.0, w / span_w),
+        "track_box_nh": min(1.0, h / span_h),
+    }
+
+
+def track_box_off() -> dict[str, Any]:
+    """Clear a drawn live-view box without touching sidereal tracking."""
+    return {
+        "track_box": False,
+        "track_box_nx": 0.0,
+        "track_box_ny": 0.0,
+        "track_box_nw": 0.0,
+        "track_box_nh": 0.0,
+        "track_box_camera": "",
+    }
+
 
 TYPE_NOTIFICATION = 2
 _RESPONSE_TYPES = (1, 3)  # WsPacket.type: 0 request, 1 reply, 2 notification, 3 response
@@ -1330,6 +1375,36 @@ class TelemetryTap:
                 return {}
             return {state_key: states.get(state, str(state))}
 
+    def _decode_track_box(self, data: bytes, *, wide: bool) -> dict[str, Any]:
+        """Move the drawn lock rectangle from that camera's track-result packet.
+
+        Tele results are 15225 and wide results are 15252. A packet for the
+        other camera must not drag the box the user is looking at.
+        """
+        message = self._parse("TrackResult", data)
+        if message is None:
+            return {}
+        snap = self.snapshot()
+        if not snap.get("track_box"):
+            return {}
+        if wide != (str(snap.get("track_box_camera") or "") == "wide"):
+            return {}
+        try:
+            frame_w = int(snap.get("track_box_frame_w") or 0)
+            frame_h = int(snap.get("track_box_frame_h") or 0)
+        except (TypeError, ValueError):
+            frame_w = 0
+            frame_h = 0
+        if frame_w < 2:
+            frame_w = 1920
+        if frame_h < 2:
+            frame_h = 1080
+        try:
+            norm = track_box_norm(int(message.x), int(message.y), int(message.w), int(message.h), frame_w, frame_h)
+        except (TypeError, ValueError):
+            return {}
+        return norm or {}
+
     def on_packet(self, cmd: int, kind: int, data: bytes) -> None:
         """Decode one incoming packet into telemetry changes (never raises)."""
         if kind in _RESPONSE_TYPES and cmd in _DARK_LIBRARY_CMDS:
@@ -1573,6 +1648,7 @@ class TelemetryTap:
                 # the firmware never sent a final GOTO idle/stopped notification.
                 changes["goto_state"] = "idle"
                 changes["tracking_kind"] = "sidereal"
+                changes.update(track_box_off())
             elif changes.get("tracking_state"):
                 if self.snapshot().get("tracking_kind") == "object":
                     # DSO mode keeps reporting sidereal tracking as idle. That
@@ -1581,7 +1657,12 @@ class TelemetryTap:
                     changes.pop("tracking_target", None)
                 else:
                     changes["tracking_kind"] = ""
+                    changes.update(track_box_off())
             return changes
+        if cmd == CMD_NOTIFY_TRACK_RESULT:
+            return self._decode_track_box(data, wide=False)
+        if cmd == CMD_NOTIFY_WIDE_TRACK_RESULT:
+            return self._decode_track_box(data, wide=True)
         if cmd == CMD_NOTIFY_NORMAL_TRACK_STATE:
             message = self._parse("NormalTrackState", data)
             if message is None:
@@ -1590,12 +1671,17 @@ class TelemetryTap:
             running = state == "running"
             if not running and self.snapshot().get("tracking_kind") == "object":
                 return {}
-            return {
+            changes = {
                 "tracking_state": "running" if running else "idle",
                 "tracking_kind": "object" if running else "",
-                "tracking_target": "Live view" if running else "",
                 "goto_state": "idle",
             }
+            if running and not self.snapshot().get("track_box"):
+                changes["tracking_target"] = "Live view"
+            elif not running:
+                changes["tracking_target"] = ""
+                changes.update(track_box_off())
+            return changes
         if cmd == CMD_NOTIFY_STATE_ASTRO_CALIBRATION:
             message = self._parse("AstroCalibrationState", data)
             state = ASTRO_STATES.get(int(message.state), str(message.state))
@@ -1936,10 +2022,12 @@ class TelemetryTap:
                     changes["tracking_state"] = state
                     changes["tracking_target"] = str(exclusive.astro_tracking_state.target_name or "")
                     changes["tracking_kind"] = "sidereal"
+                    changes.update(track_box_off())
                 elif self.snapshot().get("tracking_kind") != "object":
                     changes["tracking_state"] = state
                     changes["tracking_target"] = str(exclusive.astro_tracking_state.target_name or "")
                     changes["tracking_kind"] = ""
+                    changes.update(track_box_off())
             elif which == "normal_track_state":
                 state = OPERATION_STATES.get(int(exclusive.normal_track_state.state), "idle")
                 running = state == "running"
@@ -1948,11 +2036,13 @@ class TelemetryTap:
                 if running:
                     changes["tracking_state"] = "running"
                     changes["tracking_kind"] = "object"
-                    changes["tracking_target"] = "Live view"
+                    if not self.snapshot().get("track_box"):
+                        changes["tracking_target"] = "Live view"
                 elif self.snapshot().get("tracking_kind") != "object":
                     changes["tracking_state"] = "idle"
                     changes["tracking_kind"] = ""
                     changes["tracking_target"] = ""
+                    changes.update(track_box_off())
             elif which == "eq_state":
                 changes["eq_state"] = OPERATION_STATES.get(int(exclusive.eq_state.state), "idle")
             elif which is None:

@@ -1763,6 +1763,16 @@ class SessionStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class SessionAction(StrEnum):
+    """What a scheduled session shoots. Astro is a deep-sky stack."""
+
+    ASTRO = "astro"
+    PHOTO = "photo"
+    VIDEO = "video"
+    BURST = "burst"
+    TIMELAPSE = "timelapse"
+
+
 @dataclass(slots=True)
 class HardwareProfile:
     slew_seconds: float = 20
@@ -2540,6 +2550,12 @@ class Session:
     camera: CameraSettings = field(default_factory=CameraSettings)
     workflow: Workflow = field(default_factory=Workflow)
     mosaic: Mosaic = field(default_factory=Mosaic)
+    action: SessionAction = SessionAction.ASTRO
+    burst_count: int = 10
+    burst_interval_seconds: float = 1
+    video_seconds: float = 30
+    timelapse_interval_seconds: float = 5
+    timelapse_video_seconds: float = 30
     status: SessionStatus = SessionStatus.PLANNED
     current_step: str = "Waiting"
     planned_duration_seconds: float = 0
@@ -2820,6 +2836,55 @@ def template_from_dict(data: dict[str, Any]) -> SessionTemplate:
     return SessionTemplate(**data)
 
 
+def session_action_from_value(value: Any) -> SessionAction:
+    text = str(value or SessionAction.ASTRO.value).strip().lower()
+    try:
+        return SessionAction(text)
+    except ValueError:
+        return SessionAction.ASTRO
+
+
+def session_action_value(session: Session) -> str:
+    return session_action_from_value(getattr(session, "action", None)).value
+
+
+def _positive_float(value: Any, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if number != number or number <= 0:
+        return float(default)
+    return number
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
+
+
+def session_capture_summary(session: Session) -> str:
+    """One-line label for the sessions list. Astro stays frames × exposure."""
+    action = session_action_value(session)
+    exposure = float(session.camera.exposure_seconds)
+    if action == SessionAction.PHOTO.value:
+        return f"PHOTO · {exposure:g}s"
+    if action == SessionAction.VIDEO.value:
+        return f"VIDEO · {_positive_float(session.video_seconds, 30):g}s"
+    if action == SessionAction.BURST.value:
+        count = _positive_int(session.burst_count, 10)
+        interval = _positive_float(session.burst_interval_seconds, 1)
+        return f"BURST · {count} × {interval:g}s"
+    if action == SessionAction.TIMELAPSE.value:
+        video = _positive_float(session.timelapse_video_seconds, 30)
+        interval = _positive_float(session.timelapse_interval_seconds, 5)
+        return f"TIMELAPSE · {video:g}s video · {interval:g}s"
+    return f"{session.camera.frame_count} × {exposure:g}s"
+
+
 def session_from_dict(data: dict[str, Any]) -> Session:
     data = dict(data)
     data["target"] = target_from_dict(data["target"])
@@ -2827,6 +2892,12 @@ def session_from_dict(data: dict[str, Any]) -> Session:
     data["workflow"] = Workflow(**data.get("workflow", {}))
     data["mosaic"] = Mosaic(**data.get("mosaic", {}))
     data["status"] = SessionStatus(data.get("status", SessionStatus.PLANNED))
+    data["action"] = session_action_from_value(data.get("action"))
+    data["burst_count"] = _positive_int(data.get("burst_count"), 10)
+    data["burst_interval_seconds"] = _positive_float(data.get("burst_interval_seconds"), 1)
+    data["video_seconds"] = _positive_float(data.get("video_seconds"), 30)
+    data["timelapse_interval_seconds"] = _positive_float(data.get("timelapse_interval_seconds"), 5)
+    data["timelapse_video_seconds"] = _positive_float(data.get("timelapse_video_seconds"), 30)
     data["device_schedule_id"] = str(data.get("device_schedule_id") or "")
     data["device_schedule_state"] = str(data.get("device_schedule_state") or "")
     allowed = set(Session.__dataclass_fields__)
@@ -2922,7 +2993,11 @@ def history_record_for_run(
         frame_count=planned_frames,
         captured_frame_count=captured,
         outcome=session.outcome,
-        summary=f"{captured}/{planned_frames} frames · {session.camera.exposure_seconds:g}s",
+        summary=(
+            session_capture_summary(session)
+            if session_action_value(session) != SessionAction.ASTRO.value
+            else f"{captured}/{planned_frames} frames · {session.camera.exposure_seconds:g}s"
+        ),
         notes=session.notes,
         exposure_seconds=float(session.camera.exposure_seconds),
         mosaic_panes=int(session.mosaic.panes),

@@ -14,9 +14,11 @@ from typing import Any
 from .domain import (
     Camera,
     Session,
+    SessionAction,
     SessionStatus,
     TargetKind,
     firmware_exposure_name,
+    session_action_value,
 )
 
 SCOPE_OWNS = frozenset({"pending", "shooting", "stale"})
@@ -125,6 +127,8 @@ def next_host_session(entries: list[tuple[Session, bool]]) -> tuple[Session | No
 
 def session_schedule_blocker(session: Session) -> str:
     """Why this session stays on the computer. Empty when the telescope can run it."""
+    if session_action_value(session) != SessionAction.ASTRO.value:
+        return "Photo, video, burst, and timelapse stay on this computer"
     if session.status != SessionStatus.PLANNED:
         return "Only a planned session can be copied to the telescope"
     kind = session.target.kind.value if isinstance(session.target.kind, TargetKind) else str(session.target.kind)
@@ -159,6 +163,12 @@ def schedule_fingerprint(session: Session) -> tuple[Any, ...]:
     kind = session.target.kind.value if isinstance(session.target.kind, TargetKind) else str(session.target.kind)
     camera = session.camera.camera.value if isinstance(session.camera.camera, Camera) else str(session.camera.camera)
     return (
+        session_action_value(session),
+        session.burst_count,
+        session.burst_interval_seconds,
+        session.video_seconds,
+        session.timelapse_interval_seconds,
+        session.timelapse_video_seconds,
         session.scheduled_start,
         session.target.name,
         kind,

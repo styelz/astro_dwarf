@@ -15,11 +15,13 @@ import requests
 
 from .version import __version__
 from .sky_atlas import SKY_MAP_FOV_DEG, clean_sky_target_name
+from .telemetry_view import timelapse_shoot_seconds
 from .domain import (
     CameraSettings,
     HardwareProfile,
     Mosaic,
     Session,
+    SessionAction,
     clamp_firmware_mosaic_scale,
     device_mosaic_from_scales,
     firmware_mosaic_overlap,
@@ -29,6 +31,7 @@ from .domain import (
     TargetKind,
     Workflow,
     new_id,
+    session_action_value,
     utc_now,
 )
 
@@ -5054,9 +5057,33 @@ def next_free_start(
         cursor = nxt
 
 
+def camera_session_seconds(session: Session, profile: HardwareProfile) -> float:
+    """Wall-clock estimate for a photo, video, burst, or timelapse session."""
+    action = session_action_value(session)
+    exposure = max(0.0, float(session.camera.exposure_seconds or 0))
+    if action == SessionAction.PHOTO.value:
+        imaging = max(exposure, 1.0)
+    elif action == SessionAction.VIDEO.value:
+        imaging = max(1.0, float(session.video_seconds or 0))
+    elif action == SessionAction.BURST.value:
+        count = max(1, int(session.burst_count or 1))
+        interval = max(0.0, float(session.burst_interval_seconds or 0))
+        imaging = count * (exposure + interval)
+    elif action == SessionAction.TIMELAPSE.value:
+        imaging = float(timelapse_shoot_seconds(
+            int(round(float(session.timelapse_video_seconds or 0))),
+            int(round(float(session.timelapse_interval_seconds or 1))),
+        ))
+    else:
+        imaging = exposure
+    return round(profile.startup_seconds + imaging, 1)
+
+
 class DurationEngine:
     @staticmethod
     def calculate(session: Session | SessionTemplate, profile: HardwareProfile) -> float:
+        if isinstance(session, Session) and session_action_value(session) != SessionAction.ASTRO.value:
+            return camera_session_seconds(session, profile)
         workflow = session.workflow
         setup = profile.startup_seconds + workflow.wait_before_seconds + workflow.wait_after_seconds
         setup += profile.calibration_seconds if workflow.calibrate else 0

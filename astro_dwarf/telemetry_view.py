@@ -983,6 +983,7 @@ def format_telemetry(raw: dict[str, Any], updated_at: float | None, now: float |
     view["exposure_running"] = bool(capturing and seen and not last_done)
     view["capture_target"] = raw.get("capture_target") or ""
     view["tracking_active"] = raw.get("tracking_state") == "running"
+    view["track_box"] = bool(raw.get("track_box"))
     view["tracking_target"] = raw.get("tracking_target") or raw.get("goto_target") or ""
     view["goto_state"] = raw.get("goto_state") or ""
     view["calibration_state"] = raw.get("calibration_state") or ""

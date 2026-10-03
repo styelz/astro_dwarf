@@ -28,6 +28,7 @@ Dialog {
             rows: [
                 { gesture: "DOUBLE-CLICK WIDE", detail: "Centers the telephoto on that spot." },
                 { gesture: "DOUBLE-CLICK TELE", detail: "Full screen. F does the same. Esc leaves." },
+                { gesture: "DRAG A BOX", detail: "On the live picture, locks the mount onto whatever is inside the box. The rectangle follows the target. Click the BOX LOCK badge, or choose Stop box lock in the preview menu." },
                 { gesture: "HOVER", detail: "Preview buttons show, then hide when the pointer leaves." },
                 { gesture: "DRAG PIP", detail: "Moves the small view. Hover it to swap cameras or hide it." },
                 { gesture: "RIGHT-CLICK", detail: "Start or stop preview, swap views, full screen, or copy the stream." }

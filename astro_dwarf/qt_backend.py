@@ -43,6 +43,7 @@ from .domain import (
     HardwareProfile,
     Mosaic,
     Session,
+    SessionAction,
     SessionStatus,
     SessionTemplate,
     Target,
@@ -102,6 +103,9 @@ from .domain import (
     normalize_device_color,
     parse_mosaic_pa,
     solar_system_targets,
+    session_action_from_value,
+    session_action_value,
+    session_capture_summary,
     history_detail_fields,
     history_record_for_run,
     history_record_for_manual_stack,
@@ -736,6 +740,7 @@ _ACTION_LABELS = {
     "set_count": "Stack count set",
     "set_auto_calibration": "Auto calibration updated",
     "track": "Tracking started",
+    "box_track": "Box lock started",
     "sky_track": "Sky-map tracking started",
     "stop_goto": "Tracking stopped",
     "stack": "Stack started",
@@ -758,6 +763,7 @@ _ACTION_DETAILS = {
     "autofocus": "Watch the focus position in VITALS",
     "polar_position": "Homes and slews the mount to the polar-alignment pose",
     "track": "Locks onto the star in the center of the tele view",
+    "box_track": "The mount follows whatever is inside the box",
     "sky_track": "Telescope will slew to the sky-map target, plate-solve, and start sidereal tracking",
     "stack": "Live stacking uses the current exposure, gain and count",
     "reboot": "The connection will drop for ~60 s",
@@ -843,7 +849,7 @@ def tracking_blocks_action(operation: str, *, tracking: bool) -> str:
 
 def _object_track_label(name: str) -> bool:
     """True for the local label of a click-to-track, which has no catalog position."""
-    return str(name or "").strip().lower() in {"live tap", "live view"}
+    return str(name or "").strip().lower() in {"live tap", "live view", "box lock"}
 
 
 def command_required_shooting_mode(operation: str) -> int | None:
@@ -3074,7 +3080,7 @@ class AppBackend(QObject):
         data["planned_duration_seconds"] = planned
         data["actual_duration_seconds"] = actual_seconds
         data["duration_text"] = self._duration_text(planned)
-        data["summary"] = f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s"
+        data["summary"] = session_capture_summary(session)
         group_id = session.mosaic.group_id or ""
         data["group_id"] = group_id
         data["group_title"] = mosaic_group_title(session.target.name, group_id)
@@ -10030,6 +10036,13 @@ class AppBackend(QObject):
 
     @Slot(str, str)
     def deviceAction(self, device_id: str, operation: str) -> None:
+        box_args = None
+        if operation == "box_track":
+            pending = getattr(self, "_box_track_request", None)
+            self._box_track_request = None
+            if isinstance(pending, dict) and pending.get("device_id") == device_id:
+                raw_args = pending.get("args")
+                box_args = list(raw_args) if isinstance(raw_args, list) else None
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
             return
@@ -10082,6 +10095,17 @@ class AppBackend(QObject):
             self.add_log("warning", tracking_block, device_id)
             self._toast(tracking_block, "warning")
             return
+        if operation == "box_track":
+            from .device_worker import box_track_blocked
+
+            blocked_box = box_track_blocked(self._device_telemetry.get(device_id))
+            if blocked_box:
+                self.add_log("warning", blocked_box, device_id)
+                self._toast(blocked_box, "warning")
+                return
+            if not box_args or len(box_args) < 5:
+                self._toast("Drag a box on the live view", "warning")
+                return
         if operation == "cancel_prime":
             from .device_worker import running_photo_capture_stop
 
@@ -10151,9 +10175,17 @@ class AppBackend(QObject):
                 if operation == "astro_mode":
                     self._apply_shooting_mode_camera(device_id)
             elif ok and operation == "stop_goto":
+                from .device_telemetry import track_box_off
+
                 self._on_telemetry(
                     device_id,
-                    {"tracking_state": "idle", "tracking_kind": "", "tracking_target": "", "goto_state": "idle"},
+                    {
+                        "tracking_state": "idle",
+                        "tracking_kind": "",
+                        "tracking_target": "",
+                        "goto_state": "idle",
+                        **track_box_off(),
+                    },
                 )
             if ok and operation in {"lights_on", "lights_off"}:
                 self._device_lights[device_id] = operation == "lights_on"
@@ -10169,6 +10201,8 @@ class AppBackend(QObject):
                         fallback = str(payload["args"][-1] or "")
                     self._remember_track_target(result, fallback)
                 elif operation == "track":
+                    from .device_telemetry import track_box_off
+
                     name = "Live view"
                     if isinstance(payload.get("args"), list) and payload["args"]:
                         name = str(payload["args"][-1] or "").strip() or name
@@ -10179,6 +10213,25 @@ class AppBackend(QObject):
                             "tracking_kind": "object",
                             "tracking_target": name,
                             "goto_state": "idle",
+                            **track_box_off(),
+                        },
+                    )
+                elif operation == "box_track" and isinstance(result, dict):
+                    self._on_telemetry(
+                        device_id,
+                        {
+                            "tracking_state": "running",
+                            "tracking_kind": "object",
+                            "tracking_target": "Box lock",
+                            "goto_state": "idle",
+                            "track_box": True,
+                            "track_box_nx": float(result.get("nx") or 0),
+                            "track_box_ny": float(result.get("ny") or 0),
+                            "track_box_nw": float(result.get("nw") or 0),
+                            "track_box_nh": float(result.get("nh") or 0),
+                            "track_box_frame_w": int(result.get("frame_w") or 0),
+                            "track_box_frame_h": int(result.get("frame_h") or 0),
+                            "track_box_camera": str(result.get("camera") or ""),
                         },
                     )
                 self.add_log("success", f"{label} acknowledged", device_id)
@@ -10215,6 +10268,8 @@ class AppBackend(QObject):
             if session.get("device_id") == device_id:
                 name = str(session.get("target_name") or "")
             payload = {"args": [name or "Live view"]}
+        elif operation == "box_track":
+            payload = {"args": list(box_args or [])}
         elif operation == "sky_track":
             sky = self._sky_target
             if sky is None or sky.ra_hours is None or sky.dec_degrees is None:
@@ -10441,6 +10496,23 @@ class AppBackend(QObject):
             return
         vector = (float(angle), nudge_step_degrees(degrees))
         worker.send("joystick_nudge", {"args": list(vector)})
+
+    @Slot(str, float, float, float, float, bool)
+    def lockTrackBox(
+        self,
+        device_id: str,
+        nx: float,
+        ny: float,
+        nw: float,
+        nh: float,
+        wide: bool,
+    ) -> None:
+        """Lock object tracking on a rectangle drawn on the live view."""
+        self._box_track_request = {
+            "device_id": device_id,
+            "args": [float(nx), float(ny), float(nw), float(nh), bool(wide)],
+        }
+        self.deviceAction(device_id, "box_track")
 
     @Slot(str, float, float)
     @Slot(str, float, float, str)
@@ -13328,6 +13400,15 @@ class AppBackend(QObject):
             patch = {key: value for key, value in values.items() if key not in {"ids", "templates"}}
             if not ids:
                 raise ValueError("No items selected")
+            if not values.get("templates"):
+                for session_id in ids:
+                    session = self.store.sessions.get(session_id)
+                    if session and session_action_value(session) != SessionAction.ASTRO.value:
+                        self._toast(
+                            "Edit photo, video, burst, and timelapse sessions one at a time",
+                            "warning",
+                        )
+                        return
             if not patch:
                 self._toast("No common fields changed", "warning")
                 return
@@ -13389,9 +13470,78 @@ class AppBackend(QObject):
         except Exception as exc:
             self._toast(f"Could not update settings: {exc}", "error")
 
+    def _positive_float(self, value: Any, default: float) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if number != number or number <= 0:
+            return float(default)
+        return number
+
+    def _positive_int(self, value: Any, default: int) -> int:
+        try:
+            number = int(round(float(value)))
+        except (TypeError, ValueError):
+            return default
+        return number if number > 0 else default
+
+    def _camera_session_from_payload(
+        self,
+        values: dict[str, Any],
+        existing: Session | None,
+        action: SessionAction,
+    ) -> Session:
+        device = self._device_by_id(values["device_id"])
+        name = str(values.get("name") or "").strip() or "Camera"
+        capture = self._capture_defaults_for(device)
+        resetting = existing is not None and existing.status != SessionStatus.PLANNED
+        return Session(
+            id=existing.id if existing else uuid4().hex,
+            name=name,
+            target=Target(name=name, kind=TargetKind.NONE),
+            device_id=values["device_id"],
+            scheduled_start=self._store_session_time(values["scheduled_start"], device),
+            camera=CameraSettings(
+                camera=self._session_camera(values.get("camera", "tele"), device),
+                exposure_seconds=float(values.get("exposure", capture.exposure_seconds)),
+                gain=int(values.get("gain", capture.gain)),
+                frame_count=1,
+                binning=1,
+                ir_filter="VIS",
+            ),
+            workflow=Workflow(
+                calibrate=False,
+                autofocus=False,
+                infinite_focus=False,
+                polar_align=False,
+                goto=False,
+                wait_before_seconds=0,
+                wait_after_seconds=0,
+            ),
+            mosaic=Mosaic(),
+            action=action,
+            burst_count=self._positive_int(values.get("burst_count"), 10),
+            burst_interval_seconds=self._positive_float(values.get("burst_interval_seconds"), 1),
+            video_seconds=self._positive_float(values.get("video_seconds"), 30),
+            timelapse_interval_seconds=self._positive_float(values.get("timelapse_interval_seconds"), 5),
+            timelapse_video_seconds=self._positive_float(values.get("timelapse_video_seconds"), 30),
+            notes="",
+            status=SessionStatus.PLANNED,
+            current_step="Waiting" if (existing is None or resetting) else existing.current_step,
+            actual_started_at=None,
+            actual_ended_at=None,
+            outcome="",
+            template_id=None,
+            created_at=existing.created_at if existing else datetime.now(timezone.utc).isoformat(),
+        )
+
     def _session_from_payload(self, values: dict[str, Any], existing: Session | None) -> Session:
         if existing and existing.status == SessionStatus.RUNNING:
             raise ValueError("A running session cannot be edited")
+        action = session_action_from_value(values.get("action"))
+        if action != SessionAction.ASTRO:
+            return self._camera_session_from_payload(values, existing, action)
         device = self._device_by_id(values["device_id"])
         target, camera, workflow, mosaic = self._fields_from_payload(
             values, existing.mosaic if existing else None, device
@@ -13415,6 +13565,10 @@ class AppBackend(QObject):
             template_id=existing.template_id if existing else None,
             created_at=existing.created_at if existing else datetime.now(timezone.utc).isoformat(),
         )
+
+    @Slot()
+    def noteCameraSessionsEditOne(self) -> None:
+        self._toast("Edit photo, video, burst, and timelapse sessions one at a time", "warning")
 
     @Slot(str)
     def saveSession(self, payload: str) -> None:

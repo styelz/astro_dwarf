@@ -36,6 +36,7 @@ from .device_telemetry import (
     device_occupied,
     install_sdk_logging,
     link_telemetry,
+    track_box_off,
 )
 from .telemetry_view import (
     auto_parameter_cameras,
@@ -1481,7 +1482,12 @@ def sdk_call(operation: str, *args: Any) -> Any:
             ok = send_without_response(track_pb2.ReqStopTrack(), CMD_TRACK_STOP_TRACK, _MODULE_TRACK)
             if ok and _tap is not None:
                 _tap.update(
-                    {"tracking_state": "idle", "tracking_kind": "", "tracking_target": ""},
+                    {
+                        "tracking_state": "idle",
+                        "tracking_kind": "",
+                        "tracking_target": "",
+                        **track_box_off(),
+                    },
                     force=True,
                 )
             return ok
@@ -4803,7 +4809,143 @@ def _run_v3_until_ready(name: str, operation: str, step: Any, *args: Any) -> Non
             _clear_tracking(step)
 
 
+def _session_capture_action(session: dict[str, Any]) -> str:
+    action = str(session.get("action") or "astro").strip().lower()
+    if action in _CAMERA_SESSION_ACTIONS:
+        return action
+    return "astro"
+
+
+def _session_positive(value: Any, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if number != number or number <= 0:
+        return float(default)
+    return number
+
+
+def _select_session_camera(camera: str) -> str:
+    lens = "wide" if str(camera or "").strip().lower() == "wide" else "tele"
+    if isinstance(_device, dict):
+        _device["camera"] = lens
+    return lens
+
+
+def _enter_session_technique(tech: int, label: str, step: Any) -> None:
+    step(label)
+    if _ensure_capture_technique(tech) is False:
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        raise RuntimeError(f"{label} failed")
+
+
+def _wait_capture_state(
+    state_key: str,
+    step: Any,
+    label: str,
+    timeout: float,
+    *,
+    require_start: bool,
+    idle_after: float = 2.0,
+) -> None:
+    """Wait until firmware leaves the capture, not merely until the command was sent."""
+    step(label)
+    limit = max(5.0, float(timeout))
+    if _tap is None:
+        _wait_seconds(limit, label, step)
+        return
+    started = time.monotonic()
+    deadline = started + limit
+    # A still can finish without a running pulse. Wait out the exposure first.
+    arm = started + max(2.0, float(idle_after if not require_start else 2.0))
+    saw_running = False
+    while time.monotonic() < deadline:
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        state = str((_tap.snapshot() or {}).get(state_key) or "")
+        if state == "running":
+            saw_running = True
+        elif saw_running and time.monotonic() >= started + 2.0 and state in {"idle", "stopped"}:
+            return
+        elif not require_start and not saw_running and time.monotonic() >= arm and state in {"", "idle", "stopped"}:
+            return
+        time.sleep(0.25)
+    raise RuntimeError(f"{label} timed out")
+
+
+def _run_capture_session(session: dict[str, Any], step: Any) -> bool:
+    """Photo, video, burst, or timelapse at the current pointing."""
+    camera = session.get("camera") or {}
+    action = _session_capture_action(session)
+    lens = str(camera.get("camera") or "tele")
+    if not device_supports_wide(_device.get("model")) and lens.lower() == "wide":
+        raise RuntimeError("The Dwarf Mini only has a telephoto camera")
+    if not connect():
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        raise RuntimeError("Could not connect to telescope")
+    lens = _select_session_camera(lens)
+    model_id = {"Dwarf II": "2", "Dwarf 3": "3", "Dwarf Mini": "5"}.get(_device.get("model"), "3")
+    exposure_name = firmware_exposure_name(camera.get("exposure_seconds"))
+    try:
+        gain = int(round(float(camera.get("gain") or 0)))
+    except (TypeError, ValueError):
+        gain = 0
+    step("Selecting camera")
+    step("Entering photo mode", "photo_mode")
+    exposure = _session_positive(camera.get("exposure_seconds"), 1)
+
+    def apply_exposure() -> None:
+        step("Set exposure", "set_photo_exposure", exposure_name, model_id, lens)
+        step("Set gain", "set_photo_gain", gain, model_id, lens)
+
+    if action == "photo":
+        _enter_session_technique(1, "Preparing photo", step)
+        apply_exposure()
+        step("Take photo", "wide_photo" if lens == "wide" else "photo")
+        _wait_capture_state(
+            "photo_state",
+            step,
+            "Waiting for photo",
+            exposure + 45,
+            require_start=False,
+            idle_after=exposure,
+        )
+    elif action == "video":
+        seconds = _session_positive(session.get("video_seconds"), 30)
+        _enter_session_technique(4, "Preparing recording", step)
+        apply_exposure()
+        step("Start recording", "record_start")
+        _wait_seconds(seconds, "Recording", step)
+        step("Stop recording", "record_stop")
+        _wait_capture_state("record_state", step, "Waiting for recording to finish", 30, require_start=False)
+    elif action == "burst":
+        count = max(1, int(round(_session_positive(session.get("burst_count"), 10))))
+        interval = max(1, int(round(_session_positive(session.get("burst_interval_seconds"), 1))))
+        _enter_session_technique(3, "Preparing burst", step)
+        apply_exposure()
+        step("Set burst interval", "set_burst_interval", interval)
+        step("Start burst", "burst_start", count)
+        timeout = count * (exposure + interval) + 90
+        _wait_capture_state("burst_state", step, "Waiting for burst", timeout, require_start=True)
+    else:
+        interval = max(1, int(round(_session_positive(session.get("timelapse_interval_seconds"), 5))))
+        video = max(1, int(round(_session_positive(session.get("timelapse_video_seconds"), 30))))
+        _enter_session_technique(5, "Preparing timelapse", step)
+        apply_exposure()
+        step("Set timelapse interval", "set_timelapse_interval", interval)
+        step("Set timelapse length", "set_timelapse_duration", video)
+        step("Start timelapse", "timelapse_start")
+        timeout = timelapse_shoot_seconds(video, interval) + 120
+        _wait_capture_state("timelapse_state", step, "Waiting for timelapse", timeout, require_start=True)
+    return True
+
+
 def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
+    if _session_capture_action(session) != "astro":
+        return _run_capture_session(session, step)
     target = session["target"]
     camera = session["camera"]
     workflow = session["workflow"]
@@ -4965,6 +5107,9 @@ _STOP_STEP_LABELS = {
     "stop_autofocus": "Stopping autofocus",
     "stop_polar": "Stopping polar alignment",
     "stop_motors": "Stopping motors",
+    "burst_stop": "Stopping burst",
+    "record_stop": "Stopping recording",
+    "timelapse_stop": "Stopping timelapse",
 }
 _PHASE_STOP_LABELS = {
     "astro": "Waiting for capture to stop",
@@ -4981,6 +5126,16 @@ _PHASE_STOP_LABELS = {
     "autofocus": "Waiting for autofocus to stop",
     "polar": "Waiting for polar alignment to stop",
     "polar_position": "Waiting for polar positioning to stop",
+    "record_start": "Waiting for recording to stop",
+    "burst_start": "Waiting for burst to stop",
+    "timelapse_start": "Waiting for timelapse to stop",
+}
+
+_CAMERA_SESSION_ACTIONS = frozenset({"photo", "video", "burst", "timelapse"})
+_CAMERA_PHASE_STOPS = {
+    "burst_start": "burst_stop",
+    "record_start": "record_stop",
+    "timelapse_start": "timelapse_stop",
 }
 
 
@@ -4995,6 +5150,8 @@ def _stop_step_label(operation: str) -> str:
 
 
 def _activity_still_running(snapshot: dict[str, Any]) -> bool:
+    if running_photo_capture_stop(snapshot):
+        return True
     if _capture_running(snapshot):
         return True
     if snapshot.get("goto_state") in _BUSY_ASTRO:
@@ -5011,6 +5168,16 @@ def _activity_still_running(snapshot: dict[str, Any]) -> bool:
 
 
 def _retry_stop_capture(snapshot: dict[str, Any]) -> None:
+    photo_stop = running_photo_capture_stop(snapshot)
+    if photo_stop:
+        label = _stop_step_label(photo_stop)
+        report_status("stop", label)
+        log(f"Capture still running after stop; {label.lower()} again", "warning")
+        try:
+            _sdk_call_bounded(photo_stop, _STOP_COMMAND_TIMEOUT)
+        except Exception as exc:
+            log(f"{label} retry skipped: {exc}", "debug")
+        return
     wide = snapshot.get("capture_camera") == "wide"
     operation = "stop_wide" if wide else "stop_astro"
     label = _stop_step_label(operation)
@@ -5054,7 +5221,7 @@ def _wait_for_stop_idle(max_seconds: float | None = None) -> None:
         snapshot = _tap.snapshot()
         if not _activity_still_running(snapshot):
             return
-        if _capture_running(snapshot) and not retried:
+        if (_capture_running(snapshot) or running_photo_capture_stop(snapshot)) and not retried:
             retried = True
             _retry_stop_capture(snapshot)
         time.sleep(0.4)
@@ -5069,6 +5236,9 @@ def _stop_targets(*, include_motors: bool = True) -> list[str]:
     capturing = _capture_running(snapshot)
     wide_capture = capturing and snapshot.get("capture_camera") == "wide"
     operations: list[str] = []
+    for operation in (_CAMERA_PHASE_STOPS.get(phase or ""), running_photo_capture_stop(snapshot)):
+        if operation and operation not in operations:
+            operations.append(operation)
     if phase in ("astro", "wait_astro", "wait_astro_resume", "mosaic", "set_mosaic_count") or (capturing and not wide_capture):
         operations.append("stop_astro")
     if phase in ("wide_astro", "wait_wide", "wait_wide_resume") or wide_capture:
@@ -6417,12 +6587,137 @@ def object_track_box(
     return left, top, box, box, 1 if wide else 0
 
 
+def box_track_blocked(snapshot: dict[str, Any] | None) -> str:
+    """Why a drawn box must not be sent, or an empty string when it can."""
+    snap = snapshot or {}
+    if snap.get("tracking_kind") == "sidereal" and snap.get("tracking_state") == "running":
+        return "Stop sidereal tracking before locking a box"
+    if snap.get("goto_state") in ("running", "solving", "stopping"):
+        return "Wait for the slew to finish before locking a box"
+    if snap.get("calibration_state") in ("running", "solving"):
+        return "Wait for calibration to finish before locking a box"
+    if snap.get("capture_active") or snap.get("capture_state") == "running":
+        return "Stop the stack before locking a box"
+    return ""
+
+
+def box_track_rect(
+    width: Any = None,
+    height: Any = None,
+    nx: Any = 0,
+    ny: Any = 0,
+    nw: Any = 0,
+    nh: Any = 0,
+    *,
+    wide: bool = False,
+) -> dict[str, Any]:
+    """Map a normalized top-left box onto one camera's pixels.
+
+    nx, ny, nw, nh are fractions of that frame. cam_id 0 is tele and 1 is wide.
+    """
+    try:
+        frame_w = int(width)
+    except (TypeError, ValueError):
+        frame_w = 0
+    try:
+        frame_h = int(height)
+    except (TypeError, ValueError):
+        frame_h = 0
+    if frame_w < 2:
+        frame_w = _LINKAGE_W
+    if frame_h < 2:
+        frame_h = _LINKAGE_H
+    try:
+        left_n = float(nx)
+        top_n = float(ny)
+        width_n = float(nw)
+        height_n = float(nh)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Box lock needs a rectangle on the picture") from exc
+    if left_n != left_n or top_n != top_n or width_n != width_n or height_n != height_n:
+        raise ValueError("Box lock needs a rectangle on the picture")
+    left_n = max(0.0, min(1.0, left_n))
+    top_n = max(0.0, min(1.0, top_n))
+    width_n = max(0.0, min(1.0 - left_n, width_n))
+    height_n = max(0.0, min(1.0 - top_n, height_n))
+    x = int(round(left_n * frame_w))
+    y = int(round(top_n * frame_h))
+    box_w = int(round(width_n * frame_w))
+    box_h = int(round(height_n * frame_h))
+    if x + box_w > frame_w:
+        box_w = frame_w - x
+    if y + box_h > frame_h:
+        box_h = frame_h - y
+    if box_w < 32 or box_h < 32 or width_n < 0.02 or height_n < 0.02:
+        raise ValueError("Drag a larger box on the live view")
+    return {
+        "x": x,
+        "y": y,
+        "w": box_w,
+        "h": box_h,
+        "cam_id": 1 if wide else 0,
+        "nx": x / frame_w,
+        "ny": y / frame_h,
+        "nw": box_w / frame_w,
+        "nh": box_h / frame_h,
+        "frame_w": frame_w,
+        "frame_h": frame_h,
+        "camera": "wide" if wide else "tele",
+    }
+
+
+def _start_box_track(nx: Any, ny: Any, nw: Any, nh: Any, wide: bool = False) -> dict[str, Any]:
+    """Lock object tracking on a box the user drew. Does not enter astro mode."""
+    snapshot = _tap.snapshot() if _tap is not None else {}
+    blocked = box_track_blocked(snapshot)
+    if blocked:
+        raise RuntimeError(blocked)
+    wide_flag = bool(wide)
+    frame_w = snapshot.get("wide_width") if wide_flag else snapshot.get("tele_width")
+    frame_h = snapshot.get("wide_height") if wide_flag else snapshot.get("tele_height")
+    rect = box_track_rect(frame_w, frame_h, nx, ny, nw, nh, wide=wide_flag)
+    from dwarf_python_api.proto import track_pb2
+
+    message = track_pb2.ReqStartTrack()
+    message.x = int(rect["x"])
+    message.y = int(rect["y"])
+    message.w = int(rect["w"])
+    message.h = int(rect["h"])
+    message.cam_id = int(rect["cam_id"])
+    camera = str(rect["camera"])
+    log(
+        f"Box lock on the {camera} frame "
+        f"({rect['x']}, {rect['y']}, {rect['w']}×{rect['h']})"
+    )
+    if send_without_response(message, CMD_TRACK_START_TRACK, _MODULE_TRACK) is False:
+        raise RuntimeError("Box lock failed to start")
+    if _tap is not None:
+        _tap.update(
+            {
+                "tracking_state": "running",
+                "tracking_kind": "object",
+                "tracking_target": "Box lock",
+                "goto_state": "idle",
+                "track_box": True,
+                "track_box_nx": rect["nx"],
+                "track_box_ny": rect["ny"],
+                "track_box_nw": rect["nw"],
+                "track_box_nh": rect["nh"],
+                "track_box_frame_w": int(rect["frame_w"]),
+                "track_box_frame_h": int(rect["frame_h"]),
+                "track_box_camera": camera,
+            },
+            force=True,
+        )
+    return {"ok": True, "kind": "object", "name": "Box lock", **rect}
+
+
 def _start_tracking(target_name: str = "") -> dict[str, Any]:
     """Lock object tracking on the star already in the tele center."""
     if _ensure_astro_mode(enter_camera=False) is False:
         raise RuntimeError("Could not enter astro mode")
     snapshot = _tap.snapshot() if _tap is not None else {}
-    if snapshot.get("tracking_state") == "running":
+    if snapshot.get("tracking_state") == "running" and not snapshot.get("track_box"):
         log("Already tracking", "notice")
         return {"ok": True, "already": True, "kind": snapshot.get("tracking_kind") or "object"}
     from dwarf_python_api.proto import track_pb2
@@ -6449,6 +6744,7 @@ def _start_tracking(target_name: str = "") -> dict[str, Any]:
                 "tracking_kind": "object",
                 "tracking_target": name,
                 "goto_state": "idle",
+                **track_box_off(),
             },
             force=True,
         )
@@ -6956,6 +7252,15 @@ def dispatch(message: dict[str, Any]) -> Any:
     if command == "track":
         args = list(message.get("args") or [])
         return _start_tracking(str(args[0]) if args else "")
+    if command == "box_track":
+        args = list(message.get("args") or [])
+        return _start_box_track(
+            args[0] if args else 0,
+            args[1] if len(args) > 1 else 0,
+            args[2] if len(args) > 2 else 0,
+            args[3] if len(args) > 3 else 0,
+            bool(args[4]) if len(args) > 4 else False,
+        )
     if command == "sky_track":
         args = list(message.get("args") or [])
         return _start_sky_track(
