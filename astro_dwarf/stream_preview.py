@@ -17,6 +17,16 @@ from PySide6.QtCore import Property, QBuffer, QIODevice, QObject, QProcess, QRec
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPen, QWindow
 from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
 
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore[assignment]
+
+try:
+    import cv2
+except ImportError:  # pragma: no cover
+    cv2 = None
+
 from .domain import panorama_leave_index, panorama_shot_cell_px, panorama_stamp_live_ready
 from .runtime import PROCESS_CREATION_FLAGS, ffmpeg_mjpeg_command, ffmpeg_path, kill_pid_tree
 from .services import (
@@ -1630,6 +1640,25 @@ def preview_should_ingest_frame(
     return bool(panorama_running) and str(camera) == "tele"
 
 
+def decode_jpeg_frame(data: bytes) -> QImage:
+    """Decode one stream JPEG to a Format_RGB32 image, the format Qt's JPEG reader gives.
+
+    QImage.fromData holds the GIL for the whole decode (about 24 ms per
+    1080p frame), so two live streams starve the GUI thread. OpenCV
+    releases it while decoding and colour-converting.
+    """
+    if cv2 is not None and np is not None:
+        try:
+            bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        except Exception:
+            bgr = None
+        if bgr is not None and bgr.ndim == 3 and bgr.shape[2] == 3:
+            bgra = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
+            height, width = bgra.shape[:2]
+            return QImage(bgra.data, width, height, int(bgra.strides[0]), QImage.Format_RGB32).copy()
+    return QImage.fromData(data, "JPG")
+
+
 class JpegSplitter:
     """Pull complete JPEG payloads out of an MJPEG or image2pipe byte stream.
 
@@ -1873,7 +1902,7 @@ class StreamPlayer(QObject):
     def _on_jpeg_bytes(self, data: object) -> None:
         if self._cancelled or not isinstance(data, (bytes, bytearray)) or not data:
             return
-        image = QImage.fromData(bytes(data), "JPG")
+        image = decode_jpeg_frame(bytes(data))
         if image.isNull():
             return
         self._queue_frame(image)
@@ -1956,7 +1985,7 @@ class StreamPlayer(QObject):
         frames = self._splitter.feed(bytes(self._process.readAllStandardOutput()))
         if not frames:
             return
-        image = QImage.fromData(frames[-1], "JPG")
+        image = decode_jpeg_frame(frames[-1])
         if image.isNull():
             return
         self._queue_frame(image)
