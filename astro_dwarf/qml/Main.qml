@@ -94,6 +94,31 @@ ApplicationWindow {
     readonly property var scopeTelemetry: (backend.selectedDevice && backend.selectedDevice.telemetry) || ({})
     readonly property string scopeActivityDetail: String((backend.selectedDevice && backend.selectedDevice.activity_detail) || "")
     readonly property bool scopeActivityFromDevice: !!(backend.selectedDevice && backend.selectedDevice.activity_from_device)
+    // Title-bar chips. A new model array recreates every chip, so the list is
+    // replaced only when a field a chip reads changes; copy every field it reads.
+    property var deviceChipList: []
+    property string deviceChipListKey: ""
+    function refreshDeviceChipList() {
+        const source = backend.devices
+        const devices = source ? source.map(item => {
+            const t = item.telemetry || {}
+            return {
+                id: item.id, name: item.name, model: item.model, color: item.color,
+                ip_address: item.ip_address, status: item.status, connected: item.connected,
+                busy: item.busy, connecting: item.connecting, cancelling: item.cancelling,
+                disconnecting: item.disconnecting,
+                telemetry: {
+                    battery_percent: t.battery_percent, charging: t.charging,
+                    capture_active: t.capture_active, capture_text: t.capture_text
+                }
+            }
+        }) : []
+        const key = JSON.stringify(devices)
+        if (key === root.deviceChipListKey)
+            return
+        root.deviceChipListKey = key
+        root.deviceChipList = devices
+    }
     property int currentPage: 0
     readonly property int controlPageIndex: 0
     readonly property int sessionsPageIndex: 2
@@ -752,6 +777,7 @@ ApplicationWindow {
         backend.setEnhanceSkyCrush(Theme.enhanceSkyCrush)
         root.macKeyboardReady = true
         Qt.callLater(root.syncMacKeyboard)
+        root.refreshDeviceChipList()
     }
 
     // Keep the native Windows caption in step with the theme hue (debounced while the slider moves).
@@ -1066,7 +1092,7 @@ ApplicationWindow {
 
         Rectangle {
             id: deviceRail
-            readonly property bool shown: backend.devices.length > 1
+            readonly property bool shown: root.deviceChipList.length > 1
             Layout.fillWidth: true
             Layout.preferredHeight: shown ? 30 : 0
             Layout.maximumHeight: shown ? 30 : 0
@@ -1105,7 +1131,7 @@ ApplicationWindow {
                     orientation: ListView.Horizontal
                     spacing: Theme.s1
                     clip: true
-                    model: backend.devices
+                    model: root.deviceChipList
                     function scrollBy(distance) {
                         const minimum = originX
                         const maximum = Math.max(minimum, originX + contentWidth - width)
@@ -1692,6 +1718,7 @@ ApplicationWindow {
                 settingsPage.applyLocation(item)
         }
         function onSelectedDeviceChanged() { root.maybeAskLocation() }
+        function onDevicesChanged() { root.refreshDeviceChipList() }
         function onDarkPrompt(payload) { darkFrameDialog.applyPrompt(payload) }
         function onDeviceScheduleConflict(deviceId, summary) {
             confirmDialog.kind = "replaceDeviceSchedule"

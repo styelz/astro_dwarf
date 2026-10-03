@@ -18,7 +18,6 @@ ColumnLayout {
     Layout.fillWidth: true
     Layout.alignment: Qt.AlignTop | Qt.AlignLeft
 
-    readonly property bool tintCustom: Theme.paletteCustom
     readonly property real tintHue: {
         void Theme.paletteJson
         void Theme.hue

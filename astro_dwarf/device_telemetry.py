@@ -694,6 +694,9 @@ class TelemetryTap:
         # A restarted app has no live rect/thumbnail notify to replay, so a
         # shoot already in progress needs the last one reloaded from disk.
         self._panorama_cache_loaded = False
+        # Framing repeats the same rect notify. Log and persist it only when it changes.
+        self._panorama_rect_logged = ""
+        self._panorama_rect_saved: dict[str, Any] | None = None
         self._pano_az_raw: float | None = None
         self._pano_az_unwrapped: float | None = None
 
@@ -792,6 +795,7 @@ class TelemetryTap:
             self._goto_stop_owned = False
             self._goto_stopping_since = 0.0
             self._panorama_cache_loaded = False
+            self._panorama_rect_logged = ""
             self._pano_az_raw = None
             self._pano_az_unwrapped = None
             self._cancel_goto_unwind_locked()
@@ -1040,9 +1044,7 @@ class TelemetryTap:
             "panorama_rect_fov_v": float(message.rect_ver_fov),
             "panorama_rect_error": int(message.error_code),
         }
-        from .device_worker import log
-
-        log(
+        text = (
             "Panorama rect "
             f"{changes['panorama_x1']:.3f},{changes['panorama_y1']:.3f} "
             f"{changes['panorama_x2']:.3f},{changes['panorama_y2']:.3f} "
@@ -1051,6 +1053,11 @@ class TelemetryTap:
             f"fov {changes['panorama_rect_fov_h']:.2f}x{changes['panorama_rect_fov_v']:.2f} "
             f"err {changes['panorama_rect_error']}"
         )
+        if text != self._panorama_rect_logged:
+            self._panorama_rect_logged = text
+            from .device_worker import log
+
+            log(text)
         # The rect notify does not replay on a new socket. Keep the corners so
         # the next launch can draw the box the telescope still has.
         self.persist_panorama_rect(changes)
@@ -1218,12 +1225,16 @@ class TelemetryTap:
         except (TypeError, ValueError):
             payload["panorama_rect_error"] = 0
         payload["panorama_has_rect"] = True
+        if payload == self._panorama_rect_saved:
+            return
         try:
             path.write_text(json.dumps(payload), encoding="utf-8")
         except OSError:
-            pass
+            return
+        self._panorama_rect_saved = payload
 
     def clear_panorama_scan_cache(self) -> None:
+        self._panorama_rect_saved = None
         for path in (self._panorama_cache_path(), self._panorama_rect_cache_path()):
             if path is None:
                 continue

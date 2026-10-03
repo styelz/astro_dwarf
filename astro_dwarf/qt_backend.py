@@ -63,7 +63,6 @@ from .domain import (
     album_is_astro_stack_product,
     album_is_stack_display_image,
     album_item_preview_path,
-    album_is_media_file,
     album_delete_summary,
     album_is_category_folder_path,
     album_is_protected_folder,
@@ -2168,10 +2167,12 @@ class AppBackend(QObject):
         self._devices_view: list[dict[str, Any]] | None = None
         self._selected_device_view: dict[str, Any] | None = None
         self._devices_dirty = True
+        self._notified_devices_view: list[dict[str, Any]] | None = None
+        self._notified_selected_signature: tuple[Any, ...] | None = None
         self._devices_notify_timer = QTimer(self)
         self._devices_notify_timer.setSingleShot(True)
         self._devices_notify_timer.setInterval(200)
-        self._devices_notify_timer.timeout.connect(self._flush_devices_notify)
+        self._devices_notify_timer.timeout.connect(lambda: self._flush_devices_notify(only_changed=True))
         self._retarget_timer = QTimer(self)
         self._retarget_timer.setSingleShot(True)
         self._retarget_timer.setInterval(250)
@@ -2206,9 +2207,6 @@ class AppBackend(QObject):
         self._catalog_resolve_cooldown: dict[str, float] = {}
         self._preview_coord_text = ""
         self._preview_coord_name = ""
-        self._live_pointing: dict[str, tuple[float, float]] = {}
-        self._pointing_inflight = False
-        self._pointing_polled_at = 0.0
         self._web_view_available = _webview_available()
         self._sky_web_blocked_by_gpu = _sky_web_blocked_by_gpu()
         self._stellarium_rc_live = False
@@ -2458,7 +2456,6 @@ class AppBackend(QObject):
                 return
         if device_id == self._selected_device_id:
             self.stopPreview()
-        self._live_pointing.pop(device_id, None)
         if device_id == self._selected_device_id:
             self.skyTargetChanged.emit()
         self._disarm_scheduler_if_offline()
@@ -2612,13 +2609,42 @@ class AppBackend(QObject):
         self._selected_device_view = selected if selected is not None else (result[0] if result else {})
         self._devices_dirty = False
 
-    def _flush_devices_notify(self) -> None:
+    def _selected_notify_signature(self) -> tuple[Any, ...] | None:
+        """Every value QML reads through selectedDeviceChanged."""
+        try:
+            return (
+                self._selected_device_id,
+                self._selected_device_view,
+                self.videoUrl,
+                self.mosaicSouthUp,
+                self.mosaicFovText,
+                self.skyFovText,
+                self.skyDeviceMosaicAllowed,
+                self.skyWebSiteScript,
+                self.skyAtlasSiteScript,
+            )
+        except Exception:
+            return None
+
+    def _flush_devices_notify(self, only_changed: bool = False) -> None:
+        # Telemetry flushes pass only_changed: a packet from one telescope must
+        # not re-bind the selected HUD when nothing it shows moved. Explicit
+        # notifies still emit everything.
         if self._devices_dirty or self._devices_view is None:
             self._rebuild_devices_view()
-        self.devicesChanged.emit()
-        self.selectedDeviceChanged.emit()
-        self.mosaicPaChanged.emit()
-        self.statusChanged.emit()
+        devices = self._devices_view
+        selected = self._selected_notify_signature()
+        devices_changed = not only_changed or devices != self._notified_devices_view
+        selected_changed = not only_changed or selected is None or selected != self._notified_selected_signature
+        self._notified_devices_view = devices
+        self._notified_selected_signature = selected
+        if devices_changed:
+            self.devicesChanged.emit()
+        if selected_changed:
+            self.selectedDeviceChanged.emit()
+            self.mosaicPaChanged.emit()
+        if devices_changed:
+            self.statusChanged.emit()
 
     def _notify_devices(self, immediate: bool = True) -> None:
         self._devices_dirty = True
@@ -4595,14 +4621,6 @@ class AppBackend(QObject):
         ra, dec = coords
         return format_coordinates(ra, dec)
 
-    def _set_live_pointing(self, device_id: str, ra_hours: float, dec_degrees: float) -> None:
-        coords = self._target_coords({"ra_hours": ra_hours, "dec_degrees": dec_degrees})
-        if coords is None:
-            return
-        if self._live_pointing.get(device_id) == coords:
-            return
-        self._live_pointing[device_id] = coords
-
     def _set_preview_coords(self, name: str, coords: tuple[float, float] | None) -> None:
         text = self._format_sky_coords(coords) if coords is not None else ""
         label = str(name or "").strip()
@@ -4677,32 +4695,6 @@ class AppBackend(QObject):
             "dec_degrees": coords[1],
         }
 
-    def _maybe_poll_sky_pointing(self) -> None:
-        if self._sky_lock_inflight or self._pointing_inflight:
-            return
-        device_id = str(self._selected_device_id or "")
-        worker = self._workers.get(device_id)
-        if not worker or not worker.connected:
-            return
-        if self._pending_actions.get(device_id):
-            return
-        now = time.monotonic()
-        if now - self._pointing_polled_at < 8.0:
-            return
-        self._pointing_polled_at = now
-        self._pointing_inflight = True
-
-        def done(ok: bool, result: Any) -> None:
-            self._pointing_inflight = False
-            if not ok or not isinstance(result, dict):
-                return
-            coords = self._target_coords(result)
-            if coords is None:
-                return
-            self._set_live_pointing(device_id, coords[0], coords[1])
-
-        worker.send("sky_pointing", {}, callback=done)
-
     def _sky_lock_payload(self, name: str, coords: tuple[float, float], aliases: list[str] | None = None) -> dict[str, Any]:
         label = str(name or "").strip() or "Tracked target"
         extra = [str(item).strip() for item in (aliases or []) if str(item or "").strip()]
@@ -4717,44 +4709,6 @@ class AppBackend(QObject):
         payload = self._sky_lock_payload(name, coords, aliases)
         self._set_sky_target(Target(name=payload["name"], ra_hours=coords[0], dec_degrees=coords[1]))
         self.skyLockRequested.emit(payload)
-
-    def _request_sky_pointing(self, name: str) -> None:
-        device_id = str(self._selected_device_id or "")
-        worker = self._workers.get(device_id)
-        if not worker or not worker.connected:
-            self._sky_lock_inflight = False
-            self._toast("Connect a telescope before locking the sky map", "warning")
-            return
-
-        def done(ok: bool, result: Any) -> None:
-            self._sky_lock_inflight = False
-            data = result if isinstance(result, dict) else {}
-            coords = self._target_coords(data) if ok else None
-            if coords is None:
-                label = str(name or "").strip() or "the tracked target"
-                self._toast(
-                    "Could not lock that target on the sky map",
-                    "warning",
-                    f"No catalog match or mount pointing for {label}",
-                )
-                return
-            self._set_live_pointing(device_id, coords[0], coords[1])
-            label = str(data.get("name") or name or "Tracked target")
-            try:
-                az_text = f"{float(data.get('az')):.2f}"
-                alt_text = f"{float(data.get('alt')):.2f}"
-            except (TypeError, ValueError):
-                az_text = alt_text = "?"
-            self.add_log(
-                "warning",
-                f"Motor-derived pointing {self._format_sky_coords(coords)} "
-                f"(az {az_text}° alt {alt_text}°) for {label}. "
-                "Firmware does not publish tracked RA/Dec; this is only a mount estimate.",
-                device_id,
-            )
-            self._emit_sky_lock(label, coords)
-
-        worker.send("sky_pointing", {}, callback=done)
 
     @Slot()
     def lockSkyToTrackedTarget(self) -> None:
@@ -5076,19 +5030,8 @@ class AppBackend(QObject):
             self._mosaic_seen_stack_reset = True
         self._mosaic_stream_pane = nxt
 
-    def _mosaic_live_frame_belongs(self, pane: int, device_id: str = "") -> bool:
-        stacked, taken = self._mosaic_capture_counts(device_id)
-        return mosaic_accept_live_frame(
-            pane=pane,
-            stream_pane=self._mosaic_stream_pane,
-            stacked=stacked,
-            taken=taken,
-            seen_reset=self._mosaic_seen_stack_reset,
-        )
-
     def _mosaic_may_copy_live(self, pane: int, device_id: str = "") -> bool:
         owner = str(device_id or self._selected_device_id or "")
-        live = self._live_mosaic.get(owner) or {}
         stacked, taken = self._mosaic_capture_counts(owner)
         phase = self._mosaic_phase_name(owner)
         return mosaic_should_copy_live_still(
@@ -5292,7 +5235,7 @@ class AppBackend(QObject):
             frozen = self.mosaic_frames.frozen(pane)
             missing = pane not in self._raw_mosaic_panes or self._raw_mosaic_panes[pane].isNull()
             if not frozen:
-                self._raw_mosaic_panes[pane] = image.copy()
+                self._raw_mosaic_panes[pane] = QImage(image)
                 # The enhanced still replaces this later. Until then the pane
                 # the operator is looking at has to be on disk, or a restart
                 # and a disconnect both come back blank.
@@ -5301,7 +5244,7 @@ class AppBackend(QObject):
                     self.mosaicPreviewChanged.emit()
                 self._persist_mosaic_pane_image(pane, image)
             elif missing:
-                self._raw_mosaic_panes[pane] = image.copy()
+                self._raw_mosaic_panes[pane] = QImage(image)
                 self._finish_mosaic_pane_still(pane)
             return
         if self.mosaic_frames.frozen(pane):
@@ -8624,7 +8567,7 @@ class AppBackend(QObject):
     def _queue_preview_enhance(self, camera: str, raw: QImage) -> None:
         if raw is None or raw.isNull():
             return
-        self._preview_enhance_latest[camera] = raw.copy()
+        self._preview_enhance_latest[camera] = QImage(raw)
         if self._preview_enhance_inflight.get(camera):
             return
         self._start_preview_enhance(camera)
@@ -8802,7 +8745,7 @@ class AppBackend(QObject):
         if not first_frame and now - self._last_preview_ui.get(camera, 0.0) < 0.05:
             return
         self._last_preview_ui[camera] = now
-        raw = image.copy() if isinstance(image, QImage) and not image.isNull() else QImage()
+        raw = QImage(image) if isinstance(image, QImage) and not image.isNull() else QImage()
         self._raw_preview_images[camera] = raw
         if self._should_enhance_preview():
             shown = self.live_images.peek(camera)
@@ -9311,7 +9254,6 @@ class AppBackend(QObject):
         self._pending_session_finish.pop(device_id, None)
         self._device_lights.pop(device_id, None)
         self._device_indicators.pop(device_id, None)
-        self._live_pointing.pop(device_id, None)
         self.add_log("info", "Disconnected", device_id)
         self._toast("Telescope disconnected", "info")
         self._disarm_scheduler_if_offline()

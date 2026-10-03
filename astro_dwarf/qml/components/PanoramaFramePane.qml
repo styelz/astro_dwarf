@@ -18,8 +18,6 @@ Item {
     readonly property real limitBottom: Number(telemetry.panorama_limit_bottom || 1)
     readonly property real spanX: Math.max(0.05, limitRight - limitLeft)
     readonly property real spanY: Math.max(0.05, limitBottom - limitTop)
-    readonly property real boxNormW: Math.max(0.02, Math.abs(boxX2 - boxX1))
-    readonly property real boxNormH: Math.max(0.02, Math.abs(boxY2 - boxY1))
     // Normalized X and Y are not square pixels. Paint the scan at its own
     // aspect, or 32:9 until the first thumbnail has loaded.
     property real lockedAspect: 0

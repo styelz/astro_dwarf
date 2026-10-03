@@ -246,7 +246,10 @@ def _signal_ready_on_first_frame(window) -> None:
 
 def run() -> int:
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
-    os.environ["QML_DISABLE_DISK_CACHE"] = "1"
+    # Packaged QML does not change between launches, so frozen builds keep
+    # Qt's compiled-QML cache. Source checkouts compile fresh every launch.
+    if not is_frozen():
+        os.environ["QML_DISABLE_DISK_CACHE"] = "1"
     configure_quick_runtime()
     configure_qml_import_path()
     _configure_windows_app_id()

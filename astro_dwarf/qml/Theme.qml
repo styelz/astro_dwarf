@@ -368,10 +368,6 @@ QtObject {
         return theme.fingerprint() !== theme.fingerprintOf(current)
     }
 
-    // True when the live look differs from the selected theme. A pristine ASTRO
-    // palette is not "custom" just because it is not the cyan recipe.
-    readonly property bool paletteCustom: theme.themeEdited
-
     // How far the seed hue is from stock (0 … 0.5). The original palette leans its
     // surfaces and outlines ~35° toward blue; the same lean turns a red accent orange,
     // so the offsets shrink as the hue moves away from cyan. At the default hue
@@ -803,10 +799,6 @@ QtObject {
         theme.paletteJson = Object.keys(ov).length ? JSON.stringify(ov) : ""
     }
 
-    function resetPalette() {
-        theme.applyTheme("astro")
-    }
-
     function colorToHex(col) {
         if (col === undefined || col === null)
             return ""
@@ -977,15 +969,6 @@ QtObject {
                 return list[i]
         }
         return null
-    }
-
-    function themeIndexOf(id) {
-        const list = theme.listThemes()
-        for (let i = 0; i < list.length; i++) {
-            if (list[i].id === id)
-                return i
-        }
-        return -1
     }
 
     function isBuiltinId(id) {
@@ -1343,9 +1326,6 @@ QtObject {
     property string iconFamilyOverride: ""
     // Qt Quick will not atlas PUA glyphs from addApplicationFont alone.
     // Main.qml FontLoader writes iconFamilyOverride when the shipped face is ready.
-    readonly property var fontIconCandidates: [
-        "Astro Dwarf Icons", "Segoe MDL2 Assets", "Segoe Fluent Icons"
-    ]
     readonly property var installedFontMap: {
         const map = ({})
         const families = Qt.fontFamilies()

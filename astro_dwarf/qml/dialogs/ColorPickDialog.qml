@@ -70,14 +70,6 @@ Dialog {
         pick.hue = Theme.wrapHue(py / h)
     }
 
-    function pickAtNorm(nx, ny) {
-        pick.pickPlane(plane.width * Math.max(0, Math.min(1, nx)), plane.height * Math.max(0, Math.min(1, ny)))
-    }
-
-    function pickHueNorm(ny) {
-        pick.pickHue(hueBar.height * Math.max(0, Math.min(1, ny)))
-    }
-
     function applyLive(col) {
         if (col === undefined || col === null)
             return

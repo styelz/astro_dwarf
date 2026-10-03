@@ -602,18 +602,6 @@ QtObject {
             return item && item.source === "stills" ? "PHOTO" : ""
         }
     }
-    function mediaKindGlyph(item) {
-        if (Util.isFolderMedia(item))
-            return "▤"
-        switch (Util.mediaKind(item)) {
-        case "folder": return "▤"
-        case "video": return "▶"
-        case "burst": return "◫"
-        case "panorama": return "▣"
-        case "astro": return "◈"
-        default: return item && item.source === "stills" ? "▣" : "◈"
-        }
-    }
     function captureFlag(value, fallback) {
         if (value === undefined || value === null || value === "")
             return fallback

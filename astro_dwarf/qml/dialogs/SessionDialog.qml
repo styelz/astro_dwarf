@@ -330,18 +330,6 @@ Dialog {
         syncingPane = false
         sessionDialog.loadCommonFields(sessionDialog.selectedMembers())
     }
-    function workflowFromForm(existing) {
-        const current = existing || {}
-        return {
-            calibrate: paneFlags.calibrate,
-            autofocus: paneFlags.autofocus,
-            infinite_focus: paneFlags.infiniteFocus,
-            polar_align: paneFlags.polar,
-            goto: paneFlags.doGoto,
-            wait_before_seconds: current.wait_before_seconds,
-            wait_after_seconds: current.wait_after_seconds
-        }
-    }
     function loadMosaicFields(data) {
         const mosaic = (data && data.mosaic) || {}
         importedPlan = !!(mosaic.grid_rows && mosaic.grid_columns)

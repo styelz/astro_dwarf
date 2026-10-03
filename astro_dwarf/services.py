@@ -16,9 +16,7 @@ import requests
 from .version import __version__
 from .sky_atlas import SKY_MAP_FOV_DEG, clean_sky_target_name
 from .domain import (
-    Camera,
     CameraSettings,
-    DeviceModel,
     HardwareProfile,
     Mosaic,
     Session,
@@ -30,7 +28,6 @@ from .domain import (
     Target,
     TargetKind,
     Workflow,
-    camera_fov,
     new_id,
     utc_now,
 )
@@ -98,8 +95,6 @@ SKY_WEB_BOOT_JS = r"""
 })()
 """
 MAX_MOSAIC_AXIS = 10
-DEFAULT_TELE_FOV_H, DEFAULT_TELE_FOV_V = camera_fov(DeviceModel.DWARF_3, Camera.TELE)
-DEFAULT_WIDE_FOV_H, DEFAULT_WIDE_FOV_V = camera_fov(DeviceModel.DWARF_3, Camera.WIDE)
 
 # Read the object selected in Stellarium Web (Vue store / engine SweObj).
 SKY_WEB_HARVEST_JS = r"""

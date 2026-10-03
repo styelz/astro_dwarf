@@ -566,7 +566,10 @@ Item {
         function onSelectedDeviceChanged() {
             if (!map.pageReady)
                 return
-            map.applyObservingSite()
+            // Device flushes fire this on telemetry. The retry timer re-applies
+            // a site that failed, so only send a changed one here.
+            if (map.appliedSiteKey !== backend.skyAtlasSiteScript)
+                map.applyObservingSite()
             map.applyFovOverlay()
             if (!map.viewRestored)
                 map.restoreSavedView()

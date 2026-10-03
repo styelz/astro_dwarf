@@ -89,7 +89,7 @@ def main() -> int:
         click("sessionSave")
     page("history")
     request("POST", "/snapshot")
-    for text in ("q", "qu", "qua", NEEDLE := "quasar-needle"):
+    for text in ("q", "qu", "qua", "quasar-needle"):
         request("POST", "/set", {"name": "Search history", "value": text})
         time.sleep(0.35)
         request("GET", "/state")

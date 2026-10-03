@@ -3,14 +3,17 @@
 This module is imported *before* :mod:`astro_dwarf.app`, so it must stay free
 of the QML/backend/cv2/numpy import chain - that is what lets the splash
 process start and paint almost instantly. The splash launches the real app
-as a child process (passing ``--child``) and closes itself the moment that
+as a child process (passing ``--child``) and hides itself the moment that
 child reports its first rendered frame over stdout, instead of waiting a
-fixed delay.
+fixed delay. An AppImage keeps this process alive until that child exits:
+the runtime unmounts the squashfs when the splash process exits, and the
+real app then faults with SIGBUS.
 """
 
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -25,6 +28,46 @@ _OUTLINE_STRONG = "#315A73"
 _ACCENT = "#8C905A"
 _TEXT_SECONDARY = "#74A2B2"
 _TITLE = "#8C905A"
+
+
+def _appimage_runtime_owns_mount() -> bool:
+    """True when exiting this process makes the AppImage runtime drop the squashfs.
+
+    type2-runtime lazy-unmounts as soon as its direct child (this splash)
+    exits. The real app is started in a new session, so it keeps running
+    with libraries still mapped from that mount. The next page fault is
+    SIGBUS (BUS_ADRERR), which is the AppImage crash. A normal install
+    has the same files on disk and can let the splash exit immediately.
+    """
+    if os.environ.get("APPIMAGE") or os.environ.get("APPDIR"):
+        return True
+    return "/.mount_" in os.path.realpath(sys.executable).replace("\\", "/")
+
+
+def _wait_for_detached_child(child: subprocess.Popen) -> int:
+    """Block until the real app exits, and pass terminal signals through to it."""
+    forwarded = [
+        signum
+        for name in ("SIGTERM", "SIGINT", "SIGHUP")
+        if (signum := getattr(signal, name, None)) is not None
+    ]
+    previous = {signum: signal.getsignal(signum) for signum in forwarded}
+
+    def _forward(signum, _frame) -> None:
+        if child.poll() is None:
+            child.send_signal(signum)
+
+    for signum in forwarded:
+        signal.signal(signum, _forward)
+    try:
+        while True:
+            try:
+                return child.wait()
+            except InterruptedError:
+                continue
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 def _should_skip_splash() -> bool:
@@ -383,7 +426,14 @@ def _run_with_splash(script_path: str | None) -> int:
         done = Signal()
 
     signal = _Done()
-    signal.done.connect(app.quit)
+
+    def _dismiss() -> None:
+        splash.hide()
+        splash.close()
+        app.processEvents()
+        app.quit()
+
+    signal.done.connect(_dismiss)
 
     def _reader() -> None:
         stdout = child.stdout
@@ -395,9 +445,12 @@ def _run_with_splash(script_path: str | None) -> int:
         signal.done.emit()
 
     threading.Thread(target=_reader, daemon=True, name="splash-reader").start()
-    QTimer.singleShot(_FALLBACK_MS, app.quit)
+    QTimer.singleShot(_FALLBACK_MS, _dismiss)
 
     app.exec()
+    splash.hide()
     splash.close()
+    if _appimage_runtime_owns_mount():
+        return _wait_for_detached_child(child)
     exit_code = child.poll()
     return exit_code if exit_code is not None else 0

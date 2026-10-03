@@ -133,14 +133,6 @@ class LiveFrames(QObject):
                 }
         self.frameChanged.emit(key or "*")
 
-    def frame_size(self, key: str = "wide") -> tuple[int, int]:
-        """Native (width, height) of the latest decoded frame; (0, 0) when empty."""
-        with self._lock:
-            image = self._images.get(key) or QImage()
-            if image.isNull():
-                return (0, 0)
-            return (image.width(), image.height())
-
 
 class LiveFrameItem(QQuickPaintedItem):
     """Paints a live camera frame on the GUI thread (PreserveAspectFit)."""
@@ -168,9 +160,6 @@ class LiveFrameItem(QQuickPaintedItem):
         hub = live_frames()
         if hub is not None:
             hub.frameChanged.connect(self._on_hub_frame)
-
-    def _camera_key(self) -> str:
-        return self._camera
 
     def getCamera(self) -> str:
         return self._camera
@@ -437,14 +426,14 @@ class MosaicFrames(QObject):
             return
         if pane < 1 or image is None or image.isNull():
             return
-        shown = image.copy()
         with self._lock:
             if pane in self._frozen and not replace_frozen:
                 return
             current = self._images.get(pane)
-            if current is not None and not current.isNull() and current.cacheKey() == shown.cacheKey():
+            if current is not None and not current.isNull() and current.cacheKey() == image.cacheKey():
                 return
-            self._images[pane] = shown
+            # A shallow copy shares pixels; a later write to the caller's image detaches.
+            self._images[pane] = QImage(image)
         self.changed.emit()
 
     def peek(self, index: int) -> QImage:
@@ -1641,23 +1630,51 @@ def preview_should_ingest_frame(
     return bool(panorama_running) and str(camera) == "tele"
 
 
-def pop_jpegs(buffer: bytes, max_buffer: int = 20_000_000) -> tuple[bytes, list[bytes]]:
-    """Pull complete JPEG payloads out of an MJPEG or image2pipe byte stream."""
-    frames: list[bytes] = []
-    while True:
-        start = buffer.find(b"\xff\xd8")
-        end = buffer.find(b"\xff\xd9", start + 2) if start >= 0 else -1
-        if start < 0 or end < 0:
-            if start > 0:
-                buffer = buffer[start:]
-            elif start == 0 and len(buffer) > max_buffer:
-                buffer = b""
-            elif start < 0 and len(buffer) > max_buffer:
-                buffer = buffer[-64_000:]
-            break
-        frames.append(buffer[start : end + 2])
-        buffer = buffer[end + 2 :]
-    return buffer, frames
+class JpegSplitter:
+    """Pull complete JPEG payloads out of an MJPEG or image2pipe byte stream.
+
+    Each byte is searched once: the scan resumes where the last chunk ended,
+    so a multi-megabyte stacking JPEG arriving in 64 KB reads stays linear.
+    """
+
+    def __init__(self, max_buffer: int = 20_000_000):
+        self._max_buffer = max_buffer
+        self._buffer = bytearray()
+        self._in_frame = False
+        self._scan = 0
+
+    def clear(self) -> None:
+        self._buffer = bytearray()
+        self._in_frame = False
+        self._scan = 0
+
+    def feed(self, chunk: bytes) -> list[bytes]:
+        buffer = self._buffer
+        buffer += chunk
+        frames: list[bytes] = []
+        while True:
+            if not self._in_frame:
+                start = buffer.find(b"\xff\xd8", self._scan)
+                if start < 0:
+                    if len(buffer) > self._max_buffer:
+                        del buffer[:-64_000]
+                    self._scan = max(0, len(buffer) - 1)
+                    break
+                del buffer[:start]
+                self._in_frame = True
+                self._scan = 2
+            end = buffer.find(b"\xff\xd9", self._scan)
+            if end < 0:
+                if len(buffer) > self._max_buffer:
+                    self.clear()
+                else:
+                    self._scan = max(2, len(buffer) - 1)
+                break
+            frames.append(bytes(buffer[: end + 2]))
+            del buffer[: end + 2]
+            self._in_frame = False
+            self._scan = 0
+        return frames
 
 
 def _close_http_conn(conn: http.client.HTTPConnection | None) -> None:
@@ -1686,7 +1703,6 @@ class StreamPlayer(QObject):
     _FIRST_FRAME_MS = 8000
     _HTTP_FIRST_FRAME_MS = 120000
     _HTTP_RECONNECT_MS = 1500
-    _HTTP_RETRY_MS = 1500
 
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -1698,7 +1714,7 @@ class StreamPlayer(QObject):
         self._keep_alive = False
         self._cancelled = False
         self._got_frame = False
-        self._buffer = b""
+        self._splitter = JpegSplitter()
         self._stderr = ""
         self._pid = 0
         self._pid_lock = threading.Lock()
@@ -1711,9 +1727,6 @@ class StreamPlayer(QObject):
         self._watchdog = QTimer(self)
         self._watchdog.setSingleShot(True)
         self._watchdog.timeout.connect(self._on_watchdog)
-        self._reconnect_timer = QTimer(self)
-        self._reconnect_timer.setSingleShot(True)
-        self._reconnect_timer.timeout.connect(self._start_process)
 
     def _stream_alive(self) -> bool:
         if self._cancelled or not self._url:
@@ -1765,7 +1778,6 @@ class StreamPlayer(QObject):
         self._http_mode = False
         self._keep_alive = False
         self._watchdog.stop()
-        self._reconnect_timer.stop()
         self._latest_image = None
         self._flush_scheduled = False
         self._stop_http()
@@ -1833,7 +1845,7 @@ class StreamPlayer(QObject):
                 raise RuntimeError(f"Stacking preview returned HTTP {response.status}")
             if conn.sock is not None:
                 conn.sock.settimeout(1.0)
-            buffer = b""
+            splitter = JpegSplitter()
             announced = False
             while generation == self._http_generation and not self._cancelled:
                 try:
@@ -1848,10 +1860,9 @@ class StreamPlayer(QObject):
                     announced = True
                     if not self._got_frame:
                         self.statusChanged.emit("Downloading stacking preview…")
-                buffer += chunk
-                buffer, frames = pop_jpegs(buffer)
-                for jpeg in frames:
-                    self._jpegBytes.emit(jpeg)
+                frames = splitter.feed(chunk)
+                if frames:
+                    self._jpegBytes.emit(frames[-1])
         finally:
             with self._http_lock:
                 if self._http_conn is conn:
@@ -1870,7 +1881,6 @@ class StreamPlayer(QObject):
     def _start_process(self) -> None:
         if self._http_mode or self._cancelled or not self._url:
             return
-        self._reconnect_timer.stop()
         self._teardown()
         transport = self._transports[self._transport_index]
         if transport == "tcp":
@@ -1894,7 +1904,7 @@ class StreamPlayer(QObject):
         process.finished.connect(self._on_finished)
         self._process = process
         self._got_frame = False
-        self._buffer = b""
+        self._splitter.clear()
         self._stderr = ""
         self._latest_image = None
         self._flush_scheduled = False
@@ -1912,10 +1922,9 @@ class StreamPlayer(QObject):
 
     def _teardown(self) -> None:
         self._watchdog.stop()
-        self._reconnect_timer.stop()
         process = self._process
         self._process = None
-        self._buffer = b""
+        self._splitter.clear()
         if process is None:
             return
         for signal_name in ("started", "readyReadStandardOutput", "readyReadStandardError", "errorOccurred", "finished"):
@@ -1944,8 +1953,7 @@ class StreamPlayer(QObject):
     def _on_stdout(self) -> None:
         if self._process is None:
             return
-        self._buffer += bytes(self._process.readAllStandardOutput())
-        self._buffer, frames = pop_jpegs(self._buffer)
+        frames = self._splitter.feed(bytes(self._process.readAllStandardOutput()))
         if not frames:
             return
         image = QImage.fromData(frames[-1], "JPG")
@@ -2000,18 +2008,6 @@ class StreamPlayer(QObject):
         if self._got_frame:
             return
         self._retry_or_fail("No frames received from the camera stream")
-
-    def _schedule_reconnect(self, delay_ms: int | None = None) -> None:
-        if self._cancelled or not self._url:
-            return
-        self._watchdog.stop()
-        if self._reconnect_timer.isActive():
-            return
-        wait = self._HTTP_RETRY_MS if delay_ms is None else delay_ms
-        if wait <= 0:
-            self._start_process()
-            return
-        self._reconnect_timer.start(wait)
 
     def _retry_or_fail(self, message: str, *, fatal: bool = False) -> None:
         if self._cancelled:

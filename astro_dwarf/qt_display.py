@@ -52,29 +52,6 @@ def running_in_hyperv() -> bool:
     )
 
 
-def running_in_hypervisor() -> bool:
-    """True on Hyper-V and similar VMs. GPU passthrough guests still match."""
-    if running_in_hyperv():
-        return True
-    text = _dmi_text()
-    tokens = ("kvm", "qemu", "vmware", "virtualbox", "xen", "bochs", "virtual machine")
-    if any(token in text for token in tokens):
-        return True
-    try:
-        kind = Path("/sys/hypervisor/type").read_text(
-            encoding="utf-8", errors="ignore"
-        ).lower()
-    except OSError:
-        kind = ""
-    if any(token in kind for token in tokens):
-        return True
-    try:
-        cpu = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore").lower()
-    except OSError:
-        return False
-    return "hypervisor" in cpu and "kvm" in cpu
-
-
 def has_drm_render_node() -> bool:
     dri = Path("/dev/dri")
     try:

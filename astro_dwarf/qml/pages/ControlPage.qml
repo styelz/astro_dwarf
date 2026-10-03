@@ -1452,7 +1452,6 @@ Item {
                         && !root.scopeTelemetry.capture_active
                         && root.scopePending !== "stack"
                         && !controlPage.mosaicRunning
-                    readonly property bool mainIsWide: backend.previewStacking ? false : mainWide
                     readonly property bool displayWide: backend.previewStacking ? false : (pipAvailable ? mainWide : backend.previewWidePlaying)
                     readonly property bool mainPlaying: backend.previewResult || (displayWide ? backend.previewWidePlaying : backend.previewTelePlaying)
                     readonly property int stackCount: {

@@ -520,6 +520,42 @@ def test_panorama_pointing_tracks_motor_and_unwraps_az() -> None:
     _assert(abs(float(snap["panorama_alt_min"]) - 20.0) < 1e-6, snap)
 
 
+def test_repeated_framing_rect_is_saved_once() -> None:
+    previous_override = os.environ.get("ASTRO_DWARF_DATA")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["ASTRO_DWARF_DATA"] = tmp
+        try:
+            tap = _tap(device_id="dev-2")
+            rect = notify_pb2.PanoFramingRectUpdateNotify()
+            rect.norm_x_tl = 0.1
+            rect.norm_y_tl = 0.2
+            rect.norm_x_br = 0.6
+            rect.norm_y_br = 0.7
+            rect.norm_limit_x_right = 1.0
+            rect.norm_limit_y_bottom = 1.0
+            rect.rect_hor_fov = 20.0
+            rect.rect_ver_fov = 11.0
+            data = rect.SerializeToString()
+            rect_path = Path(tmp) / "panorama-cache" / "dev-2.json"
+            tap._decode(CMD_NOTIFY_PANO_FRAMING_RECT, TYPE_NOTIFICATION, data)
+            _assert(rect_path.is_file(), "first rect is saved")
+            rect_path.write_text("sentinel", encoding="utf-8")
+            changes = tap._decode(CMD_NOTIFY_PANO_FRAMING_RECT, TYPE_NOTIFICATION, data)
+            _assert(changes.get("panorama_x1") == rect.norm_x_tl, changes)
+            _assert(rect_path.read_text(encoding="utf-8") == "sentinel", "an identical rect is not rewritten")
+            rect.norm_x_br = 0.65
+            tap._decode(CMD_NOTIFY_PANO_FRAMING_RECT, TYPE_NOTIFICATION, rect.SerializeToString())
+            _assert('"panorama_x2": 0.65' in rect_path.read_text(encoding="utf-8"), "a moved rect is saved")
+            tap.clear_panorama_scan_cache()
+            tap._decode(CMD_NOTIFY_PANO_FRAMING_RECT, TYPE_NOTIFICATION, rect.SerializeToString())
+            _assert(rect_path.is_file(), "the same rect is saved again after the cache is cleared")
+        finally:
+            if previous_override is None:
+                os.environ.pop("ASTRO_DWARF_DATA", None)
+            else:
+                os.environ["ASTRO_DWARF_DATA"] = previous_override
+
+
 if __name__ == "__main__":
     test_panorama_progress_and_state()
     test_framing_rect_and_webp()

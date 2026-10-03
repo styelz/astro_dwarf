@@ -31,7 +31,6 @@ from astro_dwarf.domain import (
 from astro_dwarf.storage import SessionStore
 
 PREFIX = "perf-scale"
-NEEDLE = "quasar-needle"
 NOTE = (
     "Scale-test note with a long haystack for history search. "
     "The unique token is quasar-needle so a keystroke filter has something to match."

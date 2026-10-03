@@ -198,7 +198,8 @@ Item {
     }
 
     Timer {
-        interval: 50
+        // About 1° of arc per repaint: 50 ms up to an 18 s exposure, 250 ms from 90 s.
+        interval: Math.max(50, Math.min(250, Math.round(timer.exposureSeconds * 1000 / 360)))
         running: timer.active && timer.visible && timer.exposing
         repeat: true
         onTriggered: timer.tick()

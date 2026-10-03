@@ -73,10 +73,6 @@ Item {
             return
         layoutMenu.popup()
     }
-    function closeLayoutMenu() {
-        layoutMenu.close()
-    }
-    readonly property bool layoutMenuOpen: layoutMenu.opened
 
     Component.onCompleted: {
         if (panel.panelId !== "")

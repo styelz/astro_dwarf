@@ -6,14 +6,28 @@ import ".."
 
 HudCombo {
     id: deviceCombo
-    model: backend.devices
+    // Telemetry flushes re-emit devicesChanged. A new array resets the model,
+    // so keep the last list until an id, name, or colour changes.
+    property var deviceList: []
+    property string deviceListKey: ""
+    model: deviceCombo.deviceList
     textRole: "name"
     valueRole: "id"
     implicitWidth: Theme.px(200)
     onActivated: if (currentValue) backend.selectDevice(currentValue)
 
+    function refreshDevices() {
+        const source = backend.devices
+        const devices = source ? source.map(item => ({ id: item.id, name: item.name, color: item.color })) : []
+        const key = JSON.stringify(devices)
+        if (key === deviceCombo.deviceListKey)
+            return
+        deviceCombo.deviceListKey = key
+        deviceCombo.deviceList = devices
+    }
+
     function colorAt(index) {
-        const devices = backend.devices || []
+        const devices = deviceCombo.deviceList
         if (index < 0 || index >= deviceCombo.count)
             return Theme.muted
         const id = deviceCombo.valueAt(index)
@@ -35,11 +49,17 @@ HudCombo {
         }
     }
 
-    Component.onCompleted: sync()
+    Component.onCompleted: {
+        deviceCombo.refreshDevices()
+        deviceCombo.sync()
+    }
     Connections {
         target: backend
         function onSelectedDeviceChanged() { deviceCombo.sync() }
-        function onDevicesChanged() { deviceCombo.sync() }
+        function onDevicesChanged() {
+            deviceCombo.refreshDevices()
+            deviceCombo.sync()
+        }
     }
 
     contentItem: RowLayout {

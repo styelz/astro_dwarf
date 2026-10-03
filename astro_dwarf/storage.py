@@ -4,7 +4,7 @@ import json
 import os
 import time
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Generic, TypeVar
 
@@ -168,18 +168,6 @@ class SessionStore:
         if device_id:
             values = [s for s in values if s.device_id == device_id]
         return sorted(values, key=lambda s: s.scheduled_start)
-
-    def for_day(self, day: str, cutoff_hour: int = 0) -> list[Session]:
-        def observing_day(session: Session) -> str:
-            value = datetime.fromisoformat(session.scheduled_start)
-            if value.hour < cutoff_hour:
-                value -= timedelta(days=1)
-            return value.date().isoformat()
-
-        return sorted(
-            [s for s in self.sessions.all() if observing_day(s) == day],
-            key=lambda s: s.scheduled_start,
-        )
 
     def recover_running(self, device_id: str | None = None) -> list[Session]:
         """Park a live session the way an app restart does.

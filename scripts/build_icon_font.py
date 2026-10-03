@@ -147,10 +147,6 @@ def plus(pen):
     _rect(pen, 280, 356, 440, STROKE)
 
 
-def minus(pen):
-    _rect(pen, 250, 356, 500, STROKE)
-
-
 def close_x(pen):
     _polyline(pen, [(250, 180), (750, 620)], 80)
     _polyline(pen, [(750, 180), (250, 620)], 80)
@@ -252,22 +248,9 @@ def view_all(pen):
             _rect(pen, 240 + col * (size + gap), 170 + row * (size + gap), size, size)
 
 
-def folder(pen):
-    _rect(pen, 180, 520, 260, 90)
-    _frame(pen, 180, 180, 640, 430, 70)
-
-
 def swap(pen):
     _polyline(pen, [(250, 520), (750, 520), (620, 640)], 80)
     _polyline(pen, [(750, 280), (250, 280), (380, 160)], 80)
-
-
-def share(pen):
-    _disc(pen, 280, 400, 70, 16)
-    _disc(pen, 720, 620, 70, 16)
-    _disc(pen, 720, 180, 70, 16)
-    _polyline(pen, [(330, 430), (670, 590)], 60)
-    _polyline(pen, [(330, 370), (670, 210)], 60)
 
 
 def save(pen):

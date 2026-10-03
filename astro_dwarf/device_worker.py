@@ -22,7 +22,7 @@ import time
 import traceback
 import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -6288,77 +6288,6 @@ def astro_stack_result_image(
     }
 
 
-def _julian_date(when: datetime) -> float:
-    when = when.astimezone(timezone.utc)
-    year, month, day = when.year, when.month, when.day
-    hour = when.hour + when.minute / 60.0 + when.second / 3600.0 + when.microsecond / 3.6e9
-    if month <= 2:
-        year -= 1
-        month += 12
-    century = year // 100
-    leap = 2 - century + century // 4
-    return int(365.25 * (year + 4716)) + int(30.6001 * (month + 1)) + day + leap - 1524.5 + hour / 24.0
-
-
-def _local_sidereal_hours(longitude_deg: float, when: datetime) -> float:
-    jd = _julian_date(when)
-    centuries = (jd - 2451545.0) / 36525.0
-    gmst = (
-        280.46061837
-        + 360.98564736629 * (jd - 2451545.0)
-        + 0.000387933 * centuries * centuries
-        - centuries ** 3 / 38710000.0
-    )
-    return ((gmst + longitude_deg) % 360.0) / 15.0
-
-
-def _altaz_to_radec(
-    azimuth_deg: float,
-    altitude_deg: float,
-    latitude_deg: float,
-    longitude_deg: float,
-    when: datetime | None = None,
-) -> tuple[float, float]:
-    """Horizon az/alt (az from north, eastward) to RA hours and Dec degrees."""
-    when = when or datetime.now(timezone.utc)
-    lat = math.radians(latitude_deg)
-    az = math.radians(azimuth_deg)
-    alt = math.radians(altitude_deg)
-    sin_dec = math.sin(alt) * math.sin(lat) + math.cos(alt) * math.cos(lat) * math.cos(az)
-    dec = math.asin(max(-1.0, min(1.0, sin_dec)))
-    cos_dec = math.cos(dec)
-    if abs(cos_dec) < 1e-10 or abs(math.cos(lat)) < 1e-10:
-        ha = 0.0
-    else:
-        sin_ha = -math.sin(az) * math.cos(alt) / cos_dec
-        cos_ha = (math.sin(alt) - math.sin(dec) * math.sin(lat)) / (cos_dec * math.cos(lat))
-        ha = math.atan2(sin_ha, cos_ha)
-    ra_hours = (_local_sidereal_hours(longitude_deg, when) - math.degrees(ha) / 15.0) % 24.0
-    return ra_hours, math.degrees(dec)
-
-
-def _current_sky_pointing() -> dict[str, Any]:
-    """Read the mount's current az/alt and convert to RA/Dec."""
-    latitude, longitude = _site_coordinates()
-    if abs(latitude) < 1e-9 and abs(longitude) < 1e-9:
-        raise RuntimeError("Set your observing site before reading pointing")
-    az = _motor_position(1)
-    alt = _motor_position(2) if az is not None else None
-    if az is None or alt is None:
-        raise RuntimeError("Mount position is unavailable")
-    ra_hours, dec_degrees = _altaz_to_radec(az, alt, latitude, longitude)
-    snapshot = _tap.snapshot() if _tap is not None else {}
-    name = str(snapshot.get("tracking_target") or snapshot.get("goto_target") or "").strip()
-    return {
-        "ok": True,
-        "ra_hours": round(ra_hours, 6),
-        "dec_degrees": round(dec_degrees, 6),
-        "name": name,
-        "az": az,
-        "alt": alt,
-    }
-
-
 def _goto_accept_error(code: int) -> str | None:
     """User-facing reason a live TRACK/GOTO start was rejected, or None if accepted."""
     if code in (0, -11500):
@@ -7024,8 +6953,6 @@ def dispatch(message: dict[str, Any]) -> Any:
         return polar_position()
     if command == "stop_polar_position":
         return stop_polar_position()
-    if command == "sky_pointing":
-        return _current_sky_pointing()
     if command == "track":
         args = list(message.get("args") or [])
         return _start_tracking(str(args[0]) if args else "")
