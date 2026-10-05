@@ -1727,14 +1727,6 @@ ApplicationWindow {
             deviceMosaicEqDialog.deviceId = String(deviceId || "")
             deviceMosaicEqDialog.open()
         }
-        function onDeviceScheduleConflict(deviceId, summary) {
-            confirmDialog.kind = "replaceDeviceSchedule"
-            confirmDialog.pendingIds = [String(deviceId || "")]
-            confirmDialog.headingText = "REPLACE SCHEDULE"
-            confirmDialog.confirmLabel = "REPLACE"
-            confirmDialog.summary = String(summary || "The telescope already has a schedule at that time. Replace it with this one?")
-            confirmDialog.open()
-        }
     }
 
     LocationDialog { id: locationDialog }

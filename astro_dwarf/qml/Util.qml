@@ -471,30 +471,6 @@ QtObject {
     function isGrouped(item) {
         return !!(item && item.group_id && (item.is_grouped || item.is_group))
     }
-    function scopeScheduleLabel(state) {
-        const value = String(state || "")
-        if (value === "pending" || value === "shooting")
-            return "ON SCOPE"
-        if (value === "stale")
-            return "SCOPE STALE"
-        return ""
-    }
-    function scopeScheduleMark(item) {
-        if (!item)
-            return ""
-        if (item.group_collapsed && item.group_members && item.group_members.length) {
-            let stale = false
-            for (let i = 0; i < item.group_members.length; i++) {
-                const label = Util.scopeScheduleLabel(item.group_members[i] && item.group_members[i].device_schedule_state)
-                if (label === "ON SCOPE")
-                    return label
-                if (label)
-                    stale = true
-            }
-            return stale ? "SCOPE STALE" : ""
-        }
-        return Util.scopeScheduleLabel(item.device_schedule_state)
-    }
     function sessionTone(item) {
         if (Util.isGrouped(item))
             return Util.groupTone(item.group_id)

@@ -111,20 +111,6 @@ _PANORAMA_COMMANDS = frozenset({
     CMD_PANORAMA_UPDATE_FRAMING_RECT,
     CMD_PANORAMA_STOP_FRAMING_AND_START_GRID,
 })
-CMD_NOTIFY_SHOOTING_SCHEDULE_RESULT_AND_STATE = _protocol_id(
-    "CMD_NOTIFY_SHOOTING_SCHEDULE_RESULT_AND_STATE", 15248
-)
-CMD_NOTIFY_SHOOTING_TASK_STATE = _protocol_id("CMD_NOTIFY_SHOOTING_TASK_STATE", 15249)
-CMD_SYNC_SHOOTING_SCHEDULE = _protocol_id("CMD_SYNC_SHOOTING_SCHEDULE", 16100)
-CMD_GET_ALL_SHOOTING_SCHEDULE = _protocol_id("CMD_GET_ALL_SHOOTING_SCHEDULE", 16102)
-CMD_REPLACE_SHOOTING_SCHEDULE = _protocol_id("CMD_REPLACE_SHOOTING_SCHEDULE", 16105)
-CMD_DELETE_SHOOTING_SCHEDULE = _protocol_id("CMD_DELETE_SHOOTING_SCHEDULE", 16108)
-_SCHEDULE_COMMANDS = frozenset({
-    CMD_SYNC_SHOOTING_SCHEDULE,
-    CMD_GET_ALL_SHOOTING_SCHEDULE,
-    CMD_REPLACE_SHOOTING_SCHEDULE,
-    CMD_DELETE_SHOOTING_SCHEDULE,
-})
 CMD_NOTIFY_RECORD_TIME = 15286
 CMD_NOTIFY_TIMELAPSE_OUT_TIME = 15287
 CMD_NOTIFY_LONG_EXP_PROGRESS = 15288
@@ -694,66 +680,6 @@ def _stacking_progress_changes(
     return changes
 
 
-def _schedule_reply_body(code: int, **extra: Any) -> dict[str, Any]:
-    from .device_schedule import schedule_error_text
-
-    body = {
-        "ok": code == 0,
-        "code": code,
-        "error": "" if code == 0 else schedule_error_text(code),
-    }
-    body.update(extra)
-    return body
-
-
-def _decode_schedule_reply(cmd: int, data: bytes) -> dict[str, Any]:
-    """Turn a module-13 reply into the dict the session page waits on."""
-    try:
-        from dwarf_python_api.proto import shooting_schedule_pb2
-    except Exception:
-        return {"ok": False, "code": None, "error": "The telescope reply could not be read"}
-    try:
-        if cmd == CMD_SYNC_SHOOTING_SCHEDULE:
-            message = shooting_schedule_pb2.ResSyncShootingSchedule()
-            message.ParseFromString(data)
-            return _schedule_reply_body(
-                int(message.code),
-                can_replace=bool(message.can_replace),
-                conflict_ids=[str(item) for item in message.time_conflict_schedule_ids],
-            )
-        if cmd == CMD_GET_ALL_SHOOTING_SCHEDULE:
-            message = shooting_schedule_pb2.ResGetAllShootingSchedule()
-            message.ParseFromString(data)
-            schedules = []
-            for item in message.shooting_schedule:
-                schedules.append({
-                    "schedule_id": str(item.schedule_id or ""),
-                    "state": int(item.state),
-                    "result": int(item.result),
-                    "tasks": [
-                        {
-                            "schedule_task_id": str(task.schedule_task_id or ""),
-                            "state": int(task.state),
-                            "code": int(task.code),
-                        }
-                        for task in item.shooting_tasks
-                    ],
-                })
-            return _schedule_reply_body(int(message.code), schedules=schedules)
-        if cmd == CMD_REPLACE_SHOOTING_SCHEDULE:
-            message = shooting_schedule_pb2.ResReplaceShootingSchedule()
-            message.ParseFromString(data)
-            return _schedule_reply_body(int(message.code))
-        if cmd == CMD_DELETE_SHOOTING_SCHEDULE:
-            message = shooting_schedule_pb2.ResDeleteShootingSchedule()
-            message.ParseFromString(data)
-            code = int(message.code)
-            return _schedule_reply_body(code, deleted=code == 0)
-    except Exception:
-        return {"ok": False, "code": None, "error": "The telescope reply could not be read"}
-    return {"ok": False, "code": None, "error": "The telescope reply could not be read"}
-
-
 def link_telemetry(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     """Handshake telemetry for a live link. A completed connect is not a power-off."""
     data = dict(snapshot or {})
@@ -785,8 +711,6 @@ class TelemetryTap:
         self._status_signature: dict[str, Any] = {}
         self._astro = None
         self._responses: dict[int, tuple[int, float]] = {}
-        # cmd -> (decoded reply, monotonic). Schedule replies are richer than a code.
-        self._schedule_replies: dict[int, tuple[dict[str, Any], float]] = {}
         # cmd -> (status, frames, monotonic). status is "ready" or "failed".
         self._dark_libraries: dict[int, tuple[str, list[dict[str, Any]], float]] = {}
         # After a new session starts, leftover stacking packets / SDK cache
@@ -905,7 +829,6 @@ class TelemetryTap:
             self._pending.clear()
             self._status_signature.clear()
             self._responses.clear()
-            self._schedule_replies.clear()
             self._dark_libraries.clear()
             self._hold_stale_capture = False
             self._accept_sdk_capture_counts = True
@@ -1028,19 +951,6 @@ class TelemetryTap:
         if item is None or item[2] < since:
             return "pending", []
         return item[0], list(item[1])
-
-    def _record_schedule_reply(self, cmd: int, data: bytes) -> None:
-        payload = _decode_schedule_reply(cmd, data)
-        with self._lock:
-            self._schedule_replies[cmd] = (payload, time.monotonic())
-
-    def schedule_reply_after(self, cmd: int, since: float) -> dict[str, Any] | None:
-        """Return a schedule reply received after monotonic time ``since``."""
-        with self._lock:
-            item = self._schedule_replies.get(cmd)
-        if item is None or item[1] < since:
-            return None
-        return dict(item[0])
 
     def _queue_mode_exposure_fields(self) -> None:
         from .telemetry_view import apply_mode_exposure_fields
@@ -1499,8 +1409,6 @@ class TelemetryTap:
         """Decode one incoming packet into telemetry changes (never raises)."""
         if kind in _RESPONSE_TYPES and cmd in _DARK_LIBRARY_CMDS:
             self._record_dark_library(cmd, data)
-        elif kind in _RESPONSE_TYPES and cmd in _SCHEDULE_COMMANDS:
-            self._record_schedule_reply(cmd, data)
         elif kind in _RESPONSE_TYPES and (cmd in _TRACKED_RESPONSES or cmd in _PANORAMA_COMMANDS):
             self._record_response(cmd, data)
         try:
@@ -1515,8 +1423,6 @@ class TelemetryTap:
                 CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING,
                 CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING,
                 CMD_NOTIFY_POWER_OFF,
-                CMD_NOTIFY_SHOOTING_SCHEDULE_RESULT_AND_STATE,
-                CMD_NOTIFY_SHOOTING_TASK_STATE,
                 CMD_NOTIFY_PANORAMA_PROGRESS,
                 CMD_NOTIFY_PANORAMA_STATE,
                 CMD_NOTIFY_PANO_FRAMING_RECT,
@@ -1797,32 +1703,6 @@ class TelemetryTap:
                 except (TypeError, ValueError):
                     continue
             return changes
-        if cmd == CMD_NOTIFY_SHOOTING_SCHEDULE_RESULT_AND_STATE:
-            message = self._parse("ShootingScheduleResultAndState", data)
-            if message is None:
-                return {}
-            from .device_schedule import schedule_result_name, schedule_state_name
-
-            return {
-                "device_schedule_id": str(message.schedule_id or ""),
-                "device_schedule_state": schedule_state_name(message.state),
-                "device_schedule_result": schedule_result_name(message.result),
-            }
-        if cmd == CMD_NOTIFY_SHOOTING_TASK_STATE:
-            message = self._parse("ShootingTaskState", data)
-            if message is None:
-                return {}
-            from .device_schedule import task_state_name
-
-            try:
-                code = int(message.code)
-            except (TypeError, ValueError):
-                code = 0
-            return {
-                "device_schedule_task_id": str(message.schedule_task_id or ""),
-                "device_schedule_task_state": task_state_name(message.state),
-                "device_schedule_task_code": code,
-            }
         if cmd in (CMD_NOTIFY_STATE_CAPTURE_RAW_LIVE_STACKING, CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING):
             message = self._parse("CaptureRawState", data)
             state = OPERATION_STATES.get(int(message.state), str(message.state))

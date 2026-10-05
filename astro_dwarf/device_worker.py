@@ -29,10 +29,6 @@ from typing import Any
 from .device_telemetry import (
     CMD_ASTRO_GET_DARK_FRAME_LIST,
     CMD_ASTRO_GET_WIDE_DARK_FRAME_LIST,
-    CMD_DELETE_SHOOTING_SCHEDULE,
-    CMD_GET_ALL_SHOOTING_SCHEDULE,
-    CMD_REPLACE_SHOOTING_SCHEDULE,
-    CMD_SYNC_SHOOTING_SCHEDULE,
     CODE_STEP_MOTOR_NEED_RESET,
     DEVICE_OCCUPIED_MESSAGE,
     TelemetryTap,
@@ -7174,107 +7170,10 @@ def stop_polar_position() -> bool:
     return ok
 
 
-_MODULE_SHOOTING_SCHEDULE = 13
-_SCHEDULE_REPLY_WAIT_S = 8.0
-
-
-def _wait_schedule_reply(command: int, since: float) -> dict[str, Any]:
-    if _tap is None:
-        return {"ok": False, "error": "Telescope telemetry is unavailable"}
-    deadline = time.monotonic() + _SCHEDULE_REPLY_WAIT_S
-    while time.monotonic() < deadline:
-        reply = _tap.schedule_reply_after(command, since)
-        if reply is not None:
-            return reply
-        time.sleep(0.05)
-    return {"ok": False, "error": "The telescope did not answer the schedule"}
-
-
-def _exchange_schedule(request: Any, command: int) -> dict[str, Any]:
-    """Send one module-13 request and return the decoded reply."""
-    since = time.monotonic()
-    sent = send_without_response(
-        request,
-        command,
-        _MODULE_SHOOTING_SCHEDULE,
-        timeout=_SCHEDULE_REPLY_WAIT_S,
-    )
-    _forget_pending_command(command)
-    if not sent:
-        return {"ok": False, "error": "The schedule was not sent"}
-    return _wait_schedule_reply(command, since)
-
-
-def get_shooting_schedules() -> dict[str, Any]:
-    from dwarf_python_api.proto import shooting_schedule_pb2
-
-    return _exchange_schedule(
-        shooting_schedule_pb2.ReqGetAllShootingSchedule(),
-        CMD_GET_ALL_SHOOTING_SCHEDULE,
-    )
-
-
-def _delete_shooting_schedules(schedule_ids: list[str]) -> dict[str, Any]:
-    from dwarf_python_api.proto import shooting_schedule_pb2
-
-    wanted = [item for item in schedule_ids if item]
-    if not wanted:
-        return {"ok": True, "deleted": True}
-    listed = get_shooting_schedules()
-    if listed.get("ok"):
-        present = {
-            str(item.get("schedule_id") or "")
-            for item in listed.get("schedules") or []
-            if isinstance(item, dict)
-        }
-        wanted = [item for item in wanted if item in present]
-        if not wanted:
-            return {"ok": True, "deleted": True}
-    last: dict[str, Any] = {"ok": True, "deleted": True}
-    for schedule_id in wanted:
-        request = shooting_schedule_pb2.ReqDeleteShootingSchedule(id=schedule_id, password="")
-        last = _exchange_schedule(request, CMD_DELETE_SHOOTING_SCHEDULE)
-        if not last.get("ok"):
-            return last
-    last["deleted"] = True
-    return last
-
-
-def sync_shooting_schedule(message: dict[str, Any]) -> dict[str, Any]:
-    """Copy one deep-sky plan onto this telescope, or remove it."""
-    from dwarf_python_api.proto import shooting_schedule_pb2
-
-    from .device_schedule import encode_shooting_schedule
-
-    schedule = message.get("schedule")
-    replace_ids = [str(item) for item in (message.get("replace_ids") or []) if str(item)]
-    if not isinstance(schedule, dict) or not schedule.get("shooting_tasks"):
-        schedule_id = str(message.get("schedule_id") or "")
-        ids = list(replace_ids)
-        if schedule_id and schedule_id not in ids:
-            ids.append(schedule_id)
-        return _delete_shooting_schedules(ids)
-    try:
-        encoded = encode_shooting_schedule(schedule, str(_device.get("model") or ""))
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-    if replace_ids:
-        request = shooting_schedule_pb2.ReqReplaceShootingSchedule(shooting_schedule=encoded)
-        command = CMD_REPLACE_SHOOTING_SCHEDULE
-    else:
-        request = shooting_schedule_pb2.ReqSyncShootingSchedule(shooting_schedule=encoded)
-        command = CMD_SYNC_SHOOTING_SCHEDULE
-    return _exchange_schedule(request, command)
-
-
 def dispatch(message: dict[str, Any]) -> Any:
     command = message["command"]
     if command == "configure":
         return configure(message["device"])
-    if command == "sync_shooting_schedule":
-        return sync_shooting_schedule(message)
-    if command == "get_shooting_schedules":
-        return get_shooting_schedules()
     if command == "connect":
         claimed = message.get("claimed_ips")
         if claimed is not None:

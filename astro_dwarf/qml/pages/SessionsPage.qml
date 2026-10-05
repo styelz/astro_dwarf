@@ -322,32 +322,6 @@ Item {
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: Theme.s1
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.leftMargin: scheduledPage.rowInset
-                        Layout.rightMargin: scheduledPage.rowInset
-                        spacing: Theme.s2
-                        Text {
-                            text: "Deep-sky sessions can run on the telescope after disconnect"
-                            color: Theme.textSecondary
-                            font.pixelSize: Theme.fontSm
-                            font.letterSpacing: 0.4
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: 0
-                        }
-                        HudButton {
-                            objectName: "sync-scope"
-                            text: "SYNC SCOPE"
-                            tooltip: "Copy eligible deep-sky sessions onto the telescope"
-                            accessibleDescription: "Copy eligible deep-sky sessions onto the telescope"
-                            busy: backend.uiBusy === "device-schedule"
-                            busyText: "SYNCING…"
-                            busyMs: 0
-                            enabled: backend.uiBusy === "" && !!(backend.selectedDevice && backend.selectedDevice.connected)
-                            onClicked: backend.syncDeviceSchedule(backend.selectedDeviceId)
-                        }
-                    }
                     ListFilterBar {
                         id: scheduledFilter
                         Layout.fillWidth: true
@@ -675,8 +649,7 @@ Item {
                                                         else
                                                             base = pos || scheduledRow.modelData.subtitle || summary
                                                     }
-                                                    const mark = Util.scopeScheduleMark(scheduledRow.modelData)
-                                                    return mark ? (base ? base + "  ·  " + mark : mark) : base
+                                                    return base
                                                 }
                                                 color: Theme.textSecondary
                                                 font.pixelSize: Theme.fontPx(11)

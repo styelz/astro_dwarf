@@ -213,17 +213,6 @@ from .services import (
     store_local_iso,
     zoneinfo_from_name,
 )
-from .device_schedule import (
-    CODE_TIME_CONFLICT,
-    carry_device_schedule,
-    device_schedule_id_for,
-    host_should_start,
-    next_host_session,
-    plan_device_schedule,
-    updates_for_device_copy,
-    updates_for_schedule_notice,
-    updates_for_task_notice,
-)
 from .sky_atlas import (
     SKY_MAP_FOV_DEG,
     atlas_page_url,
@@ -2079,7 +2068,6 @@ class AppBackend(QObject):
     selectedDeviceChanged = Signal()
     statusChanged = Signal()
     schedulerEnabledChanged = Signal()
-    deviceScheduleConflict = Signal(str, str)
     clockChanged = Signal()
     sessionProgressChanged = Signal()
     toast = Signal(str, str, str, "QVariantMap")
@@ -2148,8 +2136,6 @@ class AppBackend(QObject):
         self._dark_prompt_device = ""
         self._stop_requested: set[str] = set()
         self._scheduler_enabled = False
-        self._pending_scope_sync: dict[str, dict[str, Any]] = {}
-        self._scope_refresh_ids: set[str] = set()
         self._clock_text = datetime.now(self._zone_for()).strftime("%H:%M:%S")
         self._connecting_ids: set[str] = set()
         self._cancel_connect_ids: set[str] = set()
@@ -2768,8 +2754,6 @@ class AppBackend(QObject):
             data.update(aliases)
         self._device_telemetry[device_id] = current
         self._telemetry_updated[device_id] = time.time()
-        if "device_schedule_id" in data or "device_schedule_task_id" in data:
-            self._apply_scope_schedule_notice(device_id, data)
         if device_id in self._center_tap_inflight:
             self._consider_center_tap_progress(device_id, data)
         if "lights_on" in data:
@@ -6972,338 +6956,6 @@ class AppBackend(QObject):
         self.add_log("warning", "Scheduler disarmed: no telescope is connected")
         self._toast("Scheduler disarmed", "warning", "Connect a telescope and re-arm it to resume the queue")
 
-    def _planned_for_device(self, device_id: str) -> list[Session]:
-        return [
-            self._with_duration(item)
-            for item in self.store.sessions.all()
-            if item.device_id == device_id and item.status == SessionStatus.PLANNED
-        ]
-
-    def _queue_scope_refresh(self, device_id: str) -> None:
-        owner = str(device_id or "").strip()
-        if not owner or owner in self._scope_refresh_ids:
-            return
-        self._scope_refresh_ids.add(owner)
-        QTimer.singleShot(0, self._flush_scope_refresh)
-
-    def _flush_scope_refresh(self) -> None:
-        device_ids = list(self._scope_refresh_ids)
-        self._scope_refresh_ids.clear()
-        for device_id in device_ids:
-            self._push_retained_schedule(device_id)
-
-    def _retained_schedule_sessions(self, device_id: str) -> list[Session]:
-        schedule_id = device_schedule_id_for(device_id)
-        return [
-            item
-            for item in self._planned_for_device(device_id)
-            if item.device_schedule_id == schedule_id
-        ]
-
-    def _push_retained_schedule(self, device_id: str) -> None:
-        sessions = self._retained_schedule_sessions(device_id)
-        worker = self._workers.get(device_id)
-        if worker is None or not worker.connected:
-            if sessions:
-                self._toast("Connect the telescope to update its schedule", "warning")
-            return
-        self._send_scope_schedule(device_id, sessions, replace_ids=[], quiet=True)
-
-    @Slot(str)
-    def syncDeviceSchedule(self, device_id: str) -> None:
-        owner = str(device_id or "").strip() or self._selected_device_id
-        device = self._device_by_id(owner)
-        if device is None:
-            return
-        worker = self._workers.get(owner)
-        if worker is None or not worker.connected:
-            self._toast("Connect the telescope before copying a schedule", "warning")
-            return
-        sessions = self._planned_for_device(owner)
-        schedule, blocked = plan_device_schedule(
-            device.id,
-            device.name,
-            device.latitude,
-            device.longitude,
-            sessions,
-        )
-        if schedule is None:
-            reason = blocked[0][1] if blocked else "No planned deep-sky sessions to copy"
-            self._toast("Nothing to copy to the telescope", "warning", reason)
-            return
-        self._send_scope_schedule(owner, [], replace_ids=[], schedule=schedule, blocked=blocked)
-
-    @Slot(str)
-    def replaceDeviceSchedule(self, device_id: str) -> None:
-        owner = str(device_id or "").strip()
-        pending = self._pending_scope_sync.get(owner)
-        if not pending:
-            return
-        self._send_scope_schedule(
-            owner,
-            [],
-            replace_ids=list(pending.get("conflict_ids") or []),
-            schedule=pending.get("schedule"),
-            blocked=list(pending.get("blocked") or []),
-            session_ids=list(pending.get("session_ids") or []),
-        )
-
-    def _send_scope_schedule(
-        self,
-        device_id: str,
-        sessions: list[Session],
-        replace_ids: list[str],
-        schedule: dict[str, Any] | None = None,
-        blocked: list[tuple[Session, str]] | None = None,
-        session_ids: list[str] | None = None,
-        quiet: bool = False,
-    ) -> None:
-        device = self._device_by_id(device_id)
-        worker = self._workers.get(device_id)
-        if device is None or worker is None or not worker.connected:
-            self._toast("Connect the telescope before copying a schedule", "warning")
-            return
-        if schedule is None:
-            schedule, blocked_now = plan_device_schedule(
-                device.id,
-                device.name,
-                device.latitude,
-                device.longitude,
-                sessions,
-            )
-            blocked = blocked_now
-        if not schedule or not schedule.get("shooting_tasks"):
-            worker.send(
-                "sync_shooting_schedule",
-                {
-                    "schedule": None,
-                    "replace_ids": replace_ids,
-                    "schedule_id": device_schedule_id_for(device_id),
-                },
-                lambda ok, result, did=device_id: self._scope_sync_done(did, ok, result, []),
-            )
-            return
-        included = [str(item.get("schedule_task_id") or "") for item in schedule.get("shooting_tasks") or []]
-        if session_ids is not None:
-            included = [item for item in session_ids if item]
-        blocked_pairs: list[tuple[str, str]] = []
-        for entry in blocked or []:
-            if not isinstance(entry, tuple) or len(entry) != 2:
-                continue
-            owner, reason = entry
-            blocked_pairs.append((str(getattr(owner, "id", owner)), str(reason)))
-        self._pending_scope_sync[device_id] = {
-            "schedule": schedule,
-            "conflict_ids": list(replace_ids),
-            "session_ids": included,
-            "blocked": blocked_pairs,
-            "quiet": quiet,
-        }
-        if not quiet:
-            self._set_ui_busy("device-schedule")
-        worker.send(
-            "sync_shooting_schedule",
-            {"schedule": schedule, "replace_ids": replace_ids},
-            lambda ok, result, did=device_id, ids=included: self._scope_sync_done(did, ok, result, ids),
-        )
-
-    def _scope_sync_done(self, device_id: str, ok: bool, result: Any, session_ids: list[str]) -> None:
-        pending = self._pending_scope_sync.get(device_id) or {}
-        if not pending.get("quiet"):
-            self._set_ui_busy("")
-        payload = result if isinstance(result, dict) else {}
-        if not ok or not payload.get("ok", ok):
-            code = payload.get("code")
-            conflict_ids = [str(item) for item in payload.get("conflict_ids") or [] if str(item)]
-            our_id = device_schedule_id_for(device_id)
-            foreign = [item for item in conflict_ids if item != our_id]
-            if code == CODE_TIME_CONFLICT and payload.get("can_replace") and foreign and pending:
-                pending["conflict_ids"] = foreign
-                self._pending_scope_sync[device_id] = pending
-                self.deviceScheduleConflict.emit(
-                    device_id,
-                    "The telescope already has a schedule at that time. Replace it with this one?",
-                )
-                return
-            message = str(payload.get("error") or result or "The telescope did not accept the schedule")
-            self._toast("Schedule was not copied", "error", message)
-            self._pending_scope_sync.pop(device_id, None)
-            return
-        blocked = list(pending.get("blocked") or [])
-        quiet = bool(pending.get("quiet"))
-        self._pending_scope_sync.pop(device_id, None)
-        if payload.get("deleted") and not session_ids:
-            self._clear_scope_marks(device_id)
-            self._toast("Removed the schedule from the telescope", "success")
-            return
-        self._mark_scope_sessions(device_id, session_ids)
-        count = len(session_ids)
-        extra = ""
-        if blocked and isinstance(blocked[0], (list, tuple)) and len(blocked[0]) > 1:
-            extra = str(blocked[0][1])
-            if len(blocked) > 1:
-                extra = f"{len(blocked)} sessions stay on this computer. {extra}"
-        title = "Updated the telescope schedule" if quiet else f"Copied {count} session{'s' if count != 1 else ''} to the telescope"
-        self._toast(title, "success", extra)
-
-    def _mark_scope_sessions(self, device_id: str, session_ids: list[str]) -> None:
-        schedule_id = device_schedule_id_for(device_id)
-        included = set(session_ids)
-        changed = False
-        for session in self.store.sessions.all():
-            if session.device_id != device_id or session.status != SessionStatus.PLANNED:
-                continue
-            if session.id in included:
-                if session.device_schedule_id == schedule_id and session.device_schedule_state == "pending":
-                    continue
-                self.store.sessions.save(replace(
-                    session,
-                    device_schedule_id=schedule_id,
-                    device_schedule_state="pending",
-                    current_step="On the telescope" if session.current_step in {"", "Waiting"} else session.current_step,
-                ))
-                changed = True
-            elif session.device_schedule_id == schedule_id:
-                self.store.sessions.save(replace(session, device_schedule_id="", device_schedule_state=""))
-                changed = True
-        if changed:
-            self._emit_sessions_changed()
-
-    def _clear_scope_marks(self, device_id: str) -> None:
-        schedule_id = device_schedule_id_for(device_id)
-        changed = False
-        for session in list(self.store.sessions.all()):
-            if session.device_id == device_id and session.device_schedule_id == schedule_id and session.status == SessionStatus.PLANNED:
-                self.store.sessions.save(replace(session, device_schedule_id="", device_schedule_state=""))
-                changed = True
-        if changed:
-            self._emit_sessions_changed()
-
-    def _read_device_schedule(self, device_id: str) -> None:
-        worker = self._workers.get(device_id)
-        if worker is None or not worker.connected:
-            return
-        worker.send(
-            "get_shooting_schedules",
-            {},
-            lambda ok, result, did=device_id: self._device_schedule_read(did, ok, result),
-        )
-
-    def _device_schedule_read(self, device_id: str, ok: bool, result: Any) -> None:
-        payload = result if isinstance(result, dict) else {}
-        if not ok or not payload.get("ok"):
-            self.add_log("info", "Telescope schedule was not read", device_id)
-            return
-        schedules = payload.get("schedules") if isinstance(payload.get("schedules"), list) else []
-        sessions = [
-            item
-            for item in self.store.sessions.all()
-            if item.device_id == device_id and item.status == SessionStatus.PLANNED
-        ]
-        updates = updates_for_device_copy(sessions, schedules, device_schedule_id_for(device_id))
-        self._apply_scope_updates(device_id, updates)
-
-    def _apply_scope_schedule_notice(self, device_id: str, data: dict[str, Any]) -> None:
-        sessions = [item for item in self.store.sessions.all() if item.device_id == device_id]
-        updates: list[dict[str, Any]] = []
-        task_id = str(data.get("device_schedule_task_id") or "")
-        if task_id:
-            try:
-                code = int(data.get("device_schedule_task_code") or 0)
-            except (TypeError, ValueError):
-                code = 0
-            updates.extend(updates_for_task_notice(
-                sessions,
-                task_id=task_id,
-                task_state=str(data.get("device_schedule_task_state") or ""),
-                code=code or None,
-            ))
-        schedule_id = str(data.get("device_schedule_id") or "")
-        if schedule_id and "device_schedule_state" in data:
-            updates.extend(updates_for_schedule_notice(
-                sessions,
-                schedule_id=schedule_id,
-                state=str(data.get("device_schedule_state") or ""),
-                result=str(data.get("device_schedule_result") or ""),
-            ))
-        self._apply_scope_updates(device_id, updates)
-
-    def _apply_scope_updates(self, device_id: str, updates: list[dict[str, Any]]) -> None:
-        if not updates:
-            return
-        changed = False
-        recorded = False
-        for update in updates:
-            session = self.store.sessions.get(str(update.get("id") or ""))
-            if session is None or session.device_id != device_id:
-                continue
-            status_name = update.get("status")
-            state = str(update.get("device_schedule_state") or "")
-            schedule_id = str(update.get("device_schedule_id") or "")
-            step = str(update.get("current_step") or session.current_step)
-            outcome = str(update.get("outcome") or session.outcome)
-            if status_name:
-                try:
-                    status = SessionStatus(str(status_name))
-                except ValueError:
-                    continue
-                if session.status != SessionStatus.PLANNED:
-                    continue
-                ended = datetime.now(timezone.utc).isoformat()
-                started = session.actual_started_at or session.scheduled_start or ended
-                final = self.store.transition(
-                    session.id,
-                    status,
-                    device_schedule_id=schedule_id,
-                    device_schedule_state=state,
-                    current_step=step,
-                    outcome=outcome,
-                    actual_started_at=started,
-                    actual_ended_at=ended,
-                )
-                self._record_scope_history(final)
-                changed = True
-                recorded = True
-                continue
-            if (
-                session.device_schedule_id == schedule_id
-                and session.device_schedule_state == state
-                and session.current_step == step
-            ):
-                continue
-            self.store.sessions.save(replace(
-                session,
-                device_schedule_id=schedule_id,
-                device_schedule_state=state,
-                current_step=step,
-            ))
-            changed = True
-        if changed:
-            self._emit_sessions_changed()
-        if recorded:
-            self._emit_history_changed()
-
-    def _record_scope_history(self, session: Session) -> None:
-        if any(record.session_id == session.id for record in self.store.history.all()):
-            return
-        started = session.actual_started_at or session.scheduled_start
-        ended = session.actual_ended_at or datetime.now(timezone.utc).isoformat()
-        try:
-            duration = max(
-                0.0,
-                (datetime.fromisoformat(ended) - datetime.fromisoformat(started)).total_seconds(),
-            )
-        except (TypeError, ValueError):
-            duration = 0.0
-        device = self._device_by_id(session.device_id)
-        record = history_record_for_run(
-            session,
-            actual_duration_seconds=duration,
-            captured_frame_count=0,
-            hardware=device.hardware if device is not None else None,
-        )
-        self.store.history.save(replace(record, summary=session.outcome or record.summary))
-
     @Property("QVariantList", notify=sessionsChanged)
     def upcomingSessions(self) -> list[dict[str, Any]]:
         self._ensure_sessions_view()
@@ -9406,7 +9058,6 @@ class AppBackend(QObject):
                 device_id, delay_ms, keep_auto=self._saved_auto_parameters(device_id)
             )
             self._schedule_control_restore(device_id, delay_ms + 400)
-            self._read_device_schedule(device_id)
         else:
             self._toast("Connection failed", "error", fail_text)
             self._disarm_scheduler_if_offline()
@@ -14259,15 +13910,9 @@ class AppBackend(QObject):
             self._toast(f"Could not save template: {exc}", "error")
 
     def _save_session(self, session: Session, *, notify: bool = True) -> Session:
-        previous = self.store.sessions.get(session.id)
-        session, rewrite = carry_device_schedule(previous, session)
         device = self._device_by_id(session.device_id)
         session = replace(session, planned_duration_seconds=DurationEngine.calculate(session, device.hardware))
         self.store.sessions.save(session)
-        if rewrite:
-            self._queue_scope_refresh(session.device_id)
-            if previous is not None and previous.device_id != session.device_id:
-                self._queue_scope_refresh(previous.device_id)
         if notify:
             self._emit_sessions_changed()
         return session
@@ -14281,7 +13926,6 @@ class AppBackend(QObject):
     def deleteSessions(self, session_ids: list) -> None:
         deleted = 0
         skipped_running = 0
-        refresh_devices: set[str] = set()
         for session_id in self._normalize_ids(session_ids):
             session = self.store.sessions.get(session_id)
             if not session:
@@ -14289,12 +13933,8 @@ class AppBackend(QObject):
             if session.status == SessionStatus.RUNNING:
                 skipped_running += 1
                 continue
-            if session.device_schedule_id:
-                refresh_devices.add(session.device_id)
             self.store.sessions.delete(session_id)
             deleted += 1
-        for device_id in refresh_devices:
-            self._queue_scope_refresh(device_id)
         if deleted:
             self._emit_sessions_changed()
         if skipped_running and not deleted:
@@ -15474,8 +15114,6 @@ class AppBackend(QObject):
         if not upcoming:
             return None
         candidate = upcoming[0]
-        if not host_should_start(candidate):
-            return None
         try:
             if parse_in_zone(candidate.scheduled_start, now.tzinfo) <= now:
                 return None
@@ -15527,7 +15165,7 @@ class AppBackend(QObject):
             datetime.now(self._zone_for(device)),
             self._cutoff_hour(),
         )
-        if nxt is None or not host_should_start(nxt):
+        if nxt is None:
             return False
         self.add_log("notice", f"Mosaic continues · {nxt.name}", device_id)
         self._start_session(worker, nxt)
@@ -15551,11 +15189,9 @@ class AppBackend(QObject):
             live = self._live_mosaic.get(device.id)
             tz = self._zone_for(device)
             now = datetime.now(tz)
-            entries = [
-                (candidate, parse_in_zone(candidate.scheduled_start, tz) <= now)
-                for candidate in self.store.upcoming(device.id)
-            ]
-            session, due = next_host_session(entries)
+            upcoming = self.store.upcoming(device.id)
+            due = bool(upcoming) and parse_in_zone(upcoming[0].scheduled_start, tz) <= now
+            session = upcoming[0] if due else None
             firmware_capturing = self._telemetry_capturing(device.id)
             mosaic_capturing = firmware_capturing
             if firmware_capturing and live:
@@ -15723,13 +15359,6 @@ class AppBackend(QObject):
             self._recovered_sessions.pop(session_id, None)
 
     def _start_session(self, worker: TelescopeProcess, session: Session, prompt_darks: bool = False) -> None:
-        if session.device_schedule_id and session.device_schedule_state in {"pending", "shooting", "stale"}:
-            self._toast(
-                "This session is on the telescope",
-                "warning",
-                "It will run there. Delete it here to take it off the telescope.",
-            )
-            return
         leftover = self._live_mosaic.get(session.device_id)
         if leftover and leftover.get("phase") and not leftover.get("worker_running"):
             self._discard_live_mosaic(session.device_id, notify=False)

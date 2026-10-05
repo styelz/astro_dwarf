@@ -50,8 +50,7 @@ Dialog {
                 { gesture: "DRAG SESSION", detail: "Moves it to another night or a new start time." },
                 { gesture: "EMPTY DAY", detail: "Right-click to add a session." },
                 { gesture: "DRAG PANEL", detail: "Rearranges Control. Right-click a panel to reset the layout." },
-                { gesture: "SCHEDULER", detail: "Title-bar switch. On, planned sessions run by themselves." },
-                { gesture: "SYNC SCOPE", detail: "Copies planned telephoto deep-sky sessions onto the telescope so they can run after this app disconnects. Solar targets, the wide camera, 2K binning, polar alignment, infinity focus, a wait, and custom mosaics stay here." }
+                { gesture: "SCHEDULER", detail: "Title-bar switch. On, planned sessions run by themselves." }
             ]
         }
     ]
