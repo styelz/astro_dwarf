@@ -1,10 +1,10 @@
 <u>Work In Progress Release</u>
 
-Still unable to test stacking due to cloudy skies.
+Short mosaic testing session, applied fixes for issues found.
 
 If you find any bugs or have any suggestions for the application, please create an issue here:
 [https://github.com/styelz/astro_dwarf/issues/new/choose](https://github.com/styelz/astro_dwarf/issues/new/choose)
 
-- Feat: Drawing a box on the wide view allows for object tracking.
-- Feat: Photo, Video, Burst and Timelapse sessions can be created.
-- Todo: test and fix any bugs in Device and Custom mosaic stacking.
+- Fix: Custom mosaic fixes, mosaic stitching, flow and Media storage updates.
+- Fix: Device mosaic requires EQ Calibration to be performed before stacking.
+- UX: removed device scheduel sync as it is not working correctly with the API.

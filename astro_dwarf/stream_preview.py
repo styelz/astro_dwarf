@@ -13,7 +13,20 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from PySide6.QtCore import Property, QBuffer, QIODevice, QObject, QProcess, QRectF, QSize, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import (
+    Property,
+    QBuffer,
+    QIODevice,
+    QLineF,
+    QObject,
+    QProcess,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPen, QWindow
 from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
 
@@ -688,6 +701,113 @@ def clear_mosaic_pane_cache(device_id: str, group: str = "", *, root: Path | Non
             shutil.rmtree(target, ignore_errors=True)
 
 
+def _pane_contains_point(rect: tuple[float, float, float, float], x: float, y: float) -> bool:
+    left, top, width, height = rect
+    if width <= 0 or height <= 0:
+        return False
+    # Float noise only. A real gap between contact-sheet cells stays outside.
+    eps = 1e-3
+    return (left - eps) <= x <= (left + width + eps) and (top - eps) <= y <= (top + height + eps)
+
+
+def _pane_edge_key(x1: float, y1: float, x2: float, y2: float) -> tuple:
+    start = (round(x1, 3), round(y1, 3))
+    end = (round(x2, 3), round(y2, 3))
+    return (start, end) if start <= end else (end, start)
+
+
+def _strictly_inside_bounds(
+    bounds: tuple[float, float, float, float],
+    x: float,
+    y: float,
+) -> bool:
+    left, top, right, bottom = bounds
+    eps = 1e-3
+    return (left + eps) < x < (right - eps) and (top + eps) < y < (bottom - eps)
+
+
+def mosaic_shared_pane_edges(
+    rects: list[tuple[float, float, float, float]],
+) -> list[tuple[float, float, float, float]]:
+    """Interior pane edges that also lie on or inside another pane.
+
+    Each edge is ``x1, y1, x2, y2``. The mosaic perimeter stays out of this
+    list so the frame can stay solid. Two tiles that share one seam return
+    that seam once.
+    """
+    usable = [rect for rect in rects if rect[2] > 0 and rect[3] > 0]
+    if len(usable) < 2:
+        return []
+    left = min(rect[0] for rect in usable)
+    top = min(rect[1] for rect in usable)
+    right = max(rect[0] + rect[2] for rect in usable)
+    bottom = max(rect[1] + rect[3] for rect in usable)
+    bounds = (left, top, right, bottom)
+    found: dict[tuple, tuple[float, float, float, float]] = {}
+    for index, rect in enumerate(rects):
+        pane_left, pane_top, width, height = rect
+        if width <= 0 or height <= 0:
+            continue
+        pane_right = pane_left + width
+        pane_bottom = pane_top + height
+        for x1, y1, x2, y2 in (
+            (pane_left, pane_top, pane_right, pane_top),
+            (pane_right, pane_top, pane_right, pane_bottom),
+            (pane_right, pane_bottom, pane_left, pane_bottom),
+            (pane_left, pane_bottom, pane_left, pane_top),
+        ):
+            mid_x = (x1 + x2) / 2.0
+            mid_y = (y1 + y2) / 2.0
+            if not _strictly_inside_bounds(bounds, mid_x, mid_y):
+                continue
+            shared = any(
+                other_index != index and _pane_contains_point(other, mid_x, mid_y)
+                for other_index, other in enumerate(rects)
+            )
+            if not shared:
+                continue
+            key = _pane_edge_key(x1, y1, x2, y2)
+            found.setdefault(key, (x1, y1, x2, y2))
+    return _merge_colinear_edges(list(found.values()))
+
+
+def _merge_spans(spans: list[tuple[float, float, float]]) -> list[tuple[float, float, float]]:
+    ordered = sorted(spans)
+    start, end, coord = ordered[0]
+    merged: list[tuple[float, float, float]] = []
+    for next_start, next_end, next_coord in ordered[1:]:
+        if next_start <= end + 1e-3:
+            end = max(end, next_end)
+            continue
+        merged.append((start, end, coord))
+        start, end, coord = next_start, next_end, next_coord
+    merged.append((start, end, coord))
+    return merged
+
+
+def _merge_colinear_edges(
+    edges: list[tuple[float, float, float, float]],
+) -> list[tuple[float, float, float, float]]:
+    """Join overlapping pieces of one seam so the dots stay in one rhythm."""
+    vertical: dict[float, list[tuple[float, float, float]]] = {}
+    horizontal: dict[float, list[tuple[float, float, float]]] = {}
+    for x1, y1, x2, y2 in edges:
+        if abs(x1 - x2) <= 1e-3:
+            x = (x1 + x2) / 2.0
+            vertical.setdefault(round(x, 3), []).append((min(y1, y2), max(y1, y2), x))
+        elif abs(y1 - y2) <= 1e-3:
+            y = (y1 + y2) / 2.0
+            horizontal.setdefault(round(y, 3), []).append((min(x1, x2), max(x1, x2), y))
+    merged: list[tuple[float, float, float, float]] = []
+    for spans in vertical.values():
+        for y1, y2, x in _merge_spans(spans):
+            merged.append((x, y1, x, y2))
+    for spans in horizontal.values():
+        for x1, x2, y in _merge_spans(spans):
+            merged.append((x1, y, x2, y))
+    return merged
+
+
 def mosaic_live_overlay_ready(image: QImage | None, stale_key: int) -> bool:
     """True when this live frame belongs to the current pane, not the previous one.
 
@@ -1085,6 +1205,29 @@ class MosaicLiveItem(QQuickPaintedItem):
         painter.drawImage(fitted, image)
         painter.restore()
 
+    def _stroke_shared_pane_edges(
+        self,
+        painter: QPainter,
+        rects: list[tuple[float, float, float, float]],
+    ) -> None:
+        """Dotted seams where one pane edge also belongs to another pane."""
+        edges = mosaic_shared_pane_edges(rects)
+        if not edges:
+            return
+        # Same round dots as the sky-chart seams: 1px mark, 6.5px gap, width 2.2.
+        # Qt dash lengths are multiples of the pen width.
+        pen = QPen(self._accent)
+        pen.setWidthF(2.2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setDashPattern([1.0 / 2.2, 6.5 / 2.2])
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for x1, y1, x2, y2 in edges:
+            painter.drawLine(QLineF(x1, y1, x2, y2))
+        painter.restore()
+
     def _paint_composed(
         self,
         painter: QPainter,
@@ -1107,16 +1250,15 @@ class MosaicLiveItem(QQuickPaintedItem):
             else mosaic_camera_up_is_south(self._south_up, self._position_angle)
         )
         count = columns * rows
-        highlight = self._live_pane if self._live_pane >= 1 else (
-            self._held_pane if self._held_pane >= 1 else current
-        )
         order = [index for index in range(1, count + 1) if index != self._live_pane]
         if self._live_pane >= 1:
             order.append(self._live_pane)
+        cells: list[tuple[float, float, float, float]] = []
         for index in order:
             cell = self._composed_cell(canvas, columns, rows, index)
             if cell is None:
                 continue
+            cells.append((cell.x(), cell.y(), cell.width(), cell.height()))
             image = images.get(index) or QImage()
             cover = False
             if (
@@ -1140,11 +1282,7 @@ class MosaicLiveItem(QQuickPaintedItem):
             else:
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, not cover)
                 self._draw_pane_image(painter, image, cell, cover=cover)
-            border = QPen(self._accent)
-            border.setWidth(2 if index == highlight else 1)
-            painter.setPen(border)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(cell.adjusted(0.5, 0.5, -0.5, -0.5))
+        self._stroke_shared_pane_edges(painter, cells)
         frame = QPen(self._accent)
         frame.setWidth(2)
         painter.setPen(frame)

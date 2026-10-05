@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
 
 from astro_dwarf.telemetry_view import (
     AlertEngine,
+    device_mosaic_needs_eq,
     eq_move_instruction,
     eq_pose_steps,
     eq_within_limit,
@@ -77,6 +78,15 @@ def test_large_residual_warns_instead_of_complete() -> None:
     _assert("down 51.50°" in alerts[0]["detail"], alerts)
 
 
+def test_device_mosaic_needs_eq_until_body_status_is_eq() -> None:
+    _assert(device_mosaic_needs_eq("") is True, "a missing body status is still alt-az")
+    _assert(device_mosaic_needs_eq(None) is True, "no mount mode is still alt-az")
+    _assert(device_mosaic_needs_eq("AZ") is True, "alt-az")
+    _assert(device_mosaic_needs_eq("2") is True, "a raw status is not EQ")
+    _assert(device_mosaic_needs_eq("EQ") is False, "EQ")
+    _assert(device_mosaic_needs_eq(" eq ") is False, "EQ")
+
+
 def test_small_residual_is_aligned() -> None:
     alerts = AlertEngine().evaluate(
         {"eq_state": "running", "eq_azi_err": 8.0, "eq_alt_err": 4.0},
@@ -94,6 +104,7 @@ def main() -> None:
     test_positive_azimuth_is_clockwise_and_positive_altitude_is_up()
     test_pose_follows_the_hemisphere()
     test_large_residual_warns_instead_of_complete()
+    test_device_mosaic_needs_eq_until_body_status_is_eq()
     test_small_residual_is_aligned()
     print("test_eq_setup: ok")
 

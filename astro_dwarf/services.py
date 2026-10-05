@@ -22,6 +22,7 @@ from .domain import (
     Mosaic,
     Session,
     SessionAction,
+    album_is_astro_stack_product,
     clamp_firmware_mosaic_scale,
     device_mosaic_from_scales,
     firmware_mosaic_overlap,
@@ -3877,6 +3878,430 @@ def mosaic_group_title(name: str, group_id: str = "") -> str:
     return (group_id or "Mosaic").replace("_", " ").replace("-", " ").strip()
 
 
+MOSAIC_MEDIA_PREFIX = "mosaic:"
+
+
+def mosaic_media_id(group_id: str) -> str:
+    return f"{MOSAIC_MEDIA_PREFIX}{group_id}"
+
+
+def mosaic_media_group_id(item_id: str) -> str:
+    text = str(item_id or "")
+    if text.startswith(MOSAIC_MEDIA_PREFIX) and not text.startswith("mosaic-stitch:"):
+        return text[len(MOSAIC_MEDIA_PREFIX):]
+    return ""
+
+
+def mosaic_store_token(group_id: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9._-]+", "-", str(group_id or "").strip()).strip("-._")
+    return text[:80] or "mosaic"
+
+
+def mosaic_album_stitch_name(title: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*]+', " ", str(title or "Mosaic"))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()[:60] or "Mosaic"
+    return f"{cleaned} mosaic.jpg"
+
+
+def _custom_mosaic_siblings(session: Session, sessions: list[Session]) -> list[Session]:
+    group = str(session.mosaic.group_id or "")
+    if not group or not session.mosaic.imported_plan:
+        return []
+    siblings = [
+        item
+        for item in sessions
+        if item.device_id == session.device_id and str(item.mosaic.group_id or "") == group
+    ]
+    if all(item.id != session.id for item in siblings):
+        siblings.append(session)
+    if len(siblings) < 2:
+        return []
+    by_id = {item.id: item for item in siblings}
+    by_id[session.id] = session
+    return list(by_id.values())
+
+
+def custom_mosaic_completed(session: Session, sessions: list[Session]) -> bool:
+    """True when every pane of this imported mosaic has finished."""
+    if session.status != SessionStatus.DONE:
+        return False
+    siblings = _custom_mosaic_siblings(session, sessions)
+    if not siblings:
+        return False
+    return all(item.status == SessionStatus.DONE for item in siblings)
+
+
+def custom_mosaic_panes_remain(session: Session, sessions: list[Session]) -> bool:
+    """True when another pane of this custom mosaic has not finished yet.
+
+    Each pane is its own session, so the pane that just stacked looks like a
+    finished single capture. Later planned panes still belong to the mosaic.
+    """
+    siblings = _custom_mosaic_siblings(session, sessions)
+    if not siblings:
+        return False
+    pending = {SessionStatus.PLANNED, SessionStatus.RUNNING}
+    return any(item.status in pending and item.id != session.id for item in siblings)
+
+
+def mosaic_pane_folder_name(
+    *,
+    session_name: str = "",
+    target_name: str = "",
+    group_id: str = "",
+    row: int = 0,
+    column: int = 0,
+    grid_columns: int = 0,
+) -> str:
+    """Telescope folder title for one custom-mosaic pane."""
+    if is_mosaic_pane_name(session_name):
+        return str(session_name).strip()
+    if is_mosaic_pane_name(target_name):
+        return str(target_name).strip()
+    title = mosaic_group_title(session_name or target_name, group_id)
+    try:
+        pane_row = int(row or 0)
+        pane_column = int(column or 0)
+        columns = int(grid_columns or 0)
+    except (TypeError, ValueError):
+        return ""
+    if pane_row < 1 or pane_column < 1 or columns < 1 or not title:
+        return ""
+    index = (pane_row - 1) * columns + pane_column
+    return f"{title} pane {index}"
+
+
+def _media_label(item: dict[str, Any]) -> str:
+    return str(item.get("target") or item.get("file_name") or "").strip()
+
+
+def _media_night(item: dict[str, Any]) -> str:
+    night = str(item.get("night") or "").strip()
+    if night:
+        return night[:10]
+    try:
+        stamp = int(item.get("modification_time") or 0)
+    except (TypeError, ValueError):
+        return ""
+    if stamp <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(stamp).date().isoformat()
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
+def _night_matches(folder_night: str, membership_night: str) -> bool:
+    folder = str(folder_night or "")[:10]
+    member = str(membership_night or "")[:10]
+    if not folder or not member:
+        return False
+    if folder == member:
+        return True
+    try:
+        folder_date = datetime.fromisoformat(folder).date()
+        member_date = datetime.fromisoformat(member).date()
+    except ValueError:
+        return False
+    return folder_date == member_date + timedelta(days=1)
+
+
+def _pick_mosaic_membership(matches: list[dict[str, Any]], night: str) -> dict[str, Any] | None:
+    if not matches:
+        return None
+    ids = {str(item.get("group_id") or "") for item in matches if item.get("group_id")}
+    if len(ids) == 1:
+        return matches[0]
+    if not night:
+        return None
+    same = [item for item in matches if _night_matches(night, str(item.get("night") or ""))]
+    same_ids = {str(item.get("group_id") or "") for item in same if item.get("group_id")}
+    if len(same_ids) == 1:
+        return same[0]
+    return None
+
+
+def _mosaic_membership_for_item(item: dict[str, Any], memberships: list[dict[str, Any]]) -> tuple[str, str] | None:
+    """Group id and title for a pane folder, or None when it stays on its own."""
+    if not item.get("is_dir"):
+        return None
+    label = _media_label(item)
+    if not label:
+        return None
+    night = _media_night(item)
+    exact = [
+        entry
+        for entry in memberships
+        if entry.get("pane_name") and str(entry.get("pane_name")).casefold() == label.casefold()
+    ]
+    chosen = _pick_mosaic_membership(exact, night)
+    if chosen is not None:
+        group_id = str(chosen.get("group_id") or "")
+        title = str(chosen.get("title") or "") or mosaic_group_title(label, group_id)
+        return group_id, title
+    if not is_mosaic_pane_name(label):
+        return None
+    title = mosaic_group_title(label)
+    titled = [
+        entry
+        for entry in memberships
+        if str(entry.get("title") or "").casefold() == title.casefold() and entry.get("group_id")
+    ]
+    ids = {str(entry.get("group_id") or "") for entry in titled}
+    if len(ids) == 1:
+        group_id = next(iter(ids))
+        return group_id, title
+    if len(ids) > 1:
+        if not night:
+            return None
+        same = [entry for entry in titled if _night_matches(night, str(entry.get("night") or ""))]
+        same_ids = {str(entry.get("group_id") or "") for entry in same}
+        if len(same_ids) == 1:
+            return next(iter(same_ids)), title
+        if len(same_ids) > 1:
+            return None
+        return f"{title}|{night}", title
+    return f"title:{title}", title
+
+
+def _mosaic_media_tile(group_id: str, title: str, members: list[dict[str, Any]]) -> dict[str, Any]:
+    def modified(item: dict[str, Any]) -> int:
+        try:
+            return int(item.get("modification_time") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    newest = max(members, key=modified)
+    count = len(members)
+    source = str(newest.get("source") or members[0].get("source") or "")
+    return {
+        "id": mosaic_media_id(group_id),
+        "source": source,
+        "kind": "mosaic",
+        "target": title or "Mosaic",
+        "file_name": title or "Mosaic",
+        "album_name": "",
+        "file_path": "",
+        "thumbnail_path": str(newest.get("thumbnail_path") or ""),
+        "thumbnail_url": str(newest.get("thumbnail_url") or ""),
+        "image_url": str(newest.get("image_url") or newest.get("thumbnail_url") or ""),
+        "date": str(newest.get("date") or ""),
+        "modification_time": modified(newest),
+        "subtitle": f"{count} pane" if count == 1 else f"{count} panes",
+        "exposure": "",
+        "gain": "",
+        "ir_filter": "",
+        "camera": "",
+        "local_path": "",
+        "downloaded": any(bool(item.get("downloaded")) for item in members),
+        "media_type": 0,
+        "sub_type": 0,
+        "duration": 0,
+        "is_dir": True,
+        "group_id": group_id,
+        "pane_count": count,
+        "members": [dict(item) for item in members],
+    }
+
+
+def group_mosaic_media_items(
+    items: list[dict[str, Any]],
+    memberships: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Collapse custom-mosaic pane folders into one tile. A single pane stays put."""
+    records = list(memberships or [])
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    titles: dict[str, str] = {}
+    assigned: list[tuple[dict[str, Any], str]] = []
+    for item in items:
+        found = _mosaic_membership_for_item(item, records)
+        if found is None:
+            assigned.append((item, ""))
+            continue
+        group_id, title = found
+        buckets.setdefault(group_id, []).append(item)
+        titles[group_id] = title
+        assigned.append((item, group_id))
+    emitted: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for item, group_id in assigned:
+        if not group_id:
+            result.append(item)
+            continue
+        if group_id in emitted:
+            continue
+        members = buckets.get(group_id) or []
+        if len(members) < 2:
+            result.append(item)
+            continue
+        emitted.add(group_id)
+        result.append(_mosaic_media_tile(group_id, titles.get(group_id) or "Mosaic", members))
+    return result
+
+
+def mosaic_group_listing(
+    members: list[dict[str, Any]],
+    stitch: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Stitch first, then pane folders in pane order."""
+    ordered = sorted(members, key=lambda item: pane_sort_key(_media_label(item)))
+    listing: list[dict[str, Any]] = []
+    for item in ordered:
+        copy = dict(item)
+        copy["pane_index"] = pane_sort_key(_media_label(item))[0]
+        listing.append(copy)
+    if stitch:
+        pinned = dict(stitch)
+        pinned["pin"] = True
+        return [pinned, *listing]
+    return listing
+
+
+def mosaic_stitch_listing_item(record: dict[str, Any]) -> dict[str, Any]:
+    path = str(record.get("path") or "")
+    title = str(record.get("title") or "Mosaic").strip() or "Mosaic"
+    group_id = str(record.get("group_id") or "")
+    return {
+        "id": f"mosaic-stitch:{group_id}",
+        "source": "local",
+        "kind": "stitch",
+        "target": f"{title} stitch",
+        "file_name": Path(path).name if path else "stitch.jpg",
+        "album_name": str(record.get("album_name") or ""),
+        "file_path": path,
+        "thumbnail_path": "",
+        "thumbnail_url": "",
+        "image_url": "",
+        "date": str(record.get("saved_at") or ""),
+        "modification_time": 0,
+        "subtitle": "Stitched mosaic",
+        "exposure": "",
+        "gain": "",
+        "ir_filter": "",
+        "camera": "",
+        "local_path": path,
+        "downloaded": True,
+        "media_type": 0,
+        "sub_type": 0,
+        "duration": 0,
+        "is_dir": False,
+        "pin": True,
+        "group_id": group_id,
+    }
+
+
+def save_mosaic_stitch(
+    root: Path | str,
+    *,
+    group_id: str,
+    title: str,
+    device_id: str = "",
+    pane_names: list[str] | None = None,
+    grid_rows: int = 0,
+    grid_columns: int = 0,
+    jpeg: bytes,
+    saved_at: str = "",
+) -> dict[str, Any]:
+    """Keep a finished stitch beside its manifest and in the local album."""
+    base = Path(root)
+    token = mosaic_store_token(group_id)
+    folder = base / "mosaics" / token
+    folder.mkdir(parents=True, exist_ok=True)
+    image = folder / "stitch.jpg"
+    image.write_bytes(jpeg)
+    album_name = mosaic_album_stitch_name(title)
+    album = base / "album"
+    album.mkdir(parents=True, exist_ok=True)
+    album_path = album / album_name
+    album_path.write_bytes(jpeg)
+    manifest = {
+        "group_id": str(group_id),
+        "title": str(title or "Mosaic"),
+        "device_id": str(device_id or ""),
+        "pane_names": [str(name) for name in (pane_names or []) if str(name).strip()],
+        "grid_rows": int(grid_rows or 0),
+        "grid_columns": int(grid_columns or 0),
+        "saved_at": str(saved_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat()),
+        "file": "stitch.jpg",
+        "album_name": album_name,
+    }
+    (folder / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    saved = dict(manifest)
+    saved["path"] = str(image)
+    saved["album_path"] = str(album_path)
+    return saved
+
+
+def load_mosaic_stitch(root: Path | str, group_id: str) -> dict[str, Any] | None:
+    base = Path(root)
+    folder = base / "mosaics" / mosaic_store_token(group_id)
+    manifest_path = folder / "manifest.json"
+    image = folder / "stitch.jpg"
+    if not manifest_path.is_file() or not image.is_file():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or str(data.get("group_id") or "") != str(group_id):
+        return None
+    saved = dict(data)
+    saved["path"] = str(image)
+    album_name = str(data.get("album_name") or "")
+    album_path = base / "album" / album_name if album_name else None
+    saved["album_path"] = str(album_path) if album_path is not None and album_path.is_file() else ""
+    return saved
+
+
+def _alnum_token(text: str) -> str:
+    return "".join(ch for ch in str(text or "").casefold() if ch.isalnum())
+
+
+def stack_file_matches_pane(file_name: str, pane_name: str) -> bool:
+    """True when a downloaded stack belongs to this pane, not a longer pane number."""
+    label = _alnum_token(file_name)
+    token = _alnum_token(pane_name)
+    if len(token) < 3:
+        return False
+    start = 0
+    while True:
+        at = label.find(token, start)
+        if at < 0:
+            return False
+        end = at + len(token)
+        if end >= len(label) or not label[end].isdigit():
+            return True
+        start = at + 1
+
+
+def _local_stack_name(name: str) -> bool:
+    if album_is_astro_stack_product("", name):
+        return True
+    lower = str(name or "").casefold()
+    return "stacked" in lower or lower.endswith((".fits", ".fit", ".fts"))
+
+
+def choose_pane_stack(paths: list[Path | str], pane_name: str) -> Path | None:
+    """Pick this pane's stack. FITS wins over a JPEG of the same pane."""
+    fits: list[Path] = []
+    images: list[Path] = []
+    for raw in paths:
+        path = Path(raw)
+        if not path.is_file():
+            continue
+        if not _local_stack_name(path.name) or not stack_file_matches_pane(path.name, pane_name):
+            continue
+        if path.suffix.lower() in {".fits", ".fit", ".fts"} or "stacked-16" in path.name.casefold():
+            fits.append(path)
+        else:
+            images.append(path)
+    if fits:
+        return sorted(fits)[0]
+    if images:
+        return sorted(images)[0]
+    return None
+
+
 def zoneinfo_from_name(name: str | None) -> ZoneInfo:
     text = str(name or "UTC").strip() or "UTC"
     try:
@@ -3914,9 +4339,151 @@ def observing_date(scheduled_start: str, cutoff_hour: int = 12, tz: ZoneInfo | s
 
 
 def mosaic_pane_workflow(workflow: Workflow, index: int) -> Workflow:
+    """First pane keeps setup. Later panes only slew and stack.
+
+    A custom mosaic is stored as one session per pane. Follow-on panes skip
+    calibration, focus, and the waits so the run does not idle between them.
+    """
     if index <= 0:
         return workflow
-    return replace(workflow, calibrate=False, polar_align=False)
+    return replace(
+        workflow,
+        calibrate=False,
+        autofocus=False,
+        infinite_focus=False,
+        polar_align=False,
+        wait_before_seconds=0,
+        wait_after_seconds=0,
+    )
+
+
+def custom_mosaic_follow_on(session: Session, sessions: list[Session]) -> bool:
+    """True when this pane is not the first of its custom mosaic group."""
+    group = str(session.mosaic.group_id or "")
+    if not group:
+        return False
+    siblings = [
+        item
+        for item in sessions
+        if item.device_id == session.device_id and item.mosaic.group_id == group
+    ]
+    if all(item.id != session.id for item in siblings):
+        siblings.append(session)
+    if len(siblings) < 2:
+        return False
+    first = min(siblings, key=lambda item: (pane_sort_key(item.name), item.scheduled_start, item.id))
+    return first.id != session.id
+
+
+def remaining_mosaic_panes(stopped: Session, sessions: list[Session]) -> list[Session]:
+    """Planned panes of this custom mosaic still waiting after one pane is stopped."""
+    group = str(stopped.mosaic.group_id or "")
+    if not group:
+        return []
+    return sorted(
+        (
+            item
+            for item in sessions
+            if item.id != stopped.id
+            and item.device_id == stopped.device_id
+            and item.mosaic.group_id == group
+            and item.status == SessionStatus.PLANNED
+        ),
+        key=lambda item: (pane_sort_key(item.name), item.scheduled_start, item.id),
+    )
+
+
+def mosaic_run_is_ready(
+    candidate: Session,
+    sessions: list[Session],
+    now: datetime,
+    cutoff_hour: int = 12,
+) -> bool:
+    """True when a later pane should start now because this mosaic is already running.
+
+    The pane's own start time can still be in the future. That gap is the
+    per-session setup the mosaic should not sit through. A later observing
+    night stays on its own slot.
+    """
+    if now.tzinfo is None or not custom_mosaic_follow_on(candidate, sessions):
+        return False
+    zone = now.tzinfo
+    try:
+        night = observing_date(candidate.scheduled_start, cutoff_hour, zone)
+        if observing_date(now.isoformat(), cutoff_hour, zone) != night:
+            return False
+    except (TypeError, ValueError):
+        return False
+    group = candidate.mosaic.group_id
+    for item in sessions:
+        if item.id == candidate.id or item.device_id != candidate.device_id:
+            continue
+        if item.mosaic.group_id != group or item.status != SessionStatus.DONE:
+            continue
+        try:
+            if observing_date(item.scheduled_start, cutoff_hour, zone) == night:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def next_mosaic_run_pane(
+    finished: Session,
+    upcoming: list[Session],
+    now: datetime,
+    cutoff_hour: int = 12,
+) -> Session | None:
+    """Next same-night pane to start the moment ``finished`` completes.
+
+    None when another target is queued first, or the next pane is on a later night.
+    """
+    group = str(finished.mosaic.group_id or "")
+    if not group or now.tzinfo is None:
+        return None
+    zone = now.tzinfo
+    try:
+        night = observing_date(finished.scheduled_start, cutoff_hour, zone)
+    except (TypeError, ValueError):
+        return None
+    queue = [
+        item
+        for item in upcoming
+        if item.device_id == finished.device_id
+        and item.status == SessionStatus.PLANNED
+        and item.id != finished.id
+    ]
+    peers: list[Session] = []
+    for item in queue:
+        if item.mosaic.group_id != group:
+            continue
+        try:
+            if observing_date(item.scheduled_start, cutoff_hour, zone) != night:
+                continue
+        except (TypeError, ValueError):
+            continue
+        peers.append(item)
+    if not peers:
+        return None
+    finished_key = pane_sort_key(finished.name)
+    later = [item for item in peers if pane_sort_key(item.name) > finished_key]
+    if not later:
+        return None
+    nxt = min(later, key=lambda item: (pane_sort_key(item.name), item.scheduled_start, item.id))
+    try:
+        nxt_start = parse_in_zone(nxt.scheduled_start, zone)
+    except (TypeError, ValueError):
+        return None
+    for item in queue:
+        if item.id == nxt.id:
+            continue
+        try:
+            start = parse_in_zone(item.scheduled_start, zone)
+        except (TypeError, ValueError):
+            continue
+        if start < nxt_start:
+            return None
+    return nxt
 
 
 def _mosaic_group_slug(name: str) -> str:
@@ -5005,12 +5572,41 @@ def generate_mosaic_plan(
     )
 
 
+def mosaic_follow_on_seconds(session: Session | SessionTemplate, profile: HardwareProfile) -> float:
+    """Imaging plus the slew onto this pane. No startup, focus, or settle wait."""
+    try:
+        frames = max(1, int(session.camera.frame_count or 1))
+    except (TypeError, ValueError):
+        frames = 1
+    try:
+        exposure = max(0.0, float(session.camera.exposure_seconds or 0))
+    except (TypeError, ValueError):
+        exposure = 0.0
+    try:
+        panes = max(1, int(session.mosaic.panes or 1))
+    except (TypeError, ValueError):
+        panes = 1
+    imaging = (exposure + profile.readout_seconds) * frames * panes
+    return round(imaging + profile.pane_slew_seconds, 1)
+
+
+def mosaic_member_seconds(
+    session: Session | SessionTemplate,
+    profile: HardwareProfile,
+    index: int,
+) -> tuple[Workflow, float]:
+    """Duration of one mosaic pane. Later panes omit the setup the first pane already did."""
+    workflow = mosaic_pane_workflow(session.workflow, index)
+    if index > 0 and session.mosaic.group_id:
+        return workflow, mosaic_follow_on_seconds(session, profile)
+    return workflow, DurationEngine.calculate(replace(session, workflow=workflow), profile)
+
+
 def stagger_mosaic_sessions(sessions: list[Session], start: datetime, profile: HardwareProfile) -> list[Session]:
     cursor = start.replace(second=0, microsecond=0)
     result: list[Session] = []
     for index, session in enumerate(sorted(sessions, key=lambda item: pane_sort_key(item.name))):
-        workflow = mosaic_pane_workflow(session.workflow, index)
-        duration = DurationEngine.calculate(replace(session, workflow=workflow), profile)
+        workflow, duration = mosaic_member_seconds(session, profile, index)
         result.append(replace(
             session,
             workflow=workflow,

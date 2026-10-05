@@ -130,6 +130,7 @@ ApplicationWindow {
     readonly property bool appModalOpen: locationDialog.visible
         || settingsLeaveDialog.visible
         || confirmDialog.visible
+        || deviceMosaicEqDialog.visible
         || darkFrameDialog.visible
         || eqSetupDialog.visible
         || scheduleTemplateDialog.visible
@@ -680,6 +681,8 @@ ApplicationWindow {
         }
 
         function confirmAction(action) {
+            if (deviceMosaicEqDialog.visible)
+                return deviceMosaicEqDialog.harnessConfirm(String(action || "accept"))
             return confirmDialog.harnessConfirm(String(action || "accept"))
         }
 
@@ -1720,6 +1723,10 @@ ApplicationWindow {
         function onSelectedDeviceChanged() { root.maybeAskLocation() }
         function onDevicesChanged() { root.refreshDeviceChipList() }
         function onDarkPrompt(payload) { darkFrameDialog.applyPrompt(payload) }
+        function onDeviceMosaicEqRequired(deviceId) {
+            deviceMosaicEqDialog.deviceId = String(deviceId || "")
+            deviceMosaicEqDialog.open()
+        }
         function onDeviceScheduleConflict(deviceId, summary) {
             confirmDialog.kind = "replaceDeviceSchedule"
             confirmDialog.pendingIds = [String(deviceId || "")]
@@ -1738,6 +1745,10 @@ ApplicationWindow {
         onViewerCloseRequested: mediaPage.closeViewer()
     }
     DarkFrameDialog { id: darkFrameDialog }
+    DeviceMosaicEqDialog {
+        id: deviceMosaicEqDialog
+        onRunRequested: root.openEqSetup()
+    }
     EqSetupDialog {
         id: eqSetupDialog
         canRun: function(op) { return root.commandEnabled(op) }

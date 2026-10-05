@@ -18,6 +18,7 @@ from .domain import (
     SessionStatus,
     TargetKind,
     firmware_exposure_name,
+    ir_filter_index,
     session_action_value,
 )
 
@@ -61,6 +62,111 @@ CODE_TIME_CONFLICT = -16302
 
 def device_schedule_id_for(device_id: str) -> str:
     return f"astro-dwarf-{device_id}"
+
+
+# /deviceInfo deviceId. DWARF 3 is 2. DWARF Mini is 4.
+_SCHEDULE_DEVICE_IDS = {
+    "Dwarf II": 1,
+    "Dwarf 3": 2,
+    "Dwarf Mini": 4,
+}
+_SCHEDULE_DWARF_TYPES = {
+    "Dwarf II": "2",
+    "Dwarf 3": "3",
+    "Dwarf Mini": "5",
+}
+
+
+def schedule_model_ids(model: str) -> tuple[int, str]:
+    """Firmware device id and exposure-table id for a connected telescope."""
+    name = str(model or "")
+    return _SCHEDULE_DEVICE_IDS.get(name, 2), _SCHEDULE_DWARF_TYPES.get(name, "3")
+
+
+def prepare_schedule_task(task: dict[str, Any], dwarf_type: str) -> dict[str, Any]:
+    """Fill gain and filter indexes for this model's tables.
+
+    Displayed gain 60 is table index 18 on DWARF 3. Sending 60 selects the
+    row named 200.
+    """
+    prepared = dict(task)
+    gain_name = prepared.get("gainName")
+    if prepared.get("gainIndex") is None and gain_name is not None and str(gain_name) != "":
+        from dwarf_python_api.lib.data_utils import get_gain_index_by_name
+
+        prepared["gainIndex"] = get_gain_index_by_name(str(gain_name), dwarf_type)
+    filter_name = str(prepared.get("filterModeName") or "")
+    if prepared.get("filterModeIndex") is None and filter_name:
+        index = ir_filter_index(filter_name)
+        if index is not None:
+            prepared["filterModeIndex"] = index
+            if dwarf_type == "2":
+                labels = {0: "IR_CUT", 1: "IR_PASS"}
+            else:
+                labels = {0: "VIS Filter", 1: "Astro Filter", 2: "Duo-Band Filter"}
+            label = labels.get(index)
+            if label:
+                prepared["filterModeName"] = label
+    return prepared
+
+
+def encode_shooting_schedule(schedule: dict[str, Any], model: str) -> Any:
+    """Build the firmware schedule message for the connected telescope.
+
+    Task windows are snapped to whole minutes. A window that is not an exact
+    number of minutes is rejected.
+    """
+    import json
+    import time
+
+    from dwarf_python_api.lib import dwarf_utils
+    from dwarf_python_api.proto import shooting_schedule_pb2
+
+    device_id, dwarf_type = schedule_model_ids(model)
+    param_mode = int(schedule.get("paramsMode") or 0)
+    schedule_id = str(schedule.get("scheduleId") or "")
+    tasks = []
+    for raw in schedule.get("shooting_tasks") or []:
+        if not isinstance(raw, dict):
+            continue
+        tasks.append(
+            dwarf_utils._build_shooting_task_msg(
+                prepare_schedule_task(raw, dwarf_type),
+                schedule_id,
+                param_mode,
+                dwarf_type,
+            )
+        )
+    windows = [json.loads(task.params) for task in tasks]
+    starts = [item["startTime"] for item in windows if item.get("startTime")]
+    ends = [item["endTime"] for item in windows if item.get("endTime")]
+    if starts and ends:
+        start_time, end_time = min(starts), max(ends)
+    else:
+        start_time, end_time = dwarf_utils._minute_window(
+            dwarf_utils._to_epoch_s(schedule.get("startTime")),
+            dwarf_utils._to_epoch_s(schedule.get("endTime")),
+        )
+    params = dict(schedule.get("params") or {})
+    params.setdefault("calibrationMode", 0)
+    now = int(time.time())
+    return shooting_schedule_pb2.ShootingScheduleMsg(
+        schedule_id=schedule_id,
+        schedule_name=str(schedule.get("scheduleName") or ""),
+        device_id=int(device_id),
+        start_time=int(start_time or 0),
+        end_time=int(end_time or 0),
+        lock=int(schedule.get("lock") or 0),
+        password=str(schedule.get("password") or ""),
+        param_mode=param_mode,
+        params=json.dumps(params, ensure_ascii=False),
+        shooting_tasks=tasks,
+        state=shooting_schedule_pb2.SHOOTING_SCHEDULE_STATE_PENDING_SHOOT,
+        param_version=1,
+        schedule_time=now,
+        created_time=now,
+        updated_time=now,
+    )
 
 
 def schedule_state_name(value: Any) -> str:

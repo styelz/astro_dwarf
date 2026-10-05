@@ -616,6 +616,16 @@ def tracking_needs_calibration(result: Any) -> bool:
 EQ_ACCEPT_DEG = 2.0
 
 
+def device_mosaic_needs_eq(mount_mode: Any) -> bool:
+    """True when a device mosaic has to wait for equatorial alignment.
+
+    Firmware keeps the field from rotating between device-mosaic panes only
+    after EQ mode is accepted. Body status ``1`` is that mode. Until the
+    packet arrives the head is alt-az, so a missing mode still needs EQ.
+    """
+    return str(mount_mode or "").strip().upper() != "EQ"
+
+
 def eq_within_limit(azimuth: Any, altitude: Any, limit: float = EQ_ACCEPT_DEG) -> bool:
     try:
         azi = abs(float(azimuth))

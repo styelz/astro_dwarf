@@ -62,6 +62,7 @@ from .domain import (
     album_http_url,
     album_is_astro_media,
     album_is_astro_stack_product,
+    album_is_astronomy_category_folder,
     album_is_stack_display_image,
     album_item_preview_path,
     album_delete_summary,
@@ -147,6 +148,21 @@ from .services import (
     mosaic_pane_index,
     mosaic_pane_number,
     mosaic_pane_workflow,
+    mosaic_member_seconds,
+    choose_pane_stack,
+    custom_mosaic_completed,
+    custom_mosaic_follow_on,
+    custom_mosaic_panes_remain,
+    group_mosaic_media_items,
+    load_mosaic_stitch,
+    mosaic_group_listing,
+    mosaic_media_group_id,
+    mosaic_pane_folder_name,
+    mosaic_run_is_ready,
+    mosaic_stitch_listing_item,
+    save_mosaic_stitch,
+    next_mosaic_run_pane,
+    remaining_mosaic_panes,
     mosaic_session_footprints,
     mosaic_stitch_cell,
     mosaic_position_angle,
@@ -201,6 +217,7 @@ from .device_schedule import (
     CODE_TIME_CONFLICT,
     carry_device_schedule,
     device_schedule_id_for,
+    host_should_start,
     next_host_session,
     plan_device_schedule,
     updates_for_device_copy,
@@ -307,6 +324,7 @@ from .telemetry_view import (
     telemetry_operation_live,
     apply_mode_exposure_fields,
     exposure_seconds_from_text,
+    device_mosaic_needs_eq,
     eq_pose_steps,
     format_telemetry,
     photo_capture_seconds,
@@ -463,6 +481,7 @@ class TelescopeProcess(QObject):
         session: Session,
         callback: Callable[[bool, Any], None],
         prompt_darks: bool = False,
+        mosaic_continue: bool = False,
     ) -> None:
         self.busy = True
         self.availabilityChanged.emit()
@@ -472,7 +491,11 @@ class TelescopeProcess(QObject):
             self.availabilityChanged.emit()
             callback(ok, result)
 
-        payload: dict[str, Any] = {"session": to_dict(session), "prompt_darks": bool(prompt_darks)}
+        payload: dict[str, Any] = {
+            "session": to_dict(session),
+            "prompt_darks": bool(prompt_darks),
+            "mosaic_continue": bool(mosaic_continue),
+        }
         fmt = firmware_stack_format(getattr(self.device.control_settings, "stack_format", ""))
         if fmt is not None:
             payload["stack_format"] = fmt
@@ -1336,8 +1359,15 @@ def mosaic_capture_continues(
     firmware_pane: int = 0,
     firmware_panes: int = 1,
     session_running: bool = False,
+    later_custom_panes: bool = False,
 ) -> bool:
-    """True while a mosaic still has panes left after the current stack stops."""
+    """True while a mosaic still has panes left after the current stack stops.
+
+    A custom mosaic stores one session per pane, so the firmware pane count
+    stays 1. ``later_custom_panes`` is that group's still-planned panes.
+    """
+    if later_custom_panes:
+        return True
     if str(live_phase or "").strip() and worker_running:
         return True
     try:
@@ -1478,6 +1508,22 @@ def mosaic_stitch_button_visible(
     except (TypeError, ValueError):
         total = 0
     return done >= 2 or total >= 2
+
+
+def media_item_sort_key(item: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Pinned stitch first, numbered panes in order, then newest files."""
+    pin = 0 if item.get("pin") else 1
+    try:
+        pane = int(item.get("pane_index") or 0)
+    except (TypeError, ValueError):
+        pane = 0
+    try:
+        modified = int(item.get("modification_time") or 0)
+    except (TypeError, ValueError):
+        modified = 0
+    if pane > 0:
+        return (pin, 0, pane, 0)
+    return (pin, 1, 0, -modified)
 
 
 def mosaic_preview_empty() -> dict[str, Any]:
@@ -2074,6 +2120,7 @@ class AppBackend(QObject):
     skyLockRequested = Signal("QVariantMap")
     stellariumRcChanged = Signal()
     darkPrompt = Signal("QVariantMap")
+    deviceMosaicEqRequired = Signal(str)
     _openTeleStream = Signal(str)
     _openWideStream = Signal(str)
     _closeWideStream = Signal()
@@ -2154,6 +2201,9 @@ class AppBackend(QObject):
         self._media_folder_parent = ""
         self._media_root_folders: list[dict[str, Any]] = []
         self._media_items: list[dict[str, Any]] = []
+        self._media_listed_items: list[dict[str, Any]] = []
+        self._media_mosaic_group = ""
+        self._media_mosaic_title = ""
         self._media_selected_id = ""
         self._media_device_id = ""
         self._media_request_id = 0
@@ -2333,6 +2383,7 @@ class AppBackend(QObject):
         self._stitch_warning = ""
         self._stitch_path = ""
         self._stitch_source = ""
+        self._stitch_meta: dict[str, Any] = {}
         self._panorama_pool = QThreadPool(self)
         self._panorama_pool.setMaxThreadCount(1)
         self._panorama_signals = PanoramaSignals(self)
@@ -3207,9 +3258,10 @@ class AppBackend(QObject):
             coords = ""
         seconds = 0.0
         profile = HardwareProfile()
-        for index, item in enumerate(members):
-            timed = replace(item, workflow=mosaic_pane_workflow(item.workflow, index))
-            seconds += DurationEngine.calculate(timed, profile)
+        ordered = sorted(members, key=lambda item: pane_sort_key(item.name))
+        for index, item in enumerate(ordered):
+            _workflow, pane_seconds = mosaic_member_seconds(item, profile, index)
+            seconds += pane_seconds
         return {
             "capture_text": f"{cam.frame_count} × {cam.exposure_seconds:g}s",
             "gain_text": f"G{cam.gain}",
@@ -4928,6 +4980,14 @@ class AppBackend(QObject):
             return True
         if any(item.status == SessionStatus.RUNNING for item in members):
             return True
+        # Between panes the finished session is done and the next has not
+        # started. Keep the real pane footprints up instead of the planner grid.
+        if (
+            self._mosaic_result_held
+            and session.mosaic.imported_plan
+            and custom_mosaic_panes_remain(session, self.store.sessions.all())
+        ):
+            return True
         return False
 
     def _mosaic_result_pane_for(self, device_id: str = "") -> int:
@@ -5218,18 +5278,69 @@ class AppBackend(QObject):
         session, members = self._mosaic_context(owner)
         firmware_panes = 1
         session_running = False
+        later_custom = False
         if session is not None:
             firmware_panes = session.mosaic.panes
             session_running = session.status == SessionStatus.RUNNING or any(
                 item.status == SessionStatus.RUNNING for item in members
             )
+            later_custom = custom_mosaic_panes_remain(session, self.store.sessions.all())
         return mosaic_capture_continues(
             live_phase=str(live.get("phase") or ""),
             worker_running=bool(live.get("worker_running")),
             firmware_pane=int(self._mosaic_firmware_pane or 1),
             firmware_panes=firmware_panes,
             session_running=session_running,
+            later_custom_panes=later_custom,
         )
+
+    def _ensure_custom_mosaic_sheet(self, device_id: str, index: int = 0) -> None:
+        """Keep the full custom grid on screen so a finished pane is not dropped."""
+        owner = str(device_id or self._selected_device_id or "")
+        if not owner or owner != self._selected_device_id:
+            return
+        session, members = self._mosaic_context(owner)
+        if session is None or not session.mosaic.imported_plan:
+            return
+        rows, columns = mosaic_grid_size(session.mosaic, *(item.mosaic for item in members))
+        if columns * rows < 2:
+            return
+        group = str(session.mosaic.group_id or "")
+        if not group:
+            return
+        try:
+            pane = int(index or 0)
+        except (TypeError, ValueError):
+            pane = 0
+        _active, cols, row_count, current, _images = self.mosaic_frames.snapshot()
+        shown = pane if pane >= 1 else int(current or 0)
+        self.mosaic_frames.set_layout(
+            max(int(columns or 1), int(cols or 1)),
+            max(int(rows or 1), int(row_count or 1)),
+            max(1, shown or 1),
+            True,
+            group,
+        )
+        if pane >= 1 and self.mosaic_frames.peek(pane).isNull():
+            self._mosaic_cache_loaded = None
+            self._restore_cached_mosaic_panes(owner, group)
+
+    def _hold_finished_custom_pane(self, session: Session) -> None:
+        """Freeze the pane that just stacked and leave it on the contact sheet."""
+        if not session.mosaic.imported_plan or session.device_id != self._selected_device_id:
+            return
+        rows, columns = mosaic_grid_size(session.mosaic)
+        index = mosaic_pane_number(session.mosaic, columns, session.name)
+        self._ensure_custom_mosaic_sheet(session.device_id, index)
+        if index >= 1:
+            self._snapshot_mosaic_pane(index)
+            self._publish_mosaic_pane_url(index)
+        if index >= 1 and not self.mosaic_frames.peek(index).isNull():
+            self._mosaic_result_held = True
+            self._mosaic_result_dismissed = False
+        elif custom_mosaic_panes_remain(session, self.store.sessions.all()):
+            self._mosaic_result_held = True
+            self._mosaic_result_dismissed = False
 
     def _remember_mosaic_live_frame(self, camera: str, image: QImage, *, raw: bool = False) -> None:
         if camera != mosaic_live_still_camera() or image is None or image.isNull():
@@ -5660,6 +5771,8 @@ class AppBackend(QObject):
         self._stack_result_mosaic_pane = 0
         self._mosaic_result_held = False
         if self._stitch_source == "held":
+            if self._stitch_status == "done" and self._stitch_path:
+                self._persist_finished_stitch(self._stitch_path)
             self.dismissStitch()
         if had:
             self.mosaicPreviewChanged.emit()
@@ -6120,6 +6233,18 @@ class AppBackend(QObject):
             return sorted(jpegs)[0]
         return None
 
+    def _album_stack_files(self) -> list[Path]:
+        try:
+            return [path for path in self._album_dir().iterdir() if path.is_file()]
+        except OSError:
+            return []
+
+    def _stack_for_pane(self, pane_name: str, files: list[Path] | None = None) -> Path | None:
+        name = str(pane_name or "").strip()
+        if not name:
+            return None
+        return choose_pane_stack(files if files is not None else self._album_stack_files(), name)
+
     def _stitch_geometry(self, members: list[Session]) -> list[dict[str, Any]]:
         if not members:
             return []
@@ -6139,33 +6264,105 @@ class AppBackend(QObject):
             zenith_camera=state.source == MOSAIC_PA_PARALLACTIC,
         )
 
-    def _queue_stitch(self, panes: list[StitchPane], overlap: float, key: str, source: str) -> None:
+    def _queue_stitch(
+        self,
+        panes: list[StitchPane],
+        overlap: float,
+        key: str,
+        source: str,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
         if not stitch_available():
             self._set_stitch("failed", "numpy and opencv are required to stitch a mosaic", source=source)
             return
         self._stitch_token += 1
         token = self._stitch_token
+        self._stitch_meta = dict(meta or {})
         dest = self._stitch_cache_dir() / f"{key}.jpg"
         warning = overlap_warning(overlap)
         self._set_stitch("working", "Matching stars", warning, source=source)
         self._stitch_pool.start(StitchJob(token, panes, overlap, dest, self._stitch_signals))
 
+    def _persist_finished_stitch(self, path: str) -> None:
+        meta = dict(self._stitch_meta or {})
+        group_id = str(meta.get("group_id") or "").strip()
+        image = Path(str(path or ""))
+        if not group_id or not image.is_file():
+            return
+        try:
+            jpeg = image.read_bytes()
+        except OSError:
+            return
+        if not jpeg:
+            return
+        try:
+            save_mosaic_stitch(
+                self.store.root,
+                group_id=group_id,
+                title=str(meta.get("title") or "Mosaic"),
+                device_id=str(meta.get("device_id") or ""),
+                pane_names=list(meta.get("pane_names") or []),
+                grid_rows=int(meta.get("grid_rows") or 0),
+                grid_columns=int(meta.get("grid_columns") or 0),
+                jpeg=jpeg,
+            )
+        except OSError:
+            return
+        if self._media_source == "local":
+            self.listLocalAlbum()
+        elif self._media_mosaic_group == group_id:
+            self.openMosaicMedia(group_id)
+
     @Slot()
     def stitchHeldMosaic(self) -> None:
+        self._stitch_open_sheet("held")
+
+    def _maybe_auto_stitch_sheet(self, device_id: str, session: Session | None = None) -> None:
+        """Save a stitch when a custom mosaic finishes and the sheet still has panes."""
+        if self._stitch_status == "working":
+            return
+        if str(device_id or "") != str(self._selected_device_id or ""):
+            return
+        if session is not None and session.mosaic.imported_plan and session.mosaic.group_id and not self.mosaic_frames.group():
+            _active, columns, rows, current, images = self.mosaic_frames.snapshot()
+            if images:
+                members = self._mosaic_group_sessions(device_id, session.mosaic.group_id)
+                grid_rows, grid_columns = mosaic_grid_size(session.mosaic, *(item.mosaic for item in members))
+                self.mosaic_frames.set_layout(
+                    max(int(columns or 1), grid_columns),
+                    max(int(rows or 1), grid_rows),
+                    max(1, int(current or 1)),
+                    True,
+                    session.mosaic.group_id,
+                )
+        found, _members = self._mosaic_context(device_id)
+        if found is None or not found.mosaic.imported_plan:
+            return
+        self._stitch_open_sheet("auto", quiet=True)
+
+    def _stitch_open_sheet(self, source: str, quiet: bool = False) -> None:
+        def fail(detail: str) -> None:
+            if not quiet:
+                self._set_stitch("failed", detail, source=source)
+
         if self._stitch_status == "working":
             return
         device_id = str(self._selected_device_id or "")
         live = self._live_mosaic.get(device_id) or {}
         if live.get("worker_running") or live.get("stopping"):
-            self._set_stitch("failed", "Wait until the mosaic finishes", source="held")
+            fail("Wait until the mosaic finishes")
             return
         _active, columns, rows, _current, images = self.mosaic_frames.snapshot()
-        if not self.mosaicPreview.get("active") or columns * rows < 2:
-            self._set_stitch("failed", "Hold a finished custom mosaic first", source="held")
+        usable = sum(1 for image in images.values() if image is not None and not image.isNull())
+        if quiet:
+            if columns * rows < 2 or usable < 2:
+                return
+        elif not self.mosaicPreview.get("active") or columns * rows < 2:
+            fail("Hold a finished custom mosaic first")
             return
         session, members = self._mosaic_context(device_id)
         if session is not None and session.mosaic.firmware_layout() is not None and not session.mosaic.imported_plan:
-            self._set_stitch("failed", "The telescope stitches its own mosaic", source="held")
+            fail("The telescope stitches its own mosaic")
             return
         footprints = {int(item["index"]): item for item in self._stitch_geometry(members)}
         panes: list[StitchPane] = []
@@ -6183,7 +6380,7 @@ class AppBackend(QObject):
                 raw = self._raw_mosaic_panes.get(index)
                 array = qimage_rgb(raw) if raw is not None and not raw.isNull() else None
                 if array is None:
-                    local = self._local_stack_for_name(member.target.name if member is not None else "")
+                    local = self._stack_for_pane(member.name if member is not None else "")
             if array is None and local is None:
                 continue
             panes.append(
@@ -6200,11 +6397,26 @@ class AppBackend(QObject):
                 )
             )
         if len(panes) < 2:
-            self._set_stitch("failed", "At least two panes need a still", source="held")
+            fail("At least two panes need a still")
             return
-        group = self.mosaic_frames.group() or "held"
+        group = self.mosaic_frames.group() or (session.mosaic.group_id if session is not None else "") or "held"
         safe = "".join(ch for ch in group if ch.isalnum())[:48] or "held"
-        self._queue_stitch(panes, float(self._sky_mosaic_overlap), safe, "held")
+        names = [item.name for item in members]
+        title = mosaic_group_title(session.target.name if session is not None else group, group)
+        self._queue_stitch(
+            panes,
+            float(self._sky_mosaic_overlap),
+            safe,
+            source,
+            {
+                "group_id": group,
+                "title": title,
+                "device_id": device_id,
+                "pane_names": names,
+                "grid_rows": int(rows or 0),
+                "grid_columns": int(columns or 0),
+            },
+        )
 
     @Slot(str, str)
     def stitchHistoryGroup(self, group_id: str, device_id: str) -> None:
@@ -6232,32 +6444,60 @@ class AppBackend(QObject):
         panes: list[StitchPane] = []
         found_file = False
         pending: list[tuple[Any, str, int, str]] = []
+        album_files = self._album_stack_files()
         for record in records:
             if isinstance(record, dict):
-                name = str(record.get("target_name") or record.get("pane_name") or "")
+                target_name = str(record.get("target_name") or record.get("pane_name") or "")
                 session = self.store.sessions.get(str(record.get("session_id") or ""))
                 index = int(record.get("pane_index") or 0)
+                settings = record.get("mosaic_settings") if isinstance(record.get("mosaic_settings"), dict) else {}
             else:
-                name = str(record.target_name or "")
+                target_name = str(record.target_name or "")
                 session = self.store.sessions.get(record.session_id)
                 index = 0
-            local = self._local_stack_for_name(name)
+                settings = record.mosaic_settings if isinstance(record.mosaic_settings, dict) else {}
+            row = int(session.mosaic.row or 0) if session is not None else int(settings.get("row") or 0)
+            column = int(session.mosaic.column or 0) if session is not None else int(settings.get("column") or 0)
+            grid_columns = (
+                int(session.mosaic.grid_columns or 0)
+                if session is not None
+                else int(settings.get("grid_columns") or settings.get("columns") or 0)
+            )
+            pane_name = mosaic_pane_folder_name(
+                session_name=session.name if session is not None else "",
+                target_name=target_name,
+                group_id=group,
+                row=row,
+                column=column,
+                grid_columns=grid_columns,
+            )
+            local = self._stack_for_pane(pane_name, album_files)
             if local is not None:
                 found_file = True
-            if local is None or session is None:
+            if local is None or row < 1 or column < 1:
                 continue
-            row = int(session.mosaic.row or 0)
-            column = int(session.mosaic.column or 0)
-            if row < 1 or column < 1:
-                continue
-            pending.append((session, name, index, str(local)))
+            snapshot = {}
+            if isinstance(record, dict) and isinstance(record.get("target_snapshot"), dict):
+                snapshot = record.get("target_snapshot") or {}
+            elif not isinstance(record, dict) and isinstance(record.target_snapshot, dict):
+                snapshot = record.target_snapshot
+            mosaic = session.mosaic if session is not None else Mosaic(
+                grid_rows=int(settings.get("grid_rows") or 0),
+                grid_columns=grid_columns,
+                row=row,
+                column=column,
+                rotation_degrees=float(settings.get("rotation_degrees") or 0),
+            )
+            ra = session.target.ra_hours if session is not None else snapshot.get("ra_hours")
+            dec = session.target.dec_degrees if session is not None else snapshot.get("dec_degrees")
+            pending.append((mosaic, pane_name or target_name, index, str(local), ra, dec))
         if len(pending) < 2:
             detail = "Pane positions are not stored for this group" if found_file else "Stacks are not downloaded yet"
             self._set_stitch("failed", detail, source="history")
             return
-        grid_rows, grid_columns = mosaic_grid_size(*(item[0].mosaic for item in pending))
-        for session, name, index, local in pending:
-            pane_index = index or mosaic_pane_number(session.mosaic, grid_columns, name)
+        grid_rows, grid_columns = mosaic_grid_size(*(item[0] for item in pending))
+        for mosaic, name, index, local, ra, dec in pending:
+            pane_index = index or mosaic_pane_number(mosaic, grid_columns, name)
             row, column, flip = self._stitch_sheet_cell(pane_index, grid_columns, grid_rows)
             panes.append(
                 StitchPane(
@@ -6265,19 +6505,35 @@ class AppBackend(QObject):
                     row=row,
                     column=column,
                     image=None,
-                    ra_hours=session.target.ra_hours,
-                    dec_degrees=session.target.dec_degrees,
-                    position_angle=float(session.mosaic.rotation_degrees or 0.0),
+                    ra_hours=ra,
+                    dec_degrees=dec,
+                    position_angle=float(mosaic.rotation_degrees or 0.0),
                     path=local,
                     flip=flip,
                 )
             )
         overlap = float(self._sky_mosaic_overlap)
         safe = "".join(ch for ch in group if ch.isalnum())[:48] or "history"
-        self._queue_stitch(panes, overlap, safe, "history")
+        title = mosaic_group_title(pending[0][1], group)
+        self._queue_stitch(
+            panes,
+            overlap,
+            safe,
+            "history",
+            {
+                "group_id": group,
+                "title": title,
+                "device_id": owner,
+                "pane_names": [name for _mosaic, name, _index, _local, _ra, _dec in pending],
+                "grid_rows": int(grid_rows or 0),
+                "grid_columns": int(grid_columns or 0),
+            },
+        )
 
     @Slot()
     def dismissStitch(self) -> None:
+        if self._stitch_status == "done" and self._stitch_path:
+            self._persist_finished_stitch(self._stitch_path)
         self._stitch_token += 1
         self._set_stitch("", source="")
 
@@ -6285,6 +6541,8 @@ class AppBackend(QObject):
         if int(token) != self._stitch_token:
             return
         source = self._stitch_source
+        if str(status or "") == "done" and path:
+            self._persist_finished_stitch(path)
         self._set_stitch(str(status or "failed"), str(detail or ""), str(warning or ""), str(path or ""), source)
 
     @Property("QVariantMap", notify=mosaicPreviewChanged)
@@ -6431,8 +6689,16 @@ class AppBackend(QObject):
             payload["columns"] = mosaic_columns
             payload["rows"] = mosaic_rows
             payload["live_pane"] = live_pane
+            footprint_members = list(members or [])
+            if session is not None and session.mosaic.imported_plan and session.mosaic.group_id:
+                grouped = self._mosaic_group_sessions(
+                    str(self._selected_device_id or ""),
+                    str(session.mosaic.group_id),
+                )
+                if len(grouped) > len(footprint_members):
+                    footprint_members = grouped
             member_panes = mosaic_session_footprints(
-                members or ([session] if session is not None else []),
+                footprint_members or ([session] if session is not None else []),
                 fov_h,
                 fov_v,
                 payload["position_angle"],
@@ -7308,6 +7574,14 @@ class AppBackend(QObject):
     @Property(str, notify=mediaChanged)
     def mediaFolderParent(self) -> str:
         return self._media_folder_parent
+
+    @Property(str, notify=mediaChanged)
+    def mediaMosaicGroup(self) -> str:
+        return self._media_mosaic_group
+
+    @Property(str, notify=mediaChanged)
+    def mediaMosaicTitle(self) -> str:
+        return self._media_mosaic_title
 
     @Property("QVariantList", notify=mediaChanged)
     def mediaRootFolders(self) -> list[dict[str, Any]]:
@@ -8277,15 +8551,24 @@ class AppBackend(QObject):
         if mode_changed or urls_changed or force_mosaic:
             was_stacking = self._preview_stack_mode
             if not stacking and was_stacking:
-                self._snapshot_mosaic_pane(
-                    mosaic_finished_pane(
-                        self._mosaic_stream_pane,
-                        self._mosaic_result_pane_for(device_id),
-                    )
+                finished = mosaic_finished_pane(
+                    self._mosaic_stream_pane,
+                    self._mosaic_result_pane_for(device_id),
                 )
-                if self._mosaic_capture_continues(device_id) or self._mosaic_result_held:
+                more = self._mosaic_capture_continues(device_id)
+                if more:
+                    self._ensure_custom_mosaic_sheet(device_id, finished)
+                self._snapshot_mosaic_pane(finished)
+                held_session, _held_members = self._mosaic_context(device_id)
+                custom = bool(held_session is not None and held_session.mosaic.imported_plan)
+                if more and custom and finished >= 1:
+                    self._mosaic_result_held = True
+                    self._mosaic_result_dismissed = False
+                # Held is how a device mosaic rides through a brief gap. A
+                # custom mosaic that has no panes left must show its result.
+                if more or (self._mosaic_result_held and not custom):
                     if self._preview_result:
-                        self._clear_preview_result()
+                        self._clear_preview_result(keep_mosaic=bool(more and custom))
                     self._detach_mosaic_stacking_preview()
                     if mosaic_slew_preview_should_restore(
                         stacking=False,
@@ -9480,6 +9763,14 @@ class AppBackend(QObject):
         self._emit_sessions_changed()
         return True
 
+    def _device_mosaic_needs_eq(self, device_id: str) -> bool:
+        mode = (self._device_telemetry.get(device_id) or {}).get("mount_mode")
+        return device_mosaic_needs_eq(mode)
+
+    def _ask_device_mosaic_eq(self, device_id: str) -> None:
+        self.add_log("notice", "Device mosaic needs equatorial alignment", device_id)
+        self.deviceMosaicEqRequired.emit(device_id)
+
     def _start_live_device_mosaic(self, device_id: str) -> bool:
         """GOTO the centre and let the telescope shoot its own mosaic."""
         worker = self._workers.get(device_id)
@@ -9503,12 +9794,9 @@ class AppBackend(QObject):
         if target is None or target.ra_hours is None or target.dec_degrees is None:
             self._toast("Select the target on SKY first", "warning")
             return False
-        if not self.mosaicPaManual:
-            self._toast(
-                "Alt-az keeps the frame horizontal",
-                "info",
-                "Equatorial mode tracks field rotation between mosaic panes.",
-            )
+        if self._device_mosaic_needs_eq(device_id):
+            self._ask_device_mosaic_eq(device_id)
+            return False
         template = device_mosaic_template(target, horizontal, vertical)
         settings = replace(self._device_stack_camera_settings(device_id), camera=Camera.TELE)
         session = Session(
@@ -9833,6 +10121,8 @@ class AppBackend(QObject):
             if device_id == self._selected_device_id:
                 self._clear_mosaic_preview()
         self._discard_live_mosaic(device_id, notify=not keep_sheet)
+        if keep_sheet and ok and not stopped:
+            self._maybe_auto_stitch_sheet(device_id)
         if keep_sheet:
             self.mosaicPreviewChanged.emit()
             self._notify_devices()
@@ -11881,7 +12171,7 @@ class AppBackend(QObject):
 
     def _replace_media_items(self, items: list[dict[str, Any]], keep_id: str = "") -> None:
         items = [item for item in items if item]
-        items.sort(key=lambda item: int(item.get("modification_time") or 0), reverse=True)
+        items.sort(key=media_item_sort_key)
         changed = self._media_signature(items) != self._media_signature(self._media_items)
         self._media_items = items
         self._select_media_id(keep_id or self._media_selected_id)
@@ -11892,6 +12182,9 @@ class AppBackend(QObject):
     def _clear_media(self, status: str = "") -> None:
         self._media_request_id += 1
         self._media_items = []
+        self._media_listed_items = []
+        self._media_mosaic_group = ""
+        self._media_mosaic_title = ""
         self._media_selected_id = ""
         self._album_items = []
         self._album_busy = ""
@@ -12047,6 +12340,8 @@ class AppBackend(QObject):
         self._media_source = choice
         self._media_folder = ""
         self._media_folder_parent = ""
+        self._media_mosaic_group = ""
+        self._media_mosaic_title = ""
         self._media_selected_id = ""
         self._media_items = []
         self._media_status = ""
@@ -12285,7 +12580,10 @@ class AppBackend(QObject):
                         device.model,
                     )
                 ]
-                self._replace_media_items([item for item in items if item], self._media_selected_id)
+                self._replace_media_items(
+                    self._present_listed_media([item for item in items if item]),
+                    self._media_selected_id,
+                )
                 if self._toast_pending_album_delete(self._media_items, True):
                     return
                 if not self._media_items:
@@ -12394,7 +12692,7 @@ class AppBackend(QObject):
                     for item in [self._normalize_remote_item(entry, ip, local_files, "folders")]
                     if item
                 ]
-                self._replace_media_items(items, self._media_selected_id)
+                self._replace_media_items(self._present_listed_media(items), self._media_selected_id)
                 if not self._media_folder_parent:
                     self._set_media_root_folders(items)
                 if self._toast_pending_album_delete(self._media_items, True):
@@ -12454,10 +12752,224 @@ class AppBackend(QObject):
             self._media_folder = path
             self._media_folder_parent = album_folder_parent(path, root)
         self._media_source = "folders"
+        self._media_mosaic_group = ""
+        self._media_mosaic_title = ""
         self._media_selected_id = ""
         self._media_items = []
         self._media_status = ""
         self._emit_media(items=True)
+
+    def _mosaic_listing_active(self) -> bool:
+        if self._media_source == "astro":
+            return True
+        if self._media_source != "folders":
+            return False
+        folder = str(self._media_folder or "")
+        name = folder.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        return album_is_astronomy_category_folder(folder, name)
+
+    def _mosaic_media_memberships(self, device_id: str = "") -> list[dict[str, Any]]:
+        owner = str(device_id or self._media_device_id or self._selected_device_id or "")
+        rows: list[dict[str, Any]] = []
+        for session in self.store.sessions.all():
+            if owner and session.device_id != owner:
+                continue
+            group = str(session.mosaic.group_id or "")
+            if not group or not session.mosaic.imported_plan:
+                continue
+            night = ""
+            try:
+                night = observing_date(
+                    session.scheduled_start,
+                    self._cutoff_hour(),
+                    self._zone_for_id(session.device_id),
+                )
+            except (TypeError, ValueError):
+                night = ""
+            rows.append({
+                "group_id": group,
+                "title": mosaic_group_title(session.target.name or session.name, group),
+                "pane_name": session.name,
+                "night": night,
+                "device_id": session.device_id,
+            })
+        for record in self.store.history.all():
+            group = str(record.mosaic_group_id or "")
+            if not group or (owner and record.device_id != owner):
+                continue
+            night = ""
+            try:
+                night = observing_date(
+                    record.scheduled_start,
+                    self._cutoff_hour(),
+                    self._zone_for_id(record.device_id),
+                )
+            except (TypeError, ValueError):
+                night = ""
+            target = str(record.target_name or "")
+            rows.append({
+                "group_id": group,
+                "title": mosaic_group_title(target, group),
+                "pane_name": target if is_mosaic_pane_name(target) else "",
+                "night": night,
+                "device_id": record.device_id,
+            })
+        return rows
+
+    def _stitch_media_item(self, group_id: str) -> dict[str, Any] | None:
+        record = load_mosaic_stitch(self.store.root, group_id)
+        if not record:
+            return None
+        item = mosaic_stitch_listing_item(record)
+        url = self._media_file_url(str(record.get("path") or ""))
+        item["thumbnail_url"] = url
+        item["image_url"] = url
+        return item
+
+    def _items_for_mosaic_group(self, group_id: str, grouped: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+        tile = next(
+            (
+                item
+                for item in grouped
+                if item.get("kind") == "mosaic" and str(item.get("group_id") or "") == group_id
+            ),
+            None,
+        )
+        if tile is None:
+            return None
+        self._media_mosaic_title = str(tile.get("target") or "Mosaic")
+        return mosaic_group_listing(list(tile.get("members") or []), self._stitch_media_item(group_id))
+
+    def _present_listed_media(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        self._media_listed_items = [dict(item) for item in items]
+        if not self._mosaic_listing_active():
+            self._media_mosaic_group = ""
+            self._media_mosaic_title = ""
+            return list(items)
+        grouped = group_mosaic_media_items(items, self._mosaic_media_memberships())
+        if not self._media_mosaic_group:
+            return grouped
+        shown = self._items_for_mosaic_group(self._media_mosaic_group, grouped)
+        if shown is None:
+            self._media_mosaic_group = ""
+            self._media_mosaic_title = ""
+            return grouped
+        return shown
+
+    @Slot(str)
+    def openMosaicMedia(self, group_id: str) -> None:
+        group = mosaic_media_group_id(group_id) or str(group_id or "").strip()
+        if not group or not self._media_listed_items:
+            return
+        self._media_mosaic_group = group
+        shown = self._present_listed_media(list(self._media_listed_items))
+        if self._media_mosaic_group != group:
+            self._replace_media_items(shown)
+            self._emit_media()
+            return
+        self._replace_media_items(shown)
+        self._emit_media()
+
+    @Slot()
+    def closeMosaicMedia(self) -> None:
+        self._media_mosaic_group = ""
+        self._media_mosaic_title = ""
+        shown = self._present_listed_media(list(self._media_listed_items))
+        self._replace_media_items(shown)
+        self._emit_media()
+
+    def _session_for_media_pane(self, label: str, group_id: str) -> Session | None:
+        name = str(label or "").strip().casefold()
+        if not name:
+            return None
+        matches = [
+            session
+            for session in self.store.sessions.all()
+            if str(session.name or "").strip().casefold() == name
+        ]
+        exact = [session for session in matches if str(session.mosaic.group_id or "") == group_id]
+        if exact:
+            return exact[0]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    @Slot(str)
+    def stitchMediaGroup(self, group_id: str) -> None:
+        if self._stitch_status == "working":
+            return
+        group = mosaic_media_group_id(group_id) or str(group_id or "").strip() or self._media_mosaic_group
+        if not group:
+            self._set_stitch("failed", "This is not a mosaic group", source="media")
+            return
+        grouped = group_mosaic_media_items(self._media_listed_items, self._mosaic_media_memberships())
+        tile = next(
+            (
+                item
+                for item in grouped
+                if item.get("kind") == "mosaic" and str(item.get("group_id") or "") == group
+            ),
+            None,
+        )
+        members = list(tile.get("members") or []) if tile is not None else []
+        if not members and self._media_mosaic_group == group:
+            members = [item for item in self._media_items if item.get("is_dir")]
+        files = self._album_stack_files()
+        pending: list[tuple[Mosaic, str, Path, float | None, float | None]] = []
+        found_file = False
+        for item in members:
+            label = str(item.get("target") or item.get("file_name") or "").strip()
+            local = self._stack_for_pane(label, files)
+            if local is not None:
+                found_file = True
+            session = self._session_for_media_pane(label, group)
+            mosaic = session.mosaic if session is not None else None
+            row = int(mosaic.row or 0) if mosaic is not None else 0
+            column = int(mosaic.column or 0) if mosaic is not None else 0
+            if local is None or row < 1 or column < 1 or mosaic is None:
+                continue
+            pending.append((mosaic, label, local, session.target.ra_hours, session.target.dec_degrees))
+        if len(pending) < 2:
+            if group.startswith("title:") or "|" in group:
+                detail = "Pane positions are not stored for this group" if found_file else "Stacks are not downloaded yet"
+                self._set_stitch("failed", detail, source="media")
+                return
+            self.stitchHistoryGroup(group, str(self._media_device_id or self._selected_device_id or ""))
+            return
+        grid_rows, grid_columns = mosaic_grid_size(*(item[0] for item in pending))
+        panes: list[StitchPane] = []
+        for mosaic, name, local, ra, dec in pending:
+            pane_index = mosaic_pane_number(mosaic, grid_columns, name)
+            row, column, flip = self._stitch_sheet_cell(pane_index, grid_columns, grid_rows)
+            panes.append(
+                StitchPane(
+                    index=pane_index,
+                    row=row,
+                    column=column,
+                    image=None,
+                    ra_hours=ra,
+                    dec_degrees=dec,
+                    position_angle=float(mosaic.rotation_degrees or 0.0),
+                    path=str(local),
+                    flip=flip,
+                )
+            )
+        title = str((tile or {}).get("target") or mosaic_group_title(pending[0][1], group))
+        safe = "".join(ch for ch in group if ch.isalnum())[:48] or "media"
+        self._queue_stitch(
+            panes,
+            float(self._sky_mosaic_overlap),
+            safe,
+            "media",
+            {
+                "group_id": group,
+                "title": title,
+                "device_id": str(self._media_device_id or self._selected_device_id or ""),
+                "pane_names": [name for _mosaic, name, _local, _ra, _dec in pending],
+                "grid_rows": int(grid_rows or 0),
+                "grid_columns": int(grid_columns or 0),
+            },
+        )
 
     @Slot(str)
     def openMediaFolder(self, folder: str) -> None:
@@ -12468,6 +12980,9 @@ class AppBackend(QObject):
             return
         if self._media_source != "folders":
             self._media_source = "folders"
+        if self._media_mosaic_group and self._media_folder == path:
+            self.closeMosaicMedia()
+            return
         if self._media_folder == path and self._media_items and self._album_busy != "list":
             return
         self._prepare_media_folder(path)
@@ -12499,8 +13014,32 @@ class AppBackend(QObject):
     def downloadMediaItems(self, device_id: str, item_ids: list) -> None:
         self._start_media_downloads(device_id, item_ids)
 
+    def _device_media_action_ids(self, ids: list[str], action: str) -> list[str]:
+        kept: list[str] = []
+        skipped_group = False
+        skipped_stitch = False
+        for item_id in ids:
+            text = str(item_id or "")
+            if mosaic_media_group_id(text):
+                skipped_group = True
+                continue
+            if text.startswith("mosaic-stitch:"):
+                skipped_stitch = True
+                continue
+            kept.append(text)
+        if kept:
+            return kept
+        if skipped_group:
+            if action == "download":
+                self._toast("Open the mosaic to download its panes", "info")
+            else:
+                self._toast("Open the mosaic to delete its panes", "info")
+        elif skipped_stitch:
+            self._toast("The stitch is already saved in the local album", "info")
+        return kept
+
     def _start_media_downloads(self, device_id: str, item_ids: Any) -> None:
-        ids = self._normalize_ids(item_ids)
+        ids = self._device_media_action_ids(self._normalize_ids(item_ids), "download")
         if not ids:
             return
         if self._album_busy:
@@ -12903,7 +13442,7 @@ class AppBackend(QObject):
     @Slot(list)
     @Slot("QVariantList")
     def deleteMedia(self, item_ids: list) -> None:
-        ids = self._normalize_ids(item_ids)
+        ids = self._device_media_action_ids(self._normalize_ids(item_ids), "delete")
         if not ids:
             return
         if self._album_busy:
@@ -13987,6 +14526,13 @@ class AppBackend(QObject):
         if self._telemetry_capturing(session.device_id) and not recovered:
             self._toast("Telescope is already stacking", "warning")
             return
+        if (
+            not recovered
+            and session.mosaic.firmware_layout() is not None
+            and self._device_mosaic_needs_eq(session.device_id)
+        ):
+            self._ask_device_mosaic_eq(session.device_id)
+            return
         if session.device_id != self._selected_device_id:
             self._toast(f"Starting on {device.name}", "info")
         # Keep the planned slot on the calendar. Actual start/end live on
@@ -14922,6 +15468,71 @@ class AppBackend(QObject):
                 )
             self._maybe_push_sky_to_desktop(payload.get("target"))
 
+    def _early_mosaic_pane(self, device_id: str, now: datetime) -> Session | None:
+        """Follow-on pane to start before its clock time once this mosaic has begun."""
+        upcoming = self.store.upcoming(device_id)
+        if not upcoming:
+            return None
+        candidate = upcoming[0]
+        if not host_should_start(candidate):
+            return None
+        try:
+            if parse_in_zone(candidate.scheduled_start, now.tzinfo) <= now:
+                return None
+        except (TypeError, ValueError):
+            return None
+        if not mosaic_run_is_ready(candidate, self.store.sessions.all(), now, self._cutoff_hour()):
+            return None
+        return candidate
+
+    def _skip_remaining_mosaic_panes(self, stopped: Session) -> list[Session]:
+        """Drop the rest of a custom mosaic when the operator stops one pane."""
+        pending = remaining_mosaic_panes(stopped, self.store.sessions.all())
+        saved: list[Session] = []
+        for item in pending:
+            try:
+                saved.append(self.store.transition(
+                    item.id,
+                    SessionStatus.SKIPPED,
+                    current_step="Skipped",
+                    outcome="Skipped because the mosaic was stopped",
+                ))
+            except (KeyError, ValueError):
+                continue
+        if saved:
+            count = len(saved)
+            self.add_log(
+                "warning",
+                f"Skipped {count} remaining mosaic pane{'s' if count != 1 else ''}",
+                stopped.device_id,
+            )
+        return saved
+
+    def _chain_mosaic_pane(self, finished: Session) -> bool:
+        """Start the next pane of this mosaic immediately."""
+        if self._shut_down:
+            return False
+        device_id = finished.device_id
+        if device_id in self._active_sessions or device_id in self._disconnecting_ids:
+            return False
+        device = self._device_by_id(device_id)
+        worker = self._workers.get(device_id)
+        if device is None or worker is None or not worker.connected or worker.busy:
+            return False
+        if not device.location_configured:
+            return False
+        nxt = next_mosaic_run_pane(
+            finished,
+            self.store.upcoming(device_id),
+            datetime.now(self._zone_for(device)),
+            self._cutoff_hour(),
+        )
+        if nxt is None or not host_should_start(nxt):
+            return False
+        self.add_log("notice", f"Mosaic continues · {nxt.name}", device_id)
+        self._start_session(worker, nxt)
+        return True
+
     def _scheduler_tick(self) -> None:
         if not self._scheduler_enabled:
             return
@@ -14973,6 +15584,11 @@ class AppBackend(QObject):
                 self._discard_live_mosaic(device.id)
             if firmware_capturing:
                 continue
+            if session is None and not due:
+                early = self._early_mosaic_pane(device.id, now)
+                if early is not None:
+                    session = early
+                    due = True
             if session is None or not due:
                 continue
             if session.id in self._recovered_sessions:
@@ -15126,6 +15742,9 @@ class AppBackend(QObject):
             if resuming and session.actual_started_at
             else datetime.now(timezone.utc).isoformat()
         )
+        continuing = custom_mosaic_follow_on(session, self.store.sessions.all())
+        if continuing:
+            prompt_darks = False
         session = self.store.transition(
             session.id,
             SessionStatus.RUNNING,
@@ -15180,10 +15799,14 @@ class AppBackend(QObject):
         else:
             self.add_log("notice", f"Session started · {session.target.name}", session.device_id)
             self._toast(f"Session started · {session.target.name}", "info", f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s")
+        launch = session
+        if continuing:
+            launch = replace(session, workflow=mosaic_pane_workflow(session.workflow, 1))
         worker.run_session(
-            session,
+            launch,
             lambda ok, result: self._session_finished(session.id, ok, result),
             prompt_darks=prompt_darks,
+            mosaic_continue=continuing,
         )
 
     def _note_firmware_mosaic_phase(self, session: Session, step: str) -> None:
@@ -15330,28 +15953,49 @@ class AppBackend(QObject):
             step_seconds=self._finish_session_timing(session.id),
         ))
         elapsed = self._duration_text((ended - started).total_seconds())
-        if ok:
+        chained = bool(ok and not stopped and self._chain_mosaic_pane(final))
+        if ok and chained:
+            self.add_log("success", f"Pane complete · {final.target.name} in {elapsed}", final.device_id)
+        elif ok:
             self.add_log("success", f"Session complete · {final.target.name} in {elapsed}", final.device_id)
             self._toast(f"Session complete · {final.target.name}", "success", f"Ran {elapsed}")
         elif stopped:
+            skipped = self._skip_remaining_mosaic_panes(final)
             self.add_log("warning", f"Session stopped · {final.target.name} after {elapsed}", final.device_id)
-            self._toast(f"Session stopped · {final.target.name}", "warning", f"Ran {elapsed}")
+            detail = f"Ran {elapsed}"
+            if skipped:
+                count = len(skipped)
+                detail = f"Skipped {count} remaining pane{'s' if count != 1 else ''}"
+            self._toast(f"Session stopped · {final.target.name}", "warning", detail)
         else:
             self.add_log("error", f"Session failed · {final.target.name}: {outcome}", final.device_id)
             self._toast(f"Session failed · {final.target.name}", "error", outcome)
         self._emit_sessions_changed()
         self._emit_history_changed()
-        if was_stack_preview or (
+        group_sessions = self.store.sessions.all()
+        more_panes = ok and not stopped and custom_mosaic_panes_remain(final, group_sessions)
+        mosaic_done = ok and not stopped and not chained and custom_mosaic_completed(final, group_sessions)
+        if ok and not stopped and final.mosaic.imported_plan:
+            self._hold_finished_custom_pane(final)
+        if chained or more_panes:
+            if final.device_id == self._selected_device_id and self._preview_result:
+                self._clear_preview_result(keep_mosaic=True)
+        elif was_stack_preview or (
             final.device_id == self._selected_device_id and self._preview_result
         ):
-            title, detail = self._stacking_result_copy(ok, stopped, final.target.name)
+            caption_name = final.target.name
+            title, detail = self._stacking_result_copy(ok, stopped, caption_name)
+            if mosaic_done:
+                caption_name = mosaic_group_title(final.target.name, final.mosaic.group_id or "")
+                title, detail = self._stacking_result_copy(ok, stopped, caption_name)
+                title = "MOSAIC COMPLETE"
             camera = final.camera.camera
             camera_name = camera.value if hasattr(camera, "value") else str(camera or "")
             self._freeze_stacking_preview_result(
                 final.device_id,
                 title=title,
                 detail=detail,
-                target=final.target.name,
+                target=caption_name,
                 camera=camera_name,
                 since=int(started.timestamp()),
             )
@@ -15359,6 +16003,8 @@ class AppBackend(QObject):
             telemetry = dict(self._device_telemetry.get(final.device_id) or {})
             self._sync_preview_for_capture(final.device_id, telemetry, telemetry)
         self._sync_mosaic_preview(final.device_id)
+        if mosaic_done:
+            self._maybe_auto_stitch_sheet(final.device_id, final)
         self._notify_devices()
         self._sync_media_lock()
         if restore_preview and not self._preview_result:

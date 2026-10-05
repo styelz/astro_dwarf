@@ -65,9 +65,11 @@ from astro_dwarf.stream_preview import (
     load_mosaic_pane_cache,
     mosaic_cache_current,
     mosaic_live_overlay_ready,
+    mosaic_shared_pane_edges,
     preview_should_ingest_frame,
     save_mosaic_pane_cache,
     set_live_frames,
+    set_mosaic_frames,
 )
 from astro_dwarf.telemetry_view import auto_parameter_cameras, camera_params_to_telemetry
 
@@ -103,6 +105,108 @@ def test_mosaic_live_item_font_pixel_size() -> None:
         "a new frame may overlay the current pane",
     )
     _assert(mosaic_live_overlay_ready(nxt, 0), "first frame after a blank pane is live")
+    del app
+
+
+def _edge_axis(edge: tuple[float, float, float, float]) -> tuple[str, float]:
+    x1, y1, x2, y2 = edge
+    if abs(x1 - x2) <= 1e-6:
+        return ("v", round((x1 + x2) / 2.0, 3))
+    return ("h", round((y1 + y2) / 2.0, 3))
+
+
+def test_mosaic_shared_edges_skip_the_outer_frame() -> None:
+    # Scale 150: each pane is 2/3 of the frame and the pair overlaps.
+    rects = [
+        (0.0, 0.0, 200.0, 120.0),
+        (100.0, 0.0, 200.0, 120.0),
+        (0.0, 60.0, 200.0, 120.0),
+        (100.0, 60.0, 200.0, 120.0),
+    ]
+    edges = mosaic_shared_pane_edges(rects)
+    axes = sorted(_edge_axis(edge) for edge in edges)
+    _assert(
+        axes == [("h", 60.0), ("h", 120.0), ("v", 100.0), ("v", 200.0)],
+        axes,
+    )
+    _assert(
+        mosaic_shared_pane_edges([(0.0, 0.0, 100.0, 80.0)]) == [],
+        "a single pane has no shared edge",
+    )
+
+
+def test_mosaic_tiled_seam_is_shared_once() -> None:
+    edges = mosaic_shared_pane_edges(
+        [(0.0, 0.0, 100.0, 80.0), (100.0, 0.0, 100.0, 80.0)]
+    )
+    _assert(len(edges) == 1, edges)
+    _assert(_edge_axis(edges[0]) == ("v", 100.0), edges)
+
+
+def test_mosaic_gapped_cells_keep_solid_frames() -> None:
+    edges = mosaic_shared_pane_edges(
+        [(2.0, 2.0, 90.0, 40.0), (96.0, 2.0, 90.0, 40.0)]
+    )
+    _assert(edges == [], edges)
+
+
+def test_composed_mosaic_dots_shared_edges() -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter
+
+    app = QGuiApplication.instance() or QGuiApplication([])
+    previous = None
+    try:
+        from astro_dwarf.stream_preview import mosaic_frames as current_frames
+
+        previous = current_frames()
+        frames = MosaicFrames()
+        set_mosaic_frames(frames)
+        frames.set_layout(2, 2, 1, True)
+        still = QImage(16, 9, QImage.Format.Format_RGB32)
+        still.fill(QColor(0, 0, 0))
+        for index in range(1, 5):
+            frames.put(index, still)
+        item = MosaicLiveItem()
+        item.composed = True
+        item.horizontalScale = 150
+        item.verticalScale = 150
+        item.accent = QColor(0, 220, 80)
+        item.setWidth(295)
+        item.setHeight(166)
+        item.playing = True
+        image = QImage(295, 166, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        item.paint(painter)
+        painter.end()
+
+        def lit(x: int, y: int) -> bool:
+            color = image.pixelColor(x, y)
+            return color.alpha() > 80 and color.green() > 140 and color.green() > color.red() + 40
+
+        top = sum(1 for x in range(12, 283) if lit(x, 1))
+        _assert(top > 240, f"outer frame should stay solid, lit={top}")
+        # Right edge of the left panes sits inside the right panes (scale 150).
+        best = (0, 0, 0)
+        for seam_x in range(180, 215):
+            lit_count = 0
+            longest = 0
+            run = 0
+            for y in range(12, 154):
+                if lit(seam_x, y):
+                    lit_count += 1
+                    run += 1
+                    longest = max(longest, run)
+                else:
+                    run = 0
+            if lit_count > best[1]:
+                best = (seam_x, lit_count, longest)
+        seam_x, lit_count, longest = best
+        _assert(8 < lit_count < 100, f"shared edge should be dotted, lit={lit_count} at x={seam_x}")
+        _assert(longest < 20, f"shared edge should not be a solid run, longest={longest} at x={seam_x}")
+    finally:
+        set_mosaic_frames(previous)
     del app
 
 
@@ -474,6 +578,14 @@ def test_mosaic_keeps_preview_open_between_panes() -> None:
     _assert(
         not mosaic_capture_continues(live_phase="", worker_running=False, firmware_panes=1),
         "a single stack should freeze when capture ends",
+    )
+    _assert(
+        mosaic_capture_continues(firmware_panes=1, later_custom_panes=True),
+        "a custom mosaic stays on the sheet while later panes are still planned",
+    )
+    _assert(
+        not mosaic_capture_continues(firmware_panes=1, later_custom_panes=False),
+        "the last custom pane can show the finished mosaic",
     )
     _assert(
         mosaic_stack_preview_should_retarget(2, 1, True, False, False),
@@ -1284,6 +1396,10 @@ def test_auto_parameters_follow_the_camera_switch() -> None:
 
 if __name__ == "__main__":
     test_mosaic_live_item_font_pixel_size()
+    test_mosaic_shared_edges_skip_the_outer_frame()
+    test_mosaic_tiled_seam_is_shared_once()
+    test_mosaic_gapped_cells_keep_solid_frames()
+    test_composed_mosaic_dots_shared_edges()
     test_preview_keeps_panorama_tele_while_unfocused()
     test_preview_preserves_dso_after_tracking()
     test_preview_skips_golive_after_tracking()

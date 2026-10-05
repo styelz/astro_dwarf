@@ -29,6 +29,10 @@ from typing import Any
 from .device_telemetry import (
     CMD_ASTRO_GET_DARK_FRAME_LIST,
     CMD_ASTRO_GET_WIDE_DARK_FRAME_LIST,
+    CMD_DELETE_SHOOTING_SCHEDULE,
+    CMD_GET_ALL_SHOOTING_SCHEDULE,
+    CMD_REPLACE_SHOOTING_SCHEDULE,
+    CMD_SYNC_SHOOTING_SCHEDULE,
     CODE_STEP_MOTOR_NEED_RESET,
     DEVICE_OCCUPIED_MESSAGE,
     TelemetryTap,
@@ -4997,7 +5001,10 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
             "Stack",
             wide=str(camera.get("camera") or "") == "wide",
         )
-    _wait_seconds(workflow.get("wait_before_seconds", 0), "Waiting before workflow", step)
+    # A follow-on mosaic pane slews and stacks. The first pane already waited.
+    continuing = bool(session.get("mosaic_continue"))
+    if not continuing:
+        _wait_seconds(workflow.get("wait_before_seconds", 0), "Waiting before workflow", step)
     # Dwarf 3 calibration plate-solves from the polar-home pose. Skipping this
     # after a power-on or leftover stop_motors fails with CALIBRATION_FAILED.
     if workflow.get("calibrate") or workflow.get("polar_align"):
@@ -5059,8 +5066,9 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     step("Set binning", "set_binning", firmware_binning(camera["binning"]))
     _remember_stack_settings(camera)
     _wait_seconds(5, "Waiting for capture camera settings to apply", step)
-    _wait_seconds(workflow.get("wait_after_seconds", 10), "Waiting after setup", step)
-    _wait_seconds(2, "Waiting before capture", step)
+    if not continuing:
+        _wait_seconds(workflow.get("wait_after_seconds", 10), "Waiting after setup", step)
+        _wait_seconds(2, "Waiting before capture", step)
     _wait_for_capture_slot(step)
     ir_index = _ir_index(camera.get("ir_filter"))
     firmware = _firmware_mosaic_layout(session)
@@ -7166,10 +7174,107 @@ def stop_polar_position() -> bool:
     return ok
 
 
+_MODULE_SHOOTING_SCHEDULE = 13
+_SCHEDULE_REPLY_WAIT_S = 8.0
+
+
+def _wait_schedule_reply(command: int, since: float) -> dict[str, Any]:
+    if _tap is None:
+        return {"ok": False, "error": "Telescope telemetry is unavailable"}
+    deadline = time.monotonic() + _SCHEDULE_REPLY_WAIT_S
+    while time.monotonic() < deadline:
+        reply = _tap.schedule_reply_after(command, since)
+        if reply is not None:
+            return reply
+        time.sleep(0.05)
+    return {"ok": False, "error": "The telescope did not answer the schedule"}
+
+
+def _exchange_schedule(request: Any, command: int) -> dict[str, Any]:
+    """Send one module-13 request and return the decoded reply."""
+    since = time.monotonic()
+    sent = send_without_response(
+        request,
+        command,
+        _MODULE_SHOOTING_SCHEDULE,
+        timeout=_SCHEDULE_REPLY_WAIT_S,
+    )
+    _forget_pending_command(command)
+    if not sent:
+        return {"ok": False, "error": "The schedule was not sent"}
+    return _wait_schedule_reply(command, since)
+
+
+def get_shooting_schedules() -> dict[str, Any]:
+    from dwarf_python_api.proto import shooting_schedule_pb2
+
+    return _exchange_schedule(
+        shooting_schedule_pb2.ReqGetAllShootingSchedule(),
+        CMD_GET_ALL_SHOOTING_SCHEDULE,
+    )
+
+
+def _delete_shooting_schedules(schedule_ids: list[str]) -> dict[str, Any]:
+    from dwarf_python_api.proto import shooting_schedule_pb2
+
+    wanted = [item for item in schedule_ids if item]
+    if not wanted:
+        return {"ok": True, "deleted": True}
+    listed = get_shooting_schedules()
+    if listed.get("ok"):
+        present = {
+            str(item.get("schedule_id") or "")
+            for item in listed.get("schedules") or []
+            if isinstance(item, dict)
+        }
+        wanted = [item for item in wanted if item in present]
+        if not wanted:
+            return {"ok": True, "deleted": True}
+    last: dict[str, Any] = {"ok": True, "deleted": True}
+    for schedule_id in wanted:
+        request = shooting_schedule_pb2.ReqDeleteShootingSchedule(id=schedule_id, password="")
+        last = _exchange_schedule(request, CMD_DELETE_SHOOTING_SCHEDULE)
+        if not last.get("ok"):
+            return last
+    last["deleted"] = True
+    return last
+
+
+def sync_shooting_schedule(message: dict[str, Any]) -> dict[str, Any]:
+    """Copy one deep-sky plan onto this telescope, or remove it."""
+    from dwarf_python_api.proto import shooting_schedule_pb2
+
+    from .device_schedule import encode_shooting_schedule
+
+    schedule = message.get("schedule")
+    replace_ids = [str(item) for item in (message.get("replace_ids") or []) if str(item)]
+    if not isinstance(schedule, dict) or not schedule.get("shooting_tasks"):
+        schedule_id = str(message.get("schedule_id") or "")
+        ids = list(replace_ids)
+        if schedule_id and schedule_id not in ids:
+            ids.append(schedule_id)
+        return _delete_shooting_schedules(ids)
+    try:
+        encoded = encode_shooting_schedule(schedule, str(_device.get("model") or ""))
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if replace_ids:
+        request = shooting_schedule_pb2.ReqReplaceShootingSchedule(shooting_schedule=encoded)
+        command = CMD_REPLACE_SHOOTING_SCHEDULE
+    else:
+        request = shooting_schedule_pb2.ReqSyncShootingSchedule(shooting_schedule=encoded)
+        command = CMD_SYNC_SHOOTING_SCHEDULE
+    return _exchange_schedule(request, command)
+
+
 def dispatch(message: dict[str, Any]) -> Any:
     command = message["command"]
     if command == "configure":
         return configure(message["device"])
+    if command == "sync_shooting_schedule":
+        return sync_shooting_schedule(message)
+    if command == "get_shooting_schedules":
+        return get_shooting_schedules()
     if command == "connect":
         claimed = message.get("claimed_ips")
         if claimed is not None:
@@ -7179,6 +7284,8 @@ def dispatch(message: dict[str, Any]) -> Any:
         session = dict(message["session"] or {})
         if message.get("stack_format") is not None:
             session["stack_format"] = message.get("stack_format")
+        if message.get("mosaic_continue"):
+            session["mosaic_continue"] = True
         return run_session(session, prompt_darks=bool(message.get("prompt_darks")))
     if command == "stop_all":
         return stop_all()

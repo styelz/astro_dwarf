@@ -557,7 +557,7 @@ Item {
                     foregroundColor: skyPage.deviceMode ? Theme.accent : Theme.textSecondary
                     accessibleDescription: "Device mosaic"
                     tooltip: skyPage.deviceMosaicAllowed
-                             ? "Stretch the tele field from 1.0× to 1.8× on each axis. The telescope shoots one pane at 1.0× and two panes above that, four views at most. Equatorial mode keeps the field from rotating between panes."
+                             ? "Stretch the tele field from 1.0× to 1.8× on each axis. The telescope shoots one pane at 1.0× and two panes above that, four views at most. Equatorial alignment is required before it starts."
                              : "Device mosaic uses the telephoto field. Switch the camera to Tele. Custom mosaic stays available on Wide."
                     onClicked: {
                         if (!skyPage.deviceMosaicAllowed)
@@ -765,7 +765,7 @@ Item {
                 tooltip: !skyPage.mapHasTarget
                          ? "Select a target in the sky map first"
                          : skyPage.deviceMode && skyPage.mosaicGrid
-                           ? "One session at the centre. The telescope frames " + backend.deviceMosaicCaption + ". Or press STACK on Control to start it now. Equatorial mode is recommended."
+                           ? "One session at the centre. The telescope frames " + backend.deviceMosaicCaption + ". Or press STACK on Control to start it now. Equatorial alignment is required."
                            : skyPage.mosaicGrid
                            ? "Create scheduled mosaic pane sessions from the selected target. Or press STACK on Control to capture the grid now. " + skyPage.mosaicHint
                            : "Create a single session from the selected target"

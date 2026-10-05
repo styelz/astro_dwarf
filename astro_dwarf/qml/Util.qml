@@ -596,6 +596,8 @@ QtObject {
         case "video": return "VIDEO"
         case "burst": return "BURST"
         case "panorama": return "PANO"
+        case "mosaic": return "MOSAIC"
+        case "stitch": return "STITCH"
         case "astro": return "STACK"
         case "photo": return "PHOTO"
         default:

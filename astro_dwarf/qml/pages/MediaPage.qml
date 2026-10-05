@@ -19,6 +19,7 @@ Item {
     readonly property bool onDevice: backend.mediaSource !== "local"
     readonly property bool deviceRootActive: backend.mediaSource === "folders" && backend.mediaFolderParent === ""
     readonly property bool inNestedFolder: backend.mediaSource === "folders" && backend.mediaFolderParent !== ""
+    readonly property bool inMosaicGroup: String(backend.mediaMosaicGroup || "") !== ""
     readonly property bool showMediaTools: mediaPage.inNestedFolder || (!mediaPage.albumLocked && mediaPage.items.length > 0)
     readonly property bool albumLocked: backend.mediaLocked && mediaPage.onDevice
     readonly property bool mediaError: {
@@ -77,7 +78,7 @@ Item {
     }
 
     function sourceKey() {
-        return backend.selectedDeviceId + ":" + backend.mediaSource + ":" + (backend.mediaFolder || "")
+        return backend.selectedDeviceId + ":" + backend.mediaSource + ":" + (backend.mediaFolder || "") + ":" + (backend.mediaMosaicGroup || "")
     }
     function refresh() {
         mediaPage.loadedKey = mediaPage.sourceKey()
@@ -101,6 +102,13 @@ Item {
     function openSelected() {
         if (!backend.selectedMedia || !backend.selectedMedia.id)
             return
+        if (Util.mediaKind(backend.selectedMedia) === "mosaic") {
+            mediaPage.clearSelection()
+            lightbox.close()
+            backend.openMosaicMedia(String(backend.selectedMedia.group_id || ""))
+            mediaPage.loadedKey = mediaPage.sourceKey()
+            return
+        }
         if (Util.isFolderMedia(backend.selectedMedia) && Util.mediaKind(backend.selectedMedia) !== "panorama") {
             mediaPage.clearSelection()
             lightbox.close()
@@ -219,13 +227,13 @@ Item {
         const thumb = String(item.thumbnail_url || "")
         if (Util.isPreviewImageName(thumb))
             return thumb
-        if (Util.isFolderMedia(item))
+        if (Util.isFolderMedia(item) && Util.mediaKind(item) !== "mosaic")
             return ""
         const image = String(item.image_url || "")
         return Util.isPreviewImageName(image) ? image : ""
     }
     function tileImageFallback(item) {
-        if (!item || Util.isVideoMedia(item) || Util.isFolderMedia(item))
+        if (!item || Util.isVideoMedia(item) || (Util.isFolderMedia(item) && Util.mediaKind(item) !== "mosaic"))
             return ""
         const thumb = String(item.thumbnail_url || "")
         const image = String(item.image_url || "")
@@ -341,9 +349,10 @@ Item {
             title: mediaPage.albumLocked
                 ? "ON DEVICE  ·  UNAVAILABLE"
                 : (backend.mediaSource === "local" ? "LOCAL ALBUM"
+                    : (mediaPage.inMosaicGroup ? ("ON DEVICE  ·  " + (backend.mediaMosaicTitle || "MOSAIC"))
                     : (backend.mediaSource === "astro" ? "ON DEVICE  ·  ASTRO SESSIONS"
                         : (backend.mediaSource === "stills" ? "ON DEVICE  ·  CAMERA"
-                            : ("ON DEVICE  ·  " + (backend.mediaFolder ? String(backend.mediaFolder).replace(/\\/g, "/").split("/").filter(Boolean).slice(-1)[0] || "FOLDERS" : "FOLDERS")))))
+                            : ("ON DEVICE  ·  " + (backend.mediaFolder ? String(backend.mediaFolder).replace(/\\/g, "/").split("/").filter(Boolean).slice(-1)[0] || "FOLDERS" : "FOLDERS"))))))
 
             Text {
                 Layout.fillWidth: true
@@ -361,14 +370,19 @@ Item {
                     id: mediaBackButton
                     objectName: "mediaBackButton"
                     text: "BACK"
-                    visible: mediaPage.inNestedFolder
-                    enabled: !mediaPage.albumLocked && !mediaPage.busy && mediaPage.scopeOnline
+                    visible: mediaPage.inNestedFolder || mediaPage.inMosaicGroup
+                    enabled: mediaPage.inMosaicGroup
+                        ? !mediaPage.busy
+                        : (!mediaPage.albumLocked && !mediaPage.busy && mediaPage.scopeOnline)
                     implicitHeight: Theme.px(28)
-                    tooltip: "Returns to the previous album folder"
+                    tooltip: mediaPage.inMosaicGroup ? "Returns to the astronomy sessions" : "Returns to the previous album folder"
                     onClicked: {
                         mediaPage.clearSelection()
                         lightbox.close()
-                        backend.openMediaFolderParent()
+                        if (mediaPage.inMosaicGroup)
+                            backend.closeMosaicMedia()
+                        else
+                            backend.openMediaFolderParent()
                         mediaPage.loadedKey = mediaPage.sourceKey()
                     }
                 }
@@ -553,7 +567,7 @@ Item {
                                 }
                                 Text {
                                     Layout.fillWidth: true
-                                    text: tile.modelData.date || (tile.modelData.downloaded ? "SAVED LOCALLY" : (backend.mediaSource === "local" ? "" : "ON DEVICE"))
+                                    text: tile.modelData.subtitle || tile.modelData.date || (tile.modelData.downloaded ? "SAVED LOCALLY" : (backend.mediaSource === "local" ? "" : "ON DEVICE"))
                                     color: Theme.textSecondary
                                     font.pixelSize: Theme.fontXs
                                     elide: Text.ElideRight

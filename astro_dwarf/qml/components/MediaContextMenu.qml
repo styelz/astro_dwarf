@@ -7,6 +7,12 @@ HudMenu {
     property var selectionItems: []
     property var selectedMap: ({})
     readonly property string itemId: String((itemData && itemData.id) || "")
+    readonly property string itemKind: String((itemData && itemData.kind) || "").toLowerCase()
+    readonly property string mosaicGroupId: {
+        if (mediaContextMenu.itemKind === "mosaic")
+            return String((itemData && itemData.group_id) || "")
+        return String(backend.mediaMosaicGroup || "")
+    }
     readonly property string fileName: String((itemData && (itemData.target || itemData.file_name)) || "")
     readonly property string localPath: String((itemData && itemData.local_path) || "")
     readonly property int selectedCount: Util.idSetCount(selectedMap)
@@ -27,9 +33,17 @@ HudMenu {
         onTriggered: mediaContextMenu.openRequested(mediaContextMenu.itemData)
     }
     HudMenuItem {
+        objectName: "media-stitch"
+        text: "Stitch mosaic"
+        glyph: "\uE8B9"
+        visible: mediaContextMenu.mosaicGroupId !== "" && mediaContextMenu.itemKind !== "stitch"
+        enabled: mediaContextMenu.mosaicGroupId !== "" && mediaContextMenu.itemKind !== "stitch" && backend.stitchStatus !== "working"
+        onTriggered: backend.stitchMediaGroup(mediaContextMenu.mosaicGroupId)
+    }
+    HudMenuItem {
         text: "Download"
         glyph: "\uE896"
-        enabled: mediaContextMenu.onDevice && !mediaContextMenu.albumLocked && !mediaContextMenu.mediaBusy && mediaContextMenu.scopeOnline && mediaContextMenu.itemId !== ""
+        enabled: mediaContextMenu.onDevice && !mediaContextMenu.albumLocked && !mediaContextMenu.mediaBusy && mediaContextMenu.scopeOnline && mediaContextMenu.itemId !== "" && mediaContextMenu.itemKind !== "mosaic" && mediaContextMenu.itemKind !== "stitch"
         onTriggered: mediaContextMenu.downloadRequested(mediaContextMenu.itemData)
     }
     HudMenuItem {
@@ -73,7 +87,7 @@ HudMenu {
         text: "Delete"
         glyph: "\uE74D"
         destructive: true
-        enabled: !mediaContextMenu.albumLocked && !mediaContextMenu.mediaBusy && mediaContextMenu.itemId !== "" && (!mediaContextMenu.onDevice || mediaContextMenu.scopeOnline)
+        enabled: !mediaContextMenu.albumLocked && !mediaContextMenu.mediaBusy && mediaContextMenu.itemId !== "" && mediaContextMenu.itemKind !== "mosaic" && (!mediaContextMenu.onDevice || mediaContextMenu.scopeOnline)
         onTriggered: mediaContextMenu.deleteRequested(mediaContextMenu.itemData)
     }
 }

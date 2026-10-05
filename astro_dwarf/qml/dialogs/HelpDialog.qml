@@ -75,7 +75,7 @@ Dialog {
         {
             title: "PLAN A MOSAIC",
             rows: [
-                { gesture: "STEP 1", detail: "On SKY, pick CUSTOM (this computer plans columns, rows, and overlap — each pane is its own GOTO and stack) or DEVICE (telephoto only). DEVICE shoots one pane at 1.0× and two panes on an axis above that, four at most. Equatorial mode keeps those panes from rotating." },
+                { gesture: "STEP 1", detail: "On SKY, pick CUSTOM (this computer plans columns, rows, and overlap — each pane is its own GOTO and stack) or DEVICE (telephoto only). DEVICE shoots one pane at 1.0× and two panes on an axis above that, four at most. Starting a device mosaic asks for equatorial alignment when the mount is still alt-az." },
                 { gesture: "STEP 2", detail: "Size the grid. CUSTOM: set COL, ROW, and OVL. DEVICE: set H and V from 1.0× to 1.8×." },
                 { gesture: "STEP 3", detail: "On an equatorial mount, PA is camera-up, east of north. Unset is 0° N-up north of the equator and 180° S-up south of it. Alt-az hides PA and follows the zenith." },
                 { gesture: "STEP 4", detail: "Pick the centre target the same way as a single session." },
