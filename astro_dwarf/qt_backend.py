@@ -166,12 +166,16 @@ from .services import (
     mosaic_session_footprints,
     mosaic_stitch_cell,
     mosaic_position_angle,
+    copy_observing_night,
     copy_session_name,
     duplicate_session_drafts,
     duplicate_session_scope,
+    history_ids_to_discard,
     mosaic_south_up,
     next_free_start,
     observing_date,
+    planned_tonight,
+    scheduler_due_session,
     pane_sort_key,
     planned_reorder_block,
     insert_reorder_block,
@@ -2468,6 +2472,7 @@ class AppBackend(QObject):
 
     def _worker_status_changed(self) -> None:
         selected_offline = False
+        deferred: list[tuple[str, bool, Any]] = []
         for device_id, worker in self._workers.items():
             if worker.connected:
                 continue
@@ -2480,7 +2485,13 @@ class AppBackend(QObject):
             self._device_telemetry.pop(device_id, None)
             self._telemetry_updated.pop(device_id, None)
             self._hold_session_capture.discard(device_id)
-            self._pending_session_finish.pop(device_id, None)
+            # A stop can finish the worker before stop_astro returns. The link
+            # dying in that gap used to drop the result and leave the row Running.
+            pending_finish = self._pending_session_finish.pop(device_id, None)
+            if pending_finish is not None:
+                deferred.append(pending_finish)
+        for session_id, ok, result in deferred:
+            self._finalize_session(session_id, ok, result)
         if selected_offline:
             self.stopPreview()
             if self._media_source != "local" and self._album_busy == "list":
@@ -10880,27 +10891,61 @@ class AppBackend(QObject):
         self.store.transition(session_id, SessionStatus.SKIPPED, current_step="Skipped")
         self._emit_sessions_changed()
 
-    @Slot(str)
-    def resetSession(self, session_id: str) -> None:
-        session = self.store.sessions.get(session_id)
-        if not session:
-            return
-        if session.status == SessionStatus.RUNNING:
+    def _reset_sessions(self, session_ids: list, discard_history: bool) -> None:
+        reset_ids: list[str] = []
+        running = 0
+        planned = 0
+        for session_id in self._normalize_ids(session_ids):
+            session = self.store.sessions.get(session_id)
+            if not session:
+                continue
+            if session.status == SessionStatus.RUNNING:
+                running += 1
+                continue
+            if session.status == SessionStatus.PLANNED:
+                planned += 1
+                continue
+            saved = self._save_session(replace(
+                session,
+                status=SessionStatus.PLANNED,
+                current_step="Waiting",
+                actual_started_at=None,
+                actual_ended_at=None,
+                outcome="",
+            ), notify=False)
+            self._sequence_mosaic_group(saved, notify=False)
+            reset_ids.append(saved.id)
+        if discard_history and reset_ids:
+            discarded = 0
+            for record_id in history_ids_to_discard(self.store.history.all(), reset_ids, True):
+                if self.store.history.delete(record_id):
+                    discarded += 1
+            if discarded:
+                self._emit_history_changed()
+        if reset_ids:
+            self._emit_sessions_changed()
+        if running and not reset_ids:
             self._toast("Stop the running session first", "warning")
             return
-        if session.status == SessionStatus.PLANNED:
+        if planned and not reset_ids and not running:
             self._toast("This session is already planned", "info")
             return
-        saved = self._save_session(replace(
-            session,
-            status=SessionStatus.PLANNED,
-            current_step="Waiting",
-            actual_started_at=None,
-            actual_ended_at=None,
-            outcome="",
-        ))
-        self._sequence_mosaic_group(saved, notify=True)
-        self._toast("Session reset", "success")
+        if not reset_ids:
+            return
+        if running:
+            self._toast(f"Reset {len(reset_ids)}; left running sessions in place", "warning")
+            return
+        self._toast("Session reset" if len(reset_ids) == 1 else f"Reset {len(reset_ids)} sessions", "success")
+
+    @Slot(str)
+    @Slot(str, bool)
+    def resetSession(self, session_id: str, discard_history: bool = False) -> None:
+        self._reset_sessions([session_id], bool(discard_history))
+
+    @Slot(list, bool)
+    @Slot("QVariantList", bool)
+    def resetSessions(self, session_ids: list, discard_history: bool = False) -> None:
+        self._reset_sessions(session_ids, bool(discard_history))
 
     def _remember_control_settings(self, device_id: str, telemetry: dict[str, Any] | None = None) -> None:
         if (
@@ -14740,6 +14785,45 @@ class AppBackend(QObject):
         self._toast(f"Scheduled {count} pane{'s' if count != 1 else ''} on {device.name}", "success")
         return True
 
+    @Slot(str, str, result=bool)
+    def copyObservingNight(self, device_id: str, night: str) -> bool:
+        """Copy one telescope's planned sessions onto the next observing night."""
+        device = self._device_or_selected(device_id)
+        if device is None:
+            self._toast("Select a telescope first", "error")
+            return False
+        tz = self._zone_for(device)
+        cutoff = self._cutoff_hour()
+        source = str(night or "").strip()
+        if not source:
+            source = observing_date(datetime.now(tz).isoformat(), cutoff, tz)
+        try:
+            date.fromisoformat(source)
+        except ValueError:
+            self._toast("That night is not a date", "error")
+            return False
+        drafts = copy_observing_night(
+            self.store.sessions.all(),
+            device_id=device.id,
+            night=source,
+            cutoff_hour=cutoff,
+            tz=tz,
+        )
+        if not drafts:
+            self._toast("No planned sessions on this night", "info")
+            return False
+        try:
+            self._commit_device_sessions(drafts, device)
+        except ValueError as exc:
+            self._toast(str(exc), "warning")
+            return False
+        count = len(drafts)
+        self._toast(
+            f"Copied {count} planned session{'s' if count != 1 else ''} to the next night",
+            "success",
+        )
+        return True
+
     @Slot(str)
     def importTelescopius(self, raw_path: str) -> None:
         path = self._local_path(raw_path)
@@ -15111,9 +15195,10 @@ class AppBackend(QObject):
     def _early_mosaic_pane(self, device_id: str, now: datetime) -> Session | None:
         """Follow-on pane to start before its clock time once this mosaic has begun."""
         upcoming = self.store.upcoming(device_id)
-        if not upcoming:
+        tonight = planned_tonight(upcoming, now, self._cutoff_hour())
+        if not tonight:
             return None
-        candidate = upcoming[0]
+        candidate = tonight[0]
         try:
             if parse_in_zone(candidate.scheduled_start, now.tzinfo) <= now:
                 return None
@@ -15190,8 +15275,8 @@ class AppBackend(QObject):
             tz = self._zone_for(device)
             now = datetime.now(tz)
             upcoming = self.store.upcoming(device.id)
-            due = bool(upcoming) and parse_in_zone(upcoming[0].scheduled_start, tz) <= now
-            session = upcoming[0] if due else None
+            session = scheduler_due_session(upcoming, now, self._cutoff_hour())
+            due = session is not None
             firmware_capturing = self._telemetry_capturing(device.id)
             mosaic_capturing = firmware_capturing
             if firmware_capturing and live:

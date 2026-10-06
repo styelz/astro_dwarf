@@ -12,9 +12,16 @@ RowLayout {
     property var comboModel: []
     property int comboIndex: 0
     property int comboWidth: Theme.px(160)
+    property bool showCombo: true
+    property bool checkVisible: false
+    property string checkText: ""
+    property string checkObjectName: ""
+    property string checkTooltip: ""
+    property bool checkOn: false
     property string query: ""
     property string pendingQuery: ""
     signal comboActivated(int index)
+    signal checkToggled(bool checked)
 
     function clearSearch() {
         searchField.text = ""
@@ -43,12 +50,21 @@ RowLayout {
         }
     }
     HudCombo {
+        visible: bar.showCombo
         objectName: bar.comboObjectName
-        Layout.preferredWidth: bar.comboWidth
-        Layout.maximumWidth: bar.comboWidth
+        Layout.preferredWidth: bar.showCombo ? bar.comboWidth : 0
+        Layout.maximumWidth: bar.showCombo ? bar.comboWidth : 0
         accessibleName: bar.comboAccessibleName
         model: bar.comboModel
         currentIndex: bar.comboIndex
         onActivated: bar.comboActivated(currentIndex)
+    }
+    HudCheck {
+        visible: bar.checkVisible
+        objectName: bar.checkObjectName
+        text: bar.checkText
+        tooltip: bar.checkTooltip
+        checked: bar.checkOn
+        onToggled: bar.checkToggled(checked)
     }
 }

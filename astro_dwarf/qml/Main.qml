@@ -133,8 +133,8 @@ ApplicationWindow {
         || deviceMosaicEqDialog.visible
         || darkFrameDialog.visible
         || eqSetupDialog.visible
-        || scheduleTemplateDialog.visible
-        || duplicateSessionDialog.visible
+        || placeOnNightDialog.visible
+        || resetHistoryDialog.visible
         || sessionDialog.visible
         || helpDialog.visible
     property bool macKeyboardReady: false
@@ -221,6 +221,9 @@ ApplicationWindow {
             ? "Delete " + ids.length + " " + plural + " from the local album? This cannot be undone."
             : "Delete " + ids.length + " " + plural + "? This cannot be undone."
         confirmDialog.open()
+    }
+    function askResetSessions(ids) {
+        resetHistoryDialog.openFor(ids)
     }
     function confirmRemoveDevice(deviceId) {
         const id = String(deviceId || backend.selectedDeviceId || "")
@@ -571,7 +574,7 @@ ApplicationWindow {
                 if (!item)
                     return "missing"
                 if (op === "schedule") {
-                    scheduleTemplateDialog.openFor(item)
+                    placeOnNightDialog.openForTemplate(item)
                     return "ok"
                 }
                 sessionDialog.openTemplate(item)
@@ -1746,8 +1749,8 @@ ApplicationWindow {
         canRun: function(op) { return root.commandEnabled(op) }
         runAction: function(op, label) { root.requestDeviceAction(op, label) }
     }
-    ScheduleTemplateDialog { id: scheduleTemplateDialog }
-    DuplicateSessionDialog { id: duplicateSessionDialog }
+    PlaceOnNightDialog { id: placeOnNightDialog }
+    ResetHistoryDialog { id: resetHistoryDialog }
 
     FileDialog {
         id: telescopiusDialog

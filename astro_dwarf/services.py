@@ -4338,6 +4338,52 @@ def observing_date(scheduled_start: str, cutoff_hour: int = 12, tz: ZoneInfo | s
     return value.date().isoformat()
 
 
+def planned_tonight(upcoming: list[Session], now: datetime, cutoff_hour: int = 12) -> list[Session]:
+    """Planned rows that belong to the observing night containing ``now``.
+
+    ``upcoming`` is already ordered by start time. Rows from another night stay
+    in the queue and are left out of this list.
+    """
+    if now.tzinfo is None:
+        return []
+    zone = now.tzinfo
+    try:
+        tonight = observing_date(now.isoformat(), cutoff_hour, zone)
+    except (TypeError, ValueError):
+        return []
+    chosen: list[Session] = []
+    for session in upcoming:
+        try:
+            if observing_date(session.scheduled_start, cutoff_hour, zone) == tonight:
+                chosen.append(session)
+        except (TypeError, ValueError):
+            continue
+    return chosen
+
+
+def scheduler_due_session(
+    upcoming: list[Session],
+    now: datetime,
+    cutoff_hour: int = 12,
+) -> Session | None:
+    """Earliest planned session for this observing night whose start has passed.
+
+    An overdue row from a previous night is not due. A later row tonight is not
+    due until the earliest one tonight has reached its start time.
+    """
+    if now.tzinfo is None:
+        return None
+    for session in planned_tonight(upcoming, now, cutoff_hour):
+        try:
+            start = parse_in_zone(session.scheduled_start, now.tzinfo)
+        except (TypeError, ValueError):
+            continue
+        if start <= now:
+            return session
+        return None
+    return None
+
+
 def mosaic_pane_workflow(workflow: Workflow, index: int) -> Workflow:
     """First pane keeps setup. Later panes only slew and stack.
 
@@ -4553,6 +4599,91 @@ def duplicate_session_drafts(
             created_at=utc_now(),
         ))
     return scope, drafts
+
+
+def history_ids_for_sessions(records: list[Any], session_ids: list[str]) -> list[str]:
+    """History row ids recorded for these sessions."""
+    wanted = {str(item).strip() for item in session_ids if str(item or "").strip()}
+    if not wanted:
+        return []
+    found: list[str] = []
+    for record in records:
+        session_id = str(getattr(record, "session_id", "") or "")
+        if session_id not in wanted:
+            continue
+        record_id = str(getattr(record, "id", "") or "")
+        if record_id:
+            found.append(record_id)
+    return found
+
+
+def history_ids_to_discard(records: list[Any], session_ids: list[str], discard: bool) -> list[str]:
+    """Rows to delete when resetting. Keeping the recorded run deletes nothing."""
+    if not discard:
+        return []
+    return history_ids_for_sessions(records, session_ids)
+
+
+def copy_observing_night(
+    sessions: list[Session],
+    *,
+    device_id: str,
+    night: str,
+    cutoff_hour: int,
+    tz: ZoneInfo,
+) -> list[Session]:
+    """Planned sessions for one telescope on ``night``, shifted onto the next night.
+
+    Membership uses the observing-day cutoff. The copies are new rows at the
+    same clock time one day later. Overlap with whatever is already on the
+    destination night is left to the existing schedule check.
+    """
+    source_night = str(night or "").strip()
+    owner = str(device_id or "").strip()
+    if not owner:
+        return []
+    try:
+        datetime.fromisoformat(source_night)
+    except ValueError:
+        return []
+    chosen: list[Session] = []
+    for item in sessions:
+        if item.device_id != owner or item.status != SessionStatus.PLANNED:
+            continue
+        try:
+            if observing_date(item.scheduled_start, cutoff_hour, tz) != source_night:
+                continue
+        except (TypeError, ValueError, OSError):
+            continue
+        chosen.append(item)
+    groups: dict[str, str] = {}
+    drafts: list[Session] = []
+    for item in chosen:
+        try:
+            start = parse_in_zone(item.scheduled_start, tz) + timedelta(days=1)
+        except (TypeError, ValueError, OSError):
+            continue
+        group_id = str(item.mosaic.group_id or "")
+        mosaic = item.mosaic
+        if group_id:
+            mapped = groups.get(group_id)
+            if not mapped:
+                mapped = new_mosaic_group_id(item.target.name or item.name)
+                groups[group_id] = mapped
+            mosaic = replace(item.mosaic, group_id=mapped)
+        drafts.append(replace(
+            item,
+            id=new_id(),
+            scheduled_start=store_local_iso(start, tz),
+            mosaic=mosaic,
+            status=SessionStatus.PLANNED,
+            current_step="Waiting",
+            actual_started_at=None,
+            actual_ended_at=None,
+            outcome="",
+            created_at=utc_now(),
+        ))
+    return drafts
 
 
 def mosaic_south_up(latitude: Any) -> bool:

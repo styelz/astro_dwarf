@@ -36,7 +36,8 @@ Item {
     id: root
     property int dayCount: -1
     property string dayOrder: ""
-    property int hiddenDone: -1
+    property int showsActual: -1
+    property int hidesPlannedSlot: -1
     property int keptPlanned: -1
     property int scopedCount: -1
     property int allScopeCount: -1
@@ -45,6 +46,12 @@ Item {
     property int plannedCount: -1
     property string multiOrder: ""
     property int bulkDayCount: -1
+    property string slipId: ""
+    property string slipEpoch: ""
+    property int slipHidden: -1
+    property string labTimeline: ""
+    property string labQueue: ""
+    property string labHistory: ""
     Component.onCompleted: {
         const sessions = [
             {id: "done-run", device_id: "scope", observing_date: "2026-09-20", status: "done", start_epoch_ms: 3000},
@@ -62,7 +69,8 @@ Item {
         const day = buckets["2026-09-20"] || []
         root.dayCount = day.length
         root.dayOrder = day.map(function(item) { return item.id }).join(",")
-        root.hiddenDone = day.some(function(item) { return item.id === "h-done" }) ? 1 : 0
+        root.showsActual = day.some(function(item) { return item.id === "h-done" }) ? 1 : 0
+        root.hidesPlannedSlot = day.some(function(item) { return item.id === "done-run" }) ? 0 : 1
         root.keptPlanned = day.some(function(item) { return item.id === "h-plan" }) ? 1 : 0
         root.scopedCount = Util.calendarBucketCount(buckets, "")
         const all = Util.calendarDayBuckets(sessions, history, true, true, "scope")
@@ -82,11 +90,34 @@ Item {
             })
             bulkHistory.push({
                 id: "h" + i, session_id: "s" + i, device_id: "scope", from_history: true,
-                observing_date: "2026-09-20", start_epoch_ms: i
+                observing_date: "2026-09-20", start_epoch_ms: i + 1
             })
         }
         const bulk = Util.calendarDayBuckets(bulkSessions, bulkHistory, true, false, "scope")
         root.bulkDayCount = (bulk["2026-09-20"] || []).length
+        const blocks = [
+            {id: "plan-block", device_id: "lab", observing_date: "2026-10-06", status: "planned", start_epoch_ms: 1000},
+            {id: "run-block", device_id: "lab", observing_date: "2026-10-06", status: "running", start_epoch_ms: 2000},
+            {id: "fin-block", device_id: "lab", observing_date: "2026-10-06", status: "done", start_epoch_ms: 3000},
+            {id: "err-block", device_id: "lab", observing_date: "2026-10-06", status: "error", start_epoch_ms: 4000},
+            {id: "skip-block", device_id: "lab", observing_date: "2026-10-06", status: "skipped", start_epoch_ms: 5000},
+            {id: "slip-session", device_id: "scope", observing_date: "2026-09-22", status: "done", start_epoch_ms: 1000}
+        ]
+        const blockHistory = [
+            {id: "fin-history", session_id: "fin-block", device_id: "lab", from_history: true, observing_date: "2026-10-06", status: "done", start_epoch_ms: 8000, end_epoch_ms: 9500},
+            {id: "slip-history", session_id: "slip-session", device_id: "scope", from_history: true, observing_date: "2026-09-22", start_epoch_ms: 9000, end_epoch_ms: 12000}
+        ]
+        const slipShown = Util.calendarDayBuckets(blocks, blockHistory, true, false, "scope")
+        const slipDay = slipShown["2026-09-22"] || []
+        root.slipId = slipDay.map(function(item) { return item.id }).join(",")
+        root.slipEpoch = slipDay.length ? String(slipDay[0].start_epoch_ms) : ""
+        const slipQuiet = Util.calendarDayBuckets(blocks, blockHistory, false, false, "scope")
+        root.slipHidden = (slipQuiet["2026-09-22"] || []).length
+        const labPlan = Util.calendarDayBuckets(blocks, blockHistory, false, false, "lab")
+        root.labTimeline = (labPlan["2026-10-06"] || []).map(function(item) { return item.id }).join(",")
+        const labRows = blocks.filter(function(item) { return item.device_id === "lab" })
+        root.labQueue = Util.filterSessionQueue(labRows, "", false).map(function(item) { return item.id }).join(",")
+        root.labHistory = blockHistory.filter(function(item) { return item.device_id === "lab" }).map(function(item) { return item.session_id }).join(",")
     }
 }
 """
@@ -104,13 +135,14 @@ Item {
 
 def test_calendar_buckets_index_each_night_once() -> None:
     _engine, _component, host = _probe()
-    _assert(int(host.property("dayCount")) == 3, "session rows plus a still-planned history row")
-    _assert(str(host.property("dayOrder") or "") == "plan-run,h-plan,done-run", host.property("dayOrder"))
-    _assert(int(host.property("hiddenDone")) == 0, "finished session hides its history row")
+    _assert(int(host.property("dayCount")) == 3, "plan, kept history, and the actual finished run")
+    _assert(str(host.property("dayOrder") or "") == "plan-run,h-plan,h-done", host.property("dayOrder"))
+    _assert(int(host.property("showsActual")) == 1, "finished run is drawn from history")
+    _assert(int(host.property("hidesPlannedSlot")) == 1, "finished session leaves the planned slot")
     _assert(int(host.property("keptPlanned")) == 1, "planned session keeps a separate history row")
     _assert(int(host.property("scopedCount")) == 4, "other telescope stays out of this scope")
     _assert(int(host.property("allScopeCount")) == 2, "all telescopes include the other night")
-    _assert(int(host.property("noHistoryCount")) == 4, "history toggle leaves the session rows")
+    _assert(int(host.property("noHistoryCount")) == 3, "finished sessions leave when history is hidden")
     _assert(int(host.property("monthCount")) == 3, "month count stays on September")
     _assert(int(host.property("plannedCount")) == 2, "planned count ignores history and finished runs")
     _assert(
@@ -118,3 +150,9 @@ def test_calendar_buckets_index_each_night_once() -> None:
         host.property("multiOrder"),
     )
     _assert(int(host.property("bulkDayCount")) == 2000, "finished runs do not add a second history row")
+    _assert(str(host.property("slipId") or "") == "slip-history", host.property("slipId"))
+    _assert(str(host.property("slipEpoch") or "") == "9000", host.property("slipEpoch"))
+    _assert(int(host.property("slipHidden")) == 0, "a finished run stays off the plan")
+    _assert(str(host.property("labTimeline") or "") == "plan-block,run-block", host.property("labTimeline"))
+    _assert(str(host.property("labQueue") or "") == "plan-block,run-block", host.property("labQueue"))
+    _assert(str(host.property("labHistory") or "") == "fin-block", host.property("labHistory"))

@@ -37,6 +37,8 @@ Item {
     property string ids: ""
     property string lenses: ""
     property string hay: ""
+    property string queue: ""
+    property string place: ""
     Component.onCompleted: {
         const sessions = [
             {id: "m42", target_name: "Orion Nebula", device_name: "DWARF 3", status: "planned", notes: "Ha"},
@@ -61,6 +63,14 @@ Item {
             return list.map(function(item) { return item.id }).join("+")
         }).join("|")
         root.hay = Util.itemMatchesQuery(sessions[1], "40 x 30s") ? "yes" : "no"
+        const queue = Util.filterSessionQueue(sessions, "", false).map(function(item) { return item.id }).join("+")
+        const withFinished = Util.filterSessionQueue(sessions, "", true).map(function(item) { return item.id }).join("+")
+        const searched = Util.filterSessionQueue(sessions, "orion", false).map(function(item) { return item.id }).join("+")
+        root.queue = queue + "|" + withFinished + "|" + searched
+        const template = Util.placeOnNightRequest({kind: "template", id: "tele"}, "scope", "2026-10-06T22:00")
+        const session = Util.placeOnNightRequest({kind: "session", id: "m42", mode: "mosaic", deviceId: "scope"}, "", "2026-10-06T23:00")
+        const empty = Util.placeOnNightRequest({}, "scope", "2026-10-06T22:00")
+        root.place = [template.op, template.id, session.op, session.mode, session.deviceId, empty.ok ? "yes" : "no"].join("|")
     }
 }
 """
@@ -78,3 +88,8 @@ def test_list_filter_matches_query_and_status() -> None:
     _assert(str(host.property("ids") or "") == "m42|m42+sun|m42|", host.property("ids"))
     _assert(str(host.property("lenses") or "") == "tele|wide|", host.property("lenses"))
     _assert(str(host.property("hay") or "") == "yes", host.property("hay"))
+    _assert(str(host.property("queue") or "") == "m42+m31|m42+m31+sun|m42", host.property("queue"))
+    _assert(
+        str(host.property("place") or "") == "scheduleTemplate|tele|duplicateSession|mosaic|scope|no",
+        host.property("place"),
+    )

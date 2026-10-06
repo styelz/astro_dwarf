@@ -78,7 +78,7 @@ HudMenu {
         text: "Reset"
         glyph: "\uE72C"
         enabled: Util.canReset(sessionContextMenu.sessionStatus)
-        onTriggered: backend.resetSession(sessionContextMenu.sessionId)
+        onTriggered: root.askResetSessions([sessionContextMenu.sessionId])
     }
     HudMenuItem {
         objectName: "session-duplicate"

@@ -89,7 +89,7 @@ Item {
                 onClicked: root.harvestStellarium("importDesktop")
             }
             HudButton { text: "IMPORT TELESCOPIUS"; busy: backend.uiBusy === "telescopius"; busyText: backend.uiBusy === "telescopius" ? "IMPORTING…" : "OPENING…"; enabled: backend.uiBusy === ""; onClicked: telescopiusDialog.open() }
-            HudButton { text: "+ MANUAL SESSION"; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: sessionDialog.openForDate(Qt.formatDate(new Date(), "yyyy-MM-dd")) }
+            HudButton { text: "+ MANUAL SESSION"; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: placeOnNightDialog.openForSlot((backend.localNow && backend.localNow.observing_date) || Qt.formatDate(new Date(), "yyyy-MM-dd")) }
         }
         RowLayout {
             id: sessionsTabs
@@ -109,7 +109,7 @@ Item {
                 objectName: "sessions-tab-scheduled"
                 Layout.fillWidth: true
                 Layout.preferredHeight: Theme.controlHeight
-                text: "SCHEDULED  ·  " + backend.sessions.length
+                text: "SCHEDULED  ·  " + backend.sessions.filter(item => item && (item.status === "planned" || item.status === "running")).length
                 font.pixelSize: Theme.fontMd
                 font.letterSpacing: Theme.tracking2
                 buttonColor: sessionsTabs.currentIndex === 0 ? Theme.fillActive : Theme.inputBg
@@ -179,10 +179,9 @@ Item {
                 property var selectedIds: ({})
                 property string selectionAnchorId: ""
                 property var expandedGroups: ({})
-                property int statusFilter: 0
-                readonly property var statusKeys: ["", "planned", "running", "done", "error", "skipped"]
-                readonly property bool filterActive: scheduledFilter.query !== "" || statusFilter !== 0
-                readonly property var filteredSessions: Util.filterByQueryAndStatus(backend.sessions, scheduledFilter.query, statusKeys[statusFilter] || "")
+                property bool includeFinished: false
+                readonly property bool filterActive: scheduledFilter.query !== "" || includeFinished
+                readonly property var filteredSessions: Util.filterSessionQueue(backend.sessions, scheduledFilter.query, includeFinished)
                 readonly property int selectedCount: Util.filterByQueryAndStatus(filteredSessions, "", "").filter(item => Util.idSetHas(selectedIds, item.id)).length
                 readonly property var clusteredSessions: Util.clusterSessions(filteredSessions)
                 readonly property var visibleSessions: Util.visibleClusteredSessions(clusteredSessions, expandedGroups)
@@ -284,10 +283,12 @@ Item {
                 }
                 function resetItem(item) {
                     const members = item && item.group_collapsed ? scheduledPage.groupMembers(item) : [item]
+                    const ids = []
                     for (let i = 0; i < members.length; i++) {
-                        if (members[i] && Util.canReset(members[i].status))
-                            backend.resetSession(members[i].id)
+                        if (members[i] && Util.canReset(members[i].status) && members[i].id)
+                            ids.push(members[i].id)
                     }
+                    root.askResetSessions(ids)
                 }
                 function canResetItem(item) {
                     const members = item && item.group_collapsed ? scheduledPage.groupMembers(item) : [item]
@@ -328,11 +329,13 @@ Item {
                         placeholderText: "Search target, device, or status"
                         searchAccessibleName: "Search scheduled sessions"
                         searchObjectName: "sessions-schedule-search"
-                        comboAccessibleName: "Filter by status"
-                        comboObjectName: "sessions-schedule-status"
-                        comboModel: ["All statuses", "Planned", "Running", "Done", "Error", "Skipped"]
-                        comboIndex: scheduledPage.statusFilter
-                        onComboActivated: index => scheduledPage.statusFilter = index
+                        showCombo: false
+                        checkVisible: true
+                        checkText: "INCLUDE FINISHED"
+                        checkObjectName: "sessions-include-finished"
+                        checkTooltip: "Done, error, and skipped rows. History is where finished runs stay."
+                        checkOn: scheduledPage.includeFinished
+                        onCheckToggled: checked => scheduledPage.includeFinished = checked
                     }
                     Item {
                         Layout.fillWidth: true
@@ -343,7 +346,11 @@ Item {
                             glyph: backend.sessions.length === 0 ? "✦" : "⌕"
                             text: backend.sessions.length === 0
                                   ? "No scheduled sessions yet. Create one manually or import a Stellarium / Telescopius target list."
-                                  : "No sessions match this search."
+                                  : scheduledFilter.query !== ""
+                                    ? "No sessions match this search."
+                                    : scheduledPage.includeFinished
+                                      ? "No sessions match this search."
+                                      : "No planned or running sessions. Finished runs are on History."
                         }
                 ColumnLayout {
                     anchors.fill: parent
@@ -359,6 +366,17 @@ Item {
                         onClearRequested: scheduledPage.selectedIds = ({})
                         onEditRequested: sessionDialog.openSelected(Util.itemsByIds(backend.sessions, scheduledPage.selectedIds))
                         onDeleteRequested: root.confirmBulkDelete("deleteSessions", Util.pruneIdSet(scheduledPage.selectedIds, scheduledPage.filteredSessions), "session")
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: scheduledPage.rowInset
+                        Layout.rightMargin: scheduledPage.rowInset
+                        visible: !scheduledPage.filterActive
+                        text: "Drag a row to pack this night. Start times follow the new order."
+                        color: Theme.muted
+                        font.pixelSize: Theme.fontXs
+                        font.letterSpacing: 0.3
+                        elide: Text.ElideRight
                     }
                     Item {
                         Layout.fillWidth: true
@@ -522,6 +540,7 @@ Item {
                                         SessionDragArea {
                                             dragItem: scheduledRow.modelData
                                             dragEnabled: !scheduledPage.filterActive
+                                            dragHint: "Drag packs this night and rewrites start times. Double-click to edit."
                                             onEditRequested: session => scheduledPage.editItem(scheduledRow.modelData)
                                         }
                                     },
@@ -787,7 +806,7 @@ Item {
                     canCollapseAll: scheduledPage.canCollapseAll
                     onEditRequested: session => scheduledPage.editItem(session)
                     onEditSelectedRequested: sessionDialog.openSelected(Util.itemsByIds(backend.sessions, scheduledPage.selectedIds))
-                    onDuplicateRequested: (session, mode) => duplicateSessionDialog.openFor(session, mode)
+                    onDuplicateRequested: (session, mode) => placeOnNightDialog.openForSession(session, mode)
                     onSelectAllRequested: scheduledPage.selectedIds = Util.idSetAll(scheduledPage.filteredSessions, true)
                     onUnselectAllRequested: {
                         scheduledPage.selectedIds = ({})
@@ -993,7 +1012,7 @@ Item {
                                 anchors.bottom: parent.bottom
                                 anchors.margins: Theme.s3
                                 HudButton { text: "EDIT"; busyText: "OPENING…"; onClicked: sessionDialog.openTemplate(templateCard.modelData) }
-                                HudButton { text: "SCHEDULE"; Layout.fillWidth: true; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: scheduleTemplateDialog.openFor(templateCard.modelData) }
+                                HudButton { text: "SCHEDULE"; Layout.fillWidth: true; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: placeOnNightDialog.openForTemplate(templateCard.modelData) }
                                 HudButton { text: "DELETE"; busyText: "DELETING…"; onClicked: root.confirmBulkDelete("deleteTemplates", templateCard.modelData.id, "template") }
                             },
                             HudMenu {
@@ -1026,7 +1045,7 @@ Item {
                                 HudMenuItem {
                                     text: "Schedule"
                                     glyph: "\uE768"
-                                    onTriggered: scheduleTemplateDialog.openFor(templateCard.modelData)
+                                    onTriggered: placeOnNightDialog.openForTemplate(templateCard.modelData)
                                 }
                                 HudMenuSeparator {}
                                 HudMenuItem {

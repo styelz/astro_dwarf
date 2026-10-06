@@ -996,21 +996,19 @@ QtObject {
         }
         return result
     }
+    function queueStatus(status) {
+        const key = String(status || "").toLowerCase()
+        return key === "planned" || key === "running"
+    }
+    function finishedStatus(status) {
+        const key = String(status || "").toLowerCase()
+        return key === "done" || key === "error" || key === "skipped"
+    }
     function calendarDayBuckets(sessions, history, showHistory, showAllDevices, deviceId) {
         const showAll = !!showAllDevices
         const scopeId = String(deviceId || "")
         function inScope(item) {
             return showAll || !!(item && item.device_id === scopeId)
-        }
-        const finished = {}
-        const list = sessions || []
-        for (let i = 0; i < list.length; i++) {
-            const item = list[i]
-            if (!item || !item.id)
-                continue
-            const status = String(item.status || "")
-            if (status === "done" || status === "error" || status === "skipped")
-                finished[item.id] = true
         }
         const byDate = {}
         function push(item) {
@@ -1024,10 +1022,12 @@ QtObject {
             }
             bucket.push(item)
         }
+        const list = sessions || []
         for (let i = 0; i < list.length; i++) {
             const item = list[i]
-            if (item && inScope(item))
-                push(item)
+            if (!item || !inScope(item) || !Util.queueStatus(item.status))
+                continue
+            push(item)
         }
         if (showHistory) {
             const rows = history || []
@@ -1036,8 +1036,6 @@ QtObject {
                 if (!item || !item.from_history || !item.observing_date || !Number(item.start_epoch_ms || 0))
                     continue
                 if (!inScope(item))
-                    continue
-                if (item.session_id && finished[item.session_id])
                     continue
                 push(item)
             }
@@ -1136,6 +1134,45 @@ QtObject {
             out.push(item)
         }
         return out
+    }
+    function filterSessionQueue(items, query, includeFinished) {
+        const list = items || []
+        const showFinished = !!includeFinished
+        const out = []
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i]
+            if (!item)
+                continue
+            const queued = Util.queueStatus(item.status)
+            const finished = Util.finishedStatus(item.status)
+            if (!queued && !(showFinished && finished))
+                continue
+            if (!Util.itemMatchesQuery(item, query))
+                continue
+            out.push(item)
+        }
+        return out
+    }
+    function placeOnNightRequest(recipe, deviceId, startText) {
+        const item = recipe || {}
+        const kind = String(item.kind || "")
+        const id = String(item.id || "")
+        const start = String(startText || "").trim()
+        const device = String(deviceId || item.deviceId || "")
+        if (!id || !start)
+            return { ok: false }
+        if (kind === "template")
+            return { ok: true, op: "scheduleTemplate", id: id, start: start, deviceId: device }
+        if (kind === "session")
+            return {
+                ok: true,
+                op: "duplicateSession",
+                id: id,
+                start: start,
+                deviceId: device,
+                mode: String(item.mode || "session")
+            }
+        return { ok: false }
     }
     function templateCamera(item) {
         const text = String((item && item.camera_text) || "").toUpperCase()

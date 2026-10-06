@@ -470,7 +470,19 @@ Item {
         return calendarPage.snapTimelineMinutes(Number(y) / nightTimeline.hourHeight * 60)
     }
     function createSessionAtMinutes(minutes) {
-        sessionDialog.openForDate(calendarPage.nightKey(), calendarPage.snapTimelineMinutes(minutes))
+        placeOnNightDialog.openForSlot(calendarPage.nightKey(), calendarPage.snapTimelineMinutes(minutes))
+    }
+    readonly property int plannedOnSelectedNight: {
+        const night = calendarPage.dateKey(calendarPage.selectedDate)
+        const device = String(backend.selectedDeviceId || "")
+        const list = backend.sessions || []
+        let count = 0
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i]
+            if (item && item.device_id === device && item.status === "planned" && item.observing_date === night)
+                count += 1
+        }
+        return count
     }
     function fitNightZoom() {
         nightTimeline.zoomLocked = false
@@ -550,10 +562,18 @@ Item {
                     objectName: "calendar-history"
                     text: calendarHeader.tight ? "HIST" : "HISTORY"
                     Accessible.name: "History on calendar"
-                    tooltip: calendarPage.showHistory ? "Hide completed runs from history" : "Show completed runs from history"
+                    tooltip: calendarPage.showHistory ? "Hide finished runs" : "Show finished runs at the time they actually ran"
                     buttonColor: calendarPage.showHistory ? Theme.fillActive : Theme.surfaceHigh
                     foregroundColor: calendarPage.showHistory ? Theme.accent : Theme.textSecondary
                     onClicked: calendarPage.showHistory = !calendarPage.showHistory
+                }
+                HudButton {
+                    objectName: "calendar-copy-night"
+                    text: calendarHeader.tight ? "COPY" : "COPY NIGHT"
+                    Accessible.name: "Copy this night"
+                    tooltip: "Copy this telescope's planned sessions onto the next observing night"
+                    enabled: calendarPage.plannedOnSelectedNight > 0
+                    onClicked: backend.copyObservingNight(backend.selectedDeviceId, calendarPage.dateKey(calendarPage.selectedDate))
                 }
                 HudButton {
                     visible: (backend.devices || []).length > 1
@@ -609,7 +629,7 @@ Item {
                     busyText: "OPENING…"
                     buttonColor: Theme.fillActive
                     foregroundColor: Theme.accent
-                    onClicked: sessionDialog.openForDate(calendarPage.dateKey(calendarPage.selectedDate))
+                    onClicked: placeOnNightDialog.openForSlot(calendarPage.dateKey(calendarPage.selectedDate))
                 }
             }
             SelectionBar {
@@ -909,7 +929,7 @@ Item {
                                             next[dayCell.key] = true
                                             calendarPage.selectedDayKeys = next
                                         }
-                                        sessionDialog.openForDate(dayCell.key)
+                                        placeOnNightDialog.openForSlot(dayCell.key)
                                     }
                                 }
                                 HudMenuSeparator {}
@@ -1119,6 +1139,15 @@ Item {
                 ColumnLayout {
                     anchors.fill: parent
                     spacing: Theme.s1
+                    Text {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: nightTimeline.gutterWidth
+                        text: "Drag a block to set its start time."
+                        color: Theme.muted
+                        font.pixelSize: Theme.fontXs
+                        font.letterSpacing: 0.3
+                        elide: Text.ElideRight
+                    }
                     Item {
                         id: columnHeader
                         visible: nightTimeline.columnsVisible
@@ -1418,6 +1447,7 @@ Item {
                                 }
                                 SessionDragArea {
                                     dragItem: timelineSession.modelData
+                                    dragHint: "Drag sets an absolute start time. Double-click to edit."
                                     onEditRequested: session => calendarPage.editItem(session)
                                 }
                                 HoverHandler { id: timelineHover }
@@ -1812,6 +1842,15 @@ Item {
                 comboIndex: calendarPage.sidebarStatusFilter
                 onComboActivated: index => calendarPage.sidebarStatusFilter = index
             }
+            Text {
+                Layout.fillWidth: true
+                visible: !calendarPage.sidebarFilterActive
+                text: "Drag a row to pack this night. Start times follow the new order."
+                color: Theme.muted
+                font.pixelSize: Theme.fontXs
+                font.letterSpacing: 0.3
+                elide: Text.ElideRight
+            }
             SelectionBar {
                 readonly property var choosable: calendarPage.schedulableItems(nightPanel.nightSessions)
                 selectedCount: choosable.filter(item => Util.idSetHas(calendarPage.selectedIds, item.id)).length
@@ -1887,6 +1926,7 @@ Item {
                             SessionDragArea {
                                 dragItem: daySessionRow.modelData
                                 dragEnabled: !calendarPage.sidebarFilterActive
+                                dragHint: "Drag packs this night and rewrites start times. Double-click to edit."
                                 onEditRequested: session => calendarPage.editItem(session)
                             }
                             HoverHandler { id: daySessionHover }
@@ -1928,7 +1968,7 @@ Item {
                                         dim: true
                                     }
                                     HudButton { text: "EDIT"; implicitHeight: Theme.px(24); visible: !modelData.from_history; enabled: modelData.status !== "running"; busyText: "OPENING…"; onClicked: calendarPage.editItem(modelData) }
-                                    HudButton { text: "RESET"; implicitHeight: Theme.px(24); visible: !modelData.from_history && Util.canReset(modelData.status); busyText: "RESETTING…"; onClicked: backend.resetSession(modelData.id) }
+                                    HudButton { text: "RESET"; implicitHeight: Theme.px(24); visible: !modelData.from_history && Util.canReset(modelData.status); busyText: "RESETTING…"; onClicked: root.askResetSessions([modelData.id]) }
                                     HudButton {
                                         text: modelData.status === "running" ? "STOP" : "RUN"
                                         implicitHeight: Theme.px(24)
@@ -1981,7 +2021,7 @@ Item {
         selectedMap: calendarPage.selectedIds
         onEditRequested: session => calendarPage.editItem(session)
         onEditSelectedRequested: sessionDialog.openSelected(Util.itemsByIds(calendarPage.contextItems, calendarPage.selectedIds))
-        onDuplicateRequested: (session, mode) => duplicateSessionDialog.openFor(session, mode)
+        onDuplicateRequested: (session, mode) => placeOnNightDialog.openForSession(session, mode)
         onSelectAllRequested: calendarPage.selectedIds = Util.idSetAll(calendarPage.contextItems, true)
         onUnselectAllRequested: {
             calendarPage.selectedIds = ({})

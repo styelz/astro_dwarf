@@ -11,6 +11,7 @@ Item {
     property var pressedAction: null
     property bool editOnDoubleTap: true
     property bool dragEnabled: true
+    property string dragHint: ""
     signal editRequested(var session)
     readonly property bool canEdit: {
         const item = root.dragItem || {}
@@ -35,6 +36,8 @@ Item {
             return "Completed run from history"
         if (!root.canEdit)
             return "Running"
+        if (root.dragHint)
+            return root.dragHint
         return root.editOnDoubleTap ? "Drag to reschedule, double-click to edit" : "Drag to reschedule"
     }
 

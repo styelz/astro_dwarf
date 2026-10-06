@@ -111,6 +111,13 @@ _PANORAMA_COMMANDS = frozenset({
     CMD_PANORAMA_UPDATE_FRAMING_RECT,
     CMD_PANORAMA_STOP_FRAMING_AND_START_GRID,
 })
+# 15513 starts the grid and leaves framing. The official app then sends 15510
+# to close framing. Once the shoot is running, that close is often rejected
+# with CODE_ASTRO_NEED_ADJUST_SHOOT_PARAM (-11514) and the capture continues.
+_PANORAMA_SHOOT_REPLIES = frozenset({
+    CMD_PANORAMA_STOP_FRAMING,
+    CMD_PANORAMA_STOP_FRAMING_AND_START_GRID,
+})
 CMD_NOTIFY_RECORD_TIME = 15286
 CMD_NOTIFY_TIMELAPSE_OUT_TIME = 15287
 CMD_NOTIFY_LONG_EXP_PROGRESS = 15288
@@ -1462,6 +1469,11 @@ class TelemetryTap:
         with self._lock:
             self._dark_libraries[cmd] = (status, frames, time.monotonic())
 
+    def _panorama_shoot_live(self) -> bool:
+        with self._lock:
+            state = self._pending.get("panorama_state", self._state.get("panorama_state"))
+        return str(state or "") == "running"
+
     def _record_response(self, cmd: int, data: bytes) -> None:
         try:
             if cmd == CMD_ASTRO_START_EQ_SOLVING and self._astro is not None:
@@ -1514,11 +1526,15 @@ class TelemetryTap:
             if changes:
                 self.update(changes, force=True)
         if cmd in _PANORAMA_COMMANDS and code not in (0,):
-            self.update({
-                "panorama_error": str(code),
-                "panorama_framing_state": "idle",
-                "panorama_has_rect": False,
-            }, force=True)
+            # A start or close reply that lands after the shoot is already
+            # running is not a framing failure. Cancelling a frame that never
+            # started still publishes the code.
+            if not (cmd in _PANORAMA_SHOOT_REPLIES and self._panorama_shoot_live()):
+                self.update({
+                    "panorama_error": str(code),
+                    "panorama_framing_state": "idle",
+                    "panorama_has_rect": False,
+                }, force=True)
         elif cmd in _PANORAMA_COMMANDS and code == 0:
             self.update({"panorama_error": ""}, force=True)
         if cmd == CMD_FOCUS_START_ASTRO_AUTO_FOCUS:

@@ -344,6 +344,11 @@ def test_panorama_shoot_writes_grid_after_panorama_mode() -> None:
 
     def fake_send(message, command, module_id, timeout=None):
         sent.append((int(command), int(module_id), message))
+        if int(command) == CMD_PANORAMA_STOP_FRAMING:
+            _assert(
+                worker._tap.snapshot().get("panorama_state") == "running",
+                "the shoot is marked running before framing is closed",
+            )
         return True
 
     class Tap:
@@ -378,6 +383,7 @@ def test_panorama_shoot_writes_grid_after_panorama_mode() -> None:
         _assert(int(sent[4][2].param_id) == 0x0702F0000000001D, hex(int(sent[4][2].param_id)))
         _assert(commands[5] == CMD_PANORAMA_STOP_FRAMING_AND_START_GRID, commands)
         _assert(commands[6] == CMD_PANORAMA_STOP_FRAMING, commands)
+        _assert(worker._tap.snapshot().get("panorama_state") == "running", worker._tap.snapshot())
         _assert(worker._tap.snapshot().get("shooting_mode") == 7, worker._tap.snapshot())
         _assert(worker._tap.snapshot().get("shooting_tech") == 6, worker._tap.snapshot())
         _assert(worker._panorama_return_mode == (2, 2), worker._panorama_return_mode)
@@ -507,6 +513,58 @@ def test_finished_panorama_returns_to_photo() -> None:
         ) = previous
 
 
+def test_panorama_close_after_start_is_not_a_framing_failure() -> None:
+    from dwarf_python_api.proto import base_pb2
+
+    from astro_dwarf.device_telemetry import (
+        CMD_PANORAMA_STOP_FRAMING,
+        CMD_PANORAMA_STOP_FRAMING_AND_START_GRID,
+    )
+
+    events: list[dict] = []
+    tap = TelemetryTap(lambda message: events.append(message), flush_interval=0)
+    tap._base = base_pb2
+    tap._notify = notify_pb2
+    tap.update({
+        "panorama_state": "running",
+        "panorama_framing_state": "running",
+        "panorama_has_rect": True,
+    }, force=True)
+    reply = base_pb2.ComResponse()
+    reply.code = -11514
+    before = len(events)
+    tap.on_packet(CMD_PANORAMA_STOP_FRAMING, 1, reply.SerializeToString())
+    snap = tap.snapshot()
+    _assert(not snap.get("panorama_error"), snap)
+    _assert(snap.get("panorama_has_rect") is True, snap)
+    _assert(snap.get("panorama_state") == "running", snap)
+    _assert(len(events) == before, "a close rejected after the shoot started was published")
+    tap.on_packet(CMD_PANORAMA_STOP_FRAMING_AND_START_GRID, 1, reply.SerializeToString())
+    _assert(not tap.snapshot().get("panorama_error"), tap.snapshot())
+
+
+def test_panorama_close_error_while_framing_is_reported() -> None:
+    from dwarf_python_api.proto import base_pb2
+
+    from astro_dwarf.device_telemetry import CMD_PANORAMA_STOP_FRAMING
+
+    tap = TelemetryTap(lambda _message: None, flush_interval=0)
+    tap._base = base_pb2
+    tap._notify = notify_pb2
+    tap.update({
+        "panorama_state": "idle",
+        "panorama_framing_state": "running",
+        "panorama_has_rect": True,
+    }, force=True)
+    reply = base_pb2.ComResponse()
+    reply.code = -11514
+    tap.on_packet(CMD_PANORAMA_STOP_FRAMING, 1, reply.SerializeToString())
+    snap = tap.snapshot()
+    _assert(snap.get("panorama_error") == "-11514", snap)
+    _assert(snap.get("panorama_framing_state") == "idle", snap)
+    _assert(snap.get("panorama_has_rect") is False, snap)
+
+
 def test_panorama_pointing_tracks_motor_and_unwraps_az() -> None:
     tap = _tap()
     tap.update({"panorama_state": "running", "motor_pos_1": 350.0, "motor_pos_2": 40.0}, force=True)
@@ -575,6 +633,8 @@ if __name__ == "__main__":
     test_framed_area_uses_the_full_grid_cell()
     test_panorama_frame_counts_match_the_tele_grid()
     test_panorama_shoot_writes_grid_after_panorama_mode()
+    test_panorama_close_after_start_is_not_a_framing_failure()
+    test_panorama_close_error_while_framing_is_reported()
     test_panorama_cancel_restores_photo_mode()
     test_finished_panorama_returns_to_photo()
     test_panorama_pointing_tracks_motor_and_unwraps_az()

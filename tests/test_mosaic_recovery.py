@@ -20,6 +20,7 @@ from astro_dwarf.device_worker import (
     _goto_started,
     _goto_terminal_fail,
     _goto_wait_complete,
+    _firmware_mosaic_grid_finished,
     _mosaic_busy,
     _mosaic_idle_timeout_s,
     _session_needs_infinity_after_autofocus,
@@ -83,6 +84,18 @@ def test_live_mosaic_resume_plan() -> None:
     _assert(live_mosaic_resume_plan("changing", 2, 4, True) == (2, False), "do not join leftover capture while changing panes")
     _assert(live_mosaic_resume_plan("recovered", 1, 4, False) == (1, False), "unknown phase starts current")
     _assert(live_mosaic_resume_plan("stacking", 4, 4, True) == (4, True), "join last pane")
+
+
+def test_recovered_firmware_mosaic_restarts_unless_the_grid_finished() -> None:
+    idle = {"capture_active": False, "capture_state": "idle", "goto_state": "idle", "mosaic_index": 2}
+    _assert(not _firmware_mosaic_grid_finished(idle, 4), "stopped on pane 2 of 4")
+    _assert(not _firmware_mosaic_grid_finished({**idle, "mosaic_index": 0}, 4), "no pane reported")
+    finished = {**idle, "mosaic_index": 4}
+    _assert(_firmware_mosaic_grid_finished(finished, 4), "every pane already shot")
+    running = {**finished, "capture_active": True, "capture_state": "running"}
+    _assert(not _firmware_mosaic_grid_finished(running, 4), "still exposing the last pane")
+    _assert(_mosaic_idle_timeout_s(finished, 4) == _MOSAIC_LAST_PANE_IDLE_S, "finished grid uses the short idle")
+    _assert(_mosaic_idle_timeout_s(idle, 4) == _MOSAIC_PANE_GAP_S, "mid-grid idle still waits out a pane gap")
 
 
 def test_failed_live_mosaic_does_not_block_scheduler() -> None:
@@ -343,6 +356,7 @@ def main() -> int:
     test_firmware_mosaic_detection()
     test_mosaic_busy_and_idle_timeout()
     test_live_mosaic_resume_plan()
+    test_recovered_firmware_mosaic_restarts_unless_the_grid_finished()
     test_failed_live_mosaic_does_not_block_scheduler()
     test_goto_reopens_camera_when_slew_never_starts()
     test_engine_busy_error_matches_firmware_reply()

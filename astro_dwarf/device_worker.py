@@ -1964,6 +1964,22 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
     factory, command = messages[operation]
     ok = send_without_response(factory(), command, module_id)
     _forget_pending_command(command)
+    if ok and operation == "panorama_shoot" and _tap is not None:
+        # Mark the shoot before the framing close. Firmware often rejects
+        # that close once 15513 has already started the grid.
+        _tap.update(
+            {
+                "panorama_state": "running",
+                "panorama_framing_state": "idle",
+                "panorama_error": "",
+                "panorama_completed": 0,
+                "panorama_total": 0,
+            },
+            force=True,
+        )
+        # Grid capture sends no further framing thumbnails; keep a copy so a
+        # reconnect mid-shoot has the background back instead of a blank pane.
+        _tap.persist_panorama_scan()
     if ok and operation == "panorama_shoot":
         closed = send_without_response(panorama_pb2.ReqStopPanoramaFraming(), CMD_PANORAMA_STOP_FRAMING, module_id)
         _forget_pending_command(CMD_PANORAMA_STOP_FRAMING)
@@ -1980,19 +1996,6 @@ def _panorama_command(operation: str, args: tuple[Any, ...]) -> bool:
             },
             force=True,
         )
-    if ok and operation == "panorama_shoot" and _tap is not None:
-        _tap.update(
-            {
-                "panorama_state": "running",
-                "panorama_framing_state": "idle",
-                "panorama_completed": 0,
-                "panorama_total": 0,
-            },
-            force=True,
-        )
-        # Grid capture sends no further framing thumbnails; keep a copy so a
-        # reconnect mid-shoot has the background back instead of a blank pane.
-        _tap.persist_panorama_scan()
     if ok and operation in {"panorama_frame_start", "panorama_shoot"}:
         _panorama_seen_active = True
     if ok and operation == "panorama_shoot":
@@ -3394,13 +3397,25 @@ def _mosaic_busy(snapshot: dict[str, Any]) -> bool:
 
 
 def _mosaic_idle_timeout_s(snapshot: dict[str, Any], panes: int) -> float:
-    try:
-        index = int(snapshot.get("mosaic_index") or 0)
-    except (TypeError, ValueError):
-        index = 0
-    if panes >= 1 and index >= panes and not _capture_running(snapshot) and not _goto_busy(snapshot):
+    if _firmware_mosaic_grid_finished(snapshot, panes):
         return _MOSAIC_LAST_PANE_IDLE_S
     return _MOSAIC_PANE_GAP_S
+
+
+def _firmware_mosaic_grid_finished(snapshot: dict[str, Any] | None, panes: int) -> bool:
+    """True when the device mosaic has shot every pane and then gone idle.
+
+    ``mosaic_index`` counts the pane the firmware last reported. An idle
+    telescope below that count stopped early and must be started again.
+    """
+    data = snapshot or {}
+    try:
+        index = int(data.get("mosaic_index") or 0)
+    except (TypeError, ValueError):
+        index = 0
+    if panes < 1 or index < panes:
+        return False
+    return not _capture_running(data) and not _goto_busy(data)
 
 
 def _reset_session_capture(session: dict[str, Any] | None = None) -> None:
@@ -4977,8 +4992,11 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     if _join_existing_capture(session, step):
         return True
     if recovered and firmware_mosaic:
-        log("Recovered mosaic is no longer running on the telescope", "notice")
-        return True
+        snapshot = _tap.snapshot() if _tap is not None else {}
+        if _firmware_mosaic_grid_finished(snapshot, _mosaic_pane_count(session)):
+            log("Recovered mosaic already finished on the telescope", "notice")
+            return True
+        log("Recovered mosaic is no longer running; starting it again", "notice")
     _reset_session_capture(session)
     step("Closing previous capture", "go_live")
     _reset_session_capture(session)
@@ -7131,11 +7149,13 @@ def polar_position() -> bool:
     if function is None:
         raise RuntimeError("motor_action is not available in this SDK")
     model = str(_device.get("model") or "")
-    steps = (
-        ((5, "Resetting rotation motor"), (6, "Resetting pitch motor"), (9, "Slewing rotation to polar pose"), (7, "Slewing pitch to polar pose"))
-        if model in {"Dwarf 3", "Dwarf Mini"}
-        else ((5, "Resetting rotation motor"), (6, "Resetting pitch motor"), (2, "Slewing rotation to polar pose"), (3, "Slewing pitch to polar pose"))
-    )
+    if model == "Dwarf Mini":
+        # Mini rotation has no home sensor. Pitch reset is 6; pitch slew is 11.
+        steps = ((6, "Resetting pitch motor"), (11, "Slewing pitch to polar pose"))
+    elif model == "Dwarf 3":
+        steps = ((5, "Resetting rotation motor"), (6, "Resetting pitch motor"), (9, "Slewing rotation to polar pose"), (7, "Slewing pitch to polar pose"))
+    else:
+        steps = ((5, "Resetting rotation motor"), (6, "Resetting pitch motor"), (2, "Slewing rotation to polar pose"), (3, "Slewing pitch to polar pose"))
     for action, label in steps:
         _polar_position_stopped()
         result = _invoke_sdk("polar_position", function, action, label=label)
