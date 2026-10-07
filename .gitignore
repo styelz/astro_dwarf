@@ -6,6 +6,9 @@ __pycache__/
 build/
 dist/
 .cursor/*
+!.cursor/rules/
+.cursor/rules/*
+!.cursor/rules/do-not-regress.mdc
 !.cursor/commands/
 .cursor/commands/*
 !.cursor/commands/version-bump.md

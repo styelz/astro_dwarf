@@ -60,6 +60,18 @@ Menu {
         popupWindow.flags = Qt.Tool | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
         hudMenu.trackedPopup = popupWindow
     }
+    function hideIfAnotherApp() {
+        // The menu is a separate window. Opening it moves focus off the HUD,
+        // which makes Qt report the application inactive. That is this menu,
+        // not another program. Closing on that signal shut the menu while it
+        // was opening and fired the activation change again.
+        if (Qt.application.state === Qt.ApplicationActive)
+            return
+        const win = hudMenu.trackedPopup || hudMenu.popupWindow()
+        if (win && win.active)
+            return
+        hudMenu.hideMenu()
+    }
     function rememberPopup() {
         const win = hudMenu.popupWindow()
         const owner = hudMenu.appWindow
@@ -90,8 +102,6 @@ Menu {
         hudMenu.rememberPopup()
         Qt.callLater(hudMenu.rememberPopup)
         dismissArm.restart()
-        if (Qt.application.state !== Qt.ApplicationActive)
-            Qt.callLater(hudMenu.hideMenu)
     }
     onClosed: {
         dismissArm.stop()
@@ -108,8 +118,7 @@ Menu {
     Connections {
         target: Qt.application
         function onStateChanged() {
-            if (Qt.application.state !== Qt.ApplicationActive)
-                Qt.callLater(hudMenu.hideMenu)
+            Qt.callLater(hudMenu.hideIfAnotherApp)
         }
     }
     Connections {
@@ -117,8 +126,7 @@ Menu {
         function onActiveChanged() {
             if (!hudMenu.trackedPopup || hudMenu.trackedPopup.active)
                 return
-            if (Qt.application.state !== Qt.ApplicationActive)
-                Qt.callLater(hudMenu.hideMenu)
+            Qt.callLater(hudMenu.hideIfAnotherApp)
         }
     }
     Component.onCompleted: hudMenu.captureAppWindow()

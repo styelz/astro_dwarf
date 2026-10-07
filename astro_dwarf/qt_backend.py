@@ -153,6 +153,7 @@ from .services import (
     custom_mosaic_completed,
     custom_mosaic_follow_on,
     custom_mosaic_panes_remain,
+    custom_mosaic_result_pending,
     group_mosaic_media_items,
     load_mosaic_stitch,
     mosaic_group_listing,
@@ -1357,7 +1358,8 @@ def mosaic_capture_continues(
     """True while a mosaic still has panes left after the current stack stops.
 
     A custom mosaic stores one session per pane, so the firmware pane count
-    stays 1. ``later_custom_panes`` is that group's still-planned panes.
+    stays 1. ``later_custom_panes`` stays true while any pane is still running
+    or planned, including the last pane before it stacks.
     """
     if later_custom_panes:
         return True
@@ -5279,7 +5281,7 @@ class AppBackend(QObject):
             session_running = session.status == SessionStatus.RUNNING or any(
                 item.status == SessionStatus.RUNNING for item in members
             )
-            later_custom = custom_mosaic_panes_remain(session, self.store.sessions.all())
+            later_custom = custom_mosaic_result_pending(session, self.store.sessions.all())
         return mosaic_capture_continues(
             live_phase=str(live.get("phase") or ""),
             worker_running=bool(live.get("worker_running")),
@@ -8227,8 +8229,9 @@ class AppBackend(QObject):
                 if more and custom and finished >= 1:
                     self._mosaic_result_held = True
                     self._mosaic_result_dismissed = False
-                # Held is how a device mosaic rides through a brief gap. A
-                # custom mosaic that has no panes left must show its result.
+                # Held is how a device mosaic rides through a brief gap. A custom
+                # mosaic keeps this page down until every pane has finished,
+                # including while the next pane is still slewing.
                 if more or (self._mosaic_result_held and not custom):
                     if self._preview_result:
                         self._clear_preview_result(keep_mosaic=bool(more and custom))

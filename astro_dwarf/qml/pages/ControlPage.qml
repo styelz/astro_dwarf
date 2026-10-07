@@ -2247,6 +2247,13 @@ Item {
                             id: readoutStrip
                             readonly property var t: root.scopeTelemetry
                             readonly property bool wide: previewHost.chromeWide
+                            // A finished custom mosaic keeps its caption in this strip.
+                            // A device mosaic is already the telescope's stitched feed.
+                            readonly property bool customMosaicResult: backend.previewResult
+                                && !root.scopeStopping
+                                && !previewHost.awaitingFirstStack
+                                && String(backend.previewResultTitle || "") === "MOSAIC COMPLETE"
+                                && !(backend.mosaicPreview && backend.mosaicPreview.device)
                             readonly property string exposure: {
                                 const value = wide ? t.wide_exposure_text : t.exposure_text
                                 return root.scopeOnline && value && value !== "—" ? String(value) : liveExposure.text
@@ -2260,9 +2267,28 @@ Item {
                             anchors.leftMargin: Theme.px(10)
                             anchors.rightMargin: Theme.px(10)
                             spacing: Theme.s2
-                            Text { text: readoutStrip.wide ? "WIDE" : "TELE"; color: Theme.accent; font.pixelSize: Theme.fontSm; font.bold: true; font.letterSpacing: 1; Layout.fillWidth: false }
                             Text {
-                                visible: root.scopeOnline && backend.previewSkyCoordVisible
+                                visible: readoutStrip.customMosaicResult
+                                text: backend.previewResultTitle || "MOSAIC COMPLETE"
+                                color: Theme.success
+                                font.pixelSize: Theme.fontSm
+                                font.bold: true
+                                font.letterSpacing: 1
+                                Layout.fillWidth: false
+                            }
+                            Text {
+                                visible: readoutStrip.customMosaicResult
+                                text: backend.previewResultDetail || "Completed stack from the telescope. This is not live video."
+                                color: Theme.textPrimary
+                                font.pixelSize: Theme.fontSm
+                                font.family: Theme.fontMono
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                            }
+                            Text { visible: !readoutStrip.customMosaicResult; text: readoutStrip.wide ? "WIDE" : "TELE"; color: Theme.accent; font.pixelSize: Theme.fontSm; font.bold: true; font.letterSpacing: 1; Layout.fillWidth: false }
+                            Text {
+                                visible: !readoutStrip.customMosaicResult && root.scopeOnline && backend.previewSkyCoordVisible
                                 text: backend.previewSkyCoordText
                                 color: Theme.textPrimary
                                 font.pixelSize: Theme.fontSm
@@ -2273,11 +2299,11 @@ Item {
                                 Layout.preferredWidth: implicitWidth
                                 Layout.maximumWidth: implicitWidth
                             }
-                            Text { text: "EXP " + readoutStrip.exposure + "s"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: Theme.px(36); Layout.preferredWidth: implicitWidth }
-                            Text { text: "GAIN " + readoutStrip.gain; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: Theme.px(36); Layout.preferredWidth: implicitWidth }
-                            Text { visible: !readoutStrip.wide; text: liveFilter.currentText.toUpperCase(); color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: Theme.px(24); Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
+                            Text { visible: !readoutStrip.customMosaicResult; text: "EXP " + readoutStrip.exposure + "s"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: Theme.px(36); Layout.preferredWidth: implicitWidth }
+                            Text { visible: !readoutStrip.customMosaicResult; text: "GAIN " + readoutStrip.gain; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: Theme.px(36); Layout.preferredWidth: implicitWidth }
+                            Text { visible: !readoutStrip.customMosaicResult && !readoutStrip.wide; text: liveFilter.currentText.toUpperCase(); color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: Theme.px(24); Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
                             Text {
-                                visible: root.scopeOnline && (controlPage.mosaicRunning || (readoutStrip.t.capture_active && !!readoutStrip.t.capture_text))
+                                visible: !readoutStrip.customMosaicResult && root.scopeOnline && (controlPage.mosaicRunning || (readoutStrip.t.capture_active && !!readoutStrip.t.capture_text))
                                 text: {
                                     if (!controlPage.mosaicRunning)
                                         return "FRAMES " + (readoutStrip.t.capture_text || "")
@@ -2300,8 +2326,8 @@ Item {
                                 Layout.minimumWidth: Theme.px(40)
                                 Layout.preferredWidth: implicitWidth
                             }
-                            Item { Layout.fillWidth: true; Layout.preferredWidth: Theme.s2; Layout.minimumWidth: 0 }
-                            Text { visible: root.scopeOnline && readoutStrip.sensor !== "—"; text: "SENSOR " + readoutStrip.sensor; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
+                            Item { visible: !readoutStrip.customMosaicResult; Layout.fillWidth: true; Layout.preferredWidth: Theme.s2; Layout.minimumWidth: 0 }
+                            Text { visible: !readoutStrip.customMosaicResult && root.scopeOnline && readoutStrip.sensor !== "—"; text: "SENSOR " + readoutStrip.sensor; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: implicitWidth; Layout.maximumWidth: implicitWidth }
                             Text {
                                 visible: root.scopeOnline && readoutStrip.t.battery_percent !== undefined && Number(readoutStrip.t.battery_percent) >= 0
                                 text: "BATT " + (readoutStrip.t.battery_text || "—") + (readoutStrip.t.charging ? "⚡" : "")
@@ -2310,7 +2336,7 @@ Item {
                                 elide: Text.ElideRight
                                 Layout.fillWidth: false
                             }
-                            Text { visible: !root.scopeOnline; text: backend.selectedDevice.ip_address || "—"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.maximumWidth: Theme.px(120) }
+                            Text { visible: !readoutStrip.customMosaicResult && !root.scopeOnline; text: backend.selectedDevice.ip_address || "—"; color: Theme.textSecondary; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; elide: Text.ElideRight; Layout.maximumWidth: Theme.px(120) }
                             Text { text: backend.clockText; color: Theme.accent; font.pixelSize: Theme.fontSm; font.family: Theme.fontMono; Layout.fillWidth: false }
                         }
                     }
@@ -2322,7 +2348,7 @@ Item {
                         anchors.leftMargin: Theme.px(14)
                         anchors.rightMargin: Theme.px(14)
                         anchors.bottomMargin: Theme.px(46)
-                        visible: backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack
+                        visible: backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !readoutStrip.customMosaicResult
                         height: resultCaptionCol.implicitHeight + Theme.s4
                         color: Theme.panelFill
                         border.color: Theme.outline

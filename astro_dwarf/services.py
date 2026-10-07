@@ -351,6 +351,13 @@ SKY_WEB_TIME_NOW_JS = r"""
     if (stel && stel.core) {
       try { stel.core.time_speed = 1; } catch (err) {}
     }
+    // A restored engine roll leaves the chart sideways until the next look.
+    // Zenith-up is roll 0; yaw and pitch still aim the field.
+    var leveled = [stel && stel.observer, stel && stel.core];
+    for (var r = 0; r < leveled.length; r++) {
+      if (!leveled[r]) continue;
+      try { leveled[r].roll = 0; } catch (err) {}
+    }
   }
   function labelOf(el) {
     return String(el && (el.innerText || el.textContent || "") || "").replace(/\s+/g, " ").trim();
@@ -750,7 +757,11 @@ SKY_WEB_FOV_JS = r"""
     if (!stel || !stel.observer || typeof stel.convertFrame !== "function") return null;
     var a = coreAngles(stel) || {};
     var o = stel.observer || {};
-    var key = [a.yaw, a.pitch, o.roll, o.latitude, o.longitude, o.lat, o.phi].join("|");
+    // Time belongs in the key. Yaw and pitch stay fixed while the clock
+    // moves the sky, and a sunset jump rotates zenith without touching them.
+    var utc = Number(o.utc);
+    var clock = isFinite(utc) ? Math.round(utc * 1440) : "";
+    var key = [a.yaw, a.pitch, o.roll, clock, o.latitude, o.longitude, o.lat, o.phi].join("|");
     if (ctl && ctl.viewBasis && ctl.viewBasis.key === key) return ctl.viewBasis;
     var frames = (ctl && ctl.viewFrame) ? [ctl.viewFrame] : ["ICRF", "CIRS", "JNOW"];
     var axes = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]];
@@ -807,7 +818,9 @@ SKY_WEB_FOV_JS = r"""
   }
   function zSign(stel) {
     var ctl = window[CTL];
-    if (ctl && ctl.zSign) return ctl.zSign;
+    var basis = viewBasis(stel);
+    var key = basis ? basis.key : "";
+    if (ctl && ctl.zSign && ctl.zSignKey === key) return ctl.zSign;
     var sign = -1;
     var probed = false;
     try {
@@ -825,7 +838,10 @@ SKY_WEB_FOV_JS = r"""
         }
       }
     } catch (err) {}
-    if (ctl && probed) ctl.zSign = sign;
+    if (ctl && probed) {
+      ctl.zSign = sign;
+      ctl.zSignKey = key;
+    }
     return sign;
   }
   function projectPoint(stel, raHours, decDeg, box) {
@@ -1903,7 +1919,7 @@ SKY_WEB_FOV_JS = r"""
       return isFinite(Number(n)) ? Number(n).toFixed(digits) : "";
     }
     return [
-      q(a.yaw, 5), q(a.pitch, 5), q(o.roll, 4), q(stel.core && stel.core.fov, 5),
+      q(a.yaw, 5), q(a.pitch, 5), q(o.roll, 4), q(o.utc, 5), q(stel.core && stel.core.fov, 5),
       box && box.width, box && box.height,
       nightModeOn() ? "N" : "D",
       ra, dec, roll
@@ -2182,8 +2198,10 @@ SKY_WEB_FOV_JS = r"""
         liveEnabled: false, liveUrl: "", liveOpacity: 0.65, livePane: 0, paneUrls: {},
         menuAt: 0, menuX: 0, menuY: 0,
         dismissAt: 0,
-        trackAt: 0
+        trackAt: 0,
+        levelUntil: Date.now() + 8000
       };
+      levelHorizon(stel);
     }
     ctl.draw = draw;
     ctl.refreshMedia = refreshMedia;
@@ -2550,7 +2568,7 @@ SKY_WEB_VIEW_APPLY_JS = r"""
         if (!observed) continue;
         try { stel.core.lock = null; } catch (err) {}
         if (typeof lookFn === "function") {
-          try { lookFn.call(stel, observed, 0); return true; } catch (err) {}
+          try { lookFn.call(stel, observed, 0); levelSkyRoll(stel); return true; } catch (err) {}
         }
         if (typeof stel.c2s !== "function") continue;
         var sph = stel.c2s(observed);
@@ -2560,10 +2578,18 @@ SKY_WEB_VIEW_APPLY_JS = r"""
         stel.observer.pitch = pitch;
         stel.core.yaw = yaw;
         stel.core.pitch = pitch;
+        levelSkyRoll(stel);
         return true;
       } catch (err) {}
     }
     return false;
+  }
+  function levelSkyRoll(stel) {
+    var targets = [stel && stel.observer, stel && stel.core];
+    for (var i = 0; i < targets.length; i++) {
+      if (!targets[i]) continue;
+      try { targets[i].roll = 0; } catch (err) {}
+    }
   }
   try {
     var stel = window._stel;
@@ -2704,6 +2730,13 @@ SKY_WEB_LOCK_TARGET_JS = r"""
     } catch (err) {}
     return false;
   }
+  function levelSkyRoll(stel) {
+    var targets = [stel && stel.observer, stel && stel.core];
+    for (var i = 0; i < targets.length; i++) {
+      if (!targets[i]) continue;
+      try { targets[i].roll = 0; } catch (err) {}
+    }
+  }
   function lookAtIcrf(stel, raHours, decDeg) {
     if (!stel || !stel.core || !stel.observer) return false;
     raHours = Number(raHours);
@@ -2730,7 +2763,7 @@ SKY_WEB_LOCK_TARGET_JS = r"""
         if (!observed) continue;
         try { stel.core.lock = null; } catch (err) {}
         if (typeof lookFn === "function") {
-          try { lookFn.call(stel, observed, 0); return true; } catch (err) {}
+          try { lookFn.call(stel, observed, 0); levelSkyRoll(stel); return true; } catch (err) {}
         }
         if (typeof stel.c2s !== "function") continue;
         var sph = stel.c2s(observed);
@@ -2740,6 +2773,7 @@ SKY_WEB_LOCK_TARGET_JS = r"""
         stel.observer.pitch = pitch;
         stel.core.yaw = yaw;
         stel.core.pitch = pitch;
+        levelSkyRoll(stel);
         return true;
       } catch (err) {}
     }
@@ -2826,6 +2860,13 @@ def sky_web_lock_target_script(payload: dict[str, Any] | None = None) -> str:
 
 SKY_WEB_CENTER_VIEW_JS = r"""
 (function(raHours, decDeg) {
+  function levelSkyRoll(stel) {
+    var targets = [stel && stel.observer, stel && stel.core];
+    for (var i = 0; i < targets.length; i++) {
+      if (!targets[i]) continue;
+      try { targets[i].roll = 0; } catch (err) {}
+    }
+  }
   function lookAtIcrf(stel, raHours, decDeg) {
     if (!stel || !stel.core || !stel.observer) return false;
     raHours = Number(raHours);
@@ -2852,7 +2893,7 @@ SKY_WEB_CENTER_VIEW_JS = r"""
         if (!observed) continue;
         try { stel.core.lock = null; } catch (err) {}
         if (typeof lookFn === "function") {
-          try { lookFn.call(stel, observed, 0); return true; } catch (err) {}
+          try { lookFn.call(stel, observed, 0); levelSkyRoll(stel); return true; } catch (err) {}
         }
         if (typeof stel.c2s !== "function") continue;
         var sph = stel.c2s(observed);
@@ -2862,6 +2903,7 @@ SKY_WEB_CENTER_VIEW_JS = r"""
         stel.observer.pitch = pitch;
         stel.core.yaw = yaw;
         stel.core.pitch = pitch;
+        levelSkyRoll(stel);
         return true;
       } catch (err) {}
     }
@@ -3942,6 +3984,21 @@ def custom_mosaic_panes_remain(session: Session, sessions: list[Session]) -> boo
         return False
     pending = {SessionStatus.PLANNED, SessionStatus.RUNNING}
     return any(item.status in pending and item.id != session.id for item in siblings)
+
+
+def custom_mosaic_result_pending(session: Session, sessions: list[Session]) -> bool:
+    """True while a custom mosaic must not show the finished-stack page.
+
+    The pane that is slewing is already the current session, so "no later pane
+    is planned" is not the same as finished. That includes the last pane:
+    it still has to stack. The page waits until every pane is done.
+    """
+    siblings = _custom_mosaic_siblings(session, sessions)
+    if not siblings:
+        return False
+    if any(item.status == SessionStatus.RUNNING for item in siblings):
+        return True
+    return any(item.status == SessionStatus.PLANNED for item in siblings)
 
 
 def mosaic_pane_folder_name(

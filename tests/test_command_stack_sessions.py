@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -8,7 +9,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from astro_dwarf.domain import CameraSettings, SessionStatus, Target, TargetKind
-from astro_dwarf.services import command_panel_workflow, sessions_for_command_stack
+from astro_dwarf.services import (
+    command_panel_workflow,
+    custom_mosaic_panes_remain,
+    custom_mosaic_result_pending,
+    sessions_for_command_stack,
+)
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -79,6 +85,36 @@ def test_mosaic_stack_creates_pane_sessions() -> None:
     _assert(abs(float(sessions[3].target.dec_degrees) + 70.1) < 1e-6, sessions[3].target.dec_degrees)
 
 
+def test_running_last_pane_does_not_count_as_finished() -> None:
+    """The completion page waits until every pane is done, not until the last one starts."""
+    target = Target(name="Delta Muscae", kind=TargetKind.EQUATORIAL, ra_hours=13.0, dec_degrees=-71.3)
+    panes = [
+        {"index": index, "ra_hours": 13.0 + index * 0.02, "dec_degrees": -71.3, "row": 1 + (index - 1) // 2, "column": 1 + (index - 1) % 2}
+        for index in range(1, 5)
+    ]
+    sessions = sessions_for_command_stack(
+        target=target,
+        device_id="scope-1",
+        scheduled_start="2026-10-07T12:00:00",
+        camera=CameraSettings(frame_count=20, exposure_seconds=15),
+        panes=panes,
+        columns=2,
+        rows=2,
+    )
+    done = [
+        replace(item, status=SessionStatus.DONE if item is not sessions[-1] else SessionStatus.RUNNING)
+        for item in sessions
+    ]
+    last = done[-1]
+    _assert(not custom_mosaic_panes_remain(last, done), "no pane is left after the last one starts")
+    _assert(custom_mosaic_result_pending(last, done), "the last pane is still slewing or stacking")
+    finished = [replace(item, status=SessionStatus.DONE) for item in done]
+    _assert(not custom_mosaic_result_pending(finished[-1], finished), "every pane done can show the mosaic")
+    middle = replace(done[1], status=SessionStatus.RUNNING)
+    group = [middle if item.id == middle.id else replace(item, status=SessionStatus.PLANNED) for item in done]
+    _assert(custom_mosaic_result_pending(middle, group), "a middle pane still belongs to the mosaic")
+
+
 def test_one_pane_list_stays_a_single_stack() -> None:
     target = Target(name="Orion", kind=TargetKind.EQUATORIAL, ra_hours=5.6, dec_degrees=-5.4)
     sessions = sessions_for_command_stack(
@@ -98,6 +134,7 @@ def main() -> int:
     test_command_panel_workflow_skips_alignment()
     test_single_stack_creates_one_session()
     test_mosaic_stack_creates_pane_sessions()
+    test_running_last_pane_does_not_count_as_finished()
     test_one_pane_list_stays_a_single_stack()
     print("command stack session tests ok")
     return 0

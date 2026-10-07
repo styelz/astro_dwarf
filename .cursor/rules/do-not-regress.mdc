@@ -1,0 +1,28 @@
+---
+description: Do not undo an earlier fix while doing a later request
+alwaysApply: true
+---
+
+# Do not undo earlier fixes
+
+The code on disk is the last behavior the user asked for, including uncommitted edits. A new request changes only what it names.
+
+Before editing a file, read the function you will touch, then `git diff -- <file>` and `git log -5 -- <file>`. Uncommitted lines stay.
+
+- Patch the lines the request needs. Do not rewrite the surrounding function, QML item, or rule from memory.
+- A failed search-replace means the file differs from what you expected. Read it again. Do not replace the whole block, and do not treat the failed edit as done.
+- Do not restyle, rename, move, or remove a neighboring control, overlay, menu, scrollbar, button size, or theme token.
+- Do not delete telescope album files except the ones the user named.
+- If an attempt fails, remove that attempt before finishing. Do not leave the workaround in the tree.
+
+These stay unless this request names them:
+
+- Neighbor-fill panel resize, and the pane sizes the user set across maximize and restore
+- Wide-view taps as Dual Lenses Locating in `1920x1080`, with no PictureMatching offset on the command
+- Mosaic overlap, dotted frames, tele-only panes and STACK MOSAIC, ICRS pane numbers, and the contact sheet kept until live view
+- Auto Parameters kept across PHOTO and DSO until a manual exposure, gain, or stack count is saved
+- Panorama framing on the wide camera. Do not resize the tele field. Shot count changes only through the framing rectangle the user set
+- Sky-map load path and restore of the last RA/Dec
+- Preview only for live view. Polar alignment does not start it. Disconnect stops it
+
+Before finishing, read `git diff` for every file touched. Put back any line the request did not ask for.
