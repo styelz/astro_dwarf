@@ -58,6 +58,10 @@ CMD_NOTIFY_STATE_ASTRO_GOTO = 15211
 CMD_NOTIFY_STATE_ASTRO_TRACKING = 15212
 CMD_NOTIFY_TRACK_RESULT = 15225
 CMD_NOTIFY_WIDE_TRACK_RESULT = 15252
+# Object track (module 7). The reply is ComResponse; -14900 means the tracker
+# is still starting, and any other non-zero code is a reject.
+CMD_TRACK_START_TRACK = 14800
+CODE_TRACK_TRACKER_INITING = -14900
 CMD_NOTIFY_NORMAL_TRACK_STATE = 15284
 CMD_NOTIFY_TELE_FUNCTION_STATE = 15215
 CMD_NOTIFY_WIDE_FUNCTION_STATE = 15216
@@ -166,6 +170,21 @@ def track_box_off() -> dict[str, Any]:
     }
 
 
+def object_track_latched(snapshot: dict[str, Any] | None) -> bool:
+    """True while a drawn box or center object track owns the motors.
+
+    DSO mode keeps publishing sidereal tracking beside that latch. Those
+    packets must not relabel it or clear the rectangle.
+    """
+    snap = snapshot or {}
+    return bool(snap.get("track_box") or snap.get("tracking_kind") == "object")
+
+
+def box_track_reply_failed(code: int | None) -> bool:
+    """True when cmd 14800 was rejected. A missing reply is not a rejection."""
+    return code not in (None, 0, CODE_TRACK_TRACKER_INITING)
+
+
 TYPE_NOTIFICATION = 2
 _RESPONSE_TYPES = (1, 3)  # WsPacket.type: 0 request, 1 reply, 2 notification, 3 response
 
@@ -207,6 +226,7 @@ _TRACKED_RESPONSES = {
     CMD_ASTRO_CONTINUE_SHOOTING,
     CMD_ASTRO_START_CAPTURE_RAW_DARK_WITH_PARAM,
     CMD_ASTRO_START_CAPTURE_WIDE_RAW_DARK_WITH_PARAM,
+    CMD_TRACK_START_TRACK,
 }
 _DARK_LIBRARY_CMDS = {
     CMD_ASTRO_GET_DARK_FRAME_LIST,
@@ -1662,11 +1682,17 @@ class TelemetryTap:
                 # The motion motor runs one astro function at a time: tracking
                 # taking over means the GOTO slew/solve has finished, even when
                 # the firmware never sent a final GOTO idle/stopped notification.
+                # A box lock is object tracking. This sidereal sample must not
+                # clear that rectangle.
                 changes["goto_state"] = "idle"
-                changes["tracking_kind"] = "sidereal"
-                changes.update(track_box_off())
+                if object_track_latched(self.snapshot()):
+                    changes.pop("tracking_state", None)
+                    changes.pop("tracking_target", None)
+                else:
+                    changes["tracking_kind"] = "sidereal"
+                    changes.update(track_box_off())
             elif changes.get("tracking_state"):
-                if self.snapshot().get("tracking_kind") == "object":
+                if object_track_latched(self.snapshot()):
                     # DSO mode keeps reporting sidereal tracking as idle. That
                     # packet must not drop an object-track latch.
                     changes.pop("tracking_state", None)
@@ -2032,18 +2058,20 @@ class TelemetryTap:
             elif which == "astro_tracking_state":
                 state = OPERATION_STATES.get(int(exclusive.astro_tracking_state.state), "idle")
                 # Exclusive state: a live sidereal track owns the motors.
+                # Object tracking, including a drawn box, keeps its latch.
                 changes["goto_state"] = "idle"
                 changes["calibration_state"] = "idle"
-                if state == "running":
-                    changes["tracking_state"] = state
-                    changes["tracking_target"] = str(exclusive.astro_tracking_state.target_name or "")
-                    changes["tracking_kind"] = "sidereal"
-                    changes.update(track_box_off())
-                elif self.snapshot().get("tracking_kind") != "object":
-                    changes["tracking_state"] = state
-                    changes["tracking_target"] = str(exclusive.astro_tracking_state.target_name or "")
-                    changes["tracking_kind"] = ""
-                    changes.update(track_box_off())
+                if not object_track_latched(self.snapshot()):
+                    if state == "running":
+                        changes["tracking_state"] = state
+                        changes["tracking_target"] = str(exclusive.astro_tracking_state.target_name or "")
+                        changes["tracking_kind"] = "sidereal"
+                        changes.update(track_box_off())
+                    else:
+                        changes["tracking_state"] = state
+                        changes["tracking_target"] = str(exclusive.astro_tracking_state.target_name or "")
+                        changes["tracking_kind"] = ""
+                        changes.update(track_box_off())
             elif which == "normal_track_state":
                 state = OPERATION_STATES.get(int(exclusive.normal_track_state.state), "idle")
                 running = state == "running"

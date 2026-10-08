@@ -308,6 +308,11 @@ Item {
         const plan = backend.skyShowPlan(item) || ({})
         if (!plan.ok)
             return
+        // The sky field follows the control-page lens. A tele template
+        // shown while Wide is selected has to select Tele before the box
+        // is drawn.
+        if (plan.select_tele && backend.selectedDeviceId && !root.scopeOccupied && !root.scopeLinking)
+            backend.setLiveCamera(backend.selectedDeviceId, "tele")
         const device = plan.mode === "device"
         if (device) {
             const horizontal = skyPage.clampInt(plan.horizontal_scale, 100, 180, 150)

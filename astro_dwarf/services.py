@@ -3655,6 +3655,24 @@ def _sky_show_label(item: dict[str, Any], mosaic: bool) -> str:
     return label or "Target"
 
 
+def sky_show_lens(camera: Any) -> str:
+    """Normalize a session or template camera to ``tele`` or ``wide``."""
+    name = camera.get("camera") if isinstance(camera, dict) else camera
+    text = str(getattr(name, "value", name) or "").strip().lower()
+    if text in {"tele", "wide"}:
+        return text
+    return ""
+
+
+def sky_show_selects_tele(current_camera: Any, item_camera: Any) -> bool:
+    """True when Show on sky should select Tele so the map matches a tele template.
+
+    The sky field follows the control-page lens. A tele template shown while
+    Wide is selected would otherwise draw the wide box.
+    """
+    return sky_show_lens(item_camera) == "tele" and sky_show_lens(current_camera) == "wide"
+
+
 def sky_show_plan(
     item: dict[str, Any] | None,
     members: list[dict[str, Any]] | None = None,
@@ -5783,21 +5801,26 @@ def mosaic_member_seconds(
     profile: HardwareProfile,
     index: int,
 ) -> tuple[Workflow, float]:
-    """Duration of one mosaic pane. Later panes omit the setup the first pane already did."""
-    workflow = mosaic_pane_workflow(session.workflow, index)
-    if index > 0 and session.mosaic.group_id:
-        return workflow, mosaic_follow_on_seconds(session, profile)
-    return workflow, DurationEngine.calculate(replace(session, workflow=workflow), profile)
+    """Duration of one mosaic pane, using the workflow stored on that pane.
+
+    A later pane that still has the generated follow-on workflow (slew and
+    stack only) keeps the short estimate. A pane the user edited uses the
+    full setup duration for the flags they saved.
+    """
+    stored = session.workflow
+    if index > 0 and session.mosaic.group_id and stored == mosaic_pane_workflow(stored, index):
+        return stored, mosaic_follow_on_seconds(session, profile)
+    return stored, DurationEngine.calculate(session, profile)
 
 
 def stagger_mosaic_sessions(sessions: list[Session], start: datetime, profile: HardwareProfile) -> list[Session]:
+    """Place mosaic panes back to back. Each pane keeps the workflow it was saved with."""
     cursor = start.replace(second=0, microsecond=0)
     result: list[Session] = []
     for index, session in enumerate(sorted(sessions, key=lambda item: pane_sort_key(item.name))):
-        workflow, duration = mosaic_member_seconds(session, profile, index)
+        _workflow, duration = mosaic_member_seconds(session, profile, index)
         result.append(replace(
             session,
-            workflow=workflow,
             scheduled_start=cursor.isoformat(timespec="minutes"),
             planned_duration_seconds=duration,
         ))

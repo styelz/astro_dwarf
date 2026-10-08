@@ -140,6 +140,8 @@ from .services import (
     mosaic_group_title,
     mosaic_grid_size,
     sky_show_plan,
+    sky_show_lens,
+    sky_show_selects_tele,
     mosaic_pane_footprints,
     mosaic_panes_match_center,
     named_mosaic_center,
@@ -1339,9 +1341,15 @@ def mosaic_slew_preview_should_restore(
     playing: bool,
     stack_mode: bool,
     opening: bool = False,
+    goto_busy: bool = False,
 ) -> bool:
-    """Reopen camera RTSP between mosaic panes once HTTP stacking is detached."""
-    if stacking or stack_mode or playing or opening or not mosaic_continues:
+    """Reopen camera RTSP between mosaic panes once HTTP stacking is detached.
+
+    A plate-solve keeps the tele encoder. Reopening RTSP on every failed
+    attach restarts that solve and stretches the gap after a pane into the
+    full GOTO budget.
+    """
+    if stacking or stack_mode or playing or opening or goto_busy or not mosaic_continues:
         return False
     return True
 
@@ -7638,6 +7646,13 @@ class AppBackend(QObject):
             if token != self._preview_token:
                 return
             if not ok:
+                text = str(result or "")
+                if "stacking JPEG" in text:
+                    # Wide RTSP is still live. Opening it must not wait on the
+                    # tele mode switch that the firmware will not answer.
+                    self.add_log("warning", text, device_id)
+                    after_cameras(True, result)
+                    return
                 after_cameras(False, result)
                 return
             if not restore_dso:
@@ -8433,12 +8448,14 @@ class AppBackend(QObject):
             and self._preview_tele_url == tele_url
             and str(tele_url).startswith("rtsp://")
         )
+        goto_busy = str(current.get("goto_state") or "") in {"running", "solving", "stopping"}
         restore_slew = mosaic_slew_preview_should_restore(
             stacking=stacking,
             mosaic_continues=mosaic_continues,
             playing=bool(self._preview_playing or self._preview_tele_playing),
             stack_mode=self._preview_stack_mode,
             opening=already_opening or bool(self._pending_retarget),
+            goto_busy=goto_busy,
         )
         if restore_slew:
             force_mosaic = True
@@ -8472,6 +8489,7 @@ class AppBackend(QObject):
                         mosaic_continues=mosaic_continues,
                         playing=False,
                         stack_mode=False,
+                        goto_busy=goto_busy,
                     ):
                         self._retarget_preview_streams(tele_url, wide_url)
                     return
@@ -8978,7 +8996,8 @@ class AppBackend(QObject):
             and self._mosaic_capture_continues()
             and not self._preview_stacking(self._selected_device_id)
         ):
-            self._preview_tele_url = ""
+            # Keep the URL. Clearing it made the next telemetry tick reopen
+            # RTSP, and that loop ran for the whole plate-solve.
             self.add_log("warning", f"{camera} preview: {text}")
             if self._mosaic_keep_live_sheet():
                 self.mosaicPreviewChanged.emit()
@@ -10403,23 +10422,29 @@ class AppBackend(QObject):
                         },
                     )
                 elif operation == "box_track" and isinstance(result, dict):
-                    self._on_telemetry(
-                        device_id,
-                        {
-                            "tracking_state": "running",
-                            "tracking_kind": "object",
-                            "tracking_target": "Box lock",
-                            "goto_state": "idle",
-                            "track_box": True,
-                            "track_box_nx": float(result.get("nx") or 0),
-                            "track_box_ny": float(result.get("ny") or 0),
-                            "track_box_nw": float(result.get("nw") or 0),
-                            "track_box_nh": float(result.get("nh") or 0),
-                            "track_box_frame_w": int(result.get("frame_w") or 0),
-                            "track_box_frame_h": int(result.get("frame_h") or 0),
-                            "track_box_camera": str(result.get("camera") or ""),
-                        },
-                    )
+                    # The worker already published the rectangle. A track
+                    # result may have moved it while this reply was in flight.
+                    current = self._device_telemetry.get(device_id) or {}
+                    fields: dict[str, Any] = {
+                        "tracking_state": "running",
+                        "tracking_kind": "object",
+                        "tracking_target": "Box lock",
+                        "goto_state": "idle",
+                    }
+                    if not current.get("track_box"):
+                        fields.update(
+                            {
+                                "track_box": True,
+                                "track_box_nx": float(result.get("nx") or 0),
+                                "track_box_ny": float(result.get("ny") or 0),
+                                "track_box_nw": float(result.get("nw") or 0),
+                                "track_box_nh": float(result.get("nh") or 0),
+                                "track_box_frame_w": int(result.get("frame_w") or 0),
+                                "track_box_frame_h": int(result.get("frame_h") or 0),
+                                "track_box_camera": str(result.get("camera") or ""),
+                            }
+                        )
+                    self._on_telemetry(device_id, fields)
                 self.add_log("success", f"{label} acknowledged", device_id)
                 self._toast(label, "success", _ACTION_DETAILS.get(operation, ""))
             else:
@@ -10594,13 +10619,19 @@ class AppBackend(QObject):
     def skyShowPlan(self, item: Any) -> dict[str, Any]:
         data = dict(item) if isinstance(item, dict) else {}
         members = self._sky_show_members(data)
+        camera_name = self._sky_show_camera(data, members)
         fov_h, fov_v, _camera = self._device_fov(
             str(data.get("device_id") or ""),
-            camera=self._sky_show_camera(data, members),
+            camera=camera_name,
         )
         plan = sky_show_plan(data, members, fov_h=fov_h, fov_v=fov_v)
         if not plan.get("ok"):
             self._toast("This session has no equatorial coordinates", "warning")
+            return plan
+        selected = self._schedule_device()
+        current = getattr(selected.camera, "value", selected.camera) if selected is not None else ""
+        plan["camera"] = sky_show_lens(camera_name)
+        plan["select_tele"] = sky_show_selects_tele(current, camera_name)
         return plan
 
     @Slot("QVariant", result=bool)
@@ -15747,14 +15778,11 @@ class AppBackend(QObject):
         else:
             self.add_log("notice", f"Session started · {session.target.name}", session.device_id)
             self._toast(f"Session started · {session.target.name}", "info", f"{session.camera.frame_count} × {session.camera.exposure_seconds:g}s")
-        launch = session
-        if continuing:
-            launch = replace(session, workflow=mosaic_pane_workflow(session.workflow, 1))
         worker.run_session(
-            launch,
+            session,
             lambda ok, result: self._session_finished(session.id, ok, result),
             prompt_darks=prompt_darks,
-            mosaic_continue=continuing,
+            mosaic_continue=False,
         )
 
     def _note_firmware_mosaic_phase(self, session: Session, step: str) -> None:

@@ -31,7 +31,10 @@ from .device_telemetry import (
     CMD_ASTRO_GET_WIDE_DARK_FRAME_LIST,
     CODE_STEP_MOTOR_NEED_RESET,
     DEVICE_OCCUPIED_MESSAGE,
+    CMD_TRACK_START_TRACK,
+    CODE_TRACK_TRACKER_INITING,
     TelemetryTap,
+    box_track_reply_failed,
     clear_device_occupied,
     device_occupied,
     install_sdk_logging,
@@ -146,9 +149,8 @@ _motors_unhomed = False
 # Dual Lenses Locating (cmd 14009) always works in wide-camera 1920x1080 pixels.
 _LINKAGE_W = 1920
 _LINKAGE_H = 1080
-# Object track (module 7). 14800 starts a box on the current frame; 14801 stops it.
+# Object track (module 7). 14800 starts a box on the live frame; 14801 stops it.
 _MODULE_TRACK = 7
-CMD_TRACK_START_TRACK = 14800
 CMD_TRACK_STOP_TRACK = 14801
 
 
@@ -3303,19 +3305,27 @@ def capture_should_skip_dark_hold(
     frames: int,
     elapsed_s: float,
     exposure_s: float,
+    taken: int = 0,
 ) -> bool:
     """True when a stack is held on the missing-darks warning.
 
     Firmware can accept START_CAPTURE and report running at 0 frames while
     it waits for continue-shooting. A real first exposure is allowed to
-    finish before a 0-frame hold counts.
+    finish before a 0-frame hold counts. ``taken`` is subframes captured:
+    the stacked count can still be 0 for a few seconds after that exposure,
+    and continue-shooting then makes the firmware burn the rest of the
+    count in short rejected frames.
     """
     if continued:
         return False
+    try:
+        progressed = max(int(frames or 0), int(taken or 0))
+    except (TypeError, ValueError):
+        progressed = 0
+    if progressed > 0:
+        return False
     if needs_continue:
         return True
-    if frames > 0:
-        return False
     if exposure_s and exposure_s > 0:
         limit = float(exposure_s) + 45.0
     else:
@@ -3540,12 +3550,17 @@ def _wait_for_capture_end(
         snapshot = _tap.snapshot() if _tap is not None else {}
         elapsed = time.monotonic() - started
         frames_now, _total_now = _capture_counts(snapshot)
+        try:
+            taken_now = max(0, int(snapshot.get("capture_current") or 0))
+        except (TypeError, ValueError):
+            taken_now = 0
         if capture_should_skip_dark_hold(
             needs_continue=_sdk_needs_continue(),
             continued=continued,
             frames=frames_now,
             elapsed_s=elapsed,
             exposure_s=_snapshot_exposure_s(snapshot),
+            taken=taken_now,
         ):
             continued = True
             _clear_sdk_continue()
@@ -5694,6 +5709,42 @@ def camera_param_unchanged(
     return False
 
 
+def photo_jpeg_leftover(snapshot: dict[str, Any] | None) -> bool:
+    """True when the tele camera is idle on the stacking JPEG encoder.
+
+    ``perform_enter_photo_mode`` then waits 150 s for a shooting-mode reply
+    that never comes, treats that timeout as success, and leaves tele on JPEG.
+    A running stack is the normal JPEG preview and is not this case.
+    """
+    snap = snapshot or {}
+    if snap.get("capture_active") or snap.get("capture_state") == "running":
+        return False
+    return str(snap.get("stream_type") or "").strip().upper() == "JPEG"
+
+
+def _enter_photo_mode() -> Any:
+    """Enter photo mode without the 150 s stall left by a finished stack.
+
+    After a mosaic the tele camera can sit on the stacking JPEG encoder while
+    capture is already idle. ``perform_enter_photo_mode`` then waits 150 s for
+    a shooting-mode reply, another 150 s for the technique, and another 150 s
+    for enter-camera. Each timeout comes back as code -5, which the SDK treats
+    as success, and the encoder never leaves JPEG. While that wait owns the
+    command queue, the next GOTO fails with CODE_ASTRO_FUNCTION_BUSY.
+    """
+    snap = _tap.snapshot() if _tap is not None else {}
+    if photo_jpeg_leftover(snap):
+        log(
+            "Tele camera is still on the stacking JPEG stream; not switching shooting mode",
+            "warning",
+        )
+        return False
+    if _shooting_int(snap.get("shooting_mode")) == _PHOTO_SHOOTING_MODE:
+        log("Already in photo mode; skipping shooting-mode switch", "debug")
+        return True
+    return sdk_call("photo_mode")
+
+
 def _remember_shooting(
     mode: int | None = None,
     tech: int | None = None,
@@ -6634,7 +6685,13 @@ def object_track_box(
 def box_track_blocked(snapshot: dict[str, Any] | None) -> str:
     """Why a drawn box must not be sent, or an empty string when it can."""
     snap = snapshot or {}
-    if snap.get("tracking_kind") == "sidereal" and snap.get("tracking_state") == "running":
+    # A running sidereal track, including one whose kind is not labeled yet.
+    # Center object track and an existing box can be replaced.
+    if (
+        snap.get("tracking_state") == "running"
+        and not snap.get("track_box")
+        and snap.get("tracking_kind") != "object"
+    ):
         return "Stop sidereal tracking before locking a box"
     if snap.get("goto_state") in ("running", "solving", "stopping"):
         return "Wait for the slew to finish before locking a box"
@@ -6710,6 +6767,24 @@ def box_track_rect(
     }
 
 
+def _await_box_track_reply(since: float, timeout: float = 2.0) -> int | None:
+    """Reply code for cmd 14800, or None when firmware does not answer.
+
+    ``CODE_TRACK_TRACKER_INITING`` means the tracker is still starting, so the
+    wait continues until a real code or the timeout.
+    """
+    if _tap is None:
+        return None
+    deadline = time.monotonic() + timeout
+    while True:
+        code = _tap.response_after(CMD_TRACK_START_TRACK, since)
+        if code not in (None, CODE_TRACK_TRACKER_INITING):
+            return code
+        if time.monotonic() >= deadline or _stop.is_set():
+            return code
+        time.sleep(0.05)
+
+
 def _start_box_track(nx: Any, ny: Any, nw: Any, nh: Any, wide: bool = False) -> dict[str, Any]:
     """Lock object tracking on a box the user drew. Does not enter astro mode."""
     snapshot = _tap.snapshot() if _tap is not None else {}
@@ -6717,9 +6792,10 @@ def _start_box_track(nx: Any, ny: Any, nw: Any, nh: Any, wide: bool = False) -> 
     if blocked:
         raise RuntimeError(blocked)
     wide_flag = bool(wide)
-    frame_w = snapshot.get("wide_width") if wide_flag else snapshot.get("tele_width")
-    frame_h = snapshot.get("wide_height") if wide_flag else snapshot.get("tele_height")
-    rect = box_track_rect(frame_w, frame_h, nx, ny, nw, nh, wide=wide_flag)
+    # Cmd 14800 is the live 1920×1080 frame. The still resolution (3840×2160
+    # on DWARF 3 tele) would place the box in the wrong half of that frame.
+    # A result that comes back in the doubled still frame is scaled later.
+    rect = box_track_rect(_LINKAGE_W, _LINKAGE_H, nx, ny, nw, nh, wide=wide_flag)
     from dwarf_python_api.proto import track_pb2
 
     message = track_pb2.ReqStartTrack()
@@ -6733,8 +6809,12 @@ def _start_box_track(nx: Any, ny: Any, nw: Any, nh: Any, wide: bool = False) -> 
         f"Box lock on the {camera} frame "
         f"({rect['x']}, {rect['y']}, {rect['w']}×{rect['h']})"
     )
+    since = time.monotonic()
     if send_without_response(message, CMD_TRACK_START_TRACK, _MODULE_TRACK) is False:
         raise RuntimeError("Box lock failed to start")
+    code = _await_box_track_reply(since)
+    if box_track_reply_failed(code):
+        raise RuntimeError(f"Box lock failed: {_error_name(int(code))}")
     if _tap is not None:
         _tap.update(
             {
@@ -7399,6 +7479,14 @@ def dispatch(message: dict[str, Any]) -> Any:
         if result is not False:
             request_state_refresh()
         return result
+    if command == "photo_mode":
+        # A leftover stacking JPEG makes the SDK mode switch wait 150 s per
+        # step and blocks the next GOTO. Refuse that switch here.
+        result = _enter_photo_mode()
+        if result is not False:
+            _remember_shooting(_PHOTO_SHOOTING_MODE, _PHOTO_STILL_TECH)
+        request_state_refresh()
+        return result
     if command == "enter_camera":
         return _enter_astro_camera()
     if command == "open_camera":
@@ -7429,9 +7517,7 @@ def dispatch(message: dict[str, Any]) -> Any:
                 return False
         result = sdk_call(command, *message.get("args", []))
         if result is not False:
-            if command == "photo_mode":
-                _remember_shooting(_PHOTO_SHOOTING_MODE, _PHOTO_STILL_TECH)
-            elif command == "shooting_mode":
+            if command == "shooting_mode":
                 args = list(message.get("args") or [])
                 if args:
                     mode = _shooting_int(args[0])
@@ -7455,6 +7541,14 @@ def execute(message: dict[str, Any]) -> None:
     try:
         result = dispatch(message)
         if not internal:
+            if message.get("command") == "photo_mode" and result is False:
+                emit({
+                    "event": "response",
+                    "id": request_id,
+                    "ok": False,
+                    "error": "Tele camera stayed on the stacking JPEG stream",
+                })
+                return
             emit({"event": "response", "id": request_id, "ok": True, "result": result})
     except Exception as exc:
         if internal:

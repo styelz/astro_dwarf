@@ -36,6 +36,7 @@ Dialog {
     readonly property bool uniqueVisible: !bulkMode
     readonly property bool mosaicVisible: !bulkMode && !cameraForm
     property int captureTab: 0
+    readonly property bool newSession: !editingId && !editingTemplate && !bulkMode
     readonly property bool cameraForm: captureTab === 1 && !bulkMode && !editingTemplate
     readonly property bool equatorialTarget: targetType.currentIndex === 0
     readonly property bool solarKind: targetType.currentIndex === 1
@@ -649,6 +650,42 @@ Dialog {
         sessionDialog.syncDeviceCombo()
         open()
     }
+    function openNewTemplate() {
+        sessionDialog.resetEditorState()
+        editingId = ""
+        editingAnchorId = ""
+        editingDeviceId = backend.selectedDeviceId
+        editingTemplate = true
+        templateMembers = []
+        sessionName.text = ""
+        targetName.text = ""
+        targetType.currentIndex = 0
+        solarName.currentIndex = solarName.count ? 0 : -1
+        ra.text = ""
+        dec.text = ""
+        startTime.text = ""
+        sessionDialog.applyCaptureDefaults(sessionDialog.editingDeviceId)
+        binning.currentIndex = 0
+        irFilter.currentIndex = 0
+        camera.currentIndex = 0
+        rows.text = "1"
+        columns.text = "1"
+        sessionDialog.storedRotation = 0
+        hFactor.value = 10
+        vFactor.value = 10
+        waitBefore.text = "0"
+        waitAfter.text = "10"
+        notes.text = ""
+        exposure.placeholderText = ""
+        gain.placeholderText = "Gain"
+        frames.placeholderText = ""
+        waitBefore.placeholderText = "Before"
+        waitAfter.placeholderText = "After"
+        sessionDialog.loadCaptureFields({})
+        captureTab = 0
+        sessionDialog.syncDeviceCombo()
+        open()
+    }
     function openExisting(data) {
         const panes = backend.sessionPanes(data && data.id)
         const members = panes && panes.length ? panes : []
@@ -699,6 +736,7 @@ Dialog {
         editingId = cloned[0].id || data.id
         syncingPane = true
         fillForm(data)
+        captureTab = 0
         loadPaneCoordinates(cloned[0])
         startTime.text = ""
         panePicker.model = sessionDialog.paneChoices()
@@ -776,7 +814,7 @@ Dialog {
                     if (sessionDialog.bulkMode)
                         return "EDIT " + sessionDialog.bulkIds.length + (sessionDialog.bulkTemplates ? " TEMPLATES" : " SESSIONS")
                     if (sessionDialog.editingTemplate)
-                        return "EDIT TEMPLATE"
+                        return sessionDialog.editingId ? "EDIT TEMPLATE" : "NEW TEMPLATE"
                     return sessionDialog.editingId ? "EDIT SESSION" : "NEW SESSION"
                 }
                 color: Theme.accent
@@ -788,7 +826,7 @@ Dialog {
         }
         RowLayout {
             id: captureTabs
-            visible: !sessionDialog.bulkMode && !sessionDialog.editingTemplate
+            visible: !sessionDialog.bulkMode
             Layout.fillWidth: true
             Layout.preferredHeight: Theme.controlHeight
             Layout.maximumHeight: Theme.controlHeight
@@ -796,6 +834,7 @@ Dialog {
             HudButton {
                 id: astroTab
                 objectName: "session-tab-astro"
+                visible: sessionDialog.newSession || sessionDialog.captureTab === 0
                 Layout.fillWidth: true
                 Layout.preferredHeight: Theme.controlHeight
                 text: "ASTRO"
@@ -805,12 +844,12 @@ Dialog {
                 foregroundColor: sessionDialog.captureTab === 0 ? Theme.accent : Theme.textSecondary
                 Accessible.name: "Astro session"
                 accessibleDescription: (sessionDialog.captureTab === 0 ? "Current tab. " : "") + "Deep-sky stack session"
-                onClicked: sessionDialog.captureTab = 0
-                Keys.onLeftPressed: {
+                onClicked: if (sessionDialog.newSession) sessionDialog.captureTab = 0
+                Keys.onLeftPressed: if (sessionDialog.newSession) {
                     cameraTab.forceActiveFocus()
                     sessionDialog.captureTab = 1
                 }
-                Keys.onRightPressed: {
+                Keys.onRightPressed: if (sessionDialog.newSession) {
                     cameraTab.forceActiveFocus()
                     sessionDialog.captureTab = 1
                 }
@@ -827,6 +866,7 @@ Dialog {
             HudButton {
                 id: cameraTab
                 objectName: "session-tab-camera"
+                visible: sessionDialog.newSession || (sessionDialog.captureTab === 1 && !sessionDialog.editingTemplate)
                 Layout.fillWidth: true
                 Layout.preferredHeight: Theme.controlHeight
                 text: "CAMERA"
@@ -836,12 +876,12 @@ Dialog {
                 foregroundColor: sessionDialog.captureTab === 1 ? Theme.accent : Theme.textSecondary
                 Accessible.name: "Camera session"
                 accessibleDescription: (sessionDialog.captureTab === 1 ? "Current tab. " : "") + "Photo, video, burst, or timelapse"
-                onClicked: sessionDialog.captureTab = 1
-                Keys.onLeftPressed: {
+                onClicked: if (sessionDialog.newSession) sessionDialog.captureTab = 1
+                Keys.onLeftPressed: if (sessionDialog.newSession) {
                     astroTab.forceActiveFocus()
                     sessionDialog.captureTab = 0
                 }
-                Keys.onRightPressed: {
+                Keys.onRightPressed: if (sessionDialog.newSession) {
                     astroTab.forceActiveFocus()
                     sessionDialog.captureTab = 0
                 }

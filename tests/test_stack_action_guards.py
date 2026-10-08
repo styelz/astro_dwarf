@@ -140,6 +140,23 @@ def test_missing_darks_hold_is_skipped() -> None:
         "frames already stacking are left alone",
     )
     _assert(
+        not capture_should_skip_dark_hold(
+            needs_continue=False,
+            continued=False,
+            frames=0,
+            elapsed_s=70.0,
+            exposure_s=15.0,
+            taken=1,
+        ),
+        "a captured subframe counts even while stacked is still 0",
+    )
+    _assert(
+        not capture_should_skip_dark_hold(
+            needs_continue=True, continued=False, frames=0, elapsed_s=0.0, exposure_s=15.0, taken=1
+        ),
+        "continue-shooting must not interrupt a stack that has already taken a frame",
+    )
+    _assert(
         is_chatter("START_CAPTURE : CODE_ASTRO_DARK_NOT_FOUND message receive (non-blocking, capture continues)"),
         "the missing-darks warning must not surface as a HUD prompt",
     )

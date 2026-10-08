@@ -90,6 +90,14 @@ Item {
             }
             HudButton { text: "IMPORT TELESCOPIUS"; busy: backend.uiBusy === "telescopius"; busyText: backend.uiBusy === "telescopius" ? "IMPORTING…" : "OPENING…"; enabled: backend.uiBusy === ""; onClicked: telescopiusDialog.open() }
             HudButton { text: "+ MANUAL SESSION"; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: placeOnNightDialog.openForSlot((backend.localNow && backend.localNow.observing_date) || Qt.formatDate(new Date(), "yyyy-MM-dd")) }
+            HudButton {
+                text: "+ NEW TEMPLATE"
+                busyText: "OPENING…"
+                visible: sessionsTabs.currentIndex === 1
+                buttonColor: Theme.fillActive
+                foregroundColor: Theme.accent
+                onClicked: sessionDialog.openNewTemplate()
+            }
         }
         RowLayout {
             id: sessionsTabs
@@ -898,7 +906,7 @@ Item {
                             visible: templatesPage.filteredTemplates.length === 0
                             glyph: backend.templates.length === 0 ? "❖" : "⌕"
                             text: backend.templates.length === 0
-                                  ? "No templates yet. Save a session as a reusable template, or import Stellarium / Telescopius."
+                                  ? "No templates yet. Use + New template, save a session as a template, or import Stellarium / Telescopius."
                                   : "No templates match this search."
                         }
                 ColumnLayout {

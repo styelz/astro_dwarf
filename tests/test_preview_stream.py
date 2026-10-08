@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from astro_dwarf.device_worker import camera_param_unchanged, mosaic_pane_change_label
+from astro_dwarf.device_worker import camera_param_unchanged, mosaic_pane_change_label, photo_jpeg_leftover
 from astro_dwarf.domain import choose_latest_astro_stack
 from astro_dwarf.qt_backend import (
     control_restore_should_set_auto_calibration,
@@ -449,6 +449,25 @@ def test_preview_restarts_rtsp_after_stacking_jpeg() -> None:
     )
 
 
+def test_photo_jpeg_leftover_skips_blocking_mode_switch() -> None:
+    _assert(
+        photo_jpeg_leftover({"shooting_mode": 1, "stream_type": "JPEG"}),
+        "photo mode plus a leftover stacking JPEG must not use the blocking mode switch",
+    )
+    _assert(
+        photo_jpeg_leftover({"shooting_mode": 2, "stream_type": "JPEG"}),
+        "DSO leftover JPEG must not use the blocking photo-mode switch either",
+    )
+    _assert(
+        not photo_jpeg_leftover({"shooting_mode": 1, "stream_type": "RTSP"}),
+        "photo mode with live RTSP is already the target",
+    )
+    _assert(
+        not photo_jpeg_leftover({"shooting_mode": 1, "stream_type": "JPEG", "capture_state": "running"}),
+        "a running stack keeps the JPEG preview",
+    )
+
+
 def test_preview_opens_only_the_dark_camera() -> None:
     both = {"stream_type": "RTSP", "stream_type_wide": "RTSP"}
     _assert(not preview_camera_needs_open(both, "tele"), "live tele does not need enter_camera")
@@ -624,6 +643,16 @@ def test_mosaic_keeps_preview_open_between_panes() -> None:
             opening=True,
         ),
         "do not reopen RTSP on every telemetry tick while it is already opening",
+    )
+    _assert(
+        not mosaic_slew_preview_should_restore(
+            stacking=False,
+            mosaic_continues=True,
+            playing=False,
+            stack_mode=False,
+            goto_busy=True,
+        ),
+        "do not reopen RTSP while the next pane is plate-solving",
     )
     _assert(
         not mosaic_slew_preview_should_restore(
@@ -1484,6 +1513,8 @@ if __name__ == "__main__":
     test_preview_preserves_dso_after_tracking()
     test_preview_skips_golive_after_tracking()
     test_preview_attaches_when_rtsp_is_already_live()
+    test_preview_restarts_rtsp_after_stacking_jpeg()
+    test_photo_jpeg_leftover_skips_blocking_mode_switch()
     test_preview_opens_only_the_dark_camera()
     test_preview_reuses_same_rtsp_player()
     test_mosaic_goto_keeps_finished_frame_off_next_pane()
