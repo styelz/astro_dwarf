@@ -1394,6 +1394,14 @@ def mosaic_progress_phase(step: str) -> str:
         return "goto"
     if "complete" in lowered or lowered.startswith("closing"):
         return "complete"
+    # A custom mosaic is one session per pane. Its capture step is
+    # "Waiting for capture · N/M", which has no "stack" in it. Leaving the
+    # phase blank made the contact sheet treat the previous stacked.jpg as
+    # this pane's frames.
+    if lowered == "start capture" or (
+        lowered.startswith("waiting for capture") and "stop" not in lowered
+    ):
+        return "stacking"
     if "stacking" in lowered or "waiting for pane" in lowered or "stack" in lowered:
         return "stacking"
     return ""
@@ -1609,13 +1617,87 @@ def mosaic_finished_pane(stream_pane: int, result_pane: int) -> int:
 
 
 def mosaic_stack_reset_seen(stacked: int, taken: int, previous_seen: bool = False) -> bool:
-    """True after the stacked.jpg owner has reset for the current pane."""
+    """True after this pane has produced its own first stacked frame.
+
+    A wiped counter (0/0) is not a frame. Treating that wipe as a reset
+    latched acceptance while stacked.jpg was still the previous pane, which
+    filed pane N's sky into pane N+1.
+    """
     if previous_seen:
         return True
     try:
-        return max(int(stacked or 0), int(taken or 0)) <= 1
+        count = max(int(stacked or 0), int(taken or 0))
     except (TypeError, ValueError):
         return False
+    return count == 1
+
+
+def mosaic_album_target_name(session_name: str, target_name: str = "") -> str:
+    """Album name for the pane that just stacked.
+
+    Every pane of a custom mosaic shares the parent target ("Atria"), so a
+    lookup by that name returns the previous pane's folder. The session
+    name is the GOTO name ("Atria pane 5") and is unique to this pane.
+    """
+    name = str(session_name or "").strip()
+    if " pane " in name.lower():
+        return name
+    text = str(target_name or "").strip()
+    return text or name
+
+
+def mosaic_still_signature(image: QImage | None) -> int:
+    """Fingerprint a stacking still so the same JPEG cannot fill two panes."""
+    if image is None or image.isNull():
+        return 0
+    width = int(image.width())
+    height = int(image.height())
+    if width < 1 or height < 1:
+        return 0
+    acc = (width * 65537) ^ (height * 257)
+    columns = 8
+    rows = 8
+    for row in range(rows):
+        y = min(height - 1, (row * height) // rows + height // (rows * 2))
+        for col in range(columns):
+            x = min(width - 1, (col * width) // columns + width // (columns * 2))
+            acc = (acc * 1315423911 + int(image.pixel(x, y))) & 0xFFFFFFFF
+    return acc or 1
+
+
+def mosaic_pane_still_is_foreign(
+    pane: int,
+    signature: int,
+    known: dict[int, Any] | None,
+) -> bool:
+    """True when this still is already filed under a different pane.
+
+    Firmware keeps the previous stacked.jpg on the same HTTP URL until the
+    new stack writes a frame. Copying that picture is what put the centre
+    target into the middle-left cell of a 3×3.
+    """
+    try:
+        index = int(pane or 0)
+        sig = int(signature or 0)
+    except (TypeError, ValueError):
+        return True
+    if index < 1 or sig == 0:
+        return False
+    for other, stored in (known or {}).items():
+        try:
+            other_index = int(other)
+        except (TypeError, ValueError):
+            continue
+        if other_index < 1 or other_index == index:
+            continue
+        values = (stored,) if isinstance(stored, int) else stored
+        try:
+            matched = any(int(item or 0) == sig for item in values)
+        except (TypeError, ValueError):
+            matched = False
+        if matched:
+            return True
+    return False
 
 
 def device_mosaic_join_pane(
@@ -2292,6 +2374,11 @@ class AppBackend(QObject):
         self._mosaic_firmware_stacked = 0
         self._mosaic_stream_pane = 0
         self._mosaic_seen_stack_reset = False
+        self._mosaic_pane_signatures: dict[int, set[int]] = {}
+        self._mosaic_foreign_logged: set[int] = set()
+        self._mosaic_blocked_enhance_pane = 0
+        self._custom_pane_album_seq = 0
+        self._custom_pane_album_jobs: dict[int, dict[str, Any]] = {}
         self._mosaic_join_locked = False
         self._mosaic_join_seen_capture = None
         self._mosaic_join_waited = False
@@ -5322,6 +5409,32 @@ class AppBackend(QObject):
             self._mosaic_cache_loaded = None
             self._restore_cached_mosaic_panes(owner, group)
 
+    def _remember_mosaic_pane_signature(self, pane: int, image: QImage | None) -> None:
+        sig = mosaic_still_signature(image)
+        if pane < 1 or not sig:
+            return
+        found = self._mosaic_pane_signatures.setdefault(pane, set())
+        found.add(sig)
+        if len(found) > 16:
+            self._mosaic_pane_signatures[pane] = {sig}
+
+    def _mosaic_frame_is_foreign(self, pane: int, image: QImage | None) -> bool:
+        return mosaic_pane_still_is_foreign(
+            pane,
+            mosaic_still_signature(image),
+            self._mosaic_pane_signatures,
+        )
+
+    def _note_foreign_mosaic_still(self, pane: int) -> None:
+        if pane < 1 or pane in self._mosaic_foreign_logged:
+            return
+        self._mosaic_foreign_logged.add(pane)
+        self.add_log(
+            "info",
+            f"Mosaic pane {pane} — waiting for its own stack, the previous pane is still on the preview",
+            self._selected_device_id,
+        )
+
     def _hold_finished_custom_pane(self, session: Session) -> None:
         """Freeze the pane that just stacked and leave it on the contact sheet."""
         if not session.mosaic.imported_plan or session.device_id != self._selected_device_id:
@@ -5332,6 +5445,7 @@ class AppBackend(QObject):
         if index >= 1:
             self._snapshot_mosaic_pane(index)
             self._publish_mosaic_pane_url(index)
+            self._fetch_custom_pane_album(session, index)
         if index >= 1 and not self.mosaic_frames.peek(index).isNull():
             self._mosaic_result_held = True
             self._mosaic_result_dismissed = False
@@ -5339,13 +5453,112 @@ class AppBackend(QObject):
             self._mosaic_result_held = True
             self._mosaic_result_dismissed = False
 
+    def _fetch_custom_pane_album(self, session: Session, pane: int) -> None:
+        """Download this pane's completed stack into its own cell.
+
+        The live URL keeps serving the previous pane until the new file
+        exists. Intermediate panes used to freeze that leftover and never
+        ask the album for the stack that actually belongs here.
+        """
+        if pane < 1 or session.device_id != self._selected_device_id:
+            return
+        worker = self._workers.get(session.device_id)
+        if worker is None or not worker.connected:
+            return
+        camera = session.camera.camera
+        camera_name = camera.value if hasattr(camera, "value") else str(camera or "tele")
+        target = mosaic_album_target_name(session.name, session.target.name)
+        since = int(time.time())
+        if session.actual_started_at:
+            try:
+                since = int(datetime.fromisoformat(session.actual_started_at).timestamp())
+            except ValueError:
+                since = int(time.time())
+        self._custom_pane_album_seq += 1
+        token = self._custom_pane_album_seq
+        self._custom_pane_album_jobs[token] = {
+            "pane": int(pane),
+            "device_id": session.device_id,
+            "target": target,
+            "camera": camera_name,
+            "since": since,
+            "started": time.monotonic(),
+        }
+        self._send_custom_pane_album(token)
+
+    def _send_custom_pane_album(self, token: int) -> None:
+        job = self._custom_pane_album_jobs.get(token)
+        if not job:
+            return
+        worker = self._workers.get(str(job.get("device_id") or ""))
+        if worker is None or not worker.connected:
+            self._custom_pane_album_jobs.pop(token, None)
+            return
+
+        def done(ok: bool, result: Any) -> None:
+            current = self._custom_pane_album_jobs.get(token)
+            if not current:
+                if ok and isinstance(result, dict):
+                    self._discard_stack_result_file(str(result.get("path") or ""))
+                return
+            path = str(result.get("path") or "") if ok and isinstance(result, dict) else ""
+            if path and self._apply_custom_pane_album(int(current["pane"]), path):
+                self._custom_pane_album_jobs.pop(token, None)
+                return
+            if path:
+                self._discard_stack_result_file(path)
+            elapsed = time.monotonic() - float(current.get("started") or time.monotonic())
+            if elapsed < _STACK_RESULT_RETRY_S:
+                QTimer.singleShot(1500, lambda token=token: self._send_custom_pane_album(token))
+                return
+            self._custom_pane_album_jobs.pop(token, None)
+            self.add_log(
+                "info",
+                f"Mosaic pane {current['pane']} — completed stack was not ready, keeping the last frame",
+                str(current.get("device_id") or ""),
+            )
+
+        worker.send(
+            "astro_stack_result_image",
+            {
+                "target": str(job.get("target") or ""),
+                "camera": str(job.get("camera") or "tele"),
+                "since": int(job.get("since") or 0),
+            },
+            done,
+        )
+
+    def _apply_custom_pane_album(self, pane: int, path: str) -> bool:
+        image = QImage(str(path))
+        if image.isNull() or pane < 1:
+            return False
+        shown = image.copy()
+        if self._mosaic_frame_is_foreign(pane, shown):
+            return False
+        self._raw_mosaic_panes[pane] = shown.copy()
+        self._remember_mosaic_pane_signature(pane, shown)
+        self._store_mosaic_pane_image(pane, shown, replace_frozen=True)
+        if self._enhance_images:
+            self._queue_mosaic_pane_enhance(pane, shown)
+        self.mosaic_frames.freeze(pane)
+        self._publish_mosaic_pane_url(pane)
+        return True
+
     def _remember_mosaic_live_frame(self, camera: str, image: QImage, *, raw: bool = False) -> None:
         if camera != mosaic_live_still_camera() or image is None or image.isNull():
             return
         pane = self._current_mosaic_live_pane()
         if pane < 1 or not self._mosaic_may_copy_live(pane):
             return
+        if self._mosaic_frame_is_foreign(pane, image):
+            self._mosaic_blocked_enhance_pane = pane
+            self._note_foreign_mosaic_still(pane)
+            return
+        if not raw and pane == self._mosaic_blocked_enhance_pane:
+            return
         if raw:
+            self._mosaic_blocked_enhance_pane = 0
+            self._remember_mosaic_pane_signature(pane, image)
             frozen = self.mosaic_frames.frozen(pane)
             missing = pane not in self._raw_mosaic_panes or self._raw_mosaic_panes[pane].isNull()
             if not frozen:
@@ -5365,6 +5578,7 @@ class AppBackend(QObject):
             return
         existed = pane in self.mosaic_frames.indexes()
         self.mosaic_frames.put(pane, image)
+        self._remember_mosaic_pane_signature(pane, image)
         self._persist_mosaic_pane_image(pane, image)
         if not existed:
             self.mosaicPreviewChanged.emit()
@@ -5424,23 +5638,29 @@ class AppBackend(QObject):
         stored = self.mosaic_frames.peek(index)
         already_frozen = self.mosaic_frames.frozen(index) and not stored.isNull()
         if already_frozen:
+            self._remember_mosaic_pane_signature(index, stored)
             self._publish_mosaic_pane_url(index)
             return
         copy_live = False if from_live is False else self._mosaic_may_copy_live(index)
         if copy_live:
             live = self.live_images.peek(mosaic_live_still_camera())
             capturing = self._telemetry_capturing(self._selected_device_id)
-            if not live.isNull() and (stored.isNull() or capturing):
+            if not live.isNull() and self._mosaic_frame_is_foreign(index, live):
+                self._note_foreign_mosaic_still(index)
+                copy_live = False
+            if copy_live and not live.isNull() and (stored.isNull() or capturing):
                 self._keep_mosaic_pane_raw(index)
                 # Enhance-on stills already in the cell must not be replaced
                 # by the raw HTTP placeholder that lives in live_images.
                 if stored.isNull() or not mosaic_pane_may_replace_frozen(self._enhance_images):
                     self._store_mosaic_pane_image(index, live)
+                    self._remember_mosaic_pane_signature(index, live)
         stored = self.mosaic_frames.peek(index)
         if stored.isNull() or not mosaic_should_publish_pane_url(
             pane=index, has_still=True, goto_failed=goto_failed, failed_pane=failed_pane
         ):
             return
+        self._remember_mosaic_pane_signature(index, stored)
         self.mosaic_frames.freeze(index)
         self._persist_mosaic_pane_image(index, self.mosaic_frames.peek(index), force=True)
         self._publish_mosaic_pane_url(index)
@@ -5761,6 +5981,10 @@ class AppBackend(QObject):
         self._mosaic_firmware_stacked = 0
         self._mosaic_stream_pane = 0
         self._mosaic_seen_stack_reset = False
+        self._mosaic_pane_signatures = {}
+        self._mosaic_foreign_logged = set()
+        self._mosaic_blocked_enhance_pane = 0
+        self._custom_pane_album_jobs = {}
         self._mosaic_join_locked = False
         self._mosaic_join_seen_capture = None
         self._mosaic_join_waited = False
@@ -5939,6 +6163,10 @@ class AppBackend(QObject):
             self._mosaic_firmware_pane = 1
             self._mosaic_firmware_stacked = 0
             self._mosaic_seen_stack_reset = False
+            self._mosaic_pane_signatures = {}
+            self._mosaic_foreign_logged = set()
+            self._mosaic_blocked_enhance_pane = 0
+            self._custom_pane_album_jobs = {}
             self._stack_result_mosaic_pane = 0
             self._mosaic_join_locked = False
             self._mosaic_join_seen_capture = None
@@ -8104,13 +8332,16 @@ class AppBackend(QObject):
             return False
         shown = image.copy()
         self._discard_stack_result_file(path)
-        self._raw_preview_images["tele"] = shown
         pane = self._stack_result_mosaic_pane or mosaic_finished_pane(
             self._mosaic_stream_pane,
             self._mosaic_result_pane_for(device_id),
         )
+        if pane >= 1 and self._mosaic_frame_is_foreign(pane, shown):
+            return False
+        self._raw_preview_images["tele"] = shown
         if pane >= 1:
             self._raw_mosaic_panes[pane] = shown.copy()
+            self._remember_mosaic_pane_signature(pane, shown)
         if self._should_enhance_preview():
             current = self.live_images.peek("tele")
             if current.isNull():
@@ -15660,6 +15891,8 @@ class AppBackend(QObject):
                 or str(self._preview_tele_url or "").startswith("http://")
             )
         )
+        if ok and not stopped and final.mosaic.imported_plan:
+            self._hold_finished_custom_pane(final)
         self._reset_device_capture_progress(final.device_id)
         device = next((item for item in self._devices if item.id == final.device_id), None)
         self.store.history.save(history_record_for_run(
@@ -15692,8 +15925,6 @@ class AppBackend(QObject):
         group_sessions = self.store.sessions.all()
         more_panes = ok and not stopped and custom_mosaic_panes_remain(final, group_sessions)
         mosaic_done = ok and not stopped and not chained and custom_mosaic_completed(final, group_sessions)
-        if ok and not stopped and final.mosaic.imported_plan:
-            self._hold_finished_custom_pane(final)
         if chained or more_panes:
             if final.device_id == self._selected_device_id and self._preview_result:
                 self._clear_preview_result(keep_mosaic=True)
@@ -15712,7 +15943,7 @@ class AppBackend(QObject):
                 final.device_id,
                 title=title,
                 detail=detail,
-                target=caption_name,
+                target=mosaic_album_target_name(final.name, final.target.name),
                 camera=camera_name,
                 since=int(started.timestamp()),
             )

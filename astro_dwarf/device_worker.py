@@ -5599,6 +5599,28 @@ def _apply_timelapse_param(operation: str, args: tuple[Any, ...] | list[Any]) ->
     return ok
 
 
+def mosaic_pane_change_label(stacked_pane: int, panes: int, reported_index: int = 0) -> str:
+    """Progress step while firmware moves from a finished pane to the next one.
+
+    The base name is ``Changing mosaic pane`` so session timing can measure
+    the gap. The ``N/M`` suffix is what the HUD shows.
+    """
+    try:
+        done = int(stacked_pane or 0)
+        total = int(panes or 0)
+        reported = int(reported_index or 0)
+    except (TypeError, ValueError):
+        return ""
+    if total <= 1 or done < 1 or done >= total:
+        return ""
+    nxt = done + 1
+    if reported > done:
+        nxt = min(total, reported)
+    if nxt <= done or nxt > total:
+        return ""
+    return f"Changing mosaic pane · {nxt}/{total}"
+
+
 def camera_param_unchanged(
     operation: str,
     args: list[Any] | tuple[Any, ...],

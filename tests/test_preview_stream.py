@@ -8,12 +8,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from astro_dwarf.device_worker import camera_param_unchanged, mosaic_pane_change_label
+from astro_dwarf.domain import choose_latest_astro_stack
 from astro_dwarf.qt_backend import (
     control_restore_should_set_auto_calibration,
     mosaic_capture_continues,
     device_mosaic_join_accepts_frames,
     device_mosaic_join_pane,
     mosaic_accept_live_frame,
+    mosaic_album_target_name,
+    mosaic_pane_still_is_foreign,
+    mosaic_still_signature,
     mosaic_finished_pane,
     mosaic_hold_pane,
     mosaic_live_still_camera,
@@ -743,8 +747,21 @@ def test_mosaic_keeps_preview_open_between_panes() -> None:
     _assert(mosaic_finished_pane(1, 2) == 1, "late capture-end still owns pane 1")
     _assert(mosaic_finished_pane(0, 2) == 2, "no stream pane falls back to result pane")
     _assert(not mosaic_stack_reset_seen(6, 6, False), "leftover pane-1 counts are not a reset")
+    _assert(not mosaic_stack_reset_seen(0, 0, False), "a wiped counter is not this pane's first frame")
     _assert(mosaic_stack_reset_seen(1, 0, False), "fresh 1 stacked is a reset")
     _assert(mosaic_stack_reset_seen(6, 6, True), "reset stays latched")
+    _assert(
+        mosaic_progress_phase("Waiting for capture · 6/10") == "stacking",
+        "a custom pane's capture step is stacking",
+    )
+    _assert(
+        mosaic_progress_phase("Start capture") == "stacking",
+        "starting the pane capture is stacking",
+    )
+    _assert(
+        mosaic_progress_phase("Waiting for capture to stop") != "stacking",
+        "stopping capture must not accept a new pane's frames",
+    )
     _assert(
         not mosaic_accept_live_frame(pane=2, stream_pane=2, stacked=6, taken=6, seen_reset=False),
         "leftover JPEG must not fill pane 2",
@@ -757,6 +774,69 @@ def test_mosaic_keeps_preview_open_between_panes() -> None:
         not mosaic_accept_live_frame(pane=2, stream_pane=1, stacked=1, taken=1, seen_reset=True),
         "live frames stay on the stream pane",
     )
+
+
+def test_mosaic_does_not_file_the_previous_pane_still() -> None:
+    from PySide6.QtGui import QColor, QImage
+
+    previous = QImage(32, 24, QImage.Format.Format_RGB32)
+    previous.fill(QColor("white"))
+    same = QImage(32, 24, QImage.Format.Format_RGB32)
+    same.fill(QColor("white"))
+    current = QImage(32, 24, QImage.Format.Format_RGB32)
+    current.fill(QColor("navy"))
+    previous_sig = mosaic_still_signature(previous)
+    same_sig = mosaic_still_signature(same)
+    current_sig = mosaic_still_signature(current)
+    _assert(previous_sig != 0 and previous_sig == same_sig, "the same stacked JPEG has one fingerprint")
+    _assert(previous_sig != current_sig, "the next pane's stack is a different fingerprint")
+    known = {4: {previous_sig}}
+    _assert(
+        mosaic_pane_still_is_foreign(5, same_sig, known),
+        "pane 5 must not keep pane 4's JPEG",
+    )
+    _assert(
+        not mosaic_pane_still_is_foreign(5, current_sig, known),
+        "pane 5 keeps the stack from its own slew",
+    )
+    _assert(
+        not mosaic_pane_still_is_foreign(4, previous_sig, known),
+        "pane 4 may refresh its own still",
+    )
+    _assert(
+        mosaic_album_target_name("Atria pane 5", "Atria") == "Atria pane 5",
+        "album lookup uses the pane GOTO name",
+    )
+    _assert(mosaic_album_target_name("Atria", "Atria") == "Atria", "a single target keeps its name")
+    previous_entry = {
+        "fileName": "Atria pane 4",
+        "modificationTime": 1000,
+        "astroImageDetails": {"target": "Atria pane 4"},
+        "filePath": "/DWARF3/Astronomy/Atria pane 4/stacked.jpg",
+    }
+    current_entry = {
+        "fileName": "Atria pane 5",
+        "modificationTime": 2000,
+        "astroImageDetails": {"target": "Atria pane 5"},
+        "filePath": "/DWARF3/Astronomy/Atria pane 5/stacked.jpg",
+    }
+    picked = choose_latest_astro_stack(
+        [previous_entry, current_entry],
+        target="Atria pane 5",
+        since=1900,
+        skew_s=15,
+    )
+    _assert(
+        picked is not None and picked.get("fileName") == "Atria pane 5",
+        "pane 5's album folder is the one that just stacked",
+    )
+    missed = choose_latest_astro_stack(
+        [previous_entry],
+        target="Atria pane 5",
+        since=1010,
+        skew_s=15,
+    )
+    _assert(missed is None, "the previous pane's folder must not fill this cell")
 
 
 def test_mosaic_rejects_leftover_wide_still() -> None:
@@ -1408,6 +1488,7 @@ if __name__ == "__main__":
     test_preview_reuses_same_rtsp_player()
     test_mosaic_goto_keeps_finished_frame_off_next_pane()
     test_mosaic_keeps_preview_open_between_panes()
+    test_mosaic_does_not_file_the_previous_pane_still()
     test_mosaic_rejects_leftover_wide_still()
     test_mosaic_goto_fail_does_not_publish_pane_url()
     test_mosaic_contact_sheet_never_freezes_wide()

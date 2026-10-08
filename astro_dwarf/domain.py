@@ -1175,8 +1175,10 @@ def choose_latest_astro_stack(
         scored.append(((target_hit, mtime), entry))
     if not scored:
         return None
-    if want_target and any(item[0][0] for item in scored):
+    if want_target:
         scored = [item for item in scored if item[0][0]]
+        if not scored:
+            return None
     scored.sort(key=lambda item: (item[0][0], item[0][1]), reverse=True)
     return scored[0][1]
 
