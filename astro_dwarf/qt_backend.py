@@ -15708,6 +15708,59 @@ class AppBackend(QObject):
         for session_id in stale:
             self._recovered_sessions.pop(session_id, None)
 
+    def _custom_mosaic_sky_item(self, session: Session) -> dict[str, Any]:
+        group_id = str(session.mosaic.group_id or "")
+        return {
+            "id": session.id,
+            "device_id": session.device_id,
+            "name": session.name,
+            "target_name": session.target.name,
+            "group_id": group_id,
+            "group_title": mosaic_group_title(session.target.name, group_id),
+            "target": to_dict(session.target),
+            "mosaic": to_dict(session.mosaic),
+        }
+
+    def _orient_running_custom_mosaic(self, session: Session, *, follow_on: bool) -> None:
+        """Lock the mosaic centre the way Show mosaic on sky does.
+
+        With no locked field, a southern site keeps the 180° chart. The control
+        sheet then puts pane 1 at the bottom and the sky grid points camera-up
+        south. Show on sky locks the group centre, so alt-az uses the parallactic
+        angle and both views are zenith-up. Later panes keep a lock already set.
+        """
+        if follow_on and self._target_coords(self._sky_target) is not None:
+            return
+        if not session.mosaic.imported_plan:
+            return
+        group = str(session.mosaic.group_id or "")
+        siblings = [
+            item
+            for item in self.store.sessions.all()
+            if item.device_id == session.device_id and group and (item.mosaic.group_id or "") == group
+        ]
+        if all(item.id != session.id for item in siblings):
+            siblings.append(session)
+        if len(siblings) < 2:
+            return
+        members = [self._custom_mosaic_sky_item(item) for item in siblings]
+        fov_h, fov_v, _camera = self._device_fov(session.device_id, camera=session.camera.camera)
+        plan = sky_show_plan(
+            self._custom_mosaic_sky_item(session),
+            members,
+            fov_h=fov_h,
+            fov_v=fov_v,
+        )
+        if not plan.get("ok") or not plan.get("mosaic") or plan.get("mode") != "custom":
+            return
+        coords = self._target_coords({"ra_hours": plan.get("ra_hours"), "dec_degrees": plan.get("dec_degrees")})
+        if coords is None:
+            return
+        name = str(plan.get("name") or "").strip()
+        if is_mosaic_pane_name(name):
+            name = mosaic_group_title(name, group)
+        self._emit_sky_lock(name or "Mosaic", coords)
+
     def _start_session(self, worker: TelescopeProcess, session: Session, prompt_darks: bool = False) -> None:
         leftover = self._live_mosaic.get(session.device_id)
         if leftover and leftover.get("phase") and not leftover.get("worker_running"):
@@ -15768,6 +15821,8 @@ class AppBackend(QObject):
                 pane = 0
             if pane >= 1:
                 self._mosaic_firmware_pane = pane
+        if session.mosaic.imported_plan:
+            self._orient_running_custom_mosaic(session, follow_on=continuing)
         self._sync_mosaic_preview(session.device_id)
         self._emit_sessions_changed()
         if not resuming:
