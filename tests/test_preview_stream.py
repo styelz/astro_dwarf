@@ -35,7 +35,10 @@ from astro_dwarf.qt_backend import (
     mosaic_live_pane,
     mosaic_overlay_live_pane,
     mosaic_pane_may_replace_frozen,
+    mosaic_pane_end_phase,
     mosaic_progress_phase,
+    publishes_mosaic_hud,
+    terminal_preview_status,
     mosaic_retarget_keeps_joined_frames,
     mosaic_result_holds_sheet,
     mosaic_result_pane,
@@ -668,6 +671,46 @@ def test_mosaic_keeps_preview_open_between_panes() -> None:
     _assert(
         mosaic_progress_phase("will not plate-solve. Not stacking this pane.") == "failed",
         "clouded-out GOTO fail still marks the pane failed",
+    )
+    _assert(
+        mosaic_progress_phase("GOTO target timed out after 600 s while plate-solving") == "failed",
+        "a plate-solve timeout is not still a slew",
+    )
+    _assert(
+        mosaic_pane_end_phase(ok=False, stopped=False, mosaic=True) == "failed",
+        "a failed mosaic pane drops the slew phase",
+    )
+    _assert(
+        mosaic_pane_end_phase(ok=True, stopped=False, mosaic=True) == "",
+        "a finished pane does not mark the mosaic failed",
+    )
+    _assert(
+        mosaic_pane_end_phase(ok=False, stopped=True, mosaic=True) == "",
+        "a user stop is not a failed phase",
+    )
+    _assert(
+        mosaic_pane_end_phase(ok=False, stopped=False, mosaic=False) == "",
+        "a single target failure does not publish a mosaic phase",
+    )
+    _assert(
+        publishes_mosaic_hud(group_id="atria", panes=1),
+        "a custom pane belongs to the mosaic HUD",
+    )
+    _assert(
+        not publishes_mosaic_hud(panes=1),
+        "one planned target is not a mosaic",
+    )
+    _assert(
+        terminal_preview_status("ffmpeg exited") == "Preview failed: ffmpeg exited",
+        "a dead ffmpeg process is a preview failure",
+    )
+    _assert(
+        terminal_preview_status(
+            "TCP stream failed, retrying over UDP…",
+            fallback="GOTO target timed out after 600 s while plate-solving",
+        )
+        == "Preview failed: GOTO target timed out after 600 s while plate-solving",
+        "a retry line must not stay up after the player has exited",
     )
     _assert(mosaic_hold_pane(1, "goto") == 1, "slew pane keeps the last live frame")
     _assert(mosaic_hold_pane(2, "stacking") == 2, "stacking pane keeps the last live frame")

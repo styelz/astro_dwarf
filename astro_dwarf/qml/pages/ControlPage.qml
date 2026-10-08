@@ -2672,7 +2672,7 @@ Item {
                                         NumberAnimation { from: 0.3; to: 1; duration: 600 }
                                     }
                                 }
-                                Text { text: previewBadge.stopping ? "STOPPING" : (previewBadge.panoramaShooting ? "SHOOTING" : (backend.previewResult ? "RESULT" : (backend.previewPlaying ? (backend.previewStacking ? "STACK" : "LIVE") : (backend.previewHeld ? "PAUSED" : (backend.previewActive ? "STARTING" : "STANDBY"))))); color: Theme.textPrimary; font.pixelSize: Theme.fontPx(11); font.bold: true }
+                                Text { text: previewBadge.stopping ? "STOPPING" : (previewBadge.panoramaShooting ? "SHOOTING" : (backend.previewResult ? "RESULT" : (backend.previewPlaying ? (backend.previewStacking ? "STACK" : "LIVE") : (backend.previewHeld ? "PAUSED" : (backend.previewActive ? (root.previewFailed ? "FAILED" : "STARTING") : "STANDBY"))))); color: Theme.textPrimary; font.pixelSize: Theme.fontPx(11); font.bold: true }
                             }
                         }
                         Rectangle {

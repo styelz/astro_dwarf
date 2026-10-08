@@ -1354,6 +1354,57 @@ def mosaic_slew_preview_should_restore(
     return True
 
 
+def mosaic_pane_end_phase(*, ok: bool, stopped: bool, mosaic: bool) -> str:
+    """Phase to publish when one mosaic pane session ends.
+
+    A failed GOTO must replace the slew phase. Leaving ``goto`` in place
+    kept "Slewing to pane" and the mosaic STOP control after the session
+    had already ended.
+    """
+    if not mosaic or ok or stopped:
+        return ""
+    return "failed"
+
+
+def publishes_mosaic_hud(
+    *,
+    group_id: str = "",
+    imported_plan: bool = False,
+    grid_rows: int = 0,
+    grid_columns: int = 0,
+    panes: int = 1,
+) -> bool:
+    """True when this session is one pane of a mosaic the HUD is showing."""
+    if str(group_id or "").strip():
+        return True
+    try:
+        cells = int(grid_rows or 0) * int(grid_columns or 0)
+        count = int(panes or 1)
+    except (TypeError, ValueError):
+        return False
+    if imported_plan and cells > 1:
+        return True
+    return (not imported_plan) and count > 1
+
+
+def terminal_preview_status(message: str, *, fallback: str = "") -> str:
+    """Status once the camera player has given up.
+
+    "TCP stream failed, retrying…" is only the UDP attempt. After ffmpeg
+    exits, that line must not stay up as if the attach were still running.
+    """
+    text = str(message or "").strip()
+    if not text or "retry" in text.lower():
+        text = str(fallback or "").strip() or "Preview failed"
+    lowered = text.lower()
+    if any(
+        marker in lowered
+        for marker in ("fail", "could not", "no frames", "invalid data", "error opening")
+    ):
+        return text
+    return f"Preview failed: {text}"
+
+
 def mosaic_capture_continues(
     *,
     live_phase: str = "",
@@ -1388,6 +1439,7 @@ def mosaic_progress_phase(step: str) -> str:
         return ""
     if (
         "fail" in lowered
+        or "timed out" in lowered
         or "not calibrated" in lowered
         or "will not plate-solve" in lowered
     ):
@@ -8980,6 +9032,21 @@ class AppBackend(QObject):
         if window_live:
             self.live_images.notify(camera)
 
+    def _release_dead_mosaic_preview(self, outcome: str) -> None:
+        """Leave STARTING after a mosaic pane has already failed.
+
+        The contact sheet stays. Clearing the stream URL would make the next
+        telemetry tick open RTSP again.
+        """
+        if self._preview_playing or self._preview_tele_playing or self._preview_wide_playing:
+            return
+        if not self._preview_active and not str(self._preview_status or "").strip():
+            return
+        self._set_preview_status(terminal_preview_status(self._preview_status, fallback=outcome))
+        if self._preview_active:
+            self._preview_active = False
+            self.previewActiveChanged.emit()
+
     def _on_tele_failed(self, message: str) -> None:
         self._on_camera_preview_failed("tele", message)
 
@@ -8997,8 +9064,19 @@ class AppBackend(QObject):
             and not self._preview_stacking(self._selected_device_id)
         ):
             # Keep the URL. Clearing it made the next telemetry tick reopen
-            # RTSP, and that loop ran for the whole plate-solve.
-            self.add_log("warning", f"{camera} preview: {text}")
+            # RTSP, and that loop ran for the whole plate-solve. The player
+            # has still given up, so the badge must leave STARTING.
+            shown = terminal_preview_status(text)
+            self.add_log("warning", f"{camera} preview: {shown}")
+            self._set_preview_status(shown)
+            if (
+                self._preview_active
+                and not self._preview_playing
+                and not self._preview_tele_playing
+                and not self._preview_wide_playing
+            ):
+                self._preview_active = False
+                self.previewActiveChanged.emit()
             if self._mosaic_keep_live_sheet():
                 self.mosaicPreviewChanged.emit()
             return
@@ -15935,6 +16013,7 @@ class AppBackend(QObject):
             self._sync_session_activity(active_device, "")
         stopped = session_id in self._stop_requested
         self._stop_requested.discard(session_id)
+        failed_mosaic_device = ""
         if device_id:
             self._firmware_mosaic_phase.pop(device_id, None)
         if not session:
@@ -16003,6 +16082,19 @@ class AppBackend(QObject):
         else:
             self.add_log("error", f"Session failed · {final.target.name}: {outcome}", final.device_id)
             self._toast(f"Session failed · {final.target.name}", "error", outcome)
+            if mosaic_pane_end_phase(
+                ok=False,
+                stopped=False,
+                mosaic=publishes_mosaic_hud(
+                    group_id=str(final.mosaic.group_id or ""),
+                    imported_plan=bool(final.mosaic.imported_plan),
+                    grid_rows=int(final.mosaic.grid_rows or 0),
+                    grid_columns=int(final.mosaic.grid_columns or 0),
+                    panes=int(final.mosaic.panes or 1),
+                ),
+            ) == "failed":
+                self._firmware_mosaic_phase[final.device_id] = "failed"
+                failed_mosaic_device = final.device_id
         self._emit_sessions_changed()
         self._emit_history_changed()
         group_sessions = self.store.sessions.all()
@@ -16034,6 +16126,9 @@ class AppBackend(QObject):
             telemetry = dict(self._device_telemetry.get(final.device_id) or {})
             self._sync_preview_for_capture(final.device_id, telemetry, telemetry)
         self._sync_mosaic_preview(final.device_id)
+        if failed_mosaic_device and failed_mosaic_device == self._selected_device_id:
+            self._release_dead_mosaic_preview(str(result or ""))
+            self.mosaicPreviewChanged.emit()
         if mosaic_done:
             self._maybe_auto_stitch_sheet(final.device_id, final)
         self._notify_devices()
