@@ -386,6 +386,18 @@ Item {
                         mediaPage.loadedKey = mediaPage.sourceKey()
                     }
                 }
+                HudButton {
+                    id: mediaStitchButton
+                    objectName: "mediaStitchButton"
+                    text: "STITCH"
+                    visible: mediaPage.inMosaicGroup
+                    enabled: mediaPage.inMosaicGroup && !mediaPage.busy && backend.stitchStatus !== "working"
+                    busy: backend.stitchStatus === "working"
+                    busyText: "STITCHING…"
+                    implicitHeight: Theme.px(28)
+                    tooltip: "Stitches this mosaic's panes into one image and keeps it"
+                    onClicked: backend.stitchMediaGroup(String(backend.mediaMosaicGroup || ""))
+                }
                 SelectionBar {
                     id: mediaSelectionBar
                     selectedCount: mediaPage.selectedCount

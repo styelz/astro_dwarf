@@ -4081,9 +4081,70 @@ def _night_matches(folder_night: str, membership_night: str) -> bool:
     return folder_date == member_date + timedelta(days=1)
 
 
-def _pick_mosaic_membership(matches: list[dict[str, Any]], night: str) -> dict[str, Any] | None:
+_RAW_CAPTURE_RE = re.compile(
+    r"^DWARF_RAW_(?:TELE|WIDE)_(?P<label>.+?)_EXP_\d+_GAIN_\d+_(?P<stamp>\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})(?:-\d+)?$",
+    re.IGNORECASE,
+)
+# The folder clock is the stack start. Slewing can put that a few minutes
+# after the session start. The next pane is further away, and the closest
+# start in this window still belongs to the same mosaic.
+_CAPTURE_MATCH_SECONDS = 300
+
+
+def album_folder_capture(name: str) -> tuple[str, str]:
+    """Pane label and local time from a firmware astronomy folder.
+
+    ``DWARF_RAW_TELE_Atria pane 9_EXP_15_GAIN_60_2026-10-09-03-16-15-739``
+    is the pane ``Atria pane 9`` at ``2026-10-09T03:16:15``. A short pane
+    title is not a firmware folder, so both values stay empty.
+    """
+    text = Path(str(name or "").replace("\\", "/")).name.strip()
+    match = _RAW_CAPTURE_RE.match(text)
+    if match is None:
+        return "", ""
+    label = str(match.group("label") or "").strip()
+    raw = str(match.group("stamp") or "")
+    if len(raw) < 19 or not label:
+        return "", ""
+    stamp = f"{raw[:10]}T{raw[11:13]}:{raw[14:16]}:{raw[17:19]}"
+    return label, stamp
+
+
+def _capture_delta_seconds(captured: str, started: str) -> float | None:
+    try:
+        left = datetime.fromisoformat(str(captured or ""))
+        right = datetime.fromisoformat(str(started or ""))
+    except ValueError:
+        return None
+    return abs((left - right).total_seconds())
+
+
+def _closest_capture_membership(matches: list[dict[str, Any]], captured: str) -> dict[str, Any] | None:
+    best: dict[str, Any] | None = None
+    best_delta: float | None = None
+    for item in matches:
+        delta = _capture_delta_seconds(captured, str(item.get("started_local") or ""))
+        if delta is None or delta > _CAPTURE_MATCH_SECONDS:
+            continue
+        if best_delta is None or delta < best_delta:
+            best = item
+            best_delta = delta
+    return best
+
+
+def _pick_mosaic_membership(
+    matches: list[dict[str, Any]],
+    night: str,
+    captured: str = "",
+) -> dict[str, Any] | None:
     if not matches:
         return None
+    if captured:
+        timed = _closest_capture_membership(matches, captured)
+        if timed is not None:
+            return timed
+        if any(str(item.get("started_local") or "") for item in matches):
+            return None
     ids = {str(item.get("group_id") or "") for item in matches if item.get("group_id")}
     if len(ids) == 1:
         return matches[0]
@@ -4096,24 +4157,73 @@ def _pick_mosaic_membership(matches: list[dict[str, Any]], night: str) -> dict[s
     return None
 
 
+def _item_capture_labels(item: dict[str, Any]) -> list[tuple[str, str]]:
+    """Pane titles found on a media row, with a local capture time when the name has one."""
+    found: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in (item.get("file_path"), item.get("file_name"), item.get("target")):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        base = Path(text.replace("\\", "/")).name
+        parsed, stamp = album_folder_capture(base)
+        pairs = [(parsed, stamp)] if parsed else []
+        pairs.append((base, ""))
+        for label, captured in pairs:
+            key = (label.casefold(), captured)
+            if not label or key in seen:
+                continue
+            seen.add(key)
+            found.append((label, captured))
+    return found
+
+
+def _match_capture_time(
+    label: str,
+    captured: str,
+    memberships: list[dict[str, Any]],
+) -> tuple[str, str] | None:
+    """Group whose pane started when this firmware folder was created."""
+    if not captured or not is_mosaic_pane_name(label):
+        return None
+    title = mosaic_group_title(label)
+    pool = [
+        entry
+        for entry in memberships
+        if str(entry.get("title") or "").casefold() == title.casefold() and entry.get("group_id")
+    ]
+    chosen = _closest_capture_membership(pool, captured)
+    if chosen is None:
+        return None
+    group_id = str(chosen.get("group_id") or "")
+    return group_id, str(chosen.get("title") or "") or title
+
+
 def _mosaic_membership_for_item(item: dict[str, Any], memberships: list[dict[str, Any]]) -> tuple[str, str] | None:
     """Group id and title for a pane folder, or None when it stays on its own."""
     if not item.get("is_dir"):
         return None
-    label = _media_label(item)
-    if not label:
+    labels = [(label, stamp) for label, stamp in _item_capture_labels(item) if is_mosaic_pane_name(label)]
+    if not labels:
         return None
     night = _media_night(item)
-    exact = [
-        entry
-        for entry in memberships
-        if entry.get("pane_name") and str(entry.get("pane_name")).casefold() == label.casefold()
-    ]
-    chosen = _pick_mosaic_membership(exact, night)
-    if chosen is not None:
-        group_id = str(chosen.get("group_id") or "")
-        title = str(chosen.get("title") or "") or mosaic_group_title(label, group_id)
-        return group_id, title
+    for label, stamp in labels:
+        exact = [
+            entry
+            for entry in memberships
+            if entry.get("pane_name") and str(entry.get("pane_name")).casefold() == label.casefold()
+        ]
+        chosen = _pick_mosaic_membership(exact, night or (stamp[:10] if stamp else ""), stamp)
+        if chosen is not None:
+            group_id = str(chosen.get("group_id") or "")
+            title = str(chosen.get("title") or "") or mosaic_group_title(label, group_id)
+            return group_id, title
+        timed = _match_capture_time(label, stamp, memberships)
+        if timed is not None:
+            return timed
+    label, stamp = labels[0]
+    if stamp and not night:
+        night = stamp[:10]
     if not is_mosaic_pane_name(label):
         return None
     title = mosaic_group_title(label)
@@ -4223,7 +4333,10 @@ def mosaic_group_listing(
     listing: list[dict[str, Any]] = []
     for item in ordered:
         copy = dict(item)
-        copy["pane_index"] = pane_sort_key(_media_label(item))[0]
+        parsed, _stamp = album_folder_capture(str(copy.get("file_path") or copy.get("file_name") or ""))
+        if parsed:
+            copy["target"] = parsed
+        copy["pane_index"] = pane_sort_key(_media_label(copy))[0]
         listing.append(copy)
     if stitch:
         pinned = dict(stitch)

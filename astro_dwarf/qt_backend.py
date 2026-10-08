@@ -156,6 +156,7 @@ from .services import (
     custom_mosaic_follow_on,
     custom_mosaic_panes_remain,
     custom_mosaic_result_pending,
+    album_folder_capture,
     group_mosaic_media_items,
     load_mosaic_stitch,
     mosaic_group_listing,
@@ -12830,6 +12831,7 @@ class AppBackend(QObject):
                 "title": mosaic_group_title(session.target.name or session.name, group),
                 "pane_name": session.name,
                 "night": night,
+                "started_local": self._local_capture_stamp(str(session.actual_started_at or ""), session.device_id),
                 "device_id": session.device_id,
             })
         for record in self.store.history.all():
@@ -12851,6 +12853,7 @@ class AppBackend(QObject):
                 "title": mosaic_group_title(target, group),
                 "pane_name": target if is_mosaic_pane_name(target) else "",
                 "night": night,
+                "started_local": self._local_capture_stamp(str(record.actual_started_at or ""), record.device_id),
                 "device_id": record.device_id,
             })
         return rows
@@ -12958,6 +12961,11 @@ class AppBackend(QObject):
         found_file = False
         for item in members:
             label = str(item.get("target") or item.get("file_name") or "").strip()
+            parsed, _stamp = album_folder_capture(str(item.get("file_path") or item.get("file_name") or ""))
+            if not parsed:
+                parsed, _stamp = album_folder_capture(label)
+            if parsed:
+                label = parsed
             local = self._stack_for_pane(label, files)
             if local is not None:
                 found_file = True
@@ -16505,6 +16513,19 @@ class AppBackend(QObject):
 
     def _zone_for_id(self, device_id: str):
         return self._zone_for(self._device_by_id(device_id))
+
+    def _local_capture_stamp(self, raw: str, device_id: str) -> str:
+        """Local ``YYYY-MM-DDTHH:MM:SS`` for a session start, matching a firmware folder clock."""
+        text = str(raw or "").strip()
+        if not text:
+            return ""
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return ""
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(self._zone_for_id(device_id))
+        return parsed.strftime("%Y-%m-%dT%H:%M:%S")
 
     def _now_local(self, device: Device | None = None) -> datetime:
         return datetime.now(self._zone_for(device))
