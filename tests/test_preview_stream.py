@@ -469,6 +469,55 @@ def test_photo_jpeg_leftover_skips_blocking_mode_switch() -> None:
         not photo_jpeg_leftover({"shooting_mode": 1, "stream_type": "JPEG", "capture_state": "running"}),
         "a running stack keeps the JPEG preview",
     )
+    _assert(
+        not photo_jpeg_leftover({"shooting_mode": 2, "stream_type": "JPEG", "jpeg_from_autofocus": True}),
+        "astro autofocus JPEG must still allow a photo-mode switch",
+    )
+    _assert(
+        photo_jpeg_leftover({"shooting_mode": 2, "stream_type": "JPEG", "jpeg_from_autofocus": False}),
+        "a cleared autofocus mark leaves a stacking JPEG blocked",
+    )
+
+
+def test_autofocus_jpeg_mark_clears_when_a_stack_starts() -> None:
+    from astro_dwarf.device_telemetry import TelemetryTap
+
+    tap = TelemetryTap(lambda _message: None, flush_interval=0)
+    try:
+        tap.update({"jpeg_from_autofocus": True, "stream_type": "RTSP", "shooting_mode": 2}, force=True)
+        tap.update({"stream_type": "JPEG"}, force=True)
+        snap = tap.snapshot()
+        _assert(snap.get("jpeg_from_autofocus") is True, "JPEG selected by autofocus keeps the mark")
+        _assert(not photo_jpeg_leftover(snap), "marked autofocus JPEG must still allow photo mode")
+        tap.update({"capture_state": "running", "capture_active": True}, force=True)
+        _assert(tap.snapshot().get("jpeg_from_autofocus") is False, "a stack clears the autofocus mark")
+        tap.update({"capture_state": "idle", "capture_active": False, "stream_type": "JPEG"}, force=True)
+        _assert(
+            photo_jpeg_leftover(tap.snapshot()),
+            "idle JPEG after a stack still blocks the photo-mode switch",
+        )
+    finally:
+        tap.reset()
+
+
+def test_autofocus_does_not_mark_an_existing_jpeg() -> None:
+    import astro_dwarf.device_worker as device_worker
+    from astro_dwarf.device_telemetry import TelemetryTap
+
+    tap = TelemetryTap(lambda _message: None, flush_interval=0)
+    previous = device_worker._tap
+    device_worker._tap = tap
+    try:
+        tap.update({"stream_type": "JPEG", "shooting_mode": 2}, force=True)
+        device_worker._mark_autofocus_jpeg_preview()
+        _assert(not tap.snapshot().get("jpeg_from_autofocus"), "an existing JPEG stays a stack leftover")
+        _assert(photo_jpeg_leftover(tap.snapshot()), "unmarked JPEG still blocks photo mode")
+        tap.update({"stream_type": "RTSP"}, force=True)
+        device_worker._mark_autofocus_jpeg_preview()
+        _assert(tap.snapshot().get("jpeg_from_autofocus") is True, "autofocus on RTSP arms the mark")
+    finally:
+        device_worker._tap = previous
+        tap.reset()
 
 
 def test_preview_opens_only_the_dark_camera() -> None:
@@ -1558,6 +1607,8 @@ if __name__ == "__main__":
     test_preview_attaches_when_rtsp_is_already_live()
     test_preview_restarts_rtsp_after_stacking_jpeg()
     test_photo_jpeg_leftover_skips_blocking_mode_switch()
+    test_autofocus_jpeg_mark_clears_when_a_stack_starts()
+    test_autofocus_does_not_mark_an_existing_jpeg()
     test_preview_opens_only_the_dark_camera()
     test_preview_reuses_same_rtsp_player()
     test_mosaic_goto_keeps_finished_frame_off_next_pane()

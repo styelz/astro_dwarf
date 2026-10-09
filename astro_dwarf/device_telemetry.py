@@ -707,6 +707,28 @@ def _stacking_progress_changes(
     return changes
 
 
+def release_autofocus_jpeg_mark(changes: dict[str, Any], held: dict[str, Any]) -> None:
+    """Drop the autofocus JPEG mark once a stack starts or tele leaves JPEG.
+
+    Astro autofocus previews on the tele JPEG encoder and can leave that
+    encoder selected after the hunt. A later stack, or a return to RTSP,
+    means the mark must not keep a finished stack's JPEG looking like focus.
+    """
+    held_mark = bool((held or {}).get("jpeg_from_autofocus"))
+    capture = changes.get("capture_active") is True or str(changes.get("capture_state") or "") == "running"
+    if capture:
+        if held_mark or changes.get("jpeg_from_autofocus"):
+            changes["jpeg_from_autofocus"] = False
+        return
+    # Arming happens while tele is still on RTSP. That same packet must not
+    # count as leaving JPEG.
+    if changes.get("jpeg_from_autofocus") is True or not held_mark:
+        return
+    stream = changes.get("stream_type")
+    if stream is not None and str(stream).strip().upper() != "JPEG":
+        changes["jpeg_from_autofocus"] = False
+
+
 def link_telemetry(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     """Handshake telemetry for a live link. A completed connect is not a power-off."""
     data = dict(snapshot or {})
@@ -1034,6 +1056,9 @@ class TelemetryTap:
         changes = dict(changes)
         now = time.monotonic()
         with self._lock:
+            held = dict(self._state)
+            held.update(self._pending)
+            release_autofocus_jpeg_mark(changes, held)
             pointing = self._panorama_pointing_changes_locked(changes)
             if pointing:
                 changes.update(pointing)

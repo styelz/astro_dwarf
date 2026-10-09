@@ -1614,6 +1614,7 @@ def sdk_call(operation: str, *args: Any) -> Any:
             from dwarf_python_api.proto import focus_pb2
 
             if operation == "autofocus":
+                _mark_autofocus_jpeg_preview()
                 message = focus_pb2.ReqAstroAutoFocus()
                 message.mode = int(args[0]) if args else 0
                 return send_without_response(message, 15004, 8)
@@ -5715,11 +5716,34 @@ def photo_jpeg_leftover(snapshot: dict[str, Any] | None) -> bool:
     ``perform_enter_photo_mode`` then waits 150 s for a shooting-mode reply
     that never comes, treats that timeout as success, and leaves tele on JPEG.
     A running stack is the normal JPEG preview and is not this case.
+
+    Astro autofocus also selects that JPEG encoder, then leaves it selected
+    after the hunt even though no stack ran. That mark is not a leftover.
     """
     snap = snapshot or {}
     if snap.get("capture_active") or snap.get("capture_state") == "running":
         return False
-    return str(snap.get("stream_type") or "").strip().upper() == "JPEG"
+    if str(snap.get("stream_type") or "").strip().upper() != "JPEG":
+        return False
+    if snap.get("jpeg_from_autofocus"):
+        return False
+    return True
+
+
+def _mark_autofocus_jpeg_preview() -> None:
+    """Remember a tele JPEG that astro autofocus is about to select.
+
+    Skip the mark when tele is already on JPEG or a stack is running, so a
+    finished stack cannot be reclassified as focus.
+    """
+    if _tap is None:
+        return
+    snap = _tap.snapshot()
+    if snap.get("capture_active") or snap.get("capture_state") == "running":
+        return
+    if str(snap.get("stream_type") or "").strip().upper() == "JPEG":
+        return
+    _tap.update({"jpeg_from_autofocus": True}, force=True)
 
 
 def _enter_photo_mode() -> Any:
@@ -5733,15 +5757,20 @@ def _enter_photo_mode() -> Any:
     command queue, the next GOTO fails with CODE_ASTRO_FUNCTION_BUSY.
     """
     snap = _tap.snapshot() if _tap is not None else {}
-    if photo_jpeg_leftover(snap):
-        log(
-            "Tele camera is still on the stacking JPEG stream; not switching shooting mode",
-            "warning",
-        )
-        return False
     if _shooting_int(snap.get("shooting_mode")) == _PHOTO_SHOOTING_MODE:
         log("Already in photo mode; skipping shooting-mode switch", "debug")
         return True
+    if photo_jpeg_leftover(snap) or snap.get("jpeg_from_autofocus"):
+        # Astro autofocus leaves tele on JPEG with no stack running, and the
+        # mode switch still answers. A finished stack can sit on that encoder
+        # and never answer, so cap the wait instead of blocking for 150 s.
+        result = _sdk_call_bounded("photo_mode", 20.0)
+        if result is False and photo_jpeg_leftover(snap):
+            log(
+                "Tele camera is still on the stacking JPEG stream; not switching shooting mode",
+                "warning",
+            )
+        return result
     return sdk_call("photo_mode")
 
 
