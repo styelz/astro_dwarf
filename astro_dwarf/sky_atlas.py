@@ -626,41 +626,26 @@ ATLAS_ASTRO_JS = r"""
     applyRotation(aladin, rot);
     drawHorizon();
   }
-  var panQueue = null;
-  function flushPan() {
-    box.panFrame = 0;
-    var step = panQueue;
-    panQueue = null;
-    if (!step || (!step.dx && !step.dy)) return;
+  function lookPan(dx, dy) {
     var aladin = aladinRef();
     if (!aladin || !box.hasSite || typeof aladin.getRaDec !== "function") return;
-    var pos = box.lookEq || aladin.getRaDec();
+    var pos = aladin.getRaDec();
     if (!pos) return;
     var size = viewSize(aladin);
     var degPerPx = viewFov(aladin) / Math.max(1, size[0]);
     var now = new Date();
     var hor = radecToAltaz(pos[0], pos[1], box.lat, box.lon, now);
     var azScale = degPerPx / Math.max(0.12, Math.abs(Math.cos(hor.alt * Math.PI / 180)));
-    hor.az = deg(hor.az - step.dx * azScale);
-    hor.alt = clamp(hor.alt + step.dy * degPerPx, -12, 89.5);
+    hor.az = deg(hor.az - dx * azScale);
+    hor.alt = clamp(hor.alt + dy * degPerPx, -12, 89.5);
     var eq = altazToRadec(hor.az, hor.alt, box.lat, box.lon, now);
     box.lookEq = eq;
     gotoCenter(aladin, eq[0], eq[1]);
-    // One zenith-up rotation per frame. Doing it on every pointer event
-    // re-rendered the survey and spun the field.
+    // Keep zenith up on every step. Waiting for pointerup left the equatorial
+    // map on the old roll, so the sky sheared and the FOV spun until release.
     applyRotation(aladin, zenithRotation(eq[0], eq[1], box.lat, box.lon, now));
     markMoved();
     requestDraw();
-  }
-  function lookPan(dx, dy) {
-    if (!panQueue) panQueue = {dx: 0, dy: 0};
-    panQueue.dx += Number(dx) || 0;
-    panQueue.dy += Number(dy) || 0;
-    if (box.panFrame) return;
-    if (typeof requestAnimationFrame === "function")
-      box.panFrame = requestAnimationFrame(flushPan);
-    else
-      box.panFrame = setTimeout(flushPan, 16);
   }
   function home() {
     var aladin = aladinRef();
@@ -1450,8 +1435,7 @@ ATLAS_ASTRO_JS = r"""
     var width = size[0];
     var height = size[1];
     var pts = [];
-    var azStep = box.dragging ? 12 : 2;
-    for (var az = 0; az <= 360; az += azStep) {
+    for (var az = 0; az <= 360; az += 2) {
       var eq = altazToRadec(az, 0, box.lat, box.lon, now);
       var xy = project(aladin, eq[0], eq[1]);
       if (xy && xy[0] > -120 && xy[1] > -120 && xy[0] < width + 120 && xy[1] < height + 120)
