@@ -1677,13 +1677,21 @@ SKY_WEB_FOV_JS = r"""
   function hudTilt(p, stel, box) {
     return cameraHudTilt(p, stel, box);
   }
+  function centeredTilt(p, stel, box) {
+    // Alt-az camera-up is the zenith and the chart is held zenith-up, so the
+    // field is level. Adding a parallactic angle from the previous centre
+    // spins the box, and north of the equator that residual shears the mosaic.
+    if (overlayMountMode(p) !== "EQ" && String(p.pa_source || "") === "parallactic")
+      return 0;
+    return cameraHudTilt(p, stel, box);
+  }
   function rotateOverlay(box, tilt, inner) {
     var cx = (box.width / 2).toFixed(1);
     var cy = (box.height / 2).toFixed(1);
     return '<g transform="rotate(' + (-tilt).toFixed(2) + " " + cx + " " + cy + ')">' + inner + "</g>";
   }
   function rotateChartGroup(box, p, stel, inner) {
-    return rotateOverlay(box, cameraHudTilt(p, stel, box), inner);
+    return rotateOverlay(box, centeredTilt(p, stel, box), inner);
   }
   function upTick(cx, top, color) {
     return haloLine(cx.toFixed(1), top.toFixed(1), cx.toFixed(1), (top - 10).toFixed(1), color);
@@ -1702,7 +1710,7 @@ SKY_WEB_FOV_JS = r"""
     var color = String(p.color || "#02900A");
     var left = (box.width - size.w) / 2;
     var top = (box.height - size.h) / 2;
-    var tilt = cameraHudTilt(p, stel, box);
+    var tilt = centeredTilt(p, stel, box);
     var ctl = window[CTL];
     if (ctl) {
       ctl.mediaTilt = tilt;
@@ -1740,7 +1748,7 @@ SKY_WEB_FOV_JS = r"""
     // stays top-right. EQ and the celestial default keep the chart formula
     // plus chart tilt: PA − 180° in the south, pane 1 top-right of that chart.
     var zenithCamera = overlayMountMode(p) !== "EQ" && String(p.pa_source || "") === "parallactic";
-    var tilt = zenithCamera ? cameraHudTilt(p, stel, box) : mosaicGridTilt(p, stel, box);
+    var tilt = zenithCamera ? 0 : mosaicGridTilt(p, stel, box);
     var chartEdge = (pa > 90 && pa < 270) === !!p.south_up;
     var col1OnRight = zenithCamera || chartEdge;
     var row1AtTop = zenithCamera || chartEdge;
@@ -1949,6 +1957,25 @@ SKY_WEB_FOV_JS = r"""
       try { obj.roll = 0; } catch (err) {}
     }
   }
+  function separationDeg(a, b) {
+    if (!a || !b) return 1e9;
+    var cosDec = Math.cos(Number(b.dec_degrees) * Math.PI / 180);
+    var draHours = ((Number(a.ra_hours) - Number(b.ra_hours) + 36) % 24) - 12;
+    var dra = draHours * 15 * cosDec;
+    var ddec = Number(a.dec_degrees) - Number(b.dec_degrees);
+    if (!isFinite(dra) || !isFinite(ddec)) return 1e9;
+    return Math.hypot(dra, ddec);
+  }
+  function fieldFollowsView(p, stel) {
+    // The browsing field is the camera at the chart centre. Payload panes are
+    // the previous centre, so projecting them makes the box orbit and spin.
+    var view = null;
+    try { view = viewCenter(stel); } catch (err) { view = null; }
+    if (!view) view = payloadView(p);
+    var tra = Number(p && p.target_ra_hours), tdec = Number(p && p.target_dec_degrees);
+    if (!view || !isFinite(tra) || !isFinite(tdec)) return true;
+    return separationDeg(view, {ra_hours: tra, dec_degrees: tdec}) < 0.5;
+  }
   function draw(force) {
     var stel = window._stel;
     var box = canvasRect();
@@ -1977,7 +2004,11 @@ SKY_WEB_FOV_JS = r"""
     ctl.lastKey = key;
     var el = overlayFor(box);
     var panes = [];
-    try { panes = resolvePanes(stel, p); } catch (err) { panes = []; }
+    var follow = true;
+    try { follow = fieldFollowsView(p, stel); } catch (err) { follow = true; }
+    if (!follow) {
+      try { panes = resolvePanes(stel, p); } catch (err) { panes = []; }
+    }
     if (panes.length) {
       try {
         var projected = drawPanes(el, box, p, stel, panes);
@@ -2049,24 +2080,25 @@ SKY_WEB_FOV_JS = r"""
     if (!ctl || ctl.levelBound) return;
     ctl.levelBound = true;
     var down = false;
-    function arm() {
-      ctl.levelUntil = Date.now() + 500;
-      levelHorizon(window._stel);
+    function holdLevel(ms) {
+      // draw() levels the horizon once per frame. Zeroing roll inside the
+      // pointer event fights Stellarium's own drag and throws the field.
+      ctl.levelUntil = Date.now() + ms;
     }
     document.addEventListener("pointerdown", function(ev) {
       if (ev.button !== 0 || !onSky(ev.target)) return;
       ctl.dismissAt = Date.now();
       down = true;
-      arm();
+      holdLevel(400);
     }, true);
     document.addEventListener("pointermove", function() {
       if (!down) return;
-      arm();
+      holdLevel(120);
     }, false);
     function endDrag() {
       if (!down) return;
       down = false;
-      arm();
+      holdLevel(400);
     }
     document.addEventListener("pointerup", endDrag, true);
     document.addEventListener("pointercancel", endDrag, true);

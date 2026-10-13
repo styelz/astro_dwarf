@@ -626,26 +626,41 @@ ATLAS_ASTRO_JS = r"""
     applyRotation(aladin, rot);
     drawHorizon();
   }
-  function lookPan(dx, dy) {
+  var panQueue = null;
+  function flushPan() {
+    box.panFrame = 0;
+    var step = panQueue;
+    panQueue = null;
+    if (!step || (!step.dx && !step.dy)) return;
     var aladin = aladinRef();
     if (!aladin || !box.hasSite || typeof aladin.getRaDec !== "function") return;
-    var pos = aladin.getRaDec();
+    var pos = box.lookEq || aladin.getRaDec();
     if (!pos) return;
     var size = viewSize(aladin);
     var degPerPx = viewFov(aladin) / Math.max(1, size[0]);
     var now = new Date();
     var hor = radecToAltaz(pos[0], pos[1], box.lat, box.lon, now);
     var azScale = degPerPx / Math.max(0.12, Math.abs(Math.cos(hor.alt * Math.PI / 180)));
-    hor.az = deg(hor.az - dx * azScale);
-    hor.alt = clamp(hor.alt + dy * degPerPx, -12, 89.5);
+    hor.az = deg(hor.az - step.dx * azScale);
+    hor.alt = clamp(hor.alt + step.dy * degPerPx, -12, 89.5);
     var eq = altazToRadec(hor.az, hor.alt, box.lat, box.lon, now);
     box.lookEq = eq;
     gotoCenter(aladin, eq[0], eq[1]);
-    // Keep zenith up on every step. Waiting for pointerup left the equatorial
-    // map on the old roll, so the sky sheared and the FOV spun until release.
+    // One zenith-up rotation per frame. Doing it on every pointer event
+    // re-rendered the survey and spun the field.
     applyRotation(aladin, zenithRotation(eq[0], eq[1], box.lat, box.lon, now));
     markMoved();
     requestDraw();
+  }
+  function lookPan(dx, dy) {
+    if (!panQueue) panQueue = {dx: 0, dy: 0};
+    panQueue.dx += Number(dx) || 0;
+    panQueue.dy += Number(dy) || 0;
+    if (box.panFrame) return;
+    if (typeof requestAnimationFrame === "function")
+      box.panFrame = requestAnimationFrame(flushPan);
+    else
+      box.panFrame = setTimeout(flushPan, 16);
   }
   function home() {
     var aladin = aladinRef();
@@ -1213,6 +1228,28 @@ ATLAS_ASTRO_JS = r"""
     // Shortest-angle sum: a ±180 parallactic wrap must not spin the box.
     var tiltPa = mosaic && !zenithCamera ? chartTilt : (equatorial ? chartPa : cameraPa);
     var tilt = wrapSigned(viewRot + tiltPa) * Math.PI / 180;
+    // Alt-az stays level on the zenith-up chart. viewRot and the live
+    // parallactic angle slip apart while the map is moving, and north of
+    // the equator that residual turns the mosaic into a skewed frame.
+    if (zenithCamera) tilt = 0;
+    var centered = true;
+    try {
+      var tra = Number(payload.target_ra_hours), tdec = Number(payload.target_dec_degrees);
+      var here = (box.dragging && box.lookEq) ? box.lookEq
+        : (aladin && typeof aladin.getRaDec === "function" ? aladin.getRaDec() : null);
+      if (isFinite(tra) && isFinite(tdec) && here) {
+        var cosDec = Math.cos(Number(here[1]) * Math.PI / 180);
+        var dra = (((tra * 15 - Number(here[0])) % 360) + 360) % 360;
+        if (dra > 180) dra -= 360;
+        centered = Math.hypot(dra * cosDec, tdec - Number(here[1])) < 0.5;
+      }
+    } catch (err) { centered = true; }
+    if (centered) {
+      box.reblitMedia = null;
+      var frame = drawScreenMosaic(ctx, width, height, w, h, cols, rows, overlap, tilt, color);
+      labelOnFov(ctx, frame, color);
+      return;
+    }
     var projected = collectProjected(aladin, panes);
     var hasQuads = false;
     for (var qi = 0; qi < projected.length; qi++) {
@@ -1413,7 +1450,8 @@ ATLAS_ASTRO_JS = r"""
     var width = size[0];
     var height = size[1];
     var pts = [];
-    for (var az = 0; az <= 360; az += 2) {
+    var azStep = box.dragging ? 12 : 2;
+    for (var az = 0; az <= 360; az += azStep) {
       var eq = altazToRadec(az, 0, box.lat, box.lon, now);
       var xy = project(aladin, eq[0], eq[1]);
       if (xy && xy[0] > -120 && xy[1] > -120 && xy[0] < width + 120 && xy[1] < height + 120)
