@@ -278,7 +278,8 @@ ATLAS_ASTRO_JS = r"""
       && typeof box.astro.paneCenterXY === "function" && typeof box.astro.overlayPixRoll === "function"
       && typeof box.astro.paintIndex === "function"
       && typeof box.astro.strokeTargetQuad === "function"
-      && typeof box.astro.applyFov === "function" && typeof box.astro.markMoved === "function")
+      && typeof box.astro.applyFov === "function" && typeof box.astro.markMoved === "function"
+      && typeof box.astro.trackView === "function")
     return box.astro;
   box.lookBound = false;
   box.objectsBound = false;
@@ -645,7 +646,8 @@ ATLAS_ASTRO_JS = r"""
     // map on the old roll, so the sky sheared and the FOV spun until release.
     applyRotation(aladin, zenithRotation(eq[0], eq[1], box.lat, box.lon, now));
     markMoved();
-    requestDraw();
+    // Same turn as the survey move. The next frame leaves the rectangle behind the stars.
+    drawHorizon();
   }
   function home() {
     var aladin = aladinRef();
@@ -1401,6 +1403,28 @@ ATLAS_ASTRO_JS = r"""
       try { drawHorizon(); } catch (err) {}
     });
   }
+  function trackView() {
+    // The survey eases wheel zoom inside its own animation frame and only
+    // emits zoomChanged a few times. Paint the camera rectangle at the end of
+    // that frame so it stays on the survey instead of stepping behind it.
+    var aladin = aladinRef();
+    var view = aladin && aladin.view;
+    if (!view || view.__astroRedrawWrapped || typeof view.redrawClbk !== "function") return;
+    view.__astroRedrawWrapped = true;
+    var inner = view.redrawClbk.bind(view);
+    view.redrawClbk = function(now) {
+      if (box.paintingFov) return inner(now);
+      var out;
+      try {
+        out = inner(now);
+      } finally {
+        box.paintingFov = true;
+        try { drawHorizon(); } catch (err) {}
+        box.paintingFov = false;
+      }
+      return out;
+    };
+  }
   function drawHorizon() {
     var canvas = horizonCanvas();
     var size = resizeCanvas(canvas);
@@ -1678,13 +1702,20 @@ ATLAS_ASTRO_JS = r"""
       if (isChrome(ev.target)) return;
       markMoved();
       box.setFovValue = 0;
-      requestDraw();
+      trackView();
     }, true);
     if (aladin && typeof aladin.on === "function") {
-      try { aladin.on("positionChanged", function() { if (box.lookGen !== gen) return; requestSync(); }); } catch (err) {}
+      try {
+        aladin.on("positionChanged", function() {
+          if (box.lookGen !== gen) return;
+          if (!box.dragging) trackView();
+          requestSync();
+        });
+      } catch (err) {}
       try {
         aladin.on("zoomChanged", function() {
           if (box.lookGen !== gen) return;
+          trackView();
           if (box.applyingFov) return;
           markMoved();
           box.setFovValue = 0;
@@ -1693,6 +1724,7 @@ ATLAS_ASTRO_JS = r"""
       } catch (err) {}
     }
     window.addEventListener("resize", function() { drawHorizon(); });
+    trackView();
   }
   box.astro = {
     bind: bind,
@@ -1713,6 +1745,7 @@ ATLAS_ASTRO_JS = r"""
       applyLook(aladin, raDeg, decDeg);
     },
     drawHorizon: drawHorizon,
+    trackView: trackView,
     applyMediaOpacity: applyMediaOpacity,
     paintFov: paintFov,
     project: project,

@@ -103,6 +103,25 @@ def test_wide_selected_does_not_space_stack_panes_on_wide_fov() -> None:
     _assert(east_hours < wide_h * 0.5, "must not inherit the ~45° Wide grid")
 
 
+def test_aladin_fov_follows_the_zoom_ease() -> None:
+    from astro_dwarf.sky_atlas import ATLAS_ASTRO_JS
+
+    _assert("function trackView()" in ATLAS_ASTRO_JS, "per-frame field follow")
+    _assert("redrawClbk" in ATLAS_ASTRO_JS, "paint on the survey frame, not a later one")
+    _assert("typeof box.astro.trackView" in ATLAS_ASTRO_JS, "boot installs the follower")
+    zoom = ATLAS_ASTRO_JS.find('aladin.on("zoomChanged"')
+    _assert(zoom > 0, "zoom listener")
+    zoom_body = ATLAS_ASTRO_JS[zoom:zoom + 450]
+    _assert("trackView()" in zoom_body, "an eased zoom must repaint the field every frame")
+    wheel = ATLAS_ASTRO_JS.find('host.addEventListener("wheel"')
+    wheel_body = ATLAS_ASTRO_JS[wheel:ATLAS_ASTRO_JS.find('aladin.on("positionChanged"')]
+    _assert("trackView()" in wheel_body, "wheel zoom starts the follower")
+    pan = ATLAS_ASTRO_JS.find("function lookPan")
+    pan_body = ATLAS_ASTRO_JS[pan:ATLAS_ASTRO_JS.find("function home")]
+    _assert("drawHorizon()" in pan_body, "drag paints the field with the survey move")
+    _assert("requestDraw()" not in pan_body, "drag must not leave the field for the next frame")
+
+
 def test_stellarium_overlay_listens_once() -> None:
     from astro_dwarf.services import SKY_WEB_FOV_JS
 
@@ -125,5 +144,6 @@ if __name__ == "__main__":
     test_dwarf3_wide_fov_is_much_larger_than_tele()
     test_implausible_firmware_fov_is_replaced()
     test_wide_selected_does_not_space_stack_panes_on_wide_fov()
+    test_aladin_fov_follows_the_zoom_ease()
     test_stellarium_overlay_listens_once()
     print("ok")
