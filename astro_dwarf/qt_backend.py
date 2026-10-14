@@ -1983,6 +1983,32 @@ def control_restore_should_apply_mode(
     return not preview_active
 
 
+def control_restore_camera_mode(
+    wanted_mode: int,
+    current_mode: int,
+    *,
+    apply_saved_mode: bool,
+) -> int | None:
+    """PHOTO/DSO table a CONTROL restore may write, or None to leave it alone.
+
+    Refusing to leave DSO still used to queue the saved PHOTO exposure. Those
+    steps are sent with the firmware's current mode, so ``set_exposure`` wrote
+    1/30 over the DSO shutter. Write the saved table only when that mode is the
+    one the telescope will be in.
+    """
+    wanted = _shooting_mode_int(wanted_mode)
+    current = _shooting_mode_int(current_mode)
+    if apply_saved_mode and wanted in {1, 2}:
+        return wanted
+    if current in {1, 2} and (wanted == current or wanted not in {1, 2}):
+        return current
+    if current in {1, 2} or current in _ASTRO_SHOOTING_MODES or current == 7:
+        return None
+    if wanted in {1, 2}:
+        return wanted
+    return None
+
+
 def control_restore_should_defer(
     *,
     session_active: bool,
@@ -11382,14 +11408,18 @@ class AppBackend(QObject):
         self._control_restore_pending.add(device_id)
         QTimer.singleShot(max(0, int(delay_ms)), lambda did=device_id: self._restore_control_settings(did))
 
-    def _control_restore_steps(self, device: Device, telemetry: dict[str, Any]) -> list[tuple[str, str, str]]:
+    def _control_restore_steps(
+        self,
+        device: Device,
+        telemetry: dict[str, Any],
+        *,
+        camera_mode: int | None = None,
+    ) -> list[tuple[str, str, str]]:
         settings = device.control_settings
         wide = device.camera == Camera.WIDE
         prefix = "wide_" if wide else ""
         default_camera = "wide" if wide else "tele"
-        wanted_mode = settings.shooting_mode
-        if wanted_mode not in {1, 2}:
-            wanted_mode = _shooting_mode_int(telemetry.get("shooting_mode"))
+        wanted_mode = camera_mode if camera_mode in {1, 2} else 0
         steps: list[tuple[str, str, str]] = []
 
         def add(name: str, wanted: str, current: Any, camera: str = "") -> None:
@@ -11497,13 +11527,21 @@ class AppBackend(QObject):
             telemetry = dict(self._device_telemetry.get(device_id) or {})
             wanted_mode = current.control_settings.shooting_mode
             current_mode = _shooting_mode_int(telemetry.get("shooting_mode"))
-            steps = self._control_restore_steps(current, telemetry)
             need_mode = control_restore_should_apply_mode(
                 wanted_mode,
                 current_mode,
                 preview_active=self._preview_active or self._preview_playing,
                 tracking=telemetry.get("tracking_state") == "running",
                 telemetry=telemetry,
+            )
+            steps = self._control_restore_steps(
+                current,
+                telemetry,
+                camera_mode=control_restore_camera_mode(
+                    wanted_mode,
+                    current_mode,
+                    apply_saved_mode=need_mode,
+                ),
             )
             if not need_mode and not steps:
                 finish()

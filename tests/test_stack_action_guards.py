@@ -9,9 +9,11 @@ if str(ROOT) not in sys.path:
 
 from astro_dwarf.device_telemetry import is_chatter
 from astro_dwarf.device_worker import _capture_running, capture_should_skip_dark_hold
+from astro_dwarf.domain import ControlSettings, shooting_mode_camera_steps
 from astro_dwarf.qt_backend import (
     command_required_shooting_mode,
     command_should_auto_enter_dso,
+    control_restore_camera_mode,
     control_restore_should_apply_mode,
     control_restore_should_defer,
     preview_should_preserve_shooting_mode,
@@ -111,6 +113,38 @@ def test_control_restore_defers_while_firmware_still_stacking() -> None:
     _assert(
         control_restore_should_defer(**{**idle, "worker_busy": True}),
         "a busy worker still owns the telescope",
+    )
+
+
+def test_saved_photo_is_not_written_into_dso() -> None:
+    dso = {"shooting_mode": 2}
+    _assert(
+        not control_restore_should_apply_mode(1, 2, preview_active=False, tracking=False, telemetry=dso),
+        "idle DSO stays in DSO when PHOTO is the saved mode",
+    )
+    mode = control_restore_camera_mode(1, 2, apply_saved_mode=False)
+    _assert(mode is None, mode)
+    settings = ControlSettings(
+        shooting_mode=1,
+        exposure="15",
+        gain="60",
+        photo_exposure="1/30",
+        photo_gain="0",
+    )
+    photo = shooting_mode_camera_steps(settings, 1, include_wide=False)
+    _assert(("exposure", "1/30", "tele") in photo, photo)
+    _assert(("exposure", "15", "tele") not in photo, photo)
+    _assert(
+        control_restore_camera_mode(1, 1, apply_saved_mode=False) == 1,
+        "PHOTO restore still writes the photo table",
+    )
+    _assert(
+        control_restore_camera_mode(2, 1, apply_saved_mode=True) == 2,
+        "a mode switch writes the saved DSO table",
+    )
+    _assert(
+        control_restore_camera_mode(1, 8, apply_saved_mode=False) is None,
+        "Sun mode must not receive the saved PHOTO shutter",
     )
 
 
@@ -235,6 +269,7 @@ if __name__ == "__main__":
     test_idle_scope_allows_stack_and_track()
     test_capture_running_helper()
     test_control_restore_defers_while_firmware_still_stacking()
+    test_saved_photo_is_not_written_into_dso()
     test_missing_darks_hold_is_skipped()
     test_reconnect_joins_live_mode_and_drops_a_restart()
     test_photo_mode_auto_enters_dso_for_tracking()
