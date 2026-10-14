@@ -109,6 +109,12 @@ def test_aladin_fov_follows_the_zoom_ease() -> None:
     _assert("function trackView()" in ATLAS_ASTRO_JS, "per-frame field follow")
     _assert("redrawClbk" in ATLAS_ASTRO_JS, "paint on the survey frame, not a later one")
     _assert("typeof box.astro.trackView" in ATLAS_ASTRO_JS, "boot installs the follower")
+    callback = ATLAS_ASTRO_JS.find("view.redrawClbk = function")
+    _assert(callback > 0, "survey frame hook")
+    callback_body = ATLAS_ASTRO_JS[callback:callback + 900]
+    _assert("paintFovFrame()" in callback_body, "zoom frame paints the field")
+    _assert("drawHorizon()" not in callback_body, "zoom frame must not rebuild the horizon mask")
+    _assert("noteZoom()" in ATLAS_ASTRO_JS, "zoom defers the horizon mask")
     zoom = ATLAS_ASTRO_JS.find('aladin.on("zoomChanged"')
     _assert(zoom > 0, "zoom listener")
     zoom_body = ATLAS_ASTRO_JS[zoom:zoom + 450]

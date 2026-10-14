@@ -23,6 +23,8 @@ Item {
     property var savedView: ({})
     property bool savedViewReady: false
     property var liveView: ({})
+    property double viewMovedAt: 0
+    property string fovStructurePushKey: ""
     property bool viewRestored: false
     property bool persistView: false
     property bool holdView: false
@@ -201,19 +203,24 @@ Item {
         }
         return data
     }
-    function fovInputKey() {
+    function fovViewPart() {
         const grid = map.mosaicColumns > 1 || map.mosaicRows > 1
-        const view = grid ? map.viewForOverlay() : ({})
+        if (!grid || map.selectedKey)
+            return ""
+        const view = map.viewForOverlay()
         const ra = Number(view.ra_hours)
         const dec = Number(view.dec_degrees)
-        const viewPart = grid && !map.selectedKey && isFinite(ra) && isFinite(dec)
-            ? ra.toFixed(3) + "," + dec.toFixed(2)
-            : ""
+        if (!isFinite(ra) || !isFinite(dec))
+            return ""
+        return ra.toFixed(3) + "," + dec.toFixed(2)
+    }
+    function fovOverlayParts(includeView) {
+        const grid = map.mosaicColumns > 1 || map.mosaicRows > 1
         const capturing = String((backend.mosaicPreview && backend.mosaicPreview.phase) || "") !== ""
         const overlayFov = (grid && capturing) ? backend.mosaicFovText : backend.skyFovText
         return [
             map.selectedKey,
-            viewPart,
+            includeView ? map.fovViewPart() : "",
             map.mosaicColumns,
             map.mosaicRows,
             Number(map.mosaicOverlap).toFixed(3),
@@ -230,12 +237,39 @@ Item {
             Object.keys(backend.skyMosaicPaneUrls || {}).join(",")
         ].join("|")
     }
+    function fovInputKey() {
+        return map.fovOverlayParts(true)
+    }
+    function fovStructureKey() {
+        return map.fovOverlayParts(false)
+    }
+    function viewFollowMoved(data, previous) {
+        const ra = Number(data && data.ra_hours)
+        const dec = Number(data && data.dec_degrees)
+        const otherRa = Number(previous && previous.ra_hours)
+        const otherDec = Number(previous && previous.dec_degrees)
+        if (!isFinite(ra) || !isFinite(dec))
+            return false
+        if (!isFinite(otherRa) || !isFinite(otherDec))
+            return true
+        if (ra.toFixed(3) !== otherRa.toFixed(3) || dec.toFixed(2) !== otherDec.toFixed(2))
+            return true
+        return !map.fovClose(data, previous)
+    }
     function applyFovOverlay() {
         if (!map.pageReady || !map.shown)
             return
+        const structure = map.fovStructureKey()
         const key = map.fovInputKey()
         if (map.fovEngineReady && key === map.fovPushKey)
             return
+        // A free-pan mosaic follows the chart in the page. Rebuilding every
+        // pane from here on each telemetry tick stalls that draw.
+        const followOnly = map.fovEngineReady && structure === map.fovStructurePushKey
+        if (followOnly && map.viewMovedAt && (Date.now() - map.viewMovedAt) < 400) {
+            fovSettle.restart()
+            return
+        }
         const sent = key
         const payload = map.overlayPayload(map.selectedTarget || ({}))
         const script = map.fovEngineReady
@@ -250,6 +284,7 @@ Item {
             if (status === "panes" || status === "center" || status === "grid" || status === "hidden") {
                 map.fovEngineReady = true
                 map.fovPushKey = sent
+                map.fovStructurePushKey = map.fovStructureKey()
                 map.overlayKey = sent + "|" + status
             }
             if (map.liveOverlay)
@@ -416,6 +451,8 @@ Item {
                 const data = JSON.parse(text)
                 if (!isFinite(Number(data.ra_hours)) || !isFinite(Number(data.dec_degrees)))
                     return
+                if (map.viewFollowMoved(data, map.liveView))
+                    map.viewMovedAt = Date.now()
                 map.liveView = data
                 if (map.holdView)
                     return
@@ -655,6 +692,13 @@ Item {
         repeat: false
         running: map.documentReady && !map.initialLoadDone && !map.initialLoadFailed
         onTriggered: map.markInitialReady()
+    }
+
+    Timer {
+        id: fovSettle
+        interval: 400
+        repeat: false
+        onTriggered: map.applyFovOverlay()
     }
 
     Timer {

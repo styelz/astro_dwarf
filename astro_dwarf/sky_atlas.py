@@ -681,6 +681,10 @@ ATLAS_ASTRO_JS = r"""
     var pos = aladin.getRaDec();
     if (!pos) return;
     applyRotation(aladin, zenithRotation(pos[0], pos[1], box.lat, box.lon, new Date()));
+    if (Date.now() < (box.zoomUntil || 0)) {
+      paintFovFrame();
+      return;
+    }
     drawHorizon();
   }
   function horizonCanvas() {
@@ -691,6 +695,52 @@ ATLAS_ASTRO_JS = r"""
     el.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:46;";
     document.body.appendChild(el);
     return el;
+  }
+  function fovCanvas() {
+    var el = document.getElementById("astro-dwarf-fov");
+    if (el) return el;
+    el = document.createElement("canvas");
+    el.id = "astro-dwarf-fov";
+    el.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:47;";
+    var horizon = document.getElementById("astro-dwarf-horizon");
+    if (horizon && horizon.parentNode)
+      horizon.parentNode.insertBefore(el, horizon.nextSibling);
+    else
+      document.body.appendChild(el);
+    return el;
+  }
+  function paintFovFrame() {
+    var canvas = fovCanvas();
+    var size = resizeCanvas(canvas);
+    var ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, size[0], size[1]);
+    paintFov(ctx, size[0], size[1]);
+  }
+  function noteZoom() {
+    // Wheel zoom eases for a few frames. The field has to follow every one of
+    // those frames; the horizon mask can catch up when the ease stops.
+    box.zoomUntil = Date.now() + 240;
+  }
+  function scheduleHorizonMask() {
+    if (!(Date.now() < (box.zoomUntil || 0))) return;
+    if (box.horizonQueued) return;
+    box.horizonQueued = true;
+    setTimeout(function drawMask() {
+      if (Date.now() < (box.zoomUntil || 0)) {
+        setTimeout(drawMask, 240);
+        return;
+      }
+      if (box.paintingFov) {
+        setTimeout(drawMask, 40);
+        return;
+      }
+      box.horizonQueued = false;
+      box.paintingFov = true;
+      try { drawHorizonMask(); } catch (err) {}
+      box.paintingFov = false;
+    }, 240);
   }
   function resizeCanvas(canvas) {
     var width = canvas.clientWidth || window.innerWidth || 0;
@@ -1418,14 +1468,27 @@ ATLAS_ASTRO_JS = r"""
       try {
         out = inner(now);
       } finally {
+        // The mask is a full-window fill plus a horizon sample. Doing that
+        // inside the survey frame makes a mosaic grid step behind the zoom.
+        // The field canvas is a few strokes and stays on this frame.
         box.paintingFov = true;
-        try { drawHorizon(); } catch (err) {}
+        try { paintFovFrame(); } catch (err) {}
         box.paintingFov = false;
+        try {
+          var fovNow = viewFov(aladinRef());
+          // The ease keeps changing the field after the last zoomChanged.
+          // Stretch the mask defer so it does not land in the middle of that.
+          if ((box.zoomUntil || 0) > Date.now() - 80
+              && isFinite(box.lastZoomFov) && Math.abs(fovNow - box.lastZoomFov) > 1e-4)
+            noteZoom();
+          if (isFinite(fovNow)) box.lastZoomFov = fovNow;
+          scheduleHorizonMask();
+        } catch (err) {}
       }
       return out;
     };
   }
-  function drawHorizon() {
+  function drawHorizonMask() {
     var canvas = horizonCanvas();
     var size = resizeCanvas(canvas);
     var aladinNow = aladinRef();
@@ -1449,7 +1512,6 @@ ATLAS_ASTRO_JS = r"""
         ctx.font = "11px sans-serif";
         ctx.fillText("Set the observing site to show the horizon and N E S W", 12, size[1] - pad.bottom);
       }
-      paintFov(ctx, size[0], size[1]);
       return;
     }
     var pos = aladin.getRaDec();
@@ -1509,7 +1571,6 @@ ATLAS_ASTRO_JS = r"""
     if (!placed)
       drawHeadingLabels(ctx, width, height, hor.az, viewFov(aladin));
     drawCompass(ctx, width, (hor.az - 180) * Math.PI / 180, facingName(hor.az));
-    paintFov(ctx, width, height);
     var hud = hudInsets();
     ctx.fillStyle = "rgba(5,8,14,0.62)";
     ctx.fillRect(Math.max(0, width / 2 - 92), height - hud.bottom - 20, 184, 20);
@@ -1522,6 +1583,10 @@ ATLAS_ASTRO_JS = r"""
       width / 2,
       height - hud.bottom - 6
     );
+  }
+  function drawHorizon() {
+    drawHorizonMask();
+    paintFovFrame();
   }
   function isChrome(el) {
     var node = el;
@@ -1701,6 +1766,7 @@ ATLAS_ASTRO_JS = r"""
       if (ev.ctrlKey || ev.metaKey) return;
       if (isChrome(ev.target)) return;
       markMoved();
+      noteZoom();
       box.setFovValue = 0;
       trackView();
     }, true);
@@ -1718,6 +1784,7 @@ ATLAS_ASTRO_JS = r"""
           trackView();
           if (box.applyingFov) return;
           markMoved();
+          noteZoom();
           box.setFovValue = 0;
           requestSync();
         });
