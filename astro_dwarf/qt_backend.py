@@ -3749,8 +3749,12 @@ class AppBackend(QObject):
     def skyMapFovDeg(self) -> float:
         return float(SKY_MAP_FOV_DEG)
 
-    @Property(str, notify=appSettingsChanged)
+    @Property(str, constant=True)
     def skyAtlasUrl(self) -> str:
+        # Not tied to appSettingsChanged. That signal also fires when the
+        # sky-map provider changes, and a fresh notify reloads this URL.
+        # Reloading drops Aladin mid-script and crashes a pending
+        # runJavaScript callback in QJSEngine.
         return atlas_page_url()
 
     @Property(bool, notify=stellariumRcChanged)

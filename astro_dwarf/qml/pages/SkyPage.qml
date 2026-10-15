@@ -16,6 +16,26 @@ Item {
     readonly property bool webReady: backend.webViewAvailable && !skyPage.webFailed
     property bool webFailed: false
     property bool mapKeepAlive: false
+    function attachSkyMap(map) {
+        if (!map)
+            return
+        skyPage.mapKeepAlive = true
+        // Only the provider on screen polls. The other map stays constructed.
+        map.shown = Qt.binding(() => skyPage.mapLive && !root.appModalOpen && map === mapLoader.item)
+        map.mosaicColumns = Qt.binding(() => skyPage.deviceMode ? 1 : columnsBox.value)
+        map.mosaicRows = Qt.binding(() => skyPage.deviceMode ? 1 : rowsBox.value)
+        map.mosaicOverlap = Qt.binding(() => skyPage.deviceMode ? 0 : overlapBox.value / 100)
+        map.mosaicPa = Qt.binding(() => backend.mosaicPaManual ? paBox.value : backend.mosaicPa)
+        map.liveOverlay = Qt.binding(() => skyStore.liveFovOverlay)
+        map.liveOpacity = Qt.binding(() => skyPage.clampOpacity(skyStore.liveFovOpacity))
+        map.savedView = Qt.binding(() => skyStore.viewSaved ? ({
+            ra_hours: skyStore.viewRaHours,
+            dec_degrees: skyStore.viewDecDegrees,
+            fov: skyStore.viewFov
+        }) : ({}))
+        map.savedViewReady = true
+        skyPage.applyPendingLock()
+    }
     property bool harvestBusy: false
     property var pendingLockTarget: null
     property string pendingAction: ""
@@ -792,7 +812,7 @@ Item {
                 anchors.margins: Theme.px(1)
             }
 
-            Loader {
+            Item {
                 id: mapLoader
                 // Native WebView2 / WKWebView paint above QML and ignore overlay z-order.
                 // The Sky page is 0×0 while another tab is current, so this view lives
@@ -802,6 +822,22 @@ Item {
                 // at -4096 culls the delegated frame and leaves the SKY slot empty.
                 readonly property bool nativeMapOverlay: Qt.platform.os === "windows"
                                                            || Qt.platform.os === "osx"
+                // Swapping one Loader's source destroys the WebEngine while
+                // runJavaScript is still returning, which segfaults in
+                // QJSEngine. A new Aladin document then starts before aladin.js
+                // has defined A, so the atlas stays on the loading spinner.
+                // Each provider stays constructed after its first visit.
+                property bool atlasHeld: false
+                property bool webHeld: false
+                readonly property bool mapEngineWanted: skyPage.webReady && root.skyToolsEnabled && (
+                    skyPage.mapLive || skyPage.mapKeepAlive
+                ) && (
+                    mapLoader.nativeMapOverlay
+                    || mapSlot.width > 1
+                    || skyPage.mapKeepAlive
+                )
+                readonly property var item: backend.skyMapUsesStellariumWeb ? webMapLoader.item : atlasMapLoader.item
+                readonly property bool active: atlasMapLoader.active || webMapLoader.active
                 parent: mapLoader.nativeMapOverlay ? root.contentItem : mapSlot
                 readonly property bool nativeMapVisible: skyPage.mapLive
                     && !root.appModalOpen
@@ -831,39 +867,48 @@ Item {
                         return 1
                     return mapSlot.mapToItem(root.contentItem, 0, 0).y
                 }
-                // Keep the map after the first visit. Destroying the Linux
-                // WebEngine on every page change reloaded Stellarium and Aladin.
-                active: skyPage.webReady && root.skyToolsEnabled && (
-                    skyPage.mapLive || skyPage.mapKeepAlive
-                ) && (
-                    mapLoader.nativeMapOverlay
-                    || mapSlot.width > 1
-                    || skyPage.mapKeepAlive
-                )
-                source: Qt.resolvedUrl(backend.skyMapUsesStellariumWeb ? "SkyWebView.qml" : "SkyAtlasView.qml")
-                onLoaded: {
-                    skyPage.mapKeepAlive = true
-                    const map = mapLoader.item
-                    if (!map)
-                        return
-                    map.shown = Qt.binding(() => skyPage.mapLive && !root.appModalOpen)
-                    map.mosaicColumns = Qt.binding(() => skyPage.deviceMode ? 1 : columnsBox.value)
-                    map.mosaicRows = Qt.binding(() => skyPage.deviceMode ? 1 : rowsBox.value)
-                    map.mosaicOverlap = Qt.binding(() => skyPage.deviceMode ? 0 : overlapBox.value / 100)
-                    map.mosaicPa = Qt.binding(() => backend.mosaicPaManual ? paBox.value : backend.mosaicPa)
-                    map.liveOverlay = Qt.binding(() => skyStore.liveFovOverlay)
-                    map.liveOpacity = Qt.binding(() => skyPage.clampOpacity(skyStore.liveFovOpacity))
-                    map.savedView = Qt.binding(() => skyStore.viewSaved ? ({
-                        ra_hours: skyStore.viewRaHours,
-                        dec_degrees: skyStore.viewDecDegrees,
-                        fov: skyStore.viewFov
-                    }) : ({}))
-                    map.savedViewReady = true
-                    skyPage.applyPendingLock()
+
+                Loader {
+                    id: atlasMapLoader
+                    anchors.fill: parent
+                    z: backend.skyMapUsesStellariumWeb ? 0 : 1
+                    // Windows WebView2 ignores z-order, so the idle map must
+                    // leave the overlay. Linux keeps both in the slot so the
+                    // delegated frame is not culled.
+                    visible: mapLoader.nativeMapOverlay ? !backend.skyMapUsesStellariumWeb : true
+                    enabled: !backend.skyMapUsesStellariumWeb
+                    active: mapLoader.mapEngineWanted && (
+                        !backend.skyMapUsesStellariumWeb || mapLoader.atlasHeld
+                    )
+                    source: Qt.resolvedUrl("SkyAtlasView.qml")
+                    onLoaded: {
+                        mapLoader.atlasHeld = true
+                        skyPage.attachSkyMap(item)
+                    }
+                    onStatusChanged: {
+                        if (status === Loader.Error)
+                            skyPage.webFailed = true
+                    }
                 }
-                onStatusChanged: {
-                    if (status === Loader.Error)
-                        skyPage.webFailed = true
+
+                Loader {
+                    id: webMapLoader
+                    anchors.fill: parent
+                    z: backend.skyMapUsesStellariumWeb ? 1 : 0
+                    visible: mapLoader.nativeMapOverlay ? backend.skyMapUsesStellariumWeb : true
+                    enabled: backend.skyMapUsesStellariumWeb
+                    active: mapLoader.mapEngineWanted && (
+                        backend.skyMapUsesStellariumWeb || mapLoader.webHeld
+                    )
+                    source: Qt.resolvedUrl("SkyWebView.qml")
+                    onLoaded: {
+                        mapLoader.webHeld = true
+                        skyPage.attachSkyMap(item)
+                    }
+                    onStatusChanged: {
+                        if (status === Loader.Error)
+                            skyPage.webFailed = true
+                    }
                 }
             }
 

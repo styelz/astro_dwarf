@@ -20,7 +20,8 @@ Item {
     WebView {
         id: view
         anchors.fill: parent
-        url: backend.skyAtlasUrl
+        // Capture the address once so a settings notify does not reload Aladin.
+        Component.onCompleted: view.url = backend.skyAtlasUrl
         onTitleChanged: root.hostTitle(view.title)
 
         onLoadingChanged: function(loadRequest) {

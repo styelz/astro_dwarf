@@ -16,7 +16,9 @@ Item {
     WebEngineView {
         id: view
         anchors.fill: parent
-        url: backend.skyAtlasUrl
+        // Capture the address once. skyAtlasUrl used to notify with every
+        // settings change, and WebEngine treated that as a new navigation.
+        Component.onCompleted: view.url = backend.skyAtlasUrl
         lifecycleState: WebEngineView.LifecycleState.Active
         onTitleChanged: root.hostTitle(view.title)
         profile: atlasProfile

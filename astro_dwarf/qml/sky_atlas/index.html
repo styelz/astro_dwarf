@@ -69,32 +69,56 @@
   <div id="aladin-lite-div"></div>
   <script>
     window.__astroDwarfAtlas = window.__astroDwarfAtlas || {};
-    A.init.then(function() {
-      window.aladin = A.aladin("#aladin-lite-div", {
-        survey: "P/DSS2/color",
-        fov: 70,
-        projection: "STG",
-        cooFrame: "ICRSd",
-        showReticle: false,
-        showCooGridControl: true,
-        showSimbadPointerControl: true,
-        showProjectionControl: false,
-        showFullscreenControl: false,
-        showLayersControl: false,
-        showGotoControl: true,
-        showZoomControl: false,
-        showShareControl: false,
-        showContextMenu: true,
-        showFrame: false,
-        showCooGrid: true
+    // P/DSS2/color resolves to an IRSA mirror that does not send
+    // Access-Control-Allow-Origin for this page's localhost origin.
+    // The CDS HiPS does, so the survey tiles can load inside the app.
+    var DSS_COLOR = "https://alasky.cds.unistra.fr/DSS/DSSColor";
+    var aladinStarted = false;
+    function startAladin(attempt) {
+      if (aladinStarted)
+        return;
+      if (!window.A || !window.A.init) {
+        if (attempt > 40)
+          return;
+        if (attempt === 1 || attempt === 8) {
+          var retry = document.createElement("script");
+          retry.src = "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js";
+          retry.charset = "utf-8";
+          retry.onload = function() { startAladin(attempt); };
+          document.head.appendChild(retry);
+        }
+        setTimeout(function() { startAladin(attempt + 1); }, 250);
+        return;
+      }
+      aladinStarted = true;
+      window.A.init.then(function() {
+        window.aladin = window.A.aladin("#aladin-lite-div", {
+          survey: DSS_COLOR,
+          fov: 70,
+          projection: "STG",
+          cooFrame: "ICRSd",
+          showReticle: false,
+          showCooGridControl: true,
+          showSimbadPointerControl: true,
+          showProjectionControl: false,
+          showFullscreenControl: false,
+          showLayersControl: false,
+          showGotoControl: true,
+          showZoomControl: false,
+          showShareControl: false,
+          showContextMenu: true,
+          showFrame: false,
+          showCooGrid: true
+        });
+        if (typeof window.aladin.setProjection === "function")
+          window.aladin.setProjection("STG");
+        try {
+          if (typeof window.aladin.setCooGrid === "function")
+            window.aladin.setCooGrid({color: "#8ad4c8", opacity: 0.28, labelSize: 11, enabled: true});
+        } catch (err) {}
       });
-      if (typeof window.aladin.setProjection === "function")
-        window.aladin.setProjection("STG");
-      try {
-        if (typeof window.aladin.setCooGrid === "function")
-          window.aladin.setCooGrid({color: "#8ad4c8", opacity: 0.28, labelSize: 11, enabled: true});
-      } catch (err) {}
-    });
+    }
+    startAladin(0);
   </script>
 </body>
 </html>
