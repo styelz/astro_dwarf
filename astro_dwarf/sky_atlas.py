@@ -408,12 +408,8 @@ ATLAS_ASTRO_JS = r"""
     return Math.atan2(n[0] - c[0], c[1] - n[1]) * 180 / Math.PI;
   }
   function overlayPixRoll(aladin, pos) {
-    var viewRot = 0;
-    try {
-      if (aladin && typeof aladin.getRotation === "function")
-        viewRot = Number(aladin.getRotation()) || 0;
-    } catch (err) {}
-    if (!isFinite(viewRot) || Math.abs(viewRot) < 0.4) return 0;
+    var viewRot = currentRotation(aladin);
+    if (Math.abs(viewRot) < 0.4) return 0;
     var north = northPixAngle(aladin, pos[0], pos[1]);
     // world2pix already includes map rotation when north is not screen-up.
     if (north == null || Math.abs(north) > 12) return 0;
@@ -475,17 +471,13 @@ ATLAS_ASTRO_JS = r"""
     // Aladin's sky is stereographic about the view centre. Calibrate that plane
     // with three world2pix samples, then place every pane corner in JS.
     if (!aladin || typeof aladin.getRaDec !== "function") return null;
-    var pos = null;
-    try { pos = aladin.getRaDec(); } catch (err) { pos = null; }
+    var pos = readRaDec(aladin);
     if (!pos) return null;
     var ra = Number(pos[0]), dec = Number(pos[1]);
     if (!isFinite(ra) || !isFinite(dec) || Math.abs(dec) > 89.2) return null;
     var size = viewSize(aladin);
     var fov = viewFov(aladin);
-    var rot = 0;
-    try {
-      if (typeof aladin.getRotation === "function") rot = Number(aladin.getRotation()) || 0;
-    } catch (err) {}
+    var rot = currentRotation(aladin);
     var cssW = window.innerWidth || size[0];
     var cssH = window.innerHeight || size[1];
     var key = ra.toFixed(5) + "|" + dec.toFixed(5) + "|" + Number(fov).toFixed(4) + "|"
@@ -1211,6 +1203,138 @@ ATLAS_ASTRO_JS = r"""
     ctx.restore();
     return rotatedRect(width / 2, height / 2, totalW, totalH, tilt);
   }
+  function readRaDec(aladin) {
+    try {
+      if (aladin && typeof aladin.getRaDec === "function") return aladin.getRaDec();
+    } catch (err) {}
+    return null;
+  }
+  function liveEq(aladin) {
+    if (box.dragging && box.lookEq) return box.lookEq;
+    return readRaDec(aladin);
+  }
+  function rollAboutCenter(ctx, width, height, extra) {
+    if (!(Math.abs(extra) > 0.4)) return;
+    ctx.translate(width / 2, height / 2);
+    ctx.rotate(extra * Math.PI / 180);
+    ctx.translate(-width / 2, -height / 2);
+  }
+  function liveCameraPa(aladin, payload, chartPa) {
+    var cameraPa = chartPa;
+    try {
+      var livePos = liveEq(aladin);
+      if (!livePos) return cameraPa;
+      var liveQ = parallacticDeg(livePos[0], livePos[1], box.lat, box.lon, new Date());
+      var pitch = Number(payload.mechanical_altitude);
+      var past = isFinite(pitch) && pitch > 90 && pitch < 270;
+      if (isFinite(liveQ))
+        cameraPa = ((liveQ + (past ? 180 : 0)) % 360 + 360) % 360;
+    } catch (err) {}
+    return cameraPa;
+  }
+  function viewCenteredOnTarget(aladin, payload) {
+    try {
+      var tra = Number(payload.target_ra_hours), tdec = Number(payload.target_dec_degrees);
+      var here = liveEq(aladin);
+      if (!(isFinite(tra) && isFinite(tdec) && here)) return true;
+      var cosDec = Math.cos(Number(here[1]) * Math.PI / 180);
+      var dra = (((tra * 15 - Number(here[0])) % 360) + 360) % 360;
+      if (dra > 180) dra -= 360;
+      return Math.hypot(dra * cosDec, tdec - Number(here[1])) < 0.5;
+    } catch (err) {
+      return true;
+    }
+  }
+  function quadCenter(quad) {
+    var px = 0, py = 0;
+    for (var n = 0; n < quad.length; n++) { px += quad[n][0]; py += quad[n][1]; }
+    return [px / quad.length, py / quad.length];
+  }
+  function quadMinSpan(quad) {
+    if (!quad || quad.length < 4) return 0;
+    return Math.min(
+      Math.hypot(quad[1][0] - quad[0][0], quad[1][1] - quad[0][1]),
+      Math.hypot(quad[3][0] - quad[0][0], quad[3][1] - quad[0][1])
+    );
+  }
+  function paintProjectedIndexes(ctx, projected, color) {
+    for (var i = 0; i < projected.length; i++) {
+      var loc = projected[i].center;
+      if (!loc && projected[i].quad) loc = quadCenter(projected[i].quad);
+      if (loc)
+        paintIndex(ctx, loc[0], loc[1], projected[i].index, color, quadMinSpan(projected[i].quad));
+    }
+  }
+  function paintProjectedMedia(ctx, projected, width, height) {
+    blitMosaicMedia(ctx, width, height, function(mctx) {
+      paintOverlayImages(mctx, projected, centerPaneQuad(projected), 0, 0, 0, 0);
+    });
+  }
+  function strokeProjectedSeams(ctx, projected, color) {
+    var seams = [];
+    function seam(p1, p2, q1, q2) {
+      if (!p1 || !p2 || !q1 || !q2) return;
+      seams.push([(p1[0] + q1[0]) / 2, (p1[1] + q1[1]) / 2, (p2[0] + q2[0]) / 2, (p2[1] + q2[1]) / 2]);
+    }
+    var byCell = {};
+    for (var pi = 0; pi < projected.length; pi++) {
+      var item = projected[pi];
+      if (item.row && item.column)
+        byCell[item.row + "," + item.column] = item;
+    }
+    for (var pk = 0; pk < projected.length; pk++) {
+      var cell = projected[pk];
+      if (!cell.quad || !cell.row || !cell.column) continue;
+      var right = byCell[cell.row + "," + (cell.column + 1)];
+      if (right && right.quad)
+        seam(cell.quad[3], cell.quad[2], right.quad[0], right.quad[1]);
+      var below = byCell[(cell.row + 1) + "," + cell.column];
+      if (below && below.quad)
+        seam(cell.quad[1], cell.quad[2], below.quad[0], below.quad[3]);
+    }
+    if (!seams.length) return;
+    ctx.beginPath();
+    for (var si = 0; si < seams.length; si++) {
+      ctx.moveTo(seams[si][0], seams[si][1]);
+      ctx.lineTo(seams[si][2], seams[si][3]);
+    }
+    ctx.lineCap = "round";
+    ctx.setLineDash([1, 6.5]);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.lineCap = "butt";
+  }
+  function paintProjectedFov(ctx, width, height, aladin, projected, color) {
+    var pos = readRaDec(aladin);
+    var extra = pos ? overlayPixRoll(aladin, pos) : 0;
+    box.reblitMedia = function() {
+      var host = horizonCanvas();
+      var mctxHost = host.getContext("2d");
+      if (!mctxHost) return;
+      mctxHost.save();
+      mctxHost.setTransform(1, 0, 0, 1, 0, 0);
+      rollAboutCenter(mctxHost, width, height, extra);
+      if (hasMosaicMedia())
+        paintProjectedMedia(mctxHost, projected, width, height);
+      else
+        clearMediaOverlay();
+      mctxHost.restore();
+    };
+    ctx.save();
+    rollAboutCenter(ctx, width, height, extra);
+    if (hasMosaicMedia())
+      paintProjectedMedia(ctx, projected, width, height);
+    paintProjectedIndexes(ctx, projected, color);
+    var outer = outerQuad(projected);
+    if (outer.length >= 4) {
+      strokeProjectedSeams(ctx, projected, color);
+      strokeTargetQuad(ctx, outer, color);
+    }
+    labelOnFov(ctx, outer, color);
+    ctx.restore();
+  }
   function paintFov(ctx, width, height) {
     if (!hasMosaicMedia())
       clearMediaOverlay();
@@ -1239,28 +1363,12 @@ ATLAS_ASTRO_JS = r"""
     var chartPa = Number(box.pa) || 0;
     var southUp = !!(payload.south_up);
     var chartTilt = ((chartPa - (southUp ? 180 : 0)) % 360 + 360) % 360;
-    var viewRot = 0;
-    try {
-      if (aladin && typeof aladin.getRotation === "function")
-        viewRot = Number(aladin.getRotation()) || 0;
-    } catch (err) {}
+    var viewRot = currentRotation(aladin);
     var panes = (box.fovPanes && box.fovPanes.length) ? box.fovPanes : [];
     var mosaic = cols > 1 || rows > 1 || panes.length > 1;
     var equatorial = String(payload.mount_mode || "").toUpperCase() === "EQ";
     var zenithCamera = !equatorial && String(payload.pa_source || "") === "parallactic";
-    var cameraPa = chartPa;
-    if (!equatorial && box.hasSite) {
-      try {
-        var livePos = (box.dragging && box.lookEq) ? box.lookEq
-          : (aladin && typeof aladin.getRaDec === "function" ? aladin.getRaDec() : null);
-        if (livePos) {
-          var liveQ = parallacticDeg(livePos[0], livePos[1], box.lat, box.lon, new Date());
-          var pitch = Number(payload.mechanical_altitude);
-          var past = isFinite(pitch) && pitch > 90 && pitch < 270;
-          if (isFinite(liveQ)) cameraPa = ((liveQ + (past ? 180 : 0)) % 360 + 360) % 360;
-        }
-      } catch (err) {}
-    }
+    var cameraPa = (!equatorial && box.hasSite) ? liveCameraPa(aladin, payload, chartPa) : chartPa;
     // Mosaic stays chart tilt; 1x1 uses camera PA (mosaic ? chartTilt : pa).
     // Shortest-angle sum: a ±180 parallactic wrap must not spin the box.
     var tiltPa = mosaic && !zenithCamera ? chartTilt : (equatorial ? chartPa : cameraPa);
@@ -1269,19 +1377,7 @@ ATLAS_ASTRO_JS = r"""
     // parallactic angle slip apart while the map is moving, and north of
     // the equator that residual turns the mosaic into a skewed frame.
     if (zenithCamera) tilt = 0;
-    var centered = true;
-    try {
-      var tra = Number(payload.target_ra_hours), tdec = Number(payload.target_dec_degrees);
-      var here = (box.dragging && box.lookEq) ? box.lookEq
-        : (aladin && typeof aladin.getRaDec === "function" ? aladin.getRaDec() : null);
-      if (isFinite(tra) && isFinite(tdec) && here) {
-        var cosDec = Math.cos(Number(here[1]) * Math.PI / 180);
-        var dra = (((tra * 15 - Number(here[0])) % 360) + 360) % 360;
-        if (dra > 180) dra -= 360;
-        centered = Math.hypot(dra * cosDec, tdec - Number(here[1])) < 0.5;
-      }
-    } catch (err) { centered = true; }
-    if (centered) {
+    if (viewCenteredOnTarget(aladin, payload)) {
       box.reblitMedia = null;
       var frame = drawScreenMosaic(ctx, width, height, w, h, cols, rows, overlap, tilt, color);
       labelOnFov(ctx, frame, color);
@@ -1293,102 +1389,7 @@ ATLAS_ASTRO_JS = r"""
       if (projected[qi].quad) { hasQuads = true; break; }
     }
     if (mosaic && hasQuads) {
-      var pos = null;
-      try { pos = aladin && typeof aladin.getRaDec === "function" ? aladin.getRaDec() : null; } catch (err) {}
-      var extra = pos ? overlayPixRoll(aladin, pos) : 0;
-      box.reblitMedia = function() {
-        var host = horizonCanvas();
-        var mctxHost = host.getContext("2d");
-        if (!mctxHost) return;
-        mctxHost.save();
-        mctxHost.setTransform(1, 0, 0, 1, 0, 0);
-        if (Math.abs(extra) > 0.4) {
-          mctxHost.translate(width / 2, height / 2);
-          mctxHost.rotate(extra * Math.PI / 180);
-          mctxHost.translate(-width / 2, -height / 2);
-        }
-        if (hasMosaicMedia()) {
-          blitMosaicMedia(mctxHost, width, height, function(mctx) {
-            paintOverlayImages(mctx, projected, centerPaneQuad(projected), 0, 0, 0, 0);
-          });
-        } else {
-          clearMediaOverlay();
-        }
-        mctxHost.restore();
-      };
-      ctx.save();
-      if (Math.abs(extra) > 0.4) {
-        ctx.translate(width / 2, height / 2);
-        ctx.rotate(extra * Math.PI / 180);
-        ctx.translate(-width / 2, -height / 2);
-      }
-      if (hasMosaicMedia()) {
-        blitMosaicMedia(ctx, width, height, function(mctx) {
-          paintOverlayImages(mctx, projected, centerPaneQuad(projected), 0, 0, 0, 0);
-        });
-      }
-      for (var i = 0; i < projected.length; i++) {
-        if (mosaic) {
-          var loc = projected[i].center;
-          if (!loc && projected[i].quad) {
-            var q = projected[i].quad, px = 0, py = 0;
-            for (var n = 0; n < q.length; n++) { px += q[n][0]; py += q[n][1]; }
-            loc = [px / q.length, py / q.length];
-          }
-          if (loc) {
-            var span = 0;
-            if (projected[i].quad && projected[i].quad.length >= 4) {
-              var qn = projected[i].quad;
-              span = Math.min(
-                Math.hypot(qn[1][0] - qn[0][0], qn[1][1] - qn[0][1]),
-                Math.hypot(qn[3][0] - qn[0][0], qn[3][1] - qn[0][1])
-              );
-            }
-            paintIndex(ctx, loc[0], loc[1], projected[i].index, color, span);
-          }
-        }
-      }
-      var outer = outerQuad(projected);
-      if (mosaic && outer.length >= 4) {
-        var seams = [];
-        function seam(p1, p2, q1, q2) {
-          if (!p1 || !p2 || !q1 || !q2) return;
-          seams.push([(p1[0] + q1[0]) / 2, (p1[1] + q1[1]) / 2, (p2[0] + q2[0]) / 2, (p2[1] + q2[1]) / 2]);
-        }
-        var byCell = {};
-        for (var pi = 0; pi < projected.length; pi++) {
-          var item = projected[pi];
-          if (item.row && item.column)
-            byCell[item.row + "," + item.column] = item;
-        }
-        for (var pk = 0; pk < projected.length; pk++) {
-          var cell = projected[pk];
-          if (!cell.quad || !cell.row || !cell.column) continue;
-          var right = byCell[cell.row + "," + (cell.column + 1)];
-          if (right && right.quad)
-            seam(cell.quad[3], cell.quad[2], right.quad[0], right.quad[1]);
-          var below = byCell[(cell.row + 1) + "," + cell.column];
-          if (below && below.quad)
-            seam(cell.quad[1], cell.quad[2], below.quad[0], below.quad[3]);
-        }
-        if (seams.length) {
-          ctx.beginPath();
-          for (var si = 0; si < seams.length; si++) {
-            ctx.moveTo(seams[si][0], seams[si][1]);
-            ctx.lineTo(seams[si][2], seams[si][3]);
-          }
-          ctx.lineCap = "round";
-          ctx.setLineDash([1, 6.5]);
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 2.2;
-          ctx.stroke();
-          ctx.setLineDash([]);
-          ctx.lineCap = "butt";
-        }
-        strokeTargetQuad(ctx, outer, color);
-      }
-      labelOnFov(ctx, outer, color);
-      ctx.restore();
+      paintProjectedFov(ctx, width, height, aladin, projected, color);
       return;
     }
     var frame = drawScreenMosaic(ctx, width, height, w, h, cols, rows, overlap, tilt, color);
@@ -1414,15 +1415,11 @@ ATLAS_ASTRO_JS = r"""
     }
   }
   function paintFingerprint(aladin, size) {
-    var pos = null;
-    try { pos = aladin && typeof aladin.getRaDec === "function" ? aladin.getRaDec() : null; } catch (err) {}
+    var pos = readRaDec(aladin);
     var ra = pos ? Number(pos[0]) : NaN;
     var dec = pos ? Number(pos[1]) : NaN;
     var fov = aladin ? viewFov(aladin) : 0;
-    var rot = 0;
-    try {
-      if (aladin && typeof aladin.getRotation === "function") rot = Number(aladin.getRotation()) || 0;
-    } catch (err) {}
+    var rot = currentRotation(aladin);
     var panes = (box.fovPanes && box.fovPanes.length) || 0;
     var payload = box.payload || {};
     return [

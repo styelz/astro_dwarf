@@ -395,12 +395,11 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
         exposure = values.get("exposure")
         if isinstance(exposure, dict):
             text = _exposure_text_from_params(exposure, model_id)
-            if text:
-                changes[f"{slot}_{prefix}exposure_text"] = text
-                if slot == "astro":
-                    changes[f"{prefix}exposure_text"] = text
         elif exposure not in (None, ""):
             text = str(exposure)
+        else:
+            text = ""
+        if text:
             changes[f"{slot}_{prefix}exposure_text"] = text
             if slot == "astro":
                 changes[f"{prefix}exposure_text"] = text
@@ -1049,18 +1048,18 @@ class AlertEngine:
         def changed(key: str) -> bool:
             return key in current and current.get(key) != previous.get(key)
 
+        def settled(key: str) -> bool:
+            return changed(key) and current.get(key) in ("stopped", "idle") and previous.get(key) == "running"
+
         # Battery thresholds. Skip the low-battery toast on the first sample —
         # a coarse 20% notify often arrives before the real 22% BatteryInfo.
         if changed("battery_percent"):
             new = int(current["battery_percent"])
             old = previous.get("battery_percent")
             old = int(old) if old is not None else None
-            if old is None:
-                if new <= BATTERY_CRITICAL:
-                    add("error", f"Battery critical · {new}%", "Shut down or connect power soon")
-            elif new <= BATTERY_CRITICAL < old:
+            if new <= BATTERY_CRITICAL and (old is None or old > BATTERY_CRITICAL):
                 add("error", f"Battery critical · {new}%", "Shut down or connect power soon")
-            elif new <= BATTERY_WARN < old:
+            elif old is not None and new <= BATTERY_WARN < old:
                 add("warning", f"Battery low · {new}%", "Plan remaining captures accordingly")
         if changed("charging"):
             if current.get("charging"):
@@ -1126,7 +1125,7 @@ class AlertEngine:
             elif failed and not previous.get("calibration_error"):
                 add("error", "Calibration failed", "The telescope could not plate-solve")
         # EQ / polar. A finished plate-solve is the residual, not alignment.
-        if changed("eq_state") and current["eq_state"] in ("stopped", "idle") and previous.get("eq_state") == "running":
+        if settled("eq_state"):
             azi = current.get("eq_azi_err", previous.get("eq_azi_err"))
             alt = current.get("eq_alt_err", previous.get("eq_alt_err"))
             if azi is None or alt is None:
@@ -1140,7 +1139,7 @@ class AlertEngine:
                     f"{eq_move_instruction('azi', azi)} {eq_move_instruction('alt', alt)}",
                 )
         # Autofocus
-        if changed("autofocus_state") and current["autofocus_state"] in ("stopped", "idle") and previous.get("autofocus_state") == "running":
+        if settled("autofocus_state"):
             focus = current.get("focus_position") or previous.get("focus_position")
             add("success", "Autofocus complete", f"Focus position {int(focus)}" if focus is not None else "")
         # Capture
@@ -1159,14 +1158,14 @@ class AlertEngine:
                 add("success", "Capture finished", " · ".join(detail_parts))
             else:
                 add("info", "Capture ended", " · ".join(detail_parts) or "No frames stacked", toast=False)
-        if changed("dark_state") and current["dark_state"] in ("stopped", "idle") and previous.get("dark_state") == "running":
+        if settled("dark_state"):
             add("success", "Dark frames complete", "")
-        if changed("burst_state") and current["burst_state"] in ("stopped", "idle") and previous.get("burst_state") == "running":
+        if settled("burst_state"):
             count = current.get("burst_count", previous.get("burst_count"))
             add("success", "Burst complete", f"{int(count)} shots" if count else "")
-        if changed("timelapse_state") and current["timelapse_state"] in ("stopped", "idle") and previous.get("timelapse_state") == "running":
+        if settled("timelapse_state"):
             add("success", "Timelapse complete", "")
-        if changed("record_state") and current["record_state"] in ("stopped", "idle") and previous.get("record_state") == "running":
+        if settled("record_state"):
             add("success", "Recording complete", "")
         # Power / host
         if changed("power_off") and current.get("power_off"):

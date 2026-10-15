@@ -10348,6 +10348,137 @@ class AppBackend(QObject):
         """Wedge instructions for the EQ setup modal, from the observing latitude."""
         return eq_pose_steps(latitude)
 
+    def _finish_device_action(
+        self,
+        device_id: str,
+        operation: str,
+        label: str,
+        photo_focus: bool,
+        payload: dict[str, Any],
+        ok: bool,
+        result: Any,
+    ) -> None:
+        # The stop command owns the pad until the motors halt. Clearing
+        # here would flash a failure and drop the running state first.
+        if (
+            operation == "polar_position"
+            and not ok
+            and str(result or "").strip().lower() == "polar positioning stopped"
+        ):
+            self.add_log("notice", "Polar positioning stopped", device_id)
+            return
+        self._complete_activity(device_id, operation, ok)
+        if ok and operation == "photo_mode":
+            self._control_applying.add(device_id)
+            self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1})
+            self._apply_shooting_mode_camera(device_id)
+        elif ok and operation in {"photo", "wide_photo"}:
+            self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": True})
+        elif ok and operation in {"burst_start", "record_start", "timelapse_start"}:
+            tech = {"burst_start": 3, "record_start": 4, "timelapse_start": 5}[operation]
+            self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": tech, "photo_primed": False})
+        elif ok and (
+            operation in {"astro_mode", "calibrate", "polar", "track", "sky_track", "stack", "infinity"}
+            or (operation == "autofocus" and not photo_focus)
+        ):
+            if operation == "astro_mode":
+                self._control_applying.add(device_id)
+            self._on_telemetry(device_id, {"shooting_mode": 2, "shooting_tech": 0, "photo_primed": False})
+            if operation == "astro_mode":
+                self._apply_shooting_mode_camera(device_id)
+        elif ok and operation == "stop_goto":
+            from .device_telemetry import track_box_off
+
+            self._on_telemetry(
+                device_id,
+                {
+                    "tracking_state": "idle",
+                    "tracking_kind": "",
+                    "tracking_target": "",
+                    "goto_state": "idle",
+                    **track_box_off(),
+                },
+            )
+        if ok and operation in {"lights_on", "lights_off"}:
+            self._device_lights[device_id] = operation == "lights_on"
+            self._notify_devices()
+        if ok and operation in {"indicator_on", "indicator_off"}:
+            self._device_indicators[device_id] = operation == "indicator_on"
+            self._notify_devices()
+        self.commandFeedback.emit(device_id, operation, bool(ok))
+        if ok:
+            if operation == "sky_track":
+                fallback = ""
+                if isinstance(payload.get("args"), list) and payload["args"]:
+                    fallback = str(payload["args"][-1] or "")
+                self._remember_track_target(result, fallback)
+            elif operation == "track":
+                from .device_telemetry import track_box_off
+
+                name = "Live view"
+                if isinstance(payload.get("args"), list) and payload["args"]:
+                    name = str(payload["args"][-1] or "").strip() or name
+                self._on_telemetry(
+                    device_id,
+                    {
+                        "tracking_state": "running",
+                        "tracking_kind": "object",
+                        "tracking_target": name,
+                        "goto_state": "idle",
+                        **track_box_off(),
+                    },
+                )
+            elif operation == "box_track" and isinstance(result, dict):
+                # The worker already published the rectangle. A track
+                # result may have moved it while this reply was in flight.
+                current = self._device_telemetry.get(device_id) or {}
+                fields: dict[str, Any] = {
+                    "tracking_state": "running",
+                    "tracking_kind": "object",
+                    "tracking_target": "Box lock",
+                    "goto_state": "idle",
+                }
+                if not current.get("track_box"):
+                    fields.update(
+                        {
+                            "track_box": True,
+                            "track_box_nx": float(result.get("nx") or 0),
+                            "track_box_ny": float(result.get("ny") or 0),
+                            "track_box_nw": float(result.get("nw") or 0),
+                            "track_box_nh": float(result.get("nh") or 0),
+                            "track_box_frame_w": int(result.get("frame_w") or 0),
+                            "track_box_frame_h": int(result.get("frame_h") or 0),
+                            "track_box_camera": str(result.get("camera") or ""),
+                        }
+                    )
+                self._on_telemetry(device_id, fields)
+            self.add_log("success", f"{label} acknowledged", device_id)
+            self._toast(label, "success", _ACTION_DETAILS.get(operation, ""))
+        else:
+            needs_calibration = operation in {"track", "sky_track"} and tracking_needs_calibration(result)
+            self.add_log(
+                "warning" if needs_calibration else "error",
+                f"{label} failed: {result}",
+                device_id,
+            )
+            if needs_calibration:
+                self._toast(
+                    TRACKING_NEEDS_CALIBRATION_TOAST,
+                    "warning",
+                    TRACKING_NEEDS_CALIBRATION_DETAIL,
+                )
+            else:
+                self._toast(f"{label} failed", "error", str(result))
+            if operation == "stack":
+                session_id = self._active_sessions.get(device_id)
+                if (
+                    session_id
+                    and session_id in self._command_panel_sessions
+                    and not self._live_mosaic_running(device_id)
+                ):
+                    self._finalize_session(session_id, False, result)
+                    self._command_panel_sessions.discard(session_id)
+
     @Slot(str, str)
     def deviceAction(self, device_id: str, operation: str) -> None:
         box_args = None
@@ -10460,126 +10591,7 @@ class AppBackend(QObject):
             self._abort_active_session(device_id, label)
 
         def done(ok: bool, result: Any) -> None:
-            # The stop command owns the pad until the motors halt. Clearing
-            # here would flash a failure and drop the running state first.
-            if (
-                operation == "polar_position"
-                and not ok
-                and str(result or "").strip().lower() == "polar positioning stopped"
-            ):
-                self.add_log("notice", "Polar positioning stopped", device_id)
-                return
-            self._complete_activity(device_id, operation, ok)
-            if ok and operation == "photo_mode":
-                self._control_applying.add(device_id)
-                self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1})
-                self._apply_shooting_mode_camera(device_id)
-            elif ok and operation in {"photo", "wide_photo"}:
-                self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": True})
-            elif ok and operation in {"burst_start", "record_start", "timelapse_start"}:
-                tech = {"burst_start": 3, "record_start": 4, "timelapse_start": 5}[operation]
-                self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": tech, "photo_primed": False})
-            elif ok and (
-                operation in {"astro_mode", "calibrate", "polar", "track", "sky_track", "stack", "infinity"}
-                or (operation == "autofocus" and not photo_focus)
-            ):
-                if operation == "astro_mode":
-                    self._control_applying.add(device_id)
-                self._on_telemetry(device_id, {"shooting_mode": 2, "shooting_tech": 0, "photo_primed": False})
-                if operation == "astro_mode":
-                    self._apply_shooting_mode_camera(device_id)
-            elif ok and operation == "stop_goto":
-                from .device_telemetry import track_box_off
-
-                self._on_telemetry(
-                    device_id,
-                    {
-                        "tracking_state": "idle",
-                        "tracking_kind": "",
-                        "tracking_target": "",
-                        "goto_state": "idle",
-                        **track_box_off(),
-                    },
-                )
-            if ok and operation in {"lights_on", "lights_off"}:
-                self._device_lights[device_id] = operation == "lights_on"
-                self._notify_devices()
-            if ok and operation in {"indicator_on", "indicator_off"}:
-                self._device_indicators[device_id] = operation == "indicator_on"
-                self._notify_devices()
-            self.commandFeedback.emit(device_id, operation, bool(ok))
-            if ok:
-                if operation == "sky_track":
-                    fallback = ""
-                    if isinstance(payload.get("args"), list) and payload["args"]:
-                        fallback = str(payload["args"][-1] or "")
-                    self._remember_track_target(result, fallback)
-                elif operation == "track":
-                    from .device_telemetry import track_box_off
-
-                    name = "Live view"
-                    if isinstance(payload.get("args"), list) and payload["args"]:
-                        name = str(payload["args"][-1] or "").strip() or name
-                    self._on_telemetry(
-                        device_id,
-                        {
-                            "tracking_state": "running",
-                            "tracking_kind": "object",
-                            "tracking_target": name,
-                            "goto_state": "idle",
-                            **track_box_off(),
-                        },
-                    )
-                elif operation == "box_track" and isinstance(result, dict):
-                    # The worker already published the rectangle. A track
-                    # result may have moved it while this reply was in flight.
-                    current = self._device_telemetry.get(device_id) or {}
-                    fields: dict[str, Any] = {
-                        "tracking_state": "running",
-                        "tracking_kind": "object",
-                        "tracking_target": "Box lock",
-                        "goto_state": "idle",
-                    }
-                    if not current.get("track_box"):
-                        fields.update(
-                            {
-                                "track_box": True,
-                                "track_box_nx": float(result.get("nx") or 0),
-                                "track_box_ny": float(result.get("ny") or 0),
-                                "track_box_nw": float(result.get("nw") or 0),
-                                "track_box_nh": float(result.get("nh") or 0),
-                                "track_box_frame_w": int(result.get("frame_w") or 0),
-                                "track_box_frame_h": int(result.get("frame_h") or 0),
-                                "track_box_camera": str(result.get("camera") or ""),
-                            }
-                        )
-                    self._on_telemetry(device_id, fields)
-                self.add_log("success", f"{label} acknowledged", device_id)
-                self._toast(label, "success", _ACTION_DETAILS.get(operation, ""))
-            else:
-                needs_calibration = operation in {"track", "sky_track"} and tracking_needs_calibration(result)
-                self.add_log(
-                    "warning" if needs_calibration else "error",
-                    f"{label} failed: {result}",
-                    device_id,
-                )
-                if needs_calibration:
-                    self._toast(
-                        TRACKING_NEEDS_CALIBRATION_TOAST,
-                        "warning",
-                        TRACKING_NEEDS_CALIBRATION_DETAIL,
-                    )
-                else:
-                    self._toast(f"{label} failed", "error", str(result))
-                if operation == "stack":
-                    session_id = self._active_sessions.get(device_id)
-                    if (
-                        session_id
-                        and session_id in self._command_panel_sessions
-                        and not self._live_mosaic_running(device_id)
-                    ):
-                        self._finalize_session(session_id, False, result)
-                        self._command_panel_sessions.discard(session_id)
+            self._finish_device_action(device_id, operation, label, photo_focus, payload, ok, result)
 
         payload: dict[str, Any] = {}
         if operation == "track":

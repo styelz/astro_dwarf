@@ -1587,336 +1587,424 @@ class TelemetryTap:
             # front, so its pad is released from motor settle / timeout.
             self.update({"autofocus_state": "idle"}, force=True)
 
+    _NOTIFY_DECODERS: dict[int, str] = {
+        **{cmd: "_decode_record_time" for cmd in _RECORD_TIME_COMMANDS},
+        **{cmd: "_decode_burst_progress" for cmd in _BURST_PROGRESS_COMMANDS},
+        **{cmd: "_decode_photo_function" for cmd in _PHOTO_FUNCTION_COMMANDS},
+        **{cmd: "_decode_timelapse_out" for cmd in _TIMELAPSE_OUT_COMMANDS},
+        **{
+            cmd: "_decode_long_exposure"
+            for cmd in (
+                CMD_NOTIFY_TELE_LONG_EXP_PROGRESS,
+                CMD_NOTIFY_WIDE_LONG_EXP_PROGRESS,
+                CMD_NOTIFY_LONG_EXP_PROGRESS,
+            )
+        },
+        CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING: "_decode_picture_matching",
+        CMD_NOTIFY_ELE: "_decode_battery_notify",
+        CMD_NOTIFY_CHARGE: "_decode_charge_notify",
+        CMD_NOTIFY_SDCARD_INFO: "_decode_storage",
+        CMD_NOTIFY_TEMPERATURE: "_decode_temperature",
+        CMD_NOTIFY_CMOS_TEMPERATURE: "_decode_cmos_temperature",
+        CMD_NOTIFY_FOCUS_POSITION: "_decode_focus_position",
+        CMD_NOTIFY_ASTRO_AUTO_FOCUS_STATE: "_decode_autofocus_state",
+        CMD_NOTIFY_ASTRO_AUTO_FOCUS_FAST_STATE: "_decode_autofocus_state",
+        CMD_NOTIFY_STREAM_TYPE: "_decode_stream_type",
+        CMD_NOTIFY_RGB_STATE: "_decode_rgb_state",
+        CMD_NOTIFY_POWER_IND_STATE: "_decode_power_indicator",
+        CMD_NOTIFY_WS_HOST_SLAVE_MODE: "_decode_host_mode",
+        CMD_NOTIFY_CPU_MODE: "_decode_cpu_mode",
+        CMD_NOTIFY_BODY_STATUS: "_decode_body_status",
+        CMD_NOTIFY_POWER_OFF: "_decode_power_off",
+        CMD_NOTIFY_STATE_ASTRO_GOTO: "_decode_goto_state",
+        CMD_NOTIFY_STATE_ASTRO_TRACKING: "_decode_tracking_state",
+        CMD_NOTIFY_TRACK_RESULT: "_decode_track_result",
+        CMD_NOTIFY_WIDE_TRACK_RESULT: "_decode_track_result",
+        CMD_NOTIFY_NORMAL_TRACK_STATE: "_decode_normal_track",
+        CMD_NOTIFY_STATE_ASTRO_CALIBRATION: "_decode_calibration_state",
+        CMD_NOTIFY_EQ_SOLVING_STATE: "_decode_eq_solving",
+        CMD_NOTIFY_STATE_CAPTURE_RAW_LIVE_STACKING: "_decode_stack_state",
+        CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING: "_decode_stack_state",
+        CMD_NOTIFY_PROGRASS_CAPTURE_RAW_LIVE_STACKING: "_decode_stack_progress",
+        CMD_NOTIFY_PROGRASS_WIDE_CAPTURE_RAW_LIVE_STACKING: "_decode_stack_progress",
+        CMD_NOTIFY_PROGRESS_CAPTURE_MOSAIC: "_decode_stack_progress",
+        CMD_NOTIFY_STATE_CAPTURE_RAW_DARK: "_decode_dark_state",
+        CMD_NOTIFY_STATE_CAPTURE_WIDE_RAW_DARK: "_decode_dark_state",
+        CMD_NOTIFY_PROGRASS_CAPTURE_RAW_DARK: "_decode_dark_progress",
+        CMD_NOTIFY_PANORAMA_PROGRESS: "_decode_panorama_progress",
+        CMD_NOTIFY_PANORAMA_STATE: "_decode_panorama_state",
+        CMD_NOTIFY_PANO_FRAMING_STATE: "_decode_pano_framing_state",
+        CMD_NOTIFY_PANO_FRAMING_RECT: "_decode_pano_framing_rect",
+        CMD_NOTIFY_PANO_FRAMING_THUMBNAIL: "_decode_pano_framing_thumbnail",
+        CMD_NOTIFY_GENERAL_INT_PARAM: "_decode_general_int_param",
+    }
+
     def _decode(self, cmd: int, kind: int, data: bytes) -> dict[str, Any]:
         if self._notify is None or self._base is None:
             return {}
         if cmd == CMD_STEP_MOTOR_GET_POSITION:
-            if kind not in _RESPONSE_TYPES:
-                return {}
-            try:
-                from dwarf_python_api.proto import motor_control_pb2
-
-                message = motor_control_pb2.ResMotorPosition()
-                message.ParseFromString(data)
-            except Exception:
-                return {}
-            code = int(message.code)
-            motor_id = int(message.id)
-            now = time.monotonic()
-            # Always stamp the reply (including errors such as NEED_RESET) so the
-            # worker can stop waiting instead of timing out on every axis.
-            changes: dict[str, Any] = {
-                "motor_pos_last_code": code,
-                "motor_pos_last_at": now,
-            }
-            if code == 0:
-                changes[f"motor_pos_{motor_id}"] = float(message.position)
-                changes[f"motor_pos_{motor_id}_at"] = now
-            return changes
+            return self._decode_motor_position(kind, data)
         if kind != TYPE_NOTIFICATION and cmd >= CMD_NOTIFY_ELE:
             return {}
-        if cmd == CMD_NOTIFY_TELE_WIDE_PICTURE_MATCHING:
-            message = self._parse("PictureMatching", data)
-            if message is None:
-                return {}
-            width = int(message.width)
-            height = int(message.height)
-            x = int(message.x)
-            y = int(message.y)
-            return normalize_picture_matching(x, y, width, height)
-        if cmd == CMD_NOTIFY_ELE:
-            message = self._base.ComResWithInt()
+        name = self._NOTIFY_DECODERS.get(cmd)
+        if name is None:
+            return {}
+        return getattr(self, name)(cmd, data)
+
+    def _decode_motor_position(self, kind: int, data: bytes) -> dict[str, Any]:
+        if kind not in _RESPONSE_TYPES:
+            return {}
+        try:
+            from dwarf_python_api.proto import motor_control_pb2
+
+            message = motor_control_pb2.ResMotorPosition()
             message.ParseFromString(data)
-            try:
-                percent = int(message.value)
-            except (TypeError, ValueError):
+        except Exception:
+            return {}
+        code = int(message.code)
+        motor_id = int(message.id)
+        now = time.monotonic()
+        # Always stamp the reply (including errors such as NEED_RESET) so the
+        # worker can stop waiting instead of timing out on every axis.
+        changes: dict[str, Any] = {
+            "motor_pos_last_code": code,
+            "motor_pos_last_at": now,
+        }
+        if code == 0:
+            changes[f"motor_pos_{motor_id}"] = float(message.position)
+            changes[f"motor_pos_{motor_id}_at"] = now
+        return changes
+
+    def _decode_picture_matching(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("PictureMatching", data)
+        if message is None:
+            return {}
+        width = int(message.width)
+        height = int(message.height)
+        x = int(message.x)
+        y = int(message.y)
+        return normalize_picture_matching(x, y, width, height)
+
+    def _decode_battery_notify(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._base.ComResWithInt()
+        message.ParseFromString(data)
+        try:
+            percent = int(message.value)
+        except (TypeError, ValueError):
+            return {}
+        if not self._should_apply_battery(percent, "notify"):
+            return {}
+        return {"battery_percent": percent}
+
+    def _decode_charge_notify(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._base.ComResWithInt()
+        message.ParseFromString(data)
+        with self._lock:
+            self._charge_notify = True
+        return charging_notify_changes(message.value)
+
+    def _decode_storage(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("StorageInfo", data)
+        return {
+            "storage_free_gb": int(message.available_size),
+            "storage_total_gb": int(message.total_size),
+            "storage_valid": bool(message.is_valid) or int(message.total_size) > 0,
+        }
+
+    def _decode_temperature(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("Temperature", data)
+        return {"temperature_c": int(message.temperature)}
+
+    def _decode_cmos_temperature(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("CmosTemperature", data)
+        if not message.HasField("temperature"):
+            return {}
+        key = "cmos_wide_c" if int(message.camera_type) == 1 else "cmos_tele_c"
+        return {key: int(message.temperature)}
+
+    def _decode_focus_position(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("FocusPosition", data)
+        return {"focus_position": int(message.pos)}
+
+    def _decode_autofocus_state(self, cmd: int, data: bytes) -> dict[str, Any]:
+        factory = (
+            "AstroAutoFocusFastState"
+            if cmd == CMD_NOTIFY_ASTRO_AUTO_FOCUS_FAST_STATE
+            else "AstroAutoFocusState"
+        )
+        message = self._parse(factory, data)
+        if message is None:
+            return {}
+        return {"autofocus_state": OPERATION_STATES.get(int(message.state), str(message.state))}
+
+    def _decode_stream_type(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("StreamType", data)
+        value = int(message.stream_type)
+        key = "stream_type_wide" if int(message.cam_id) == 1 else "stream_type"
+        return {key: STREAM_TYPES.get(value, str(value))}
+
+    def _decode_rgb_state(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("RgbState", data)
+        return {"lights_on": int(message.state) == 1}
+
+    def _decode_power_indicator(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("PowerIndState", data)
+        return {"indicator_on": int(message.state) == 1}
+
+    def _decode_host_mode(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("HostSlaveMode", data)
+        return {"host_mode": int(message.mode) == 0, "host_locked": bool(message.lock)}
+
+    def _decode_cpu_mode(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("CPUMode", data)
+        return {"cpu_mode": int(message.mode)}
+
+    def _decode_body_status(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("BodyStatus", data)
+        return {"mount_mode": BODY_STATUS.get(int(message.body_status), "")}
+
+    def _decode_power_off(self, cmd: int, data: bytes) -> dict[str, Any]:
+        with self._lock:
+            if not self._accept_power_off:
                 return {}
-            if not self._should_apply_battery(percent, "notify"):
-                return {}
-            return {"battery_percent": percent}
-        if cmd == CMD_NOTIFY_CHARGE:
-            message = self._base.ComResWithInt()
-            message.ParseFromString(data)
-            with self._lock:
-                self._charge_notify = True
-            return charging_notify_changes(message.value)
-        if cmd == CMD_NOTIFY_SDCARD_INFO:
-            message = self._parse("StorageInfo", data)
-            return {
-                "storage_free_gb": int(message.available_size),
-                "storage_total_gb": int(message.total_size),
-                "storage_valid": bool(message.is_valid) or int(message.total_size) > 0,
-            }
-        if cmd == CMD_NOTIFY_TEMPERATURE:
-            message = self._parse("Temperature", data)
-            return {"temperature_c": int(message.temperature)}
-        if cmd == CMD_NOTIFY_CMOS_TEMPERATURE:
-            message = self._parse("CmosTemperature", data)
-            if not message.HasField("temperature"):
-                return {}
-            key = "cmos_wide_c" if int(message.camera_type) == 1 else "cmos_tele_c"
-            return {key: int(message.temperature)}
-        if cmd == CMD_NOTIFY_FOCUS_POSITION:
-            message = self._parse("FocusPosition", data)
-            return {"focus_position": int(message.pos)}
-        if cmd in (CMD_NOTIFY_ASTRO_AUTO_FOCUS_STATE, CMD_NOTIFY_ASTRO_AUTO_FOCUS_FAST_STATE):
-            factory = (
-                "AstroAutoFocusFastState"
-                if cmd == CMD_NOTIFY_ASTRO_AUTO_FOCUS_FAST_STATE
-                else "AstroAutoFocusState"
-            )
-            message = self._parse(factory, data)
-            if message is None:
-                return {}
-            return {"autofocus_state": OPERATION_STATES.get(int(message.state), str(message.state))}
-        if cmd == CMD_NOTIFY_STREAM_TYPE:
-            message = self._parse("StreamType", data)
-            value = int(message.stream_type)
-            key = "stream_type_wide" if int(message.cam_id) == 1 else "stream_type"
-            return {key: STREAM_TYPES.get(value, str(value))}
-        if cmd == CMD_NOTIFY_RGB_STATE:
-            message = self._parse("RgbState", data)
-            return {"lights_on": int(message.state) == 1}
-        if cmd == CMD_NOTIFY_POWER_IND_STATE:
-            message = self._parse("PowerIndState", data)
-            return {"indicator_on": int(message.state) == 1}
-        if cmd == CMD_NOTIFY_WS_HOST_SLAVE_MODE:
-            message = self._parse("HostSlaveMode", data)
-            return {"host_mode": int(message.mode) == 0, "host_locked": bool(message.lock)}
-        if cmd == CMD_NOTIFY_CPU_MODE:
-            message = self._parse("CPUMode", data)
-            return {"cpu_mode": int(message.mode)}
-        if cmd == CMD_NOTIFY_BODY_STATUS:
-            message = self._parse("BodyStatus", data)
-            return {"mount_mode": BODY_STATUS.get(int(message.body_status), "")}
-        if cmd == CMD_NOTIFY_POWER_OFF:
-            with self._lock:
-                if not self._accept_power_off:
-                    return {}
-            return {"power_off": True}
-        if cmd == CMD_NOTIFY_STATE_ASTRO_GOTO:
-            changes = self._decode_named_state("AstroGotoState", data, "goto_state", "goto_target", ASTRO_STATES)
-            if changes.get("goto_state") in ("running", "solving"):
-                changes["goto_error"] = ""
-            return changes
-        if cmd == CMD_NOTIFY_STATE_ASTRO_TRACKING:
-            changes = self._decode_named_state(
-                "AstroTrackingState", data, "tracking_state", "tracking_target", OPERATION_STATES
-            )
-            if changes.get("tracking_state") == "running":
-                # The motion motor runs one astro function at a time: tracking
-                # taking over means the GOTO slew/solve has finished, even when
-                # the firmware never sent a final GOTO idle/stopped notification.
-                # A box lock is object tracking. This sidereal sample must not
-                # clear that rectangle.
-                changes["goto_state"] = "idle"
-                if object_track_latched(self.snapshot()):
-                    changes.pop("tracking_state", None)
-                    changes.pop("tracking_target", None)
-                else:
-                    changes["tracking_kind"] = "sidereal"
-                    changes.update(track_box_off())
-            elif changes.get("tracking_state"):
-                if object_track_latched(self.snapshot()):
-                    # DSO mode keeps reporting sidereal tracking as idle. That
-                    # packet must not drop an object-track latch.
-                    changes.pop("tracking_state", None)
-                    changes.pop("tracking_target", None)
-                else:
-                    changes["tracking_kind"] = ""
-                    changes.update(track_box_off())
-            return changes
-        if cmd == CMD_NOTIFY_TRACK_RESULT:
-            return self._decode_track_box(data, wide=False)
-        if cmd == CMD_NOTIFY_WIDE_TRACK_RESULT:
-            return self._decode_track_box(data, wide=True)
-        if cmd == CMD_NOTIFY_NORMAL_TRACK_STATE:
-            message = self._parse("NormalTrackState", data)
-            if message is None:
-                return {}
-            state = OPERATION_STATES.get(int(message.state), "idle")
-            running = state == "running"
-            if not running and self.snapshot().get("tracking_kind") == "object":
-                return {}
-            changes = {
-                "tracking_state": "running" if running else "idle",
-                "tracking_kind": "object" if running else "",
-                "goto_state": "idle",
-            }
-            if running and not self.snapshot().get("track_box"):
-                changes["tracking_target"] = "Live view"
-            elif not running:
-                changes["tracking_target"] = ""
+        return {"power_off": True}
+
+    def _decode_goto_state(self, cmd: int, data: bytes) -> dict[str, Any]:
+        changes = self._decode_named_state("AstroGotoState", data, "goto_state", "goto_target", ASTRO_STATES)
+        if changes.get("goto_state") in ("running", "solving"):
+            changes["goto_error"] = ""
+        return changes
+
+    def _decode_tracking_state(self, cmd: int, data: bytes) -> dict[str, Any]:
+        changes = self._decode_named_state(
+            "AstroTrackingState", data, "tracking_state", "tracking_target", OPERATION_STATES
+        )
+        if changes.get("tracking_state") == "running":
+            # The motion motor runs one astro function at a time: tracking
+            # taking over means the GOTO slew/solve has finished, even when
+            # the firmware never sent a final GOTO idle/stopped notification.
+            # A box lock is object tracking. This sidereal sample must not
+            # clear that rectangle.
+            changes["goto_state"] = "idle"
+            if object_track_latched(self.snapshot()):
+                changes.pop("tracking_state", None)
+                changes.pop("tracking_target", None)
+            else:
+                changes["tracking_kind"] = "sidereal"
                 changes.update(track_box_off())
-            return changes
-        if cmd == CMD_NOTIFY_STATE_ASTRO_CALIBRATION:
-            message = self._parse("AstroCalibrationState", data)
-            state = ASTRO_STATES.get(int(message.state), str(message.state))
-            changes = {
-                "calibration_state": state,
-                "calibration_phase": int(message.plate_solving_times),
-            }
-            if _calibration_run_started(state, self.snapshot().get("calibration_state")):
-                changes["calibration_error"] = ""
-            return changes
-        if cmd == CMD_NOTIFY_EQ_SOLVING_STATE:
-            message = self._parse("EqSolvingState", data)
-            changes = {"eq_state": OPERATION_STATES.get(int(message.state), str(message.state))}
-            for attr, key in (("azi_err", "eq_azi_err"), ("alt_err", "eq_alt_err")):
-                if not hasattr(message, attr):
-                    continue
-                try:
-                    changes[key] = float(getattr(message, attr))
-                except (TypeError, ValueError):
-                    continue
-            return changes
-        if cmd in (CMD_NOTIFY_STATE_CAPTURE_RAW_LIVE_STACKING, CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING):
-            message = self._parse("CaptureRawState", data)
-            state = OPERATION_STATES.get(int(message.state), str(message.state))
-            with self._lock:
-                hold = self._hold_stale_capture
-            if hold and state == "running":
-                return {}
-            changes: dict[str, Any] = {"capture_state": state}
-            changes["capture_camera"] = "wide" if cmd == CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING else "tele"
-            if state in ("idle", "stopped"):
-                changes["capture_active"] = False
-                changes["exposure_elapsed_s"] = 0
-                changes["capture_progress_seen"] = False
-            elif state == "running":
-                changes["capture_active"] = True
-            return changes
-        if cmd in (CMD_NOTIFY_PROGRASS_CAPTURE_RAW_LIVE_STACKING, CMD_NOTIFY_PROGRASS_WIDE_CAPTURE_RAW_LIVE_STACKING):
-            message = self._parse("ProgressCaptureRawLiveStacking", data)
-            return self._fresh_stacking_progress(
-                message,
-                wide=cmd == CMD_NOTIFY_PROGRASS_WIDE_CAPTURE_RAW_LIVE_STACKING,
-            )
+        elif changes.get("tracking_state"):
+            if object_track_latched(self.snapshot()):
+                # DSO mode keeps reporting sidereal tracking as idle. That
+                # packet must not drop an object-track latch.
+                changes.pop("tracking_state", None)
+                changes.pop("tracking_target", None)
+            else:
+                changes["tracking_kind"] = ""
+                changes.update(track_box_off())
+        return changes
+
+    def _decode_track_result(self, cmd: int, data: bytes) -> dict[str, Any]:
+        return self._decode_track_box(data, wide=cmd == CMD_NOTIFY_WIDE_TRACK_RESULT)
+
+    def _decode_normal_track(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("NormalTrackState", data)
+        if message is None:
+            return {}
+        state = OPERATION_STATES.get(int(message.state), "idle")
+        running = state == "running"
+        if not running and self.snapshot().get("tracking_kind") == "object":
+            return {}
+        changes = {
+            "tracking_state": "running" if running else "idle",
+            "tracking_kind": "object" if running else "",
+            "goto_state": "idle",
+        }
+        if running and not self.snapshot().get("track_box"):
+            changes["tracking_target"] = "Live view"
+        elif not running:
+            changes["tracking_target"] = ""
+            changes.update(track_box_off())
+        return changes
+
+    def _decode_calibration_state(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("AstroCalibrationState", data)
+        state = ASTRO_STATES.get(int(message.state), str(message.state))
+        changes = {
+            "calibration_state": state,
+            "calibration_phase": int(message.plate_solving_times),
+        }
+        if _calibration_run_started(state, self.snapshot().get("calibration_state")):
+            changes["calibration_error"] = ""
+        return changes
+
+    def _decode_eq_solving(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("EqSolvingState", data)
+        changes = {"eq_state": OPERATION_STATES.get(int(message.state), str(message.state))}
+        for attr, key in (("azi_err", "eq_azi_err"), ("alt_err", "eq_alt_err")):
+            if not hasattr(message, attr):
+                continue
+            try:
+                changes[key] = float(getattr(message, attr))
+            except (TypeError, ValueError):
+                continue
+        return changes
+
+    def _decode_stack_state(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("CaptureRawState", data)
+        state = OPERATION_STATES.get(int(message.state), str(message.state))
+        with self._lock:
+            hold = self._hold_stale_capture
+        if hold and state == "running":
+            return {}
+        changes: dict[str, Any] = {"capture_state": state}
+        changes["capture_camera"] = "wide" if cmd == CMD_NOTIFY_STATE_WIDE_CAPTURE_RAW_LIVE_STACKING else "tele"
+        if state in ("idle", "stopped"):
+            changes["capture_active"] = False
+            changes["exposure_elapsed_s"] = 0
+            changes["capture_progress_seen"] = False
+        elif state == "running":
+            changes["capture_active"] = True
+        return changes
+
+    def _decode_stack_progress(self, cmd: int, data: bytes) -> dict[str, Any]:
         if cmd == CMD_NOTIFY_PROGRESS_CAPTURE_MOSAIC:
             message = self._parse("ProgressCaptureMosaic", data)
             return self._fresh_stacking_progress(message, mosaic=True)
-        if cmd in (CMD_NOTIFY_STATE_CAPTURE_RAW_DARK, CMD_NOTIFY_STATE_CAPTURE_WIDE_RAW_DARK):
-            message = self._parse("OperationStateNotify", data)
-            state = OPERATION_STATES.get(int(message.state), str(message.state))
-            changes = {"dark_state": state}
-            if state != "running":
-                changes["dark_progress"] = 0
-                changes["dark_remaining_s"] = 0
-            return changes
-        if cmd == CMD_NOTIFY_PROGRASS_CAPTURE_RAW_DARK:
-            message = self._parse("ProgressCaptureRawDark", data)
-            return {
-                "dark_state": "running",
-                "dark_progress": int(message.progress),
-                "dark_remaining_s": int(message.remaining_time),
-            }
-        if cmd in _RECORD_TIME_COMMANDS:
-            message = self._parse("RecordTime", data)
-            if message is None:
-                return {}
-            return {"record_seconds": int(message.record_time), "record_state": "running"}
-        if cmd == CMD_NOTIFY_PANORAMA_PROGRESS:
-            message = self._parse("PanoramaProgress", data)
-            if message is None:
-                return {}
-            completed = int(message.completed_count)
-            total = int(message.total_count)
-            from .device_worker import log
+        message = self._parse("ProgressCaptureRawLiveStacking", data)
+        return self._fresh_stacking_progress(
+            message,
+            wide=cmd == CMD_NOTIFY_PROGRASS_WIDE_CAPTURE_RAW_LIVE_STACKING,
+        )
 
-            log(f"Panorama progress {completed}/{total}")
-            changes = {"panorama_state": "running", "panorama_completed": completed}
-            if total:
-                changes["panorama_total"] = total
-            return changes
-        if cmd == CMD_NOTIFY_PANORAMA_STATE:
-            message = self._parse("PanoramaState", data)
-            if message is None:
-                return {}
-            state = OPERATION_STATES.get(int(message.state), str(message.state))
-            changes = {"panorama_state": state}
-            if state != "running":
-                changes["panorama_completed"] = 0
-                changes["panorama_total"] = 0
-            return changes
-        if cmd == CMD_NOTIFY_PANO_FRAMING_STATE:
-            message = self._parse("PanoFramingStateNotify", data)
-            if message is None:
-                return {}
-            raw_state = int(message.state)
-            state = OPERATION_STATES.get(raw_state, "running" if raw_state else "idle")
-            changes = {"panorama_framing_state": state}
-            if state in ("idle", "stopped") and str(self._state.get("panorama_state") or "") != "running":
-                changes["panorama_has_rect"] = False
-            return changes
-        if cmd == CMD_NOTIFY_PANO_FRAMING_RECT:
-            return self._decode_panorama_rect(data)
-        if cmd == CMD_NOTIFY_PANO_FRAMING_THUMBNAIL:
-            return self._store_panorama_scan(data)
-        if cmd in _BURST_PROGRESS_COMMANDS:
-            message = self._parse("BurstProgress", data)
-            if message is None:
-                return {}
-            completed = int(message.completed_count)
-            total = int(message.total_count)
-            changes = {
-                "burst_state": "running",
-                "burst_completed": completed,
-            }
-            if total:
-                changes["burst_total"] = total
-                changes["burst_count"] = total
-            return changes
-        if cmd in _PHOTO_FUNCTION_COMMANDS:
-            factory_name, key = _PHOTO_FUNCTION_COMMANDS[cmd]
-            message = self._parse(factory_name, data)
-            if message is None:
-                return {}
-            state = OPERATION_STATES.get(int(message.state), str(message.state))
-            return _photo_function_state_changes(key, state)
-        if cmd in _TIMELAPSE_OUT_COMMANDS:
-            message = self._parse("TimeLapseOutTime", data)
-            if message is None:
-                return {}
-            return {
-                "timelapse_state": "running",
-                "timelapse_interval_s": int(message.interval),
-                "timelapse_out_s": int(message.out_time),
-                "timelapse_total_s": int(message.total_time),
-            }
-        if cmd in (
-            CMD_NOTIFY_TELE_LONG_EXP_PROGRESS,
-            CMD_NOTIFY_WIDE_LONG_EXP_PROGRESS,
-            CMD_NOTIFY_LONG_EXP_PROGRESS,
-        ):
-            message = self._parse("LongExpPhotoProgress", data)
-            return {
-                "exposure_total_s": float(message.total_time),
-                "exposure_elapsed_s": float(message.exposured_time),
-                # DWARF 3 dark runs notify this once per frame and never send
-                # 15206/15207. The stamp lets the dark waiter count those frames.
-                "exposure_progress_at": time.monotonic(),
-            }
-        if cmd == CMD_NOTIFY_GENERAL_INT_PARAM:
-            message = self._parse("GeneralIntParam", data)
-            param_id = int(message.param_id)
-            value = int(message.value)
-            if param_id in _PHOTO_EXPOSURE_PARAMS:
-                return {"photo_exposure_text": _exposure_name(value, self._model_id), "exposure_auto": int(message.mode) == 0}
-            if param_id in _ASTRO_EXPOSURE_PARAMS:
-                return {"astro_exposure_text": _exposure_name(value, self._model_id)}
-            if param_id in _PHOTO_GAIN_PARAMS:
-                return {"photo_gain": value}
-            if param_id in _ASTRO_GAIN_PARAMS:
-                return {"astro_gain": value}
-            if param_id in _PHOTO_WIDE_EXPOSURE_PARAMS:
-                return {"photo_wide_exposure_text": _exposure_name(value, self._model_id)}
-            if param_id in _ASTRO_WIDE_EXPOSURE_PARAMS:
-                return {"astro_wide_exposure_text": _exposure_name(value, self._model_id)}
-            if param_id in _PHOTO_WIDE_GAIN_PARAMS:
-                return {"photo_wide_gain": value}
-            if param_id in _ASTRO_WIDE_GAIN_PARAMS:
-                return {"astro_wide_gain": value}
+    def _decode_dark_state(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("OperationStateNotify", data)
+        state = OPERATION_STATES.get(int(message.state), str(message.state))
+        changes = {"dark_state": state}
+        if state != "running":
+            changes["dark_progress"] = 0
+            changes["dark_remaining_s"] = 0
+        return changes
+
+    def _decode_dark_progress(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("ProgressCaptureRawDark", data)
+        return {
+            "dark_state": "running",
+            "dark_progress": int(message.progress),
+            "dark_remaining_s": int(message.remaining_time),
+        }
+
+    def _decode_record_time(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("RecordTime", data)
+        if message is None:
             return {}
+        return {"record_seconds": int(message.record_time), "record_state": "running"}
+
+    def _decode_panorama_progress(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("PanoramaProgress", data)
+        if message is None:
+            return {}
+        completed = int(message.completed_count)
+        total = int(message.total_count)
+        from .device_worker import log
+
+        log(f"Panorama progress {completed}/{total}")
+        changes = {"panorama_state": "running", "panorama_completed": completed}
+        if total:
+            changes["panorama_total"] = total
+        return changes
+
+    def _decode_panorama_state(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("PanoramaState", data)
+        if message is None:
+            return {}
+        state = OPERATION_STATES.get(int(message.state), str(message.state))
+        changes = {"panorama_state": state}
+        if state != "running":
+            changes["panorama_completed"] = 0
+            changes["panorama_total"] = 0
+        return changes
+
+    def _decode_pano_framing_state(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("PanoFramingStateNotify", data)
+        if message is None:
+            return {}
+        raw_state = int(message.state)
+        state = OPERATION_STATES.get(raw_state, "running" if raw_state else "idle")
+        changes = {"panorama_framing_state": state}
+        if state in ("idle", "stopped") and str(self._state.get("panorama_state") or "") != "running":
+            changes["panorama_has_rect"] = False
+        return changes
+
+    def _decode_pano_framing_rect(self, cmd: int, data: bytes) -> dict[str, Any]:
+        return self._decode_panorama_rect(data)
+
+    def _decode_pano_framing_thumbnail(self, cmd: int, data: bytes) -> dict[str, Any]:
+        return self._store_panorama_scan(data)
+
+    def _decode_burst_progress(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("BurstProgress", data)
+        if message is None:
+            return {}
+        completed = int(message.completed_count)
+        total = int(message.total_count)
+        changes = {
+            "burst_state": "running",
+            "burst_completed": completed,
+        }
+        if total:
+            changes["burst_total"] = total
+            changes["burst_count"] = total
+        return changes
+
+    def _decode_photo_function(self, cmd: int, data: bytes) -> dict[str, Any]:
+        factory_name, key = _PHOTO_FUNCTION_COMMANDS[cmd]
+        message = self._parse(factory_name, data)
+        if message is None:
+            return {}
+        state = OPERATION_STATES.get(int(message.state), str(message.state))
+        return _photo_function_state_changes(key, state)
+
+    def _decode_timelapse_out(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("TimeLapseOutTime", data)
+        if message is None:
+            return {}
+        return {
+            "timelapse_state": "running",
+            "timelapse_interval_s": int(message.interval),
+            "timelapse_out_s": int(message.out_time),
+            "timelapse_total_s": int(message.total_time),
+        }
+
+    def _decode_long_exposure(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("LongExpPhotoProgress", data)
+        return {
+            "exposure_total_s": float(message.total_time),
+            "exposure_elapsed_s": float(message.exposured_time),
+            # DWARF 3 dark runs notify this once per frame and never send
+            # 15206/15207. The stamp lets the dark waiter count those frames.
+            "exposure_progress_at": time.monotonic(),
+        }
+
+    def _decode_general_int_param(self, cmd: int, data: bytes) -> dict[str, Any]:
+        message = self._parse("GeneralIntParam", data)
+        param_id = int(message.param_id)
+        value = int(message.value)
+        if param_id in _PHOTO_EXPOSURE_PARAMS:
+            return {"photo_exposure_text": _exposure_name(value, self._model_id), "exposure_auto": int(message.mode) == 0}
+        if param_id in _ASTRO_EXPOSURE_PARAMS:
+            return {"astro_exposure_text": _exposure_name(value, self._model_id)}
+        if param_id in _PHOTO_GAIN_PARAMS:
+            return {"photo_gain": value}
+        if param_id in _ASTRO_GAIN_PARAMS:
+            return {"astro_gain": value}
+        if param_id in _PHOTO_WIDE_EXPOSURE_PARAMS:
+            return {"photo_wide_exposure_text": _exposure_name(value, self._model_id)}
+        if param_id in _ASTRO_WIDE_EXPOSURE_PARAMS:
+            return {"astro_wide_exposure_text": _exposure_name(value, self._model_id)}
+        if param_id in _PHOTO_WIDE_GAIN_PARAMS:
+            return {"photo_wide_gain": value}
+        if param_id in _ASTRO_WIDE_GAIN_PARAMS:
+            return {"astro_wide_gain": value}
         return {}
 
     # ---------------------------------------------------- full device state
