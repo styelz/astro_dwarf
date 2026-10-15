@@ -186,6 +186,61 @@ def test_listing_preview_stack_products_share_session_thumbnail() -> None:
     )
 
 
+def test_remote_item_int_fields_keep_defaults() -> None:
+    from astro_dwarf.qt_backend import AppBackend
+
+    class Host:
+        _astro_details = AppBackend._astro_details
+        _match_local_album_file = AppBackend._match_local_album_file
+        _local_name_for_remote = AppBackend._local_name_for_remote
+        _media_file_url = AppBackend._media_file_url
+        _format_media_time = AppBackend._format_media_time
+
+    def item(entry: dict) -> dict:
+        parsed = AppBackend._normalize_remote_item(Host(), entry, "", {}, "stills")
+        _assert(parsed is not None, "named file stays an item")
+        return parsed
+
+    missing = item({"fileName": "shot.jpg", "filePath": "/DWARF3/shot.jpg"})
+    _assert(missing["media_type"] == 0, "missing media type")
+    _assert(missing["sub_type"] == 0, "missing sub type")
+    _assert(missing["camera"] == "", "missing cam id stays unknown")
+    _assert(missing["modification_time"] == 0, "missing mtime")
+    _assert(missing["duration"] == 0, "missing duration")
+
+    tele = item({
+        "fileName": "shot.jpg",
+        "filePath": "/DWARF3/shot.jpg",
+        "mediaType": "4",
+        "astroSubType": 0,
+        "subType": "3",
+        "camId": 0,
+        "modificationTime": "bad",
+        "videoDuration": "",
+    })
+    _assert(tele["media_type"] == 4, "string media type")
+    _assert(tele["sub_type"] == 3, "zero astro sub type falls through")
+    _assert(tele["camera"] == "tele", "cam id 0 is tele")
+    _assert(tele["modification_time"] == 0, "bad mtime")
+    _assert(tele["duration"] == 0, "blank duration")
+
+    wide = item({
+        "fileName": "wide.jpg",
+        "filePath": "/DWARF3/wide.jpg",
+        "camId": "1",
+        "subType": "nope",
+        "videoDuration": "15",
+        "modificationTime": 20,
+    })
+    _assert(wide["camera"] == "wide", "cam id 1 is wide")
+    _assert(wide["sub_type"] == 0, "bad sub type")
+    _assert(wide["duration"] == 15, "string duration")
+    _assert(wide["modification_time"] == 20, "numeric mtime")
+
+    blank_cam = item({"fileName": "shot.jpg", "filePath": "/DWARF3/shot.jpg", "camId": ""})
+    _assert(blank_cam["camera"] == "", "blank cam id stays unknown")
+
+
 def test_listing_preview_uses_existing_stack_thumbnail() -> None:
     updated = album_apply_listing_preview(
         {
@@ -214,6 +269,7 @@ def main() -> None:
     test_listing_preview_frames_keep_their_own_sidecars()
     test_listing_preview_stack_products_share_session_thumbnail()
     test_listing_preview_uses_existing_stack_thumbnail()
+    test_remote_item_int_fields_keep_defaults()
     print("test_album_preview: ok")
 
 

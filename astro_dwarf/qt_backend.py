@@ -6891,6 +6891,37 @@ class AppBackend(QObject):
         fov_h, fov_v, camera = self._sky_map_fov()
         return f"{camera.upper()} {fov_h:.2f}° × {fov_v:.2f}°"
 
+    def _apply_device_capture_overlay(
+        self,
+        payload: dict[str, Any],
+        target: Target,
+        layout: tuple[int, int, int, int],
+        *,
+        live_pane: int,
+        fov_h: float,
+        fov_v: float,
+        camera: str,
+        pa: float,
+        south_up: bool,
+    ) -> None:
+        columns_d, rows_d, horizontal, vertical = layout
+        payload["columns"] = columns_d
+        payload["rows"] = rows_d
+        payload["overlap"] = 0.0
+        payload["live_pane"] = live_pane
+        framed_h = fov_h * horizontal / 100.0
+        framed_v = fov_v * vertical / 100.0
+        payload["label"] = f"{camera.upper()} {framed_h:.2f}° × {framed_v:.2f}°  PA {pa:.0f}°"
+        payload["panes"] = device_mosaic_capture_panes(
+            target,
+            horizontal,
+            vertical,
+            fov_h,
+            fov_v,
+            south_up=south_up,
+            position_angle=payload["position_angle"],
+        )
+
     def _sky_overlay_payload(
         self, web_raw: Any, columns: int, rows: int, overlap: float, color: str, position_angle: float = 0.0
     ) -> dict[str, Any]:
@@ -6983,22 +7014,16 @@ class AppBackend(QObject):
                 and session.target.ra_hours is not None
                 and session.target.dec_degrees is not None
             ):
-                columns_d, rows_d, horizontal, vertical = layout
-                payload["columns"] = columns_d
-                payload["rows"] = rows_d
-                payload["overlap"] = 0.0
-                payload["live_pane"] = live_pane
-                framed_h = fov_h * horizontal / 100.0
-                framed_v = fov_v * vertical / 100.0
-                payload["label"] = f"{camera.upper()} {framed_h:.2f}° × {framed_v:.2f}°  PA {pa:.0f}°"
-                payload["panes"] = device_mosaic_capture_panes(
+                self._apply_device_capture_overlay(
+                    payload,
                     session.target,
-                    horizontal,
-                    vertical,
-                    fov_h,
-                    fov_v,
+                    layout,
+                    live_pane=live_pane,
+                    fov_h=fov_h,
+                    fov_v=fov_v,
+                    camera=camera,
+                    pa=pa,
                     south_up=south_up,
-                    position_angle=payload["position_angle"],
                 )
                 payload["mode"] = "panes"
                 return payload
@@ -7027,22 +7052,16 @@ class AppBackend(QObject):
                 try:
                     layout = session.mosaic.firmware_layout()
                     if layout is not None:
-                        _columns_d, _rows_d, horizontal, vertical = layout
-                        payload["columns"] = layout[0]
-                        payload["rows"] = layout[1]
-                        payload["overlap"] = 0.0
-                        payload["live_pane"] = live_pane
-                        framed_h = fov_h * horizontal / 100.0
-                        framed_v = fov_v * vertical / 100.0
-                        payload["label"] = f"{camera.upper()} {framed_h:.2f}° × {framed_v:.2f}°  PA {pa:.0f}°"
-                        payload["panes"] = device_mosaic_capture_panes(
+                        self._apply_device_capture_overlay(
+                            payload,
                             session.target,
-                            horizontal,
-                            vertical,
-                            fov_h,
-                            fov_v,
+                            layout,
+                            live_pane=live_pane,
+                            fov_h=fov_h,
+                            fov_v=fov_v,
+                            camera=camera,
+                            pa=pa,
                             south_up=south_up,
-                            position_angle=payload["position_angle"],
                         )
                     else:
                         payload["panes"] = mosaic_pane_footprints(
@@ -12122,26 +12141,18 @@ class AppBackend(QObject):
                 image_url = local_url
         elif local_url:
             image_url = local_url
-        try:
-            media_type = int(entry.get("mediaType"))
-        except (TypeError, ValueError):
-            media_type = 0
-        try:
-            sub_type = int(entry.get("astroSubType") or entry.get("subType") or 0)
-        except (TypeError, ValueError):
-            sub_type = 0
-        try:
-            cam_id = int(entry.get("camId"))
-        except (TypeError, ValueError):
-            cam_id = -1
-        try:
-            modified = int(entry.get("modificationTime") or 0)
-        except (TypeError, ValueError):
-            modified = 0
-        try:
-            duration = int(entry.get("videoDuration") or 0)
-        except (TypeError, ValueError):
-            duration = 0
+
+        def entry_int(value: Any, default: int = 0) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        media_type = entry_int(entry.get("mediaType"))
+        sub_type = entry_int(entry.get("astroSubType") or entry.get("subType") or 0)
+        cam_id = entry_int(entry.get("camId"), -1)
+        modified = entry_int(entry.get("modificationTime") or 0)
+        duration = entry_int(entry.get("videoDuration") or 0)
         return {
             "id": remote or thumb or name,
             "source": source,

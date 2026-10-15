@@ -1064,6 +1064,37 @@ class TestHarness:
         rows = getattr(self.backend, attr, []) or []
         return [item_summary(row) for row in rows]
 
+    _ROUTES: dict[tuple[str, str], str] = {
+        ("GET", "/state"): "_route_state",
+        ("GET", "/controls"): "_route_controls",
+        ("GET", "/items"): "_route_items",
+        ("POST", "/click"): "_route_click",
+        ("POST", "/drag"): "_route_drag",
+        ("POST", "/set"): "_route_set",
+        ("POST", "/page"): "_route_page",
+        ("POST", "/snapshot"): "_route_snapshot",
+        ("POST", "/window/maximize"): "_route_window_maximize",
+        ("POST", "/window/resize"): "_route_window_resize",
+        ("POST", "/panorama/frame"): "_route_panorama_frame",
+        ("POST", "/device/action"): "_route_device_action",
+        ("POST", "/device/connect"): "_route_device_connect",
+        ("POST", "/device/disconnect"): "_route_device_disconnect",
+        ("POST", "/device/cancel"): "_route_device_cancel",
+        ("POST", "/device/select"): "_route_device_select",
+        ("POST", "/preview/center"): "_route_preview_center",
+        ("POST", "/joystick/nudge"): "_route_joystick_nudge",
+        ("POST", "/items/open"): "_route_items_open",
+        ("POST", "/items/delete"): "_route_items_delete",
+        ("POST", "/items/run"): "_route_items_run",
+        ("POST", "/sky/harvest"): "_route_sky_harvest",
+        ("POST", "/sky/view"): "_route_sky_view",
+        ("POST", "/sky/lock"): "_route_sky_lock",
+        ("POST", "/sky/menu"): "_route_sky_menu",
+        ("POST", "/sky/grid"): "_route_sky_grid",
+        ("POST", "/sky/eval"): "_route_sky_eval",
+        ("POST", "/confirm"): "_route_confirm",
+    }
+
     def handle(self, method: str, path: str, body: dict[str, Any]) -> dict[str, Any]:
         parsed = urlparse(path)
         route = parsed.path.rstrip("/") or "/"
@@ -1071,165 +1102,196 @@ class TestHarness:
         payload = dict(body or {})
 
         def work() -> dict[str, Any]:
-            if method == "GET" and route == "/state":
-                return self.state()
-            if method == "GET" and route == "/controls":
-                return {"controls": self.controls()}
-            if method == "GET" and route == "/items":
-                return {"items": self.items(str(query.get("kind") or payload.get("kind") or "sessions"))}
-            if method == "POST" and route == "/click":
-                return self.click(
-                    str(payload.get("name") or payload.get("path") or ""),
-                    bool(payload.get("double")),
-                    str(payload.get("button") or "left"),
-                    float(payload.get("nx") if payload.get("nx") is not None else 0.5),
-                    float(payload.get("ny") if payload.get("ny") is not None else 0.5),
-                )
-            if method == "POST" and route == "/drag":
-                return self.drag(
-                    str(payload.get("name") or payload.get("path") or ""),
-                    float(payload.get("dx") or 0),
-                    float(payload.get("dy") if payload.get("dy") is not None else 80),
-                    str(payload.get("mode") or "pointer"),
-                )
-            if method == "POST" and route == "/set":
-                return self.set_value(str(payload.get("name") or payload.get("path") or ""), payload.get("value"))
-            if method == "POST" and route == "/page":
-                return self.go_to_page(str(payload.get("page") or payload.get("name") or ""))
-            if method == "POST" and route == "/snapshot":
-                return self.snapshot()
-            if method == "POST" and route == "/window/maximize":
-                maximize_window(self.window)
-                return {"action": "maximize"}
-            if method == "POST" and route == "/window/resize":
-                show = getattr(self.window, "showNormal", None)
-                if callable(show):
-                    show()
-                width = int(payload.get("width") or _property(self.window, "minimumWidth", 1040) or 1040)
-                height = int(payload.get("height") or _property(self.window, "minimumHeight", 620) or 620)
-                resize = getattr(self.window, "resize", None)
-                if not callable(resize):
-                    raise RuntimeError("window does not support resize")
-                resize(width, height)
-                return {
-                    "width": int(_property(self.window, "width", width) or width),
-                    "height": int(_property(self.window, "height", height) or height),
-                }
-            if method == "POST" and route == "/panorama/frame":
-                x1 = float(payload.get("x1", 0))
-                y1 = float(payload.get("y1", 0))
-                x2 = float(payload.get("x2", 1))
-                y2 = float(payload.get("y2", 1))
-                pane = find_named(self.window, "panoramaFrame")
-                if pane is not None:
-                    try:
-                        invoke_qml(pane, "holdBox", x1, y1, x2, y2)
-                    except Exception:
-                        pass
-                    setter = getattr(pane, "setProperty", None)
-                    if callable(setter):
-                        setter("userEnlarged", True)
-                self.backend.updatePanoramaFrame(x1, y1, x2, y2)
-                return {"ok": True, "x1": x1, "y1": y1, "x2": x2, "y2": y2}
-            if method == "POST" and route == "/device/action":
-                operation = str(payload.get("operation") or payload.get("name") or "")
-                label = str(payload.get("label") or operation)
-                result = self.call_hook("requestAction", operation, label)
-                return {"operation": operation, "result": result}
-            if method == "POST" and route == "/device/connect":
-                return self.connect_device(str(payload.get("ip") or ""), str(payload.get("id") or ""))
-            if method == "POST" and route == "/device/disconnect":
-                self.call_hook("disconnectSelected")
-                return {"action": "disconnect"}
-            if method == "POST" and route == "/device/cancel":
-                self.call_hook("cancelConnectSelected")
-                return {"action": "cancel"}
-            if method == "POST" and route == "/device/select":
-                ident = str(payload.get("id") or "")
-                ip = str(payload.get("ip") or "")
-                if not ident and ip:
-                    device = device_by_ip(getattr(self.backend, "devices", []), ip)
-                    ident = str((device or {}).get("id") or "")
-                if not ident:
-                    raise RuntimeError("device id or ip required")
-                self.call_hook("selectById", ident)
-                return {"id": ident}
-            if method == "POST" and route == "/preview/center":
-                nx = float(payload.get("nx", 0.5))
-                ny = float(payload.get("ny", 0.5))
-                self.call_hook("centerPreview", nx, ny)
-                return {"nx": nx, "ny": ny}
-            if method == "POST" and route == "/joystick/nudge":
-                angle = float(payload.get("angle", 0))
-                self.call_hook("joystickNudge", angle)
-                return {"angle": angle}
-            if method == "POST" and route == "/items/open":
-                kind = str(payload.get("kind") or "sessions")
-                ident = str(payload.get("id") or "")
-                action = str(payload.get("action") or "edit")
-                result = self.call_hook("openItem", kind, ident, action)
-                return {"kind": kind, "id": ident, "action": action, "result": result}
-            if method == "POST" and route == "/items/delete":
-                kind = str(payload.get("kind") or "sessions")
-                ident = str(payload.get("id") or "")
-                result = self.call_hook("deleteItem", kind, ident)
-                return {"kind": kind, "id": ident, "result": result}
-            if method == "POST" and route == "/items/run":
-                kind = str(payload.get("kind") or "sessions")
-                ident = str(payload.get("id") or "")
-                result = self.call_hook("runItem", kind, ident)
-                return {"kind": kind, "id": ident, "result": result}
-            if method == "POST" and route == "/sky/harvest":
-                action = str(payload.get("action") or "import")
-                result = self.call_hook("skyHarvest", action)
-                return {"action": action, "result": result}
-            if method == "POST" and route == "/sky/view":
-                ra = float(payload.get("ra_hours", 0))
-                dec = float(payload.get("dec_degrees", 0))
-                result = self.call_hook("skyView", ra, dec)
-                return {"ra_hours": ra, "dec_degrees": dec, "result": result}
-            if method == "POST" and route == "/sky/lock":
-                result = self.call_hook(
-                    "skyLock",
-                    str(payload.get("name") or ""),
-                    float(payload.get("ra_hours", 0)),
-                    float(payload.get("dec_degrees", 0)),
-                )
-                return {"result": result}
-            if method == "POST" and route == "/sky/menu":
-                action = str(payload.get("action") or "")
-                result = self.call_hook("skyMenu", action)
-                return {"action": action, "result": result}
-            if method == "POST" and route == "/sky/grid":
-                result = self.call_hook(
-                    "skyGrid",
-                    int(payload.get("columns") or 1),
-                    int(payload.get("rows") or 1),
-                )
-                return {"result": result}
-            if method == "POST" and route == "/sky/eval":
-                script = str(payload.get("script") or payload.get("js") or "")
-                started = self.call_hook("skyEval", script)
-                hooks = self.hooks()
-                deadline = time.monotonic() + 4.0
-                from PySide6.QtCore import QCoreApplication, QEventLoop
-
-                while time.monotonic() < deadline:
-                    if bool(hooks.property("skyEvalDone")):
-                        break
-                    QCoreApplication.processEvents(QEventLoop.AllEvents, 50)
-                return {
-                    "started": started,
-                    "done": bool(hooks.property("skyEvalDone")),
-                    "result": str(hooks.property("skyEvalResult") or ""),
-                }
-            if method == "POST" and route == "/confirm":
-                action = str(payload.get("action") or "accept")
-                result = self.call_hook("confirmAction", action)
-                return {"action": action, "result": result}
-            raise RuntimeError(f"unknown {method} {route}")
+            name = self._ROUTES.get((method, route))
+            if name is None:
+                raise RuntimeError(f"unknown {method} {route}")
+            return getattr(self, name)(query, payload)
 
         return self.on_gui(work)
+
+    def _route_state(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        return self.state()
+
+    def _route_controls(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        return {"controls": self.controls()}
+
+    def _route_items(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        return {"items": self.items(str(query.get("kind") or payload.get("kind") or "sessions"))}
+
+    def _route_click(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        return self.click(
+            str(payload.get("name") or payload.get("path") or ""),
+            bool(payload.get("double")),
+            str(payload.get("button") or "left"),
+            float(payload.get("nx") if payload.get("nx") is not None else 0.5),
+            float(payload.get("ny") if payload.get("ny") is not None else 0.5),
+        )
+
+    def _route_drag(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        return self.drag(
+            str(payload.get("name") or payload.get("path") or ""),
+            float(payload.get("dx") or 0),
+            float(payload.get("dy") if payload.get("dy") is not None else 80),
+            str(payload.get("mode") or "pointer"),
+        )
+
+    def _route_set(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        return self.set_value(str(payload.get("name") or payload.get("path") or ""), payload.get("value"))
+
+    def _route_page(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        return self.go_to_page(str(payload.get("page") or payload.get("name") or ""))
+
+    def _route_snapshot(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        return self.snapshot()
+
+    def _route_window_maximize(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        maximize_window(self.window)
+        return {"action": "maximize"}
+
+    def _route_window_resize(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        show = getattr(self.window, "showNormal", None)
+        if callable(show):
+            show()
+        width = int(payload.get("width") or _property(self.window, "minimumWidth", 1040) or 1040)
+        height = int(payload.get("height") or _property(self.window, "minimumHeight", 620) or 620)
+        resize = getattr(self.window, "resize", None)
+        if not callable(resize):
+            raise RuntimeError("window does not support resize")
+        resize(width, height)
+        return {
+            "width": int(_property(self.window, "width", width) or width),
+            "height": int(_property(self.window, "height", height) or height),
+        }
+
+    def _route_panorama_frame(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        x1 = float(payload.get("x1", 0))
+        y1 = float(payload.get("y1", 0))
+        x2 = float(payload.get("x2", 1))
+        y2 = float(payload.get("y2", 1))
+        pane = find_named(self.window, "panoramaFrame")
+        if pane is not None:
+            try:
+                invoke_qml(pane, "holdBox", x1, y1, x2, y2)
+            except Exception:
+                pass
+            setter = getattr(pane, "setProperty", None)
+            if callable(setter):
+                setter("userEnlarged", True)
+        self.backend.updatePanoramaFrame(x1, y1, x2, y2)
+        return {"ok": True, "x1": x1, "y1": y1, "x2": x2, "y2": y2}
+
+    def _route_device_action(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        operation = str(payload.get("operation") or payload.get("name") or "")
+        label = str(payload.get("label") or operation)
+        result = self.call_hook("requestAction", operation, label)
+        return {"operation": operation, "result": result}
+
+    def _route_device_connect(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        return self.connect_device(str(payload.get("ip") or ""), str(payload.get("id") or ""))
+
+    def _route_device_disconnect(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        self.call_hook("disconnectSelected")
+        return {"action": "disconnect"}
+
+    def _route_device_cancel(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        self.call_hook("cancelConnectSelected")
+        return {"action": "cancel"}
+
+    def _route_device_select(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        ident = str(payload.get("id") or "")
+        ip = str(payload.get("ip") or "")
+        if not ident and ip:
+            device = device_by_ip(getattr(self.backend, "devices", []), ip)
+            ident = str((device or {}).get("id") or "")
+        if not ident:
+            raise RuntimeError("device id or ip required")
+        self.call_hook("selectById", ident)
+        return {"id": ident}
+
+    def _route_preview_center(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        nx = float(payload.get("nx", 0.5))
+        ny = float(payload.get("ny", 0.5))
+        self.call_hook("centerPreview", nx, ny)
+        return {"nx": nx, "ny": ny}
+
+    def _route_joystick_nudge(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        angle = float(payload.get("angle", 0))
+        self.call_hook("joystickNudge", angle)
+        return {"angle": angle}
+
+    def _route_items_open(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        kind = str(payload.get("kind") or "sessions")
+        ident = str(payload.get("id") or "")
+        action = str(payload.get("action") or "edit")
+        result = self.call_hook("openItem", kind, ident, action)
+        return {"kind": kind, "id": ident, "action": action, "result": result}
+
+    def _route_items_delete(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        kind = str(payload.get("kind") or "sessions")
+        ident = str(payload.get("id") or "")
+        result = self.call_hook("deleteItem", kind, ident)
+        return {"kind": kind, "id": ident, "result": result}
+
+    def _route_items_run(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        kind = str(payload.get("kind") or "sessions")
+        ident = str(payload.get("id") or "")
+        result = self.call_hook("runItem", kind, ident)
+        return {"kind": kind, "id": ident, "result": result}
+
+    def _route_sky_harvest(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action") or "import")
+        result = self.call_hook("skyHarvest", action)
+        return {"action": action, "result": result}
+
+    def _route_sky_view(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        ra = float(payload.get("ra_hours", 0))
+        dec = float(payload.get("dec_degrees", 0))
+        result = self.call_hook("skyView", ra, dec)
+        return {"ra_hours": ra, "dec_degrees": dec, "result": result}
+
+    def _route_sky_lock(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.call_hook(
+            "skyLock",
+            str(payload.get("name") or ""),
+            float(payload.get("ra_hours", 0)),
+            float(payload.get("dec_degrees", 0)),
+        )
+        return {"result": result}
+
+    def _route_sky_menu(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action") or "")
+        result = self.call_hook("skyMenu", action)
+        return {"action": action, "result": result}
+
+    def _route_sky_grid(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        result = self.call_hook(
+            "skyGrid",
+            int(payload.get("columns") or 1),
+            int(payload.get("rows") or 1),
+        )
+        return {"result": result}
+
+    def _route_sky_eval(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        script = str(payload.get("script") or payload.get("js") or "")
+        started = self.call_hook("skyEval", script)
+        hooks = self.hooks()
+        deadline = time.monotonic() + 4.0
+        from PySide6.QtCore import QCoreApplication, QEventLoop
+
+        while time.monotonic() < deadline:
+            if bool(hooks.property("skyEvalDone")):
+                break
+            QCoreApplication.processEvents(QEventLoop.AllEvents, 50)
+        return {
+            "started": started,
+            "done": bool(hooks.property("skyEvalDone")),
+            "result": str(hooks.property("skyEvalResult") or ""),
+        }
+
+    def _route_confirm(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action") or "accept")
+        result = self.call_hook("confirmAction", action)
+        return {"action": action, "result": result}
 
     def _handler(self) -> type[BaseHTTPRequestHandler]:
         harness = self

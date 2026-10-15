@@ -274,6 +274,145 @@ def test_click_uses_pad_hook_then_tree() -> None:
     _assert(pad.clicked is True, "tree click reached the pad")
 
 
+def test_route_lookup_keeps_each_parser() -> None:
+    from PySide6.QtCore import QCoreApplication
+
+    app = QCoreApplication.instance() or QCoreApplication(sys.argv)
+    backend = MagicMock()
+    backend.toast = MagicMock()
+    backend.toast.connect = MagicMock()
+    backend.devices = [{"id": "lab", "ip_address": "192.168.1.42"}]
+    window = Node("astroWindow", visible=True, currentPage=0)
+
+    class SizedWindow(Node):
+        def __init__(self) -> None:
+            super().__init__("astroWindow", visible=True, currentPage=0, width=800, height=600)
+            self.resized: tuple[int, int] | None = None
+            self.normal = False
+
+        def showNormal(self) -> None:
+            self.normal = True
+
+        def resize(self, width: int, height: int) -> None:
+            self.resized = (width, height)
+
+    sized = SizedWindow()
+    harness = TestHarness(app, window, backend)
+    calls: list[tuple[object, ...]] = []
+
+    def call_hook(name: str, *args: object) -> str:
+        calls.append((name, args))
+        return f"r:{name}"
+
+    harness.call_hook = call_hook
+    harness.state = lambda: {"page": "control"}
+    harness.controls = lambda: [{"name": "pad"}]
+    harness.items = lambda kind: [{"kind": kind}]
+    harness.click = lambda *args: {"click": args}
+    harness.drag = lambda *args: {"drag": args}
+    harness.set_value = lambda *args: {"set": args}
+    harness.go_to_page = lambda name: {"page": name}
+    harness.snapshot = lambda: {"path": "snap.png"}
+    harness.connect_device = lambda ip, ident: {"ip": ip, "id": ident, "action": "connect"}
+
+    class EvalHooks:
+        def property(self, name: str) -> object:
+            if name == "skyEvalDone":
+                return True
+            if name == "skyEvalResult":
+                return "3"
+            return None
+
+    harness.hooks = lambda: EvalHooks()
+
+    _assert(harness.handle("GET", "/state/", {}) == {"page": "control"}, "state route")
+    _assert(harness.handle("GET", "/controls", {}) == {"controls": [{"name": "pad"}]}, "controls route")
+    _assert(
+        harness.handle("GET", "/items?kind=media&kind=history", {}) == {"items": [{"kind": "history"}]},
+        "items uses the last query value",
+    )
+    _assert(harness.handle("GET", "/items", {"kind": "templates"}) == {"items": [{"kind": "templates"}]}, "items body")
+    _assert(
+        harness.handle("POST", "/click", {"path": "POWER", "nx": None, "double": 1})
+        == {"click": ("POWER", True, "left", 0.5, 0.5)},
+        "click keeps a missing nx at 0.5",
+    )
+    _assert(
+        harness.handle("POST", "/drag", {"name": "slider", "dx": 0, "dy": None})
+        == {"drag": ("slider", 0.0, 80.0, "pointer")},
+        "drag default dy",
+    )
+    _assert(
+        harness.handle("POST", "/drag", {"name": "slider", "dy": 0, "mode": "wheel"})
+        == {"drag": ("slider", 0.0, 0.0, "wheel")},
+        "explicit zero dy",
+    )
+    _assert(harness.handle("POST", "/set", {"name": "gain", "value": 40}) == {"set": ("gain", 40)}, "set route")
+    _assert(harness.handle("POST", "/page", {"name": "sky"}) == {"page": "sky"}, "page name fallback")
+    _assert(harness.handle("POST", "/snapshot", {}) == {"path": "snap.png"}, "snapshot route")
+    _assert(harness.handle("POST", "/window/maximize", {}) == {"action": "maximize"}, "maximize route")
+
+    harness.window = sized
+    resized = harness.handle("POST", "/window/resize", {"width": 900})
+    _assert(sized.normal is True, "resize shows normal")
+    _assert(sized.resized == (900, 620), "resize fills height from the minimum")
+    _assert(resized == {"width": 800, "height": 600}, "resize reports the window size")
+
+    framed = harness.handle("POST", "/panorama/frame", {"x1": 0.1, "y2": 0.4})
+    _assert(framed == {"ok": True, "x1": 0.1, "y1": 0.0, "x2": 1.0, "y2": 0.4}, "panorama defaults")
+    backend.updatePanoramaFrame.assert_called_with(0.1, 0.0, 1.0, 0.4)
+
+    action = harness.handle("POST", "/device/action", {"name": "track"})
+    _assert(action == {"operation": "track", "result": "r:requestAction"}, "action route")
+    _assert(calls[-1] == ("requestAction", ("track", "track")), "action label defaults to the operation")
+    _assert(
+        harness.handle("POST", "/device/connect", {"ip": "192.168.1.42"})
+        == {"ip": "192.168.1.42", "id": "", "action": "connect"},
+        "connect route",
+    )
+    _assert(harness.handle("POST", "/device/disconnect", {}) == {"action": "disconnect"}, "disconnect route")
+    _assert(calls[-1] == ("disconnectSelected", ()), "disconnect hook")
+    _assert(harness.handle("POST", "/device/cancel", {}) == {"action": "cancel"}, "cancel route")
+    _assert(harness.handle("POST", "/device/select", {"ip": "192.168.1.42"}) == {"id": "lab"}, "select by ip")
+    _assert(calls[-1] == ("selectById", ("lab",)), "select hook")
+    try:
+        harness.handle("POST", "/device/select", {})
+        missing = False
+    except RuntimeError as exc:
+        missing = "device id or ip required" in str(exc)
+    _assert(missing, "select requires an id")
+    _assert(harness.handle("POST", "/preview/center", {}) == {"nx": 0.5, "ny": 0.5}, "center defaults")
+    _assert(calls[-1] == ("centerPreview", (0.5, 0.5)), "center hook")
+    _assert(harness.handle("POST", "/joystick/nudge", {"angle": 90}) == {"angle": 90.0}, "nudge route")
+    opened = harness.handle("POST", "/items/open", {"id": "s1"})
+    _assert(opened == {"kind": "sessions", "id": "s1", "action": "edit", "result": "r:openItem"}, "open defaults")
+    deleted = harness.handle("POST", "/items/delete", {"kind": "history", "id": "h1"})
+    _assert(deleted == {"kind": "history", "id": "h1", "result": "r:deleteItem"}, "delete route")
+    ran = harness.handle("POST", "/items/run", {"id": "s1"})
+    _assert(ran == {"kind": "sessions", "id": "s1", "result": "r:runItem"}, "run route")
+    _assert(
+        harness.handle("POST", "/sky/harvest", {}) == {"action": "import", "result": "r:skyHarvest"},
+        "harvest default",
+    )
+    viewed = harness.handle("POST", "/sky/view", {"ra_hours": 5.5, "dec_degrees": -30})
+    _assert(viewed["ra_hours"] == 5.5 and viewed["dec_degrees"] == -30.0 and viewed["result"] == "r:skyView", "view route")
+    _assert(harness.handle("POST", "/sky/lock", {"name": "M42"}) == {"result": "r:skyLock"}, "lock route")
+    _assert(calls[-1] == ("skyLock", ("M42", 0.0, 0.0)), "lock defaults")
+    _assert(harness.handle("POST", "/sky/menu", {"action": "goto"}) == {"action": "goto", "result": "r:skyMenu"}, "menu route")
+    _assert(harness.handle("POST", "/sky/grid", {"columns": 0, "rows": 2}) == {"result": "r:skyGrid"}, "grid route")
+    _assert(calls[-1] == ("skyGrid", (1, 2)), "zero columns falls through to 1")
+    evaluated = harness.handle("POST", "/sky/eval", {"js": "1+2"})
+    _assert(evaluated == {"started": "r:skyEval", "done": True, "result": "3"}, "eval route")
+    _assert(calls[-1] == ("skyEval", ("1+2",)), "eval prefers js when script is empty")
+    _assert(harness.handle("POST", "/confirm", {}) == {"action": "accept", "result": "r:confirmAction"}, "confirm default")
+    try:
+        harness.handle("PUT", "/state", {})
+        unknown = False
+    except RuntimeError as exc:
+        unknown = str(exc) == "unknown PUT /state"
+    _assert(unknown, "unknown route")
+
+
 def test_connect_by_ip_helper_on_harness() -> None:
     from PySide6.QtCore import QCoreApplication
 
@@ -303,5 +442,6 @@ if __name__ == "__main__":
     test_pad_query_aliases()
     test_walk_includes_child_items()
     test_click_uses_pad_hook_then_tree()
+    test_route_lookup_keeps_each_parser()
     test_connect_by_ip_helper_on_harness()
     print("test_test_harness ok")
