@@ -1285,14 +1285,11 @@ ATLAS_ASTRO_JS = r"""
     return separationDeg(tra, tdec, vra * 15, vdec) < 0.5;
   }
   function chartField(aladin, payload) {
-    // Custom framing stays on the chart centre for the whole pan, including
-    // when the previous target was already off centre. Host footprints are
-    // that previous point until the new centre is published.
-    if (payload && payload.follow_view && box.dragFollows) {
-      if (!box.dragging && viewCenteredOnTarget(aladin, payload))
-        box.dragFollows = false;
+    // Custom mosaic is the page reticle. Footprints projected on the previous
+    // sky point ride the drag, then sit off centre until the host rebuilds
+    // them about two seconds after the mouse button comes up.
+    if (payload && payload.follow_view)
       return true;
-    }
     // A drag that starts on the chart centre keeps the camera there, the
     // same as a 1x1 field. Host footprints are the previous centre, and the
     // page waits out the pan before asking for new ones.
