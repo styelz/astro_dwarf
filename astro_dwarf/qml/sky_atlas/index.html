@@ -74,24 +74,39 @@
     // The CDS HiPS does, so the survey tiles can load inside the app.
     var DSS_COLOR = "https://alasky.cds.unistra.fr/DSS/DSSColor";
     var aladinStarted = false;
+    var chartStatusEl = null;
+    function chartStatus(text) {
+      if (!chartStatusEl) {
+        chartStatusEl = document.createElement("div");
+        chartStatusEl.id = "astro-dwarf-chart-status";
+        chartStatusEl.style.cssText = "position:absolute;left:12px;bottom:28px;z-index:100;color:rgba(216,244,238,0.72);font:11px sans-serif;pointer-events:none;";
+        document.body.appendChild(chartStatusEl);
+      }
+      chartStatusEl.textContent = text;
+    }
+    function clearChartStatus() {
+      if (chartStatusEl && chartStatusEl.parentNode)
+        chartStatusEl.parentNode.removeChild(chartStatusEl);
+      chartStatusEl = null;
+    }
     function startAladin(attempt) {
       if (aladinStarted)
         return;
       if (!window.A || !window.A.init) {
-        if (attempt > 40)
-          return;
-        if (attempt === 1 || attempt === 8) {
+        chartStatus(attempt > 40 ? "Sky chart did not load. Retrying\u2026" : "Sky chart is loading");
+        if (attempt === 1 || attempt === 8 || (attempt > 0 && attempt % 20 === 0)) {
           var retry = document.createElement("script");
           retry.src = "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js";
           retry.charset = "utf-8";
           retry.onload = function() { startAladin(attempt); };
           document.head.appendChild(retry);
         }
-        setTimeout(function() { startAladin(attempt + 1); }, 250);
+        setTimeout(function() { startAladin(attempt + 1); }, attempt > 40 ? 2000 : 250);
         return;
       }
       aladinStarted = true;
       window.A.init.then(function() {
+        clearChartStatus();
         window.aladin = window.A.aladin("#aladin-lite-div", {
           survey: DSS_COLOR,
           fov: 70,
@@ -116,6 +131,10 @@
           if (typeof window.aladin.setCooGrid === "function")
             window.aladin.setCooGrid({color: "#8ad4c8", opacity: 0.28, labelSize: 11, enabled: true});
         } catch (err) {}
+      }).catch(function() {
+        aladinStarted = false;
+        chartStatus("Sky chart did not load. Retrying\u2026");
+        setTimeout(function() { startAladin(attempt + 1); }, 2000);
       });
     }
     startAladin(0);

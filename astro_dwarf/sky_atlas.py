@@ -279,7 +279,9 @@ ATLAS_ASTRO_JS = r"""
       && typeof box.astro.paintIndex === "function"
       && typeof box.astro.strokeTargetQuad === "function"
       && typeof box.astro.applyFov === "function" && typeof box.astro.markMoved === "function"
-      && typeof box.astro.trackView === "function")
+      && typeof box.astro.trackView === "function"
+      && typeof box.astro.chartField === "function"
+      && typeof box.astro.fitChart === "function")
     return box.astro;
   box.lookBound = false;
   box.objectsBound = false;
@@ -1232,18 +1234,51 @@ ATLAS_ASTRO_JS = r"""
     } catch (err) {}
     return cameraPa;
   }
+  function separationDeg(raHours, decDeg, raDeg, decOther) {
+    var cosDec = Math.cos(Number(decOther) * Math.PI / 180);
+    var dra = (((Number(raHours) * 15 - Number(raDeg)) % 360) + 540) % 360 - 180;
+    var ddec = Number(decDeg) - Number(decOther);
+    if (!isFinite(dra) || !isFinite(ddec)) return 1e9;
+    return Math.hypot(dra * cosDec, ddec);
+  }
   function viewCenteredOnTarget(aladin, payload) {
     try {
       var tra = Number(payload.target_ra_hours), tdec = Number(payload.target_dec_degrees);
-      var here = liveEq(aladin);
+      // The commanded pan runs ahead of the chart. Testing that point drops a
+      // multi-pane grid onto the previous footprints, so the grid rides the
+      // sky and only returns to the chart centre on pointer-up.
+      var here = readRaDec(aladin);
       if (!(isFinite(tra) && isFinite(tdec) && here)) return true;
-      var cosDec = Math.cos(Number(here[1]) * Math.PI / 180);
-      var dra = (((tra * 15 - Number(here[0])) % 360) + 360) % 360;
-      if (dra > 180) dra -= 360;
-      return Math.hypot(dra * cosDec, tdec - Number(here[1])) < 0.5;
+      return separationDeg(tra, tdec, here[0], here[1]) < 0.5;
     } catch (err) {
       return true;
     }
+  }
+  function centreIsChart(payload) {
+    var tra = Number(payload && payload.target_ra_hours);
+    var tdec = Number(payload && payload.target_dec_degrees);
+    if (!(isFinite(tra) && isFinite(tdec))) return true;
+    var vra = Number(payload.view_ra_hours);
+    var vdec = Number(payload.view_dec_degrees);
+    if (!(isFinite(vra) && isFinite(vdec))) return true;
+    return separationDeg(tra, tdec, vra * 15, vdec) < 0.5;
+  }
+  function chartField(aladin, payload) {
+    // A drag that starts on the chart centre keeps the camera there, the
+    // same as a 1x1 field. Host footprints are the previous centre, and the
+    // page waits out the pan before asking for new ones.
+    if (box.dragFollows && box.dragging)
+      return true;
+    if (box.dragFollows && centreIsChart(payload) && Date.now() < (Number(box.followUntil) || 0)) {
+      if (viewCenteredOnTarget(aladin, payload)) {
+        box.dragFollows = false;
+        box.followUntil = 0;
+      }
+      return true;
+    }
+    if (!box.dragging)
+      box.dragFollows = false;
+    return viewCenteredOnTarget(aladin, payload);
   }
   function quadCenter(quad) {
     var px = 0, py = 0;
@@ -1377,7 +1412,7 @@ ATLAS_ASTRO_JS = r"""
     // parallactic angle slip apart while the map is moving, and north of
     // the equator that residual turns the mosaic into a skewed frame.
     if (zenithCamera) tilt = 0;
-    if (viewCenteredOnTarget(aladin, payload)) {
+    if (chartField(aladin, payload)) {
       box.reblitMedia = null;
       var frame = drawScreenMosaic(ctx, width, height, w, h, cols, rows, overlap, tilt, color);
       labelOnFov(ctx, frame, color);
@@ -1430,6 +1465,8 @@ ATLAS_ASTRO_JS = r"""
       size[0], size[1],
       panes, box.fovH, box.fovV, box.pa,
       payload.columns, payload.rows, payload.overlap, payload.color,
+      box.hasSite ? 1 : 0,
+      aladin ? 1 : 0,
       box.mediaRev || 0,
       box.liveEnabled ? 1 : 0,
       box.livePane || 0,
@@ -1503,7 +1540,9 @@ ATLAS_ASTRO_JS = r"""
     ctx.clearRect(0, 0, size[0], size[1]);
     var aladin = aladinRef();
     if (!aladin || !box.hasSite || typeof aladin.getRaDec !== "function") {
-      if (!box.hasSite) {
+      // The page draws this before the chart exists. Leaving it up makes a
+      // chart that has not started yet look like the site was never set.
+      if (aladin && !box.hasSite) {
         var pad = hudInsets();
         ctx.fillStyle = "rgba(216,244,238,0.72)";
         ctx.font = "11px sans-serif";
@@ -1581,7 +1620,27 @@ ATLAS_ASTRO_JS = r"""
       height - hud.bottom - 6
     );
   }
+  function fitChart() {
+    // A WebView that was still parked when Aladin measured itself keeps a
+    // 1px canvas after the page is shown. The survey then stays black.
+    var aladin = aladinRef();
+    var view = aladin && aladin.view;
+    var div = document.getElementById("aladin-lite-div");
+    if (!view || !div || typeof view.fixLayoutDimensions !== "function")
+      return;
+    var boxW = div.clientWidth || 0;
+    var boxH = div.clientHeight || 0;
+    if (boxW < 32 || boxH < 32)
+      return;
+    var img = document.querySelector("canvas.aladin-imageCanvas");
+    var cssW = img ? img.clientWidth : 0;
+    var cssH = img ? img.clientHeight : 0;
+    if (img && cssW >= boxW - 8 && cssH >= boxH - 8)
+      return;
+    try { view.fixLayoutDimensions(); } catch (err) {}
+  }
   function drawHorizon() {
+    fitChart();
     drawHorizonMask();
     paintFovFrame();
   }
@@ -1727,6 +1786,8 @@ ATLAS_ASTRO_JS = r"""
       if (ev.button !== 0 || isChrome(ev.target)) return;
       box.dismissAt = Date.now();
       if (!box.hasSite) return;
+      box.dragFollows = viewCenteredOnTarget(aladinRef(), box.payload || {});
+      box.followUntil = 0;
       dragging = true;
       box.dragging = true;
       lastX = ev.clientX;
@@ -1753,6 +1814,8 @@ ATLAS_ASTRO_JS = r"""
       dragging = false;
       box.dragging = false;
       box.lookEq = null;
+      if (box.dragFollows)
+        box.followUntil = Date.now() + 1500;
       ev.stopPropagation();
       syncRotation();
     }
@@ -1809,6 +1872,7 @@ ATLAS_ASTRO_JS = r"""
       applyLook(aladin, raDeg, decDeg);
     },
     drawHorizon: drawHorizon,
+    fitChart: fitChart,
     trackView: trackView,
     applyMediaOpacity: applyMediaOpacity,
     paintFov: paintFov,
@@ -1819,6 +1883,7 @@ ATLAS_ASTRO_JS = r"""
     paintIndex: paintIndex,
     strokeTargetQuad: strokeTargetQuad,
     drawScreenMosaic: drawScreenMosaic,
+    chartField: chartField,
     drawPaneMedia: drawPaneMedia,
     paintOverlayImages: paintOverlayImages,
     overlayPixRoll: overlayPixRoll,
