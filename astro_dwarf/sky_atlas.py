@@ -281,6 +281,7 @@ ATLAS_ASTRO_JS = r"""
       && typeof box.astro.applyFov === "function" && typeof box.astro.markMoved === "function"
       && typeof box.astro.trackView === "function"
       && typeof box.astro.chartField === "function"
+      && typeof box.astro.publishChartCenter === "function"
       && typeof box.astro.fitChart === "function")
     return box.astro;
   box.lookBound = false;
@@ -616,10 +617,30 @@ ATLAS_ASTRO_JS = r"""
     try { aladin.gotoRaDec(raDeg, decDeg); } catch (err) {}
   }
   function applyLook(aladin, raDeg, decDeg) {
+    // A programmed pan (clipboard pane, double-click) is not a framing drag.
+    box.dragFollows = false;
+    box.armFollow = false;
+    box.followUntil = 0;
     var rot = box.hasSite ? zenithRotation(raDeg, decDeg, box.lat, box.lon, new Date()) : 0;
     gotoCenter(aladin, raDeg, decDeg);
     applyRotation(aladin, rot);
     drawHorizon();
+  }
+  function publishChartCenter() {
+    var eq = box.lookEq;
+    if (!eq) {
+      var pos = readRaDec(aladinRef());
+      if (pos) eq = pos;
+    }
+    if (!eq) return;
+    var ra = Number(eq[0]);
+    var dec = Number(eq[1]);
+    if (!isFinite(ra) || !isFinite(dec)) return;
+    box.selected = {
+      name: "FOV centre",
+      ra_hours: ((ra / 15) % 24 + 24) % 24,
+      dec_degrees: Math.max(-90, Math.min(90, dec))
+    };
   }
   function lookPan(dx, dy) {
     var aladin = aladinRef();
@@ -1264,6 +1285,14 @@ ATLAS_ASTRO_JS = r"""
     return separationDeg(tra, tdec, vra * 15, vdec) < 0.5;
   }
   function chartField(aladin, payload) {
+    // Custom framing stays on the chart centre for the whole pan, including
+    // when the previous target was already off centre. Host footprints are
+    // that previous point until the new centre is published.
+    if (payload && payload.follow_view && box.dragFollows) {
+      if (!box.dragging && viewCenteredOnTarget(aladin, payload))
+        box.dragFollows = false;
+      return true;
+    }
     // A drag that starts on the chart centre keeps the camera there, the
     // same as a 1x1 field. Host footprints are the previous centre, and the
     // page waits out the pan before asking for new ones.
@@ -1786,7 +1815,10 @@ ATLAS_ASTRO_JS = r"""
       if (ev.button !== 0 || isChrome(ev.target)) return;
       box.dismissAt = Date.now();
       if (!box.hasSite) return;
-      box.dragFollows = viewCenteredOnTarget(aladinRef(), box.payload || {});
+      var framing = !!(box.payload && box.payload.follow_view);
+      box.armFollow = framing;
+      box.dragPixels = 0;
+      box.dragFollows = framing ? false : viewCenteredOnTarget(aladinRef(), box.payload || {});
       box.followUntil = 0;
       dragging = true;
       box.dragging = true;
@@ -1806,14 +1838,23 @@ ATLAS_ASTRO_JS = r"""
       var dy = ev.clientY - lastY;
       lastX = ev.clientX;
       lastY = ev.clientY;
+      box.dragPixels = (Number(box.dragPixels) || 0) + Math.hypot(dx, dy);
+      if (box.armFollow && box.dragPixels > 3)
+        box.dragFollows = true;
       lookPan(dx, dy);
     }, true);
     function endDrag(ev) {
       if (box.lookGen !== gen) return;
       if (!dragging) return;
+      var framed = !!(box.armFollow && box.dragFollows);
+      box.armFollow = false;
+      if (framed)
+        publishChartCenter();
       dragging = false;
       box.dragging = false;
       box.lookEq = null;
+      if (framed)
+        box.ignoreClick = true;
       if (box.dragFollows)
         box.followUntil = Date.now() + 1500;
       ev.stopPropagation();
@@ -1884,6 +1925,7 @@ ATLAS_ASTRO_JS = r"""
     strokeTargetQuad: strokeTargetQuad,
     drawScreenMosaic: drawScreenMosaic,
     chartField: chartField,
+    publishChartCenter: publishChartCenter,
     drawPaneMedia: drawPaneMedia,
     paintOverlayImages: paintOverlayImages,
     overlayPixRoll: overlayPixRoll,
@@ -2285,6 +2327,10 @@ ATLAS_FOV_JS = r"""
       box.trackAt = Date.now();
     }, true);
     document.addEventListener("click", function(ev) {
+      if (box.ignoreClick) {
+        box.ignoreClick = false;
+        return;
+      }
       var world = skyPoint(ev);
       if (!world) return;
       var obj = pickedObject(box);

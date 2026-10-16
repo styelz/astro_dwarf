@@ -7138,6 +7138,8 @@ class AppBackend(QObject):
                 )
             except ValueError:
                 payload["mode"] = "center"
+        if not mosaic_active and self._sky_mosaic_mode != "device":
+            payload["follow_view"] = True
         return payload
 
     @Slot("QVariant", int, int, float, str, float, result=str)
