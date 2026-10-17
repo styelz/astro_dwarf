@@ -183,10 +183,6 @@ Item {
         calendarSidebarFilter.query,
         calendarPage.sidebarStatusKeys[calendarPage.sidebarStatusFilter] || ""
     )
-    readonly property int shownMonthSessionCount: {
-        const prefix = calendarPage.shownMonth.getFullYear() + "-" + String(calendarPage.shownMonth.getMonth() + 1).padStart(2, "0")
-        return Util.calendarBucketCount(calendarPage.calendarBuckets, prefix)
-    }
     readonly property var nightLayout: calendarPage.layoutNight(calendarPage.nightSessions)
     function nightDeviceIds(items) {
         const present = {}
@@ -655,9 +651,8 @@ Item {
                 }
             }
             Text {
-                readonly property bool monthEmpty: calendarPage.viewMode === 0 && calendarPage.shownMonthSessionCount === 0
                 readonly property bool nightEmpty: calendarPage.viewMode === 1 && calendarPage.nightSessions.length === 0
-                visible: monthEmpty || nightEmpty
+                visible: nightEmpty
                 Layout.fillWidth: true
                 color: Theme.muted
                 font.pixelSize: Theme.fontSm
@@ -665,15 +660,6 @@ Item {
                 wrapMode: Text.NoWrap
                 elide: Text.ElideRight
                 text: {
-                    if (monthEmpty) {
-                        if (calendarPage.showHistory)
-                            return calendarPage.showAllDevices
-                                ? "Nothing scheduled or in history this month."
-                                : "Nothing scheduled or in history on this telescope this month."
-                        return calendarPage.showAllDevices
-                            ? "Nothing scheduled this month. Drop a session onto a night, or create a new one."
-                            : "Nothing scheduled on this telescope this month."
-                    }
                     if (calendarPage.showHistory)
                         return calendarPage.showAllDevices
                             ? "Nothing scheduled or in history for this night."
