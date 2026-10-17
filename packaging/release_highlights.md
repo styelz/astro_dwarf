@@ -14,3 +14,8 @@ feat: enhance mosaic stitching with coarse cataloging and edge pairing improveme
 - Updated edge pairing logic to utilize coarse stars and seeds when fine matches are unavailable, enhancing robustness in challenging stitching scenarios.
 - Modified the `_stars` function to allow dynamic limits on star detection, improving flexibility in star handling.
 - Added a new test to validate stitching recovery for full-frame images shifted outside the fine window, ensuring consistent performance across various conditions.
+
+feat: add completion view readiness logic and associated tests
+- Introduced `completion_view_ready` function to determine when the finished mosaic picture can be displayed, ensuring it only shows settled pane stills.
+- Updated `AppBackend` to integrate the new completion view logic, including retry mechanisms for completion view readiness.
+- Added tests to validate the behavior of the completion view under various conditions, ensuring robustness in the mosaic stitching process.

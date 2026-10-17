@@ -1047,6 +1047,25 @@ def mosaic_result_holds_sheet(
     return mosaic and (preview_result or held)
 
 
+def completion_view_ready(
+    *,
+    pending_stacks: int,
+    stack_fetching: bool,
+    enhance_pending: bool,
+) -> bool:
+    """True when the finished mosaic picture can use the settled pane stills.
+
+    Session complete runs while the stack JPEG is still downloading and before
+    display enhance replaces the live frame. That early picture is the broken
+    one. The STITCH button uses the sheet after those stills have landed.
+    """
+    try:
+        pending = int(pending_stacks or 0)
+    except (TypeError, ValueError):
+        pending = 1
+    return pending <= 0 and not stack_fetching and not enhance_pending
+
+
 def mosaic_disconnected_sheet_should_hold(
     *,
     keep_live: bool,
@@ -2402,6 +2421,7 @@ class AppBackend(QObject):
         self._stack_result_timer.timeout.connect(self._fetch_stack_result_image)
         self._stack_result_token = 0
         self._stack_result_loaded = False
+        self._stack_result_fetching = False
         self._stack_result_device_id = ""
         self._stack_result_target = ""
         self._stack_result_camera = ""
@@ -5591,6 +5611,7 @@ class AppBackend(QObject):
         worker = self._workers.get(str(job.get("device_id") or ""))
         if worker is None or not worker.connected:
             self._custom_pane_album_jobs.pop(token, None)
+            self._retry_completion_view()
             return
 
         def done(ok: bool, result: Any) -> None:
@@ -5602,6 +5623,7 @@ class AppBackend(QObject):
             path = str(result.get("path") or "") if ok and isinstance(result, dict) else ""
             if path and self._apply_custom_pane_album(int(current["pane"]), path):
                 self._custom_pane_album_jobs.pop(token, None)
+                self._retry_completion_view()
                 return
             if path:
                 self._discard_stack_result_file(path)
@@ -5615,6 +5637,7 @@ class AppBackend(QObject):
                 f"Mosaic pane {current['pane']} — completed stack was not ready, keeping the last frame",
                 str(current.get("device_id") or ""),
             )
+            self._retry_completion_view()
 
         worker.send(
             "astro_stack_result_image",
@@ -6640,11 +6663,26 @@ class AppBackend(QObject):
     def stitchHeldMosaic(self) -> None:
         self._stitch_open_sheet("held")
 
+    def _completion_view_ready(self) -> bool:
+        enhance_pending = bool(self._mosaic_enhance_inflight) or any(self._preview_enhance_inflight.values())
+        return completion_view_ready(
+            pending_stacks=len(self._custom_pane_album_jobs),
+            stack_fetching=self._stack_result_fetching,
+            enhance_pending=enhance_pending,
+        )
+
+    def _retry_completion_view(self) -> None:
+        device_id = str(self._selected_device_id or "")
+        if device_id:
+            self._maybe_auto_stitch_sheet(device_id)
+
     def _maybe_auto_stitch_sheet(self, device_id: str, session: Session | None = None) -> None:
-        """Save a stitch when a custom mosaic finishes and the sheet still has panes."""
-        if self._stitch_status == "working":
+        """Show the finished mosaic once the pane stills match the contact sheet."""
+        if self._stitch_status == "working" and self._stitch_source != "auto":
             return
         if str(device_id or "") != str(self._selected_device_id or ""):
+            return
+        if self._mosaic_result_dismissed:
             return
         if session is not None and session.mosaic.imported_plan and session.mosaic.group_id and not self.mosaic_frames.group():
             _active, columns, rows, current, images = self.mosaic_frames.snapshot()
@@ -6661,6 +6699,10 @@ class AppBackend(QObject):
         found, _members = self._mosaic_context(device_id)
         if found is None or not found.mosaic.imported_plan:
             return
+        if not custom_mosaic_completed(found, self.store.sessions.all()):
+            return
+        if not self._completion_view_ready():
+            return
         self._stitch_open_sheet("auto", quiet=True)
 
     def _stitch_open_sheet(self, source: str, quiet: bool = False) -> None:
@@ -6668,7 +6710,9 @@ class AppBackend(QObject):
             if not quiet:
                 self._set_stitch("failed", detail, source=source)
 
-        if self._stitch_status == "working":
+        if self._stitch_status == "working" and not (
+            self._stitch_source == "auto" and source in {"auto", "held"}
+        ):
             return
         device_id = str(self._selected_device_id or "")
         live = self._live_mosaic.get(device_id) or {}
@@ -8251,6 +8295,7 @@ class AppBackend(QObject):
         self._stack_result_token += 1
         self._stack_result_timer.stop()
         self._stack_result_loaded = False
+        self._stack_result_fetching = False
         self._stack_result_device_id = ""
         self._stack_result_target = ""
         self._stack_result_camera = ""
@@ -8407,6 +8452,7 @@ class AppBackend(QObject):
         self._stack_result_token += 1
         self._stack_result_timer.stop()
         self._stack_result_loaded = False
+        self._stack_result_fetching = True
         self._stack_result_device_id = device_id
         self._stack_result_target = str(target or "").strip()
         self._stack_result_camera = str(camera or self._preview_camera_name(device_id) or "tele")
@@ -8484,12 +8530,14 @@ class AppBackend(QObject):
             if pane >= 1:
                 self._store_mosaic_pane_image(pane, shown, replace_frozen=True)
         self._stack_result_loaded = True
+        self._stack_result_fetching = False
         self._stack_result_timer.stop()
         self._preview_result_detail = self._stack_result_final_detail or _STACK_RESULT_READY
         self._set_preview_status(self._preview_result_detail)
         self.previewResultChanged.emit()
         self._sync_mosaic_preview(device_id)
         self.add_log("info", "Showing the completed stack in live preview", device_id)
+        self._retry_completion_view()
         return True
 
     def _finish_stack_result_fetch(self, ok: bool, result: Any) -> None:
@@ -8501,6 +8549,7 @@ class AppBackend(QObject):
                 self._stack_result_timer.start()
             return
         self._stack_result_timer.stop()
+        self._stack_result_fetching = False
         self._preview_result_detail = self._stack_result_final_detail or _STACK_RESULT_READY
         self._set_preview_status(self._preview_result_detail)
         self.previewResultChanged.emit()
@@ -8509,6 +8558,7 @@ class AppBackend(QObject):
             "Completed stack JPEG was not available yet — keeping the last stacking frame",
             self._stack_result_device_id,
         )
+        self._retry_completion_view()
 
     def _stacking_result_copy(self, ok: bool, stopped: bool, target: str) -> tuple[str, str]:
         return stacking_preview_result_copy(ok, stopped, target, self._scheduler_enabled)
@@ -8908,6 +8958,8 @@ class AppBackend(QObject):
         self._preview_enhance_inflight[camera] = False
         if not self._shut_down and camera in self._preview_enhance_latest:
             self._start_preview_enhance(camera)
+            return
+        self._retry_completion_view()
 
     def _queue_mosaic_pane_enhance(self, pane: int, raw: QImage) -> None:
         try:
@@ -8943,6 +8995,8 @@ class AppBackend(QObject):
         self._mosaic_enhance_inflight.discard(pane)
         if not self._shut_down and pane in self._mosaic_enhance_latest:
             self._start_mosaic_pane_enhance(pane)
+            return
+        self._retry_completion_view()
 
     def _on_mosaic_pane_enhanced(self, token: int, pane: int, image) -> None:
         try:

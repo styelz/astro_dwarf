@@ -40,6 +40,7 @@ from astro_dwarf.qt_backend import (
     publishes_mosaic_hud,
     terminal_preview_status,
     mosaic_retarget_keeps_joined_frames,
+    completion_view_ready,
     mosaic_result_holds_sheet,
     mosaic_result_pane,
     mosaic_result_should_drop_sheet,
@@ -1177,6 +1178,27 @@ def test_sky_mosaic_urls_backfill_from_stored_stills() -> None:
     _assert(all(value.startswith("data:image/jpeg;base64,") for value in urls.values()), urls)
 
 
+def test_completion_view_waits_until_the_pane_stills_settle() -> None:
+    # Session complete still has the stack fetch in flight. That early sheet
+    # is the broken picture. The STITCH button runs after the stills land.
+    _assert(
+        not completion_view_ready(pending_stacks=1, stack_fetching=True, enhance_pending=False),
+        "a stack still downloading must not become the completion picture",
+    )
+    _assert(
+        not completion_view_ready(pending_stacks=0, stack_fetching=False, enhance_pending=True),
+        "display enhance has not replaced the live frame yet",
+    )
+    _assert(
+        completion_view_ready(pending_stacks=0, stack_fetching=False, enhance_pending=False),
+        "a settled sheet is the picture the STITCH button builds",
+    )
+    _assert(
+        mosaic_result_holds_sheet(preview_result=True, active=True, columns=2, rows=2),
+        "the contact sheet stays up while that picture waits",
+    )
+
+
 def test_mosaic_result_keeps_contact_sheet_until_dismissed() -> None:
     _assert(
         mosaic_result_holds_sheet(preview_result=True, active=True, columns=2, rows=2),
@@ -1620,6 +1642,7 @@ if __name__ == "__main__":
     test_mosaic_group_sessions_uses_repository_all()
     test_mosaic_frames_keep_completed_stills()
     test_sky_mosaic_urls_backfill_from_stored_stills()
+    test_completion_view_waits_until_the_pane_stills_settle()
     test_mosaic_result_keeps_contact_sheet_until_dismissed()
     test_mosaic_dismiss_drops_leftover_sheet_and_sky_stills()
     test_finished_device_mosaic_shows_the_live_stitch()
