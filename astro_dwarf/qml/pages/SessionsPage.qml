@@ -89,7 +89,7 @@ Item {
                 onClicked: root.harvestStellarium("importDesktop")
             }
             HudButton { text: "IMPORT TELESCOPIUS"; busy: backend.uiBusy === "telescopius"; busyText: backend.uiBusy === "telescopius" ? "IMPORTING…" : "OPENING…"; enabled: backend.uiBusy === ""; onClicked: telescopiusDialog.open() }
-            HudButton { text: "+ MANUAL SESSION"; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: placeOnNightDialog.openForSlot((backend.localNow && backend.localNow.observing_date) || Qt.formatDate(new Date(), "yyyy-MM-dd")) }
+            HudButton { text: "+ MANUAL SESSION"; busyText: "OPENING…"; buttonColor: Theme.fillActive; foregroundColor: Theme.accent; onClicked: sessionDialog.openForDate((backend.localNow && backend.localNow.observing_date) || Qt.formatDate(new Date(), "yyyy-MM-dd")) }
             HudButton {
                 text: "+ NEW TEMPLATE"
                 busyText: "OPENING…"

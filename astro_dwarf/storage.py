@@ -20,6 +20,7 @@ from .domain import (
     device_from_dict,
     history_from_dict,
     session_from_dict,
+    stored_capture_fields,
     template_from_dict,
     to_dict,
 )
@@ -256,6 +257,7 @@ class SessionStore:
             workflow=template.workflow,
             mosaic=template.mosaic,
             notes=template.notes,
+            **stored_capture_fields(template),
         )
 
     def seed_device(self) -> Device:

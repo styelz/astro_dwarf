@@ -107,6 +107,7 @@ from .domain import (
     session_action_from_value,
     session_action_value,
     session_capture_summary,
+    stored_capture_fields,
     history_detail_fields,
     history_record_for_run,
     history_record_for_manual_stack,
@@ -3379,7 +3380,9 @@ class AppBackend(QObject):
         data["members"] = [self._template_member_dict(item) for item in ordered]
         data["grid_text"] = first.mosaic.grid_text
         exposure = f"{first.camera.frame_count} × {first.camera.exposure_seconds:g}s"
-        if grouped:
+        if session_action_value(first) != SessionAction.ASTRO.value:
+            data["summary"] = session_capture_summary(first)
+        elif grouped:
             grid = f"{first.mosaic.grid_text} · " if first.mosaic.grid_text else ""
             data["summary"] = f"{len(members)} panes · {grid}{exposure}"
         else:
@@ -3434,7 +3437,11 @@ class AppBackend(QObject):
             _workflow, pane_seconds = mosaic_member_seconds(item, profile, index)
             seconds += pane_seconds
         return {
-            "capture_text": f"{cam.frame_count} × {cam.exposure_seconds:g}s",
+            "capture_text": (
+                session_capture_summary(first)
+                if session_action_value(first) != SessionAction.ASTRO.value
+                else f"{cam.frame_count} × {cam.exposure_seconds:g}s"
+            ),
             "gain_text": f"G{cam.gain}",
             "camera_text": " · ".join(camera_bits),
             "mosaic_text": mosaic_text,
@@ -14262,6 +14269,7 @@ class AppBackend(QObject):
                     camera=session.camera,
                     workflow=session.workflow,
                     mosaic=session.mosaic,
+                    **stored_capture_fields(session),
                 )
                 self.store.templates.save(template)
                 self.templatesChanged.emit()
@@ -14311,6 +14319,7 @@ class AppBackend(QObject):
                 camera=anchor.camera,
                 workflow=anchor.workflow,
                 mosaic=anchor.mosaic,
+                **stored_capture_fields(anchor),
             )
             self.store.templates.save(template)
             self.templatesChanged.emit()
@@ -14326,6 +14335,7 @@ class AppBackend(QObject):
         )
         name = values.get("name") or values["target"]
         notes = values.get("notes", existing.notes if existing else "")
+        capture = stored_capture_fields(values)
         if existing:
             template = replace(
                 existing,
@@ -14335,6 +14345,7 @@ class AppBackend(QObject):
                 workflow=workflow,
                 mosaic=mosaic,
                 notes=notes,
+                **capture,
             )
         else:
             template = SessionTemplate(
@@ -14344,6 +14355,7 @@ class AppBackend(QObject):
                 workflow=workflow,
                 mosaic=mosaic,
                 notes=notes,
+                **capture,
             )
         self.store.templates.save(template)
         return template

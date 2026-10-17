@@ -6034,7 +6034,7 @@ def camera_session_seconds(session: Session, profile: HardwareProfile) -> float:
 class DurationEngine:
     @staticmethod
     def calculate(session: Session | SessionTemplate, profile: HardwareProfile) -> float:
-        if isinstance(session, Session) and session_action_value(session) != SessionAction.ASTRO.value:
+        if session_action_value(session) != SessionAction.ASTRO.value:
             return camera_session_seconds(session, profile)
         workflow = session.workflow
         setup = profile.startup_seconds + workflow.wait_before_seconds + workflow.wait_after_seconds

@@ -2539,6 +2539,12 @@ class SessionTemplate:
     mosaic: Mosaic = field(default_factory=Mosaic)
     notes: str = ""
     created_at: str = field(default_factory=utc_now)
+    action: SessionAction = SessionAction.ASTRO
+    burst_count: int = 10
+    burst_interval_seconds: float = 1
+    video_seconds: float = 30
+    timelapse_interval_seconds: float = 5
+    timelapse_video_seconds: float = 30
 
 
 @dataclass(slots=True)
@@ -2835,6 +2841,7 @@ def template_from_dict(data: dict[str, Any]) -> SessionTemplate:
     data["camera"] = camera_from_dict(data.get("camera", {}))
     data["workflow"] = Workflow(**data.get("workflow", {}))
     data["mosaic"] = Mosaic(**data.get("mosaic", {}))
+    data.update(stored_capture_fields(data))
     return SessionTemplate(**data)
 
 
@@ -2848,6 +2855,32 @@ def session_action_from_value(value: Any) -> SessionAction:
 
 def session_action_value(session: Session) -> str:
     return session_action_from_value(getattr(session, "action", None)).value
+
+
+def stored_capture_fields(source: Any) -> dict[str, Any]:
+    """Action and camera timings shared by a session and a template."""
+    if isinstance(source, dict):
+        raw_action = source.get("action")
+        burst_count = source.get("burst_count")
+        burst_interval = source.get("burst_interval_seconds")
+        video = source.get("video_seconds")
+        interval = source.get("timelapse_interval_seconds")
+        length = source.get("timelapse_video_seconds")
+    else:
+        raw_action = getattr(source, "action", None)
+        burst_count = getattr(source, "burst_count", 10)
+        burst_interval = getattr(source, "burst_interval_seconds", 1)
+        video = getattr(source, "video_seconds", 30)
+        interval = getattr(source, "timelapse_interval_seconds", 5)
+        length = getattr(source, "timelapse_video_seconds", 30)
+    return {
+        "action": session_action_from_value(raw_action),
+        "burst_count": _positive_int(burst_count, 10),
+        "burst_interval_seconds": _positive_float(burst_interval, 1),
+        "video_seconds": _positive_float(video, 30),
+        "timelapse_interval_seconds": _positive_float(interval, 5),
+        "timelapse_video_seconds": _positive_float(length, 30),
+    }
 
 
 def _positive_float(value: Any, default: float) -> float:

@@ -36,8 +36,9 @@ Dialog {
     readonly property bool uniqueVisible: !bulkMode
     readonly property bool mosaicVisible: !bulkMode && !cameraForm
     property int captureTab: 0
-    readonly property bool newSession: !editingId && !editingTemplate && !bulkMode
-    readonly property bool cameraForm: captureTab === 1 && !bulkMode && !editingTemplate
+    // Both tabs while creating a session or template. An existing one keeps only its own tab.
+    readonly property bool choosingCapture: !editingId && !bulkMode
+    readonly property bool cameraForm: captureTab === 1 && !bulkMode
     readonly property bool equatorialTarget: targetType.currentIndex === 0
     readonly property bool solarKind: targetType.currentIndex === 1
     readonly property string copiedCoordinates: Util.formatCoordinates(ra.text, dec.text)
@@ -736,7 +737,6 @@ Dialog {
         editingId = cloned[0].id || data.id
         syncingPane = true
         fillForm(data)
-        captureTab = 0
         loadPaneCoordinates(cloned[0])
         startTime.text = ""
         panePicker.model = sessionDialog.paneChoices()
@@ -834,7 +834,7 @@ Dialog {
             HudButton {
                 id: astroTab
                 objectName: "session-tab-astro"
-                visible: sessionDialog.newSession || sessionDialog.captureTab === 0
+                visible: sessionDialog.choosingCapture || sessionDialog.captureTab === 0
                 Layout.fillWidth: true
                 Layout.preferredHeight: Theme.controlHeight
                 text: "ASTRO"
@@ -844,12 +844,12 @@ Dialog {
                 foregroundColor: sessionDialog.captureTab === 0 ? Theme.accent : Theme.textSecondary
                 Accessible.name: "Astro session"
                 accessibleDescription: (sessionDialog.captureTab === 0 ? "Current tab. " : "") + "Deep-sky stack session"
-                onClicked: if (sessionDialog.newSession) sessionDialog.captureTab = 0
-                Keys.onLeftPressed: if (sessionDialog.newSession) {
+                onClicked: if (sessionDialog.choosingCapture) sessionDialog.captureTab = 0
+                Keys.onLeftPressed: if (sessionDialog.choosingCapture) {
                     cameraTab.forceActiveFocus()
                     sessionDialog.captureTab = 1
                 }
-                Keys.onRightPressed: if (sessionDialog.newSession) {
+                Keys.onRightPressed: if (sessionDialog.choosingCapture) {
                     cameraTab.forceActiveFocus()
                     sessionDialog.captureTab = 1
                 }
@@ -866,7 +866,7 @@ Dialog {
             HudButton {
                 id: cameraTab
                 objectName: "session-tab-camera"
-                visible: sessionDialog.newSession || (sessionDialog.captureTab === 1 && !sessionDialog.editingTemplate)
+                visible: sessionDialog.choosingCapture || sessionDialog.captureTab === 1
                 Layout.fillWidth: true
                 Layout.preferredHeight: Theme.controlHeight
                 text: "CAMERA"
@@ -876,12 +876,12 @@ Dialog {
                 foregroundColor: sessionDialog.captureTab === 1 ? Theme.accent : Theme.textSecondary
                 Accessible.name: "Camera session"
                 accessibleDescription: (sessionDialog.captureTab === 1 ? "Current tab. " : "") + "Photo, video, burst, or timelapse"
-                onClicked: if (sessionDialog.newSession) sessionDialog.captureTab = 1
-                Keys.onLeftPressed: if (sessionDialog.newSession) {
+                onClicked: if (sessionDialog.choosingCapture) sessionDialog.captureTab = 1
+                Keys.onLeftPressed: if (sessionDialog.choosingCapture) {
                     astroTab.forceActiveFocus()
                     sessionDialog.captureTab = 0
                 }
-                Keys.onRightPressed: if (sessionDialog.newSession) {
+                Keys.onRightPressed: if (sessionDialog.choosingCapture) {
                     astroTab.forceActiveFocus()
                     sessionDialog.captureTab = 0
                 }
