@@ -120,6 +120,23 @@ Item {
         return isFinite(pane) && pane >= 1 ? pane : 0
     }
     readonly property bool mosaicChanging: mosaicChangingPane >= 1 || String(mosaicPreview.phase || "") === "changing"
+    function targetPanelTitle() {
+        const session = backend.currentSession || ({})
+        const t = root.scopeTelemetry || ({})
+        return backend.targetPanelTitle(
+            !!backend.selectedDevice.connected,
+            !!root.scopeOnline,
+            String(session.target_name || ""),
+            String(session.status || ""),
+            !!controlPage.mosaicRunning,
+            String((controlPage.mosaicPreview && controlPage.mosaicPreview.label) || ""),
+            String(t.capture_target || ""),
+            String(t.tracking_target || ""),
+            !!t.tracking_active,
+            !!t.capture_active,
+            String(root.scopeActivity || "")
+        )
+    }
     readonly property string mosaicPaneText: {
         if (mosaicRunning && mosaicPaneIndex >= 1 && mosaicPaneTotal >= 1)
             return "PANE " + mosaicPaneIndex + "/" + mosaicPaneTotal
@@ -542,17 +559,8 @@ Item {
                     }
                 }
                 Text {
-                    text: {
-                        const t = root.scopeTelemetry
-                        const deviceTarget = String(t.capture_target || t.tracking_target || "")
-                        if (controlPage.mosaicRunning && mosaicPreview.label)
-                            return mosaicPreview.label
-                        if (backend.currentSession.target_name)
-                            return backend.currentSession.target_name
-                        if (root.scopeOnline && deviceTarget)
-                            return deviceTarget
-                        return backend.selectedDevice.connected ? "No active lock" : "No telescope link"
-                    }
+                    objectName: "targetPanelTitle"
+                    text: controlPage.targetPanelTitle()
                     color: Theme.textPrimary
                     font.pixelSize: Theme.fontPx(18)
                     font.bold: true
@@ -1718,15 +1726,7 @@ Item {
                             return "ALT-AZ"
                         return ""
                     }
-                    readonly property string startBriefTarget: {
-                        const sessionName = String((backend.currentSession && backend.currentSession.target_name) || "").trim()
-                        if (sessionName)
-                            return sessionName
-                        const deviceTarget = String(root.scopeTelemetry.capture_target || root.scopeTelemetry.tracking_target || "").trim()
-                        if (root.scopeOnline && deviceTarget)
-                            return deviceTarget
-                        return backend.selectedDevice.connected ? "No active lock" : "No telescope link"
-                    }
+                    readonly property string startBriefTarget: controlPage.targetPanelTitle()
                     readonly property string startBriefAccessibleName: {
                         const lines = [actionLabel, startBriefProgress, startBriefCameraLine]
                         if (!startBriefCompact) {

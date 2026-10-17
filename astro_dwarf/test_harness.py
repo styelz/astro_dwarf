@@ -223,7 +223,7 @@ def named_hook_kind(name: str) -> str:
         return "button"
     if name.startswith(("session-", "template-", "history-", "media-", "upcoming-", "calendar-")):
         return "item"
-    if name in {"titleConnect", "confirmCancel", "confirmAccept", "analogPad", "previewHost", "livePane"}:
+    if name in {"titleConnect", "confirmCancel", "confirmAccept", "analogPad", "previewHost", "livePane", "targetPanelTitle"}:
         return "hook"
     return ""
 

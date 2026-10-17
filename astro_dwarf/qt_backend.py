@@ -1375,6 +1375,40 @@ def mosaic_slew_preview_should_restore(
     return True
 
 
+def target_panel_title(
+    *,
+    connected: bool = False,
+    online: bool = False,
+    session_name: str = "",
+    session_status: str = "",
+    mosaic_running: bool = False,
+    mosaic_label: str = "",
+    capture_target: str = "",
+    tracking_target: str = "",
+    tracking_active: bool = False,
+    capture_active: bool = False,
+    activity: str = "",
+) -> str:
+    """Title for the control TARGET panel.
+
+    A finished custom mosaic and a stopped session leave the last pane name in
+    capture or tracking telemetry. That string is not a lock. Show a device
+    name only while the telescope is slewing, tracking, or capturing, and a
+    session name only while that session is running.
+    """
+    label = str(mosaic_label or "").strip()
+    if mosaic_running and label:
+        return label
+    name = str(session_name or "").strip()
+    if name and str(session_status or "").strip().lower() == "running":
+        return name
+    device = str(capture_target or tracking_target or "").strip()
+    device_live = bool(tracking_active or capture_active or str(activity or "") == "goto")
+    if online and device_live and device:
+        return device
+    return "No active lock" if connected else "No telescope link"
+
+
 def mosaic_pane_end_phase(*, ok: bool, stopped: bool, mosaic: bool) -> str:
     """Phase to publish when one mosaic pane session ends.
 
@@ -3698,6 +3732,35 @@ class AppBackend(QObject):
             suffix = f"  (×{count})" if count > 1 else ""
             lines.append(f"{entry['time']}  {entry['level']:<8}[{entry['device']}]  {entry['message']}{suffix}")
         return "\n".join(lines)
+
+    @Slot(bool, bool, str, str, bool, str, str, str, bool, bool, str, result=str)
+    def targetPanelTitle(
+        self,
+        connected: bool,
+        online: bool,
+        session_name: str,
+        session_status: str,
+        mosaic_running: bool,
+        mosaic_label: str,
+        capture_target: str,
+        tracking_target: str,
+        tracking_active: bool,
+        capture_active: bool,
+        activity: str,
+    ) -> str:
+        return target_panel_title(
+            connected=bool(connected),
+            online=bool(online),
+            session_name=str(session_name or ""),
+            session_status=str(session_status or ""),
+            mosaic_running=bool(mosaic_running),
+            mosaic_label=str(mosaic_label or ""),
+            capture_target=str(capture_target or ""),
+            tracking_target=str(tracking_target or ""),
+            tracking_active=bool(tracking_active),
+            capture_active=bool(capture_active),
+            activity=str(activity or ""),
+        )
 
     @Property("QVariantMap", notify=currentSessionChanged)
     def currentSession(self) -> dict[str, Any]:
