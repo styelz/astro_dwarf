@@ -473,6 +473,7 @@ ColumnLayout {
 
     SettingGroup {
         title: "COLOURS"
+        visible: !iface.themeLocked
         trailing: [
             HudChip {
                 label: iface.tintRoleName
