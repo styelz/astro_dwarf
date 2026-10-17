@@ -766,7 +766,7 @@ def _center_wide_view(nx: float, ny: float) -> dict[str, Any]:
     log(
         f"Center tap ({nx:.3f}, {ny:.3f}) → Dual Lenses Locating ({x}, {y}) of "
         f"{_LINKAGE_W}×{_LINKAGE_H}",
-        "info",
+        "debug",
     )
     if _send_dual_camera_linkage(x, y):
         detail["ok"] = True

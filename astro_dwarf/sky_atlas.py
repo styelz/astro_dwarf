@@ -276,6 +276,7 @@ ATLAS_ASTRO_JS = r"""
       && typeof box.astro.drawPaneMedia === "function" && typeof box.astro.paintOverlayImages === "function"
       && typeof box.astro.bindLiveOpacityWheel === "function"
       && typeof box.astro.paneCenterXY === "function" && typeof box.astro.overlayPixRoll === "function"
+      && typeof box.astro.levelZenithPanes === "function"
       && typeof box.astro.paintIndex === "function"
       && typeof box.astro.strokeTargetQuad === "function"
       && typeof box.astro.applyFov === "function" && typeof box.astro.markMoved === "function"
@@ -921,14 +922,22 @@ ATLAS_ASTRO_JS = r"""
     }
     return pts;
   }
+  // Ring is 0 right-up, 1 right-down, 2 left-down, 3 left-up.
+  // JPEG top-left is camera left-up, the same order Stellarium uses.
+  function imageQuadFromRing(ring) {
+    if (!ring || ring.length < 4) return null;
+    return [ring[3], ring[0], ring[1], ring[2]];
+  }
   function collectProjected(aladin, panes) {
     if (!aladin || !panes || !panes.length) return [];
     var out = [];
     for (var i = 0; i < panes.length; i++) {
       var center = paneCenterXY(aladin, panes[i]);
       if (!center) continue;
+      var ring = paneQuad(aladin, panes[i]);
       out.push({
-        quad: paneQuad(aladin, panes[i]),
+        quad: ring,
+        image: imageQuadFromRing(ring),
         center: center,
         index: Number(panes[i].index || (i + 1)),
         row: Number(panes[i].row) || 0,
@@ -939,20 +948,42 @@ ATLAS_ASTRO_JS = r"""
   }
   function outerQuad(items) {
     if (!items || !items.length) return [];
+    var quads = [];
     var all = [];
     for (var i = 0; i < items.length; i++) {
+      if (items[i].quad && items[i].quad.length >= 4)
+        quads.push(items[i].quad);
       if (items[i].quad && items[i].quad.length)
         all = all.concat(items[i].quad);
       else if (items[i].center)
         all.push(items[i].center);
     }
     if (!all.length) return [];
-    if (all.length === 1) return [all[0], all[0], all[0], all[0]];
-    var xs = all.map(function(pt) { return pt[0]; });
-    var ys = all.map(function(pt) { return pt[1]; });
-    var left = Math.min.apply(null, xs), right = Math.max.apply(null, xs);
-    var top = Math.min.apply(null, ys), bottom = Math.max.apply(null, ys);
-    return [[left, top], [right, top], [right, bottom], [left, bottom]];
+    if (quads.length === 1) return quads[0];
+    if (!quads.length) {
+      if (all.length === 1) return [all[0], all[0], all[0], all[0]];
+      var xs = all.map(function(pt) { return pt[0]; });
+      var ys = all.map(function(pt) { return pt[1]; });
+      var left = Math.min.apply(null, xs), right = Math.max.apply(null, xs);
+      var top = Math.min.apply(null, ys), bottom = Math.max.apply(null, ys);
+      return [[left, top], [right, top], [right, bottom], [left, bottom]];
+    }
+    var q0 = quads[0];
+    var ux = q0[1][0] - q0[0][0], uy = q0[1][1] - q0[0][1];
+    var vx = q0[3][0] - q0[0][0], vy = q0[3][1] - q0[0][1];
+    var ulen = Math.hypot(ux, uy) || 1, vlen = Math.hypot(vx, vy) || 1;
+    ux /= ulen; uy /= ulen; vx /= vlen; vy /= vlen;
+    var minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    for (var p = 0; p < all.length; p++) {
+      var dx = all[p][0] - q0[0][0], dy = all[p][1] - q0[0][1];
+      var u = dx * ux + dy * uy, v = dx * vx + dy * vy;
+      if (u < minU) minU = u; if (u > maxU) maxU = u;
+      if (v < minV) minV = v; if (v > maxV) maxV = v;
+    }
+    function at(u, v) {
+      return [q0[0][0] + ux * u + vx * v, q0[0][1] + uy * u + vy * v];
+    }
+    return [at(minU, minV), at(maxU, minV), at(maxU, maxV), at(minU, maxV)];
   }
   function liveOpacity() {
     var op = Number(box.liveOpacity);
@@ -1079,11 +1110,15 @@ ATLAS_ASTRO_JS = r"""
     if (livePaneIndex() || paneStills()) {
       for (var i = 0; i < panes.length; i++) {
         var pane = panes[i];
-        drawPaneMedia(ctx, pane.index, pane.quad || null, pane.x, pane.y, pane.w, pane.h);
+        drawPaneMedia(
+          ctx, pane.index,
+          pane.image || imageQuadFromRing(pane.quad) || null,
+          pane.x, pane.y, pane.w, pane.h
+        );
       }
       return;
     }
-    drawLiveFrame(ctx, centerQuad, x, y, w, h);
+    drawLiveFrame(ctx, imageQuadFromRing(centerQuad) || centerQuad, x, y, w, h);
   }
   function mediaOverlay() {
     var el = document.getElementById("astro-dwarf-mosaic-media");
@@ -1367,9 +1402,94 @@ ATLAS_ASTRO_JS = r"""
     ctx.setLineDash([]);
     ctx.lineCap = "butt";
   }
+  function zenithCameraOf(payload) {
+    return String(payload && payload.mount_mode || "").toUpperCase() !== "EQ"
+      && String(payload && payload.pa_source || "") === "parallactic";
+  }
+  function levelZenithPanes(projected) {
+    // Alt-az camera-up is the zenith. Stellarium keeps that grid level.
+    // A raw world2pix quad still carries a few degrees of map roll, so the
+    // pane sits crooked inside the frame and the JPEG is turned over.
+    if (!projected || !projected.length) return projected || [];
+    var cx = 0, cy = 0, n = 0;
+    for (var i = 0; i < projected.length; i++) {
+      var c = projected[i].center;
+      if (!c && projected[i].quad) c = quadCenter(projected[i].quad);
+      if (!c) continue;
+      cx += c[0]; cy += c[1]; n += 1;
+    }
+    if (!n) return projected;
+    cx /= n; cy /= n;
+    var byCell = {};
+    for (var b = 0; b < projected.length; b++) {
+      var cell = projected[b];
+      if (cell.row && cell.column && cell.center)
+        byCell[cell.row + "," + cell.column] = cell;
+    }
+    var residual = 0;
+    var found = false;
+    for (var key in byCell) {
+      var here = byCell[key];
+      var nextCol = byCell[here.row + "," + (here.column + 1)];
+      if (nextCol && nextCol.center && here.center) {
+        // Column 1 is camera-right, so the next column sits to camera-left.
+        residual = Math.atan2(here.center[1] - nextCol.center[1], here.center[0] - nextCol.center[0]);
+        found = true;
+        break;
+      }
+      var below = byCell[(here.row + 1) + "," + here.column];
+      if (below && below.center && here.center) {
+        residual = Math.atan2(below.center[1] - here.center[1], below.center[0] - here.center[0]) - Math.PI / 2;
+        found = true;
+        break;
+      }
+    }
+    if (!found) residual = 0;
+    var cos = Math.cos(residual), sin = Math.sin(residual);
+    function unspin(pt) {
+      var dx = pt[0] - cx, dy = pt[1] - cy;
+      return [cx + dx * cos + dy * sin, cy - dx * sin + dy * cos];
+    }
+    var hw = 0, hh = 0;
+    for (var q = 0; q < projected.length; q++) {
+      var quad = projected[q].quad;
+      if (!quad || quad.length < 4) continue;
+      hw = Math.hypot(quad[3][0] - quad[0][0], quad[3][1] - quad[0][1]) / 2;
+      hh = Math.hypot(quad[1][0] - quad[0][0], quad[1][1] - quad[0][1]) / 2;
+      break;
+    }
+    var out = [];
+    for (var k = 0; k < projected.length; k++) {
+      var item = projected[k];
+      var center = item.center || (item.quad ? quadCenter(item.quad) : null);
+      if (!center || !(hw > 1) || !(hh > 1)) {
+        out.push(item);
+        continue;
+      }
+      var p = unspin(center);
+      var ring = [
+        [p[0] + hw, p[1] - hh],
+        [p[0] + hw, p[1] + hh],
+        [p[0] - hw, p[1] + hh],
+        [p[0] - hw, p[1] - hh]
+      ];
+      out.push({
+        quad: ring,
+        image: imageQuadFromRing(ring),
+        center: p,
+        index: item.index,
+        row: item.row,
+        column: item.column
+      });
+    }
+    return out;
+  }
   function paintProjectedFov(ctx, width, height, aladin, projected, color) {
+    var zenithCamera = zenithCameraOf(box.payload || {});
+    if (zenithCamera)
+      projected = levelZenithPanes(projected);
     var pos = readRaDec(aladin);
-    var extra = pos ? overlayPixRoll(aladin, pos) : 0;
+    var extra = zenithCamera ? 0 : (pos ? overlayPixRoll(aladin, pos) : 0);
     box.reblitMedia = function() {
       var host = horizonCanvas();
       var mctxHost = host.getContext("2d");
@@ -1926,6 +2046,7 @@ ATLAS_ASTRO_JS = r"""
     drawPaneMedia: drawPaneMedia,
     paintOverlayImages: paintOverlayImages,
     overlayPixRoll: overlayPixRoll,
+    levelZenithPanes: levelZenithPanes,
     horizonOf: function(raDeg, decDeg) {
       if (!box.hasSite) return null;
       return radecToAltaz(raDeg, decDeg, box.lat, box.lon, new Date());

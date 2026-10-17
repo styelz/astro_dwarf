@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from astro_dwarf.domain import DeviceModel, Target
+from astro_dwarf.sky_atlas import ATLAS_ASTRO_JS
 from astro_dwarf.services import (
     MOSAIC_IMAGE_QUAD_ORDER,
     MOSAIC_PA_PARALLACTIC,
@@ -170,6 +171,53 @@ def test_altaz_stays_upright_on_both_sides_of_the_south_pole() -> None:
     _assert(again.source == near_pa.source and abs(again.degrees - near_pa.degrees) < 1e-6, (again, near_pa))
 
 
+def _unspin_zenith(points: list[tuple[float, float]], residual: float) -> list[tuple[float, float]]:
+    """Same screen unspin as Aladin ``levelZenithPanes``.
+
+    ``residual`` is the clockwise angle of camera-right away from screen +x.
+    """
+    import math
+
+    cx = sum(p[0] for p in points) / len(points)
+    cy = sum(p[1] for p in points) / len(points)
+    cos_r = math.cos(residual)
+    sin_r = math.sin(residual)
+    out = []
+    for x, y in points:
+        dx, dy = x - cx, y - cy
+        out.append((cx + dx * cos_r + dy * sin_r, cy - dx * sin_r + dy * cos_r))
+    return out
+
+
+def test_aladin_zenith_pane_sits_level_like_stellarium() -> None:
+    """A few degrees of Aladin map roll must not turn the pane over.
+
+    Stellarium's alt-az grid is level, pane 1 at the top-right, JPEG top
+    toward camera-up. Aladin used the raw corner ring as the JPEG, which
+    plants the top-left pixel on camera right-up, and it kept that ring's roll.
+    """
+    import math
+
+    _assert("function imageQuadFromRing" in ATLAS_ASTRO_JS, "Aladin JPEG order helper")
+    _assert("return [ring[3], ring[0], ring[1], ring[2]];" in ATLAS_ASTRO_JS, ATLAS_ASTRO_JS[ATLAS_ASTRO_JS.find("function imageQuadFromRing"):ATLAS_ASTRO_JS.find("function imageQuadFromRing") + 240])
+    _assert(MOSAIC_IMAGE_QUAD_ORDER == (3, 0, 1, 2), MOSAIC_IMAGE_QUAD_ORDER)
+    _assert("function levelZenithPanes" in ATLAS_ASTRO_JS, "zenith panes snap level")
+    _assert("var extra = zenithCamera ? 0 :" in ATLAS_ASTRO_JS, "zenith overlay does not add map roll")
+    _assert("dx * cos + dy * sin" in ATLAS_ASTRO_JS, "unspin x")
+    _assert("- dx * sin + dy * cos" in ATLAS_ASTRO_JS, "unspin y")
+    roll = math.radians(4.0)
+    # Pane 1 is up-right. Roll those centres so camera-right leaves screen +x,
+    # which is the inverse of the Aladin unspin.
+    level = [(20.0, -10.0), (-20.0, -10.0), (20.0, 10.0), (-20.0, 10.0)]
+    cos_r, sin_r = math.cos(roll), math.sin(roll)
+    rolled = [(x * cos_r - y * sin_r, x * sin_r + y * cos_r) for x, y in level]
+    snapped = _unspin_zenith(rolled, roll)
+    for got, want in zip(snapped, level):
+        _assert(abs(got[0] - want[0]) < 1e-6 and abs(got[1] - want[1]) < 1e-6, (got, want))
+    pane1 = snapped[0]
+    _assert(pane1[0] > 0 and pane1[1] < 0, (pane1, "pane 1 stays up and right"))
+
+
 def test_stellarium_js_unifies_one_by_one_and_mosaic_live() -> None:
     _assert("function livePointingQuad" in SKY_WEB_FOV_JS, "1×1 and mosaic share one live quad")
     _assert("return [3, 0, 1, 2];" in SKY_WEB_FOV_JS, "JPEG TL is camera left-up")
@@ -203,5 +251,6 @@ if __name__ == "__main__":
     test_jpeg_top_is_camera_up_on_north_up_chart()
     test_one_by_one_and_mosaic_centre_share_camera_up()
     test_altaz_stays_upright_on_both_sides_of_the_south_pole()
+    test_aladin_zenith_pane_sits_level_like_stellarium()
     test_stellarium_js_unifies_one_by_one_and_mosaic_live()
     print("ok")

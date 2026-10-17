@@ -2401,6 +2401,10 @@ _DEMOTE_PREFIXES = (
     "receive position data >>",
     ">> code_step_motor_need_reset",
     "success cmd_step_motor_get_position",
+    # State polls and charge/focus notifies repeat these. Vitals already show them.
+    "streamtypebycamera from get_device_state_info",
+    "charging:",
+    "focus position is ",
 )
 # Firmware reply code 0 means success. The SDK logs "SET EXPOSURE (V3) -> 0"
 # as if 0 were the value; the worker already logs the real arguments.
