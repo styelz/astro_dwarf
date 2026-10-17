@@ -21,3 +21,9 @@ feat: add target panel title functionality to enhance user interface
 - Introduced `target_panel_title` function to dynamically generate the title for the control TARGET panel based on session and device states.
 - Updated `AppBackend` with a new slot `targetPanelTitle` to expose the title generation logic to the QML layer.
 - Modified `ControlPage.qml` to utilize the new `targetPanelTitle` function, improving the display of active session and device information.
+
+feat: enhance mosaic functionality with new display logic and camera handling
+- Introduced `mosaic_replaces_sheet` and `mosaic_session_should_drop_previous_sheet` functions to manage mosaic state transitions effectively.
+- Added `mosaic_keep_camera_until_stack_frame` and `mosaic_camera_hold_timeout_s` functions for improved camera handling during mosaic operations.
+- Updated `mosaic_preview_keep_live_sheet` and related methods to ensure proper handling of live and stored images in the mosaic display.
+- Enhanced `ControlPage.qml` to dynamically determine the camera source for mosaic previews, improving user interface responsiveness.

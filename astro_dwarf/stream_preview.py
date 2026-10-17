@@ -808,6 +808,38 @@ def _merge_colinear_edges(
     return merged
 
 
+def mosaic_pane_display_source(
+    *,
+    index: int,
+    live_pane: int,
+    live_active: bool,
+    awaiting_live: bool,
+    live_ready: bool,
+    has_stored: bool,
+    has_hold: bool,
+) -> str:
+    """What a contact-sheet cell paints: live, hold, stored, or empty.
+
+    The active pane stays on the camera until a new frame is ready. A still
+    from the previous mosaic must not sit in that cell in the meantime.
+    """
+    try:
+        cell = int(index or 0)
+        pane = int(live_pane or 0)
+    except (TypeError, ValueError):
+        cell = 0
+        pane = 0
+    if cell == pane and pane >= 1 and live_active and not awaiting_live and live_ready:
+        return "live"
+    if cell == pane and pane >= 1 and live_active:
+        return "hold" if has_hold else "empty"
+    if has_stored:
+        return "stored"
+    if has_hold:
+        return "hold"
+    return "empty"
+
+
 def mosaic_live_overlay_ready(image: QImage | None, stale_key: int) -> bool:
     """True when this live frame belongs to the current pane, not the previous one.
 
@@ -1061,6 +1093,19 @@ class MosaicLiveItem(QQuickPaintedItem):
 
     verticalScale = Property(int, getVerticalScale, setVerticalScale, notify=verticalScaleChanged)
 
+    def _pane_display_source(self, index: int, stored: QImage, live_image: QImage) -> str:
+        has_stored = stored is not None and not stored.isNull()
+        has_hold = index == self._held_pane and not self._held_image.isNull()
+        return mosaic_pane_display_source(
+            index=index,
+            live_pane=self._live_pane,
+            live_active=self._live_active,
+            awaiting_live=self._await_live_frame,
+            live_ready=mosaic_live_overlay_ready(live_image, self._stale_live_key),
+            has_stored=has_stored,
+            has_hold=has_hold,
+        )
+
     def _capture_hold(self) -> None:
         """Keep the last painted live frame after stacking takes the stream."""
         if self._live_pane < 1:
@@ -1259,20 +1304,18 @@ class MosaicLiveItem(QQuickPaintedItem):
             if cell is None:
                 continue
             cells.append((cell.x(), cell.y(), cell.width(), cell.height()))
-            image = images.get(index) or QImage()
+            stored = images.get(index) or QImage()
+            source = self._pane_display_source(index, stored, live_image)
+            image = QImage()
             cover = False
-            if (
-                index == self._live_pane
-                and self._live_active
-                and not self._await_live_frame
-                and mosaic_live_overlay_ready(live_image, self._stale_live_key)
-            ):
+            if source == "live":
                 image = live_image
                 cover = True
-            elif image.isNull() and index == self._held_pane and not self._held_image.isNull():
+            elif source == "hold":
                 image = self._held_image
                 cover = True
-            elif not image.isNull():
+            elif source == "stored":
+                image = stored
                 cover = True
             if flip and not image.isNull():
                 image = image.flipped(Qt.Orientation.Horizontal | Qt.Orientation.Vertical)
@@ -1319,22 +1362,18 @@ class MosaicLiveItem(QQuickPaintedItem):
             if cell is None:
                 continue
             painter.fillRect(cell, QColor(0, 0, 0, 160))
-            image = images.get(index) or QImage()
-            if (
-                index == self._live_pane
-                and self._live_active
-                and not self._await_live_frame
-                and mosaic_live_overlay_ready(live_image, self._stale_live_key)
-            ):
+            stored = images.get(index) or QImage()
+            source = self._pane_display_source(index, stored, live_image)
+            image = QImage()
+            if source == "live":
                 image = live_image
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-            elif (
-                image.isNull()
-                and index == self._held_pane
-                and not self._held_image.isNull()
-            ):
+            elif source == "hold":
                 image = self._held_image
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+            elif source == "stored":
+                image = stored
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
             else:
                 painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
             fitted = self._fit_in(image, cell)

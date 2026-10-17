@@ -1461,6 +1461,13 @@ Item {
                         && root.scopePending !== "stack"
                         && !controlPage.mosaicRunning
                     readonly property bool displayWide: backend.previewStacking ? false : (pipAvailable ? mainWide : backend.previewWidePlaying)
+                    readonly property string mosaicLiveCamera: {
+                        if (backend.previewStacking || backend.previewTelePlaying)
+                            return "tele"
+                        if (backend.previewWidePlaying)
+                            return "wide"
+                        return "tele"
+                    }
                     readonly property bool mainPlaying: backend.previewResult || (displayWide ? backend.previewWidePlaying : backend.previewTelePlaying)
                     readonly property int stackCount: {
                         const n = Number(root.scopeTelemetry.capture_stacked)
@@ -1912,7 +1919,7 @@ Item {
                         anchors.fill: parent
                         visible: previewHost.mosaicSheet && backend.stitchStatus !== "done"
                         playing: !previewHost.feedFullscreen && previewHost.mosaicSheet && backend.stitchStatus !== "done"
-                        camera: "tele"
+                        camera: previewHost.mosaicLiveCamera
                         accent: Theme.fov
                     }
                     Image {

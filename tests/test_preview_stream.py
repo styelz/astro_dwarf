@@ -30,8 +30,12 @@ from astro_dwarf.qt_backend import (
     finished_device_mosaic_uses_live_feed,
     held_sheet_device_layout,
     mosaic_frozen_takes_dropped_enhance,
+    mosaic_camera_hold_timeout_s,
     mosaic_goto_failed_result,
     mosaic_group_sessions,
+    mosaic_keep_camera_until_stack_frame,
+    mosaic_replaces_sheet,
+    mosaic_session_should_drop_previous_sheet,
     mosaic_live_pane,
     mosaic_overlay_live_pane,
     mosaic_pane_may_replace_frozen,
@@ -73,6 +77,7 @@ from astro_dwarf.stream_preview import (
     load_mosaic_pane_cache,
     mosaic_cache_current,
     mosaic_live_overlay_ready,
+    mosaic_pane_display_source,
     mosaic_shared_pane_edges,
     preview_should_ingest_frame,
     save_mosaic_pane_cache,
@@ -1110,6 +1115,130 @@ def test_mosaic_group_sessions_uses_repository_all() -> None:
         raise AssertionError("JsonRepository has all(), not values()")
 
 
+def test_new_mosaic_drops_previous_stills_and_keeps_the_camera() -> None:
+    _assert(mosaic_replaces_sheet("live-a", "live-b"), "a different mosaic must drop the old sheet")
+    _assert(not mosaic_replaces_sheet("live-a", "live-a"), "the next pane of this mosaic keeps its stills")
+    _assert(not mosaic_replaces_sheet("", "live-b"), "the first layout has nothing to replace")
+    _assert(
+        mosaic_session_should_drop_previous_sheet(
+            resuming=False,
+            continuing=False,
+            imported_plan=True,
+            grid_rows=2,
+            grid_columns=2,
+            panes=1,
+        ),
+        "starting pane 1 of a new mosaic clears the previous run",
+    )
+    _assert(
+        not mosaic_session_should_drop_previous_sheet(
+            resuming=False,
+            continuing=True,
+            imported_plan=True,
+            grid_rows=2,
+            grid_columns=2,
+            panes=1,
+        ),
+        "pane 2 of the same mosaic keeps pane 1",
+    )
+    _assert(
+        not mosaic_session_should_drop_previous_sheet(
+            resuming=True,
+            continuing=False,
+            imported_plan=True,
+            grid_rows=2,
+            grid_columns=2,
+            panes=1,
+        ),
+        "joining a capture after restart keeps the sheet",
+    )
+    _assert(
+        not mosaic_session_should_drop_previous_sheet(
+            resuming=False,
+            continuing=False,
+            imported_plan=False,
+            grid_rows=0,
+            grid_columns=0,
+            panes=1,
+        ),
+        "a single stack does not clear a held mosaic sheet",
+    )
+    _assert(
+        mosaic_keep_camera_until_stack_frame(stacking=True, pane=1, frame_ready=False),
+        "the active pane stays on the camera until its first stack frame",
+    )
+    _assert(
+        not mosaic_keep_camera_until_stack_frame(stacking=True, pane=1, frame_ready=True),
+        "the first stack frame may replace the camera",
+    )
+    _assert(
+        not mosaic_keep_camera_until_stack_frame(
+            stacking=True, pane=1, frame_ready=False, timed_out=True
+        ),
+        "a missed stack frame still falls through to the stacking preview",
+    )
+    _assert(
+        not mosaic_keep_camera_until_stack_frame(stacking=False, pane=1, frame_ready=False),
+        "goto uses the slew overlay, not the stacking hold",
+    )
+    _assert(
+        not mosaic_keep_camera_until_stack_frame(stacking=True, pane=0, frame_ready=False),
+        "a single stack still switches to the stacking preview",
+    )
+    _assert(mosaic_camera_hold_timeout_s(15) == 20.0, "one 15s shutter plus a short quiet")
+    _assert(mosaic_camera_hold_timeout_s(0) == 8.0, "unknown exposure uses the short floor")
+    _assert(mosaic_camera_hold_timeout_s(500) == 180.0, "a very long exposure stays capped")
+    _assert(
+        mosaic_pane_display_source(
+            index=1,
+            live_pane=1,
+            live_active=True,
+            awaiting_live=True,
+            live_ready=False,
+            has_stored=True,
+            has_hold=False,
+        )
+        == "empty",
+        "the active pane must not keep the previous mosaic still while the camera catches up",
+    )
+    _assert(
+        mosaic_pane_display_source(
+            index=1,
+            live_pane=1,
+            live_active=True,
+            awaiting_live=False,
+            live_ready=True,
+            has_stored=True,
+            has_hold=False,
+        )
+        == "live",
+        "a fresh camera frame replaces the old still in the active pane",
+    )
+    _assert(
+        mosaic_pane_display_source(
+            index=2,
+            live_pane=1,
+            live_active=True,
+            awaiting_live=False,
+            live_ready=True,
+            has_stored=True,
+            has_hold=False,
+        )
+        == "stored",
+        "a finished pane of this mosaic stays on its still",
+    )
+    from PySide6.QtGui import QColor, QImage
+
+    frames = MosaicFrames()
+    image = QImage(8, 8, QImage.Format.Format_RGB32)
+    image.fill(QColor(20, 40, 60))
+    frames.set_layout(2, 2, 1, True, "live-a")
+    frames.put(1, image)
+    frames.clear()
+    frames.set_layout(2, 2, 1, True, "live-b")
+    _assert(not frames.indexes(), "clearing before the new layout drops the old pane")
+
+
 def test_mosaic_frames_keep_completed_stills() -> None:
     from PySide6.QtGui import QImage, QColor
 
@@ -1640,6 +1769,7 @@ if __name__ == "__main__":
     test_mosaic_goto_fail_does_not_publish_pane_url()
     test_mosaic_contact_sheet_never_freezes_wide()
     test_mosaic_group_sessions_uses_repository_all()
+    test_new_mosaic_drops_previous_stills_and_keeps_the_camera()
     test_mosaic_frames_keep_completed_stills()
     test_sky_mosaic_urls_backfill_from_stored_stills()
     test_completion_view_waits_until_the_pane_stills_settle()
