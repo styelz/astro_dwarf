@@ -9,10 +9,10 @@ import numpy as np
 from astro_dwarf.mosaic_stitch import StitchPane, overlap_warning, stitch_panes
 
 
-def _field(width: int, height: int, rng: np.random.Generator) -> np.ndarray:
+def _field(width: int, height: int, rng: np.random.Generator, count: int = 48) -> np.ndarray:
     image = np.zeros((height, width), dtype=np.float32)
-    ys = rng.uniform(12, height - 12, 48)
-    xs = rng.uniform(12, width - 12, 48)
+    ys = rng.uniform(12, height - 12, count)
+    xs = rng.uniform(12, width - 12, count)
     for x, y in zip(xs, ys):
         x0, x1 = int(x) - 2, int(x) + 3
         y0, y1 = int(y) - 2, int(y) + 3
@@ -55,6 +55,36 @@ class MosaicStitchTests(unittest.TestCase):
         self.assertLessEqual(result.residual_px, 0.5)
         self.assertEqual(result.unmatched, [])
         self.assertGreater(len(result.jpeg), 100)
+
+    def test_recovers_full_frame_shift_outside_the_fine_window(self) -> None:
+        """A 1920-class still sits ~30px and 1° off the seed. The 18px window misses it."""
+        rng = np.random.default_rng(11)
+        width, height = 960, 540
+        master = _field(width + 800, height + 500, rng, count=220)
+        overlap = 0.2
+        step_x = int(round(width * (1.0 - overlap)))
+        step_y = int(round(height * (1.0 - overlap)))
+        placed = {
+            (0, 0): (0.0, (0.0, 0.0)),
+            (0, 1): (-1.4, (32.0, -8.0)),
+            (1, 0): (1.6, (6.0, -28.0)),
+            (1, 1): (0.8, (26.0, -22.0)),
+        }
+        panes = []
+        index = 1
+        for row, column in ((0, 0), (0, 1), (1, 0), (1, 1)):
+            y0 = row * step_y
+            x0 = column * step_x
+            crop = master[y0 : y0 + height, x0 : x0 + width].copy()
+            degrees, shift = placed[(row, column)]
+            if degrees or shift != (0.0, 0.0):
+                crop = _rotate(crop, degrees, shift)
+            panes.append(StitchPane(index, row + 1, column + 1, crop))
+            index += 1
+        result = stitch_panes(panes, overlap=overlap)
+        self.assertIsNotNone(result.residual_px)
+        self.assertLessEqual(result.residual_px, 1.5)
+        self.assertEqual(result.unmatched, [])
 
     def test_starless_edge_keeps_seed(self) -> None:
         left = np.linspace(0.05, 0.2, 80, dtype=np.float32)[None, :].repeat(60, axis=0)

@@ -3,10 +3,14 @@
 If you find any bugs or have any suggestions for the application, please create an issue here:
 [https://github.com/styelz/astro_dwarf/issues/new/choose](https://github.com/styelz/astro_dwarf/issues/new/choose)
 
-feat: update visibility of colour settings based on theme lock status
-- Made the COLOURS setting group visibility dependent on the themeLocked property, enhancing user interface responsiveness to theme changes.
-feat: enhance session template and capture handling
-- Added new fields to the SessionTemplate class for action and timing configurations, including burst and timelapse settings.
-- Introduced a `stored_capture_fields` function to streamline the retrieval of session action and timing data from both dictionaries and session objects.
-- Updated various components in the AppBackend and storage modules to utilize the new capture fields, ensuring consistent handling of session data across the application.
-- Modified the SessionDialog and SessionsPage to improve user interaction with session creation and management.
+feat: enhance sky atlas functionality with zenith pane leveling and image handling
+- Added `levelZenithPanes` function to ensure zenith panes remain level during rendering, improving visual accuracy.
+- Introduced `imageQuadFromRing` function to correctly order image quadrants based on camera orientation.
+- Updated drawing logic in `paintProjectedFov` to utilize new image handling functions for better alignment.
+- Enhanced tests to validate zenith pane leveling and image handling, ensuring consistent behavior with Stellarium's grid.
+
+feat: enhance mosaic stitching with coarse cataloging and edge pairing improvements
+- Introduced a coarse cataloging mechanism to handle full-frame stills that exceed the fine stitching window, improving alignment accuracy.
+- Updated edge pairing logic to utilize coarse stars and seeds when fine matches are unavailable, enhancing robustness in challenging stitching scenarios.
+- Modified the `_stars` function to allow dynamic limits on star detection, improving flexibility in star handling.
+- Added a new test to validate stitching recovery for full-frame images shifted outside the fine window, ensuring consistent performance across various conditions.

@@ -26,6 +26,11 @@ except ImportError:  # pragma: no cover
 _MIN_MATCHES = 4
 _LOW_OVERLAP = 0.15
 _MAX_CANVAS = 8192
+# Full-frame stills are ~1920px on the sheet and ~3856px on disk. A fixed
+# 18px window then misses a degree of alt-az field rotation and a few
+# percent of plate scale. Match a short side first, then refine.
+_COARSE_LONG_SIDE = 420
+_COARSE_STARS = 80
 
 
 @dataclass(slots=True)
@@ -85,17 +90,31 @@ def stitch_panes(
     ov = _axis(overlap_v, overlap)
     seeds = _seed_placements(prepared, oh, ov)
     stars = {item["index"]: _stars(item["rgb"]) for item in prepared}
+    coarse = _coarse_catalog(prepared, seeds)
     edges = _neighbor_edges(prepared)
     inliers: list[tuple[int, int, Any, Any]] = []
     unmatched: list[tuple[int, int]] = []
     for left, right in edges:
-        pairs = _edge_inliers(left, right, seeds, stars)
+        pairs = _edge_pairs(left, right, seeds, stars, coarse)
         if pairs is None:
             unmatched.append((left, right))
             continue
         src, dst = pairs
         inliers.append((left, right, src, dst))
     solved, connected = _solve_similarities(prepared, seeds, inliers)
+    if coarse is not None and inliers:
+        refined: list[tuple[int, int, Any, Any]] = []
+        changed = False
+        for left, right, src, dst in inliers:
+            pairs = _edge_inliers(left, right, solved, stars)
+            if pairs is None:
+                refined.append((left, right, src, dst))
+                continue
+            refined.append((left, right, pairs[0], pairs[1]))
+            changed = True
+        if changed:
+            inliers = refined
+            solved, connected = _solve_similarities(prepared, solved, inliers)
     for left, right in edges:
         if left not in connected or right not in connected:
             pair = (left, right)
@@ -339,7 +358,7 @@ def _seed_placements(prepared: list[dict[str, Any]], overlap_h: float, overlap_v
     return seeds
 
 
-def _stars(rgb: Any) -> Any:
+def _stars(rgb: Any, limit: int = 400) -> Any:
     gray = (0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]).astype(np.float32)
     small = cv2.GaussianBlur(gray, (0, 0), 1.1)
     radius = max(15, int(min(gray.shape) * 0.06) | 1)
@@ -348,9 +367,10 @@ def _stars(rgb: Any) -> Any:
     kernel = np.ones((5, 5), np.uint8)
     peaks = (high == cv2.dilate(high, kernel)) & (high > max(0.02, float(np.percentile(high, 99.2)) * 0.45))
     ys, xs = np.nonzero(peaks)
-    if len(xs) > 400:
+    cap = max(_MIN_MATCHES, int(limit))
+    if len(xs) > cap:
         score = high[ys, xs]
-        keep = np.argpartition(score, -400)[-400:]
+        keep = np.argpartition(score, -cap)[-cap:]
         xs = xs[keep]
         ys = ys[keep]
     points = []
@@ -370,6 +390,50 @@ def _stars(rgb: Any) -> Any:
     if not points:
         return np.zeros((0, 2), dtype=np.float64)
     return np.asarray(points, dtype=np.float64)
+
+
+def _coarse_catalog(
+    prepared: list[dict[str, Any]],
+    seeds: dict[int, Any],
+) -> tuple[dict[int, Any], dict[int, Any], float] | None:
+    """Downscaled stars and seeds for joins the 18px window cannot see."""
+    longest = max(max(int(item["width"]), int(item["height"])) for item in prepared)
+    if longest <= _COARSE_LONG_SIDE:
+        return None
+    lift = float(longest) / float(_COARSE_LONG_SIDE)
+    stars: dict[int, Any] = {}
+    for item in prepared:
+        width = int(item["width"])
+        height = int(item["height"])
+        tw = max(8, int(round(width / lift)))
+        th = max(8, int(round(height / lift)))
+        small = cv2.resize(item["rgb"], (tw, th), interpolation=cv2.INTER_AREA)
+        stars[int(item["index"])] = _stars(small, _COARSE_STARS)
+    scaled: dict[int, Any] = {}
+    for index, params in seeds.items():
+        shrunk = np.array(params, dtype=np.float64)
+        shrunk[2] /= lift
+        shrunk[3] /= lift
+        scaled[index] = shrunk
+    return stars, scaled, lift
+
+
+def _edge_pairs(
+    left: int,
+    right: int,
+    seeds: dict[int, Any],
+    stars: dict[int, Any],
+    coarse: tuple[dict[int, Any], dict[int, Any], float] | None,
+) -> tuple[Any, Any] | None:
+    pairs = _edge_inliers(left, right, seeds, stars)
+    if pairs is not None or coarse is None:
+        return pairs
+    coarse_stars, coarse_seeds, lift = coarse
+    pairs = _edge_inliers(left, right, coarse_seeds, coarse_stars)
+    if pairs is None:
+        return None
+    src, dst = pairs
+    return src * lift, dst * lift
 
 
 def _neighbor_edges(prepared: list[dict[str, Any]]) -> list[tuple[int, int]]:
