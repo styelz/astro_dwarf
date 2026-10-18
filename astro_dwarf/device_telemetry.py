@@ -307,6 +307,27 @@ def settle_goto_changes(
     released["goto_state"] = "idle"
     released["goto_released"] = True
     return released, False, 0.0
+
+
+_BUSY_GOTO_STATES = frozenset({"running", "solving", "stopping"})
+
+
+def goto_search_cleared(snapshot: dict[str, Any] | None) -> bool:
+    """True when firmware has left a target search.
+
+    ``goto_released`` is an idle this app invents after STOPPING sits for
+    12s. The telescope can still be searching. Another GOTO then comes back
+    FUNCTION_BUSY and the search can ignore stop, including from the
+    official app.
+    """
+    data = snapshot or {}
+    if data.get("goto_released"):
+        return False
+    if str(data.get("tracking_state") or "") == "running":
+        return False
+    return str(data.get("goto_state") or "") not in _BUSY_GOTO_STATES
+
+
 def charging_notify_changes(value: Any) -> dict[str, Any]:
     """Map ``CMD_NOTIFY_CHARGE``.
 
@@ -1071,6 +1092,11 @@ class TelemetryTap:
                     stopping_since=self._goto_stopping_since,
                     now=now,
                 )
+                # Keep a synthetic idle visible until firmware sends its own
+                # state. Dropping the flag here made a stalled plate-solve
+                # look finished, and the retry GOTO landed on a live search.
+                if held.get("goto_released") and not changes.get("goto_released"):
+                    changes["goto_released"] = False
                 if self._goto_stop_owned and str(changes.get("goto_state") or "") == "stopping":
                     self._arm_goto_unwind_locked()
                 else:
@@ -1095,8 +1121,6 @@ class TelemetryTap:
             payload = self._pending
             self._pending = {}
             self._state.update(payload)
-            if payload.get("goto_released"):
-                self._state.pop("goto_released", None)
             self._last_flush = now
         self._emit({"event": "telemetry", "data": payload})
 

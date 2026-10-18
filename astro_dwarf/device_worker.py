@@ -37,6 +37,7 @@ from .device_telemetry import (
     box_track_reply_failed,
     clear_device_occupied,
     device_occupied,
+    goto_search_cleared,
     install_sdk_logging,
     link_telemetry,
     track_box_off,
@@ -2972,10 +2973,15 @@ _V3_OPERATION_WAITS: dict[str, tuple[int, str | None, bool, float]] = {
 # A slew that is still moving can run past the 5 min GOTO budget.
 # Plate-solving is different: a healthy solve leaves this state in well
 # under a minute. One that stays there has stopped producing a result, and
-# waiting out the 10 min cap freezes the mosaic. Stop it and send the slew
-# again. The second attempt fails at the same stall instead of waiting.
+# waiting out the 10 min cap freezes the mosaic. Stop it, and send the slew
+# again only after firmware has left the search. The second attempt fails
+# at the same stall instead of waiting.
 _GOTO_SOLVE_TIMEOUT_S = 600.0
 _GOTO_SOLVE_STALL_S = 90.0
+# After a real stop, 11002 was still FUNCTION_BUSY 9s later. The retry
+# waits this long once the search has actually cleared.
+_GOTO_RETRY_QUIET_S = 12.0
+_GOTO_RETRY_STOP_S = 40.0
 _NON_FATAL_REPLIES = {
     11000: {-11500},  # plate solving retry during calibration
     11002: {-11500},
@@ -4664,12 +4670,45 @@ def _goto_stalled_error(exc: BaseException) -> bool:
 
 
 def _retry_stalled_plate_solve(name: str) -> None:
-    """Stop a plate-solve that never reported a result, then let the caller resend GOTO."""
+    """Stop a hung plate-solve. The caller resends GOTO only if this returns.
+
+    A synthetic idle after STOPPING is not a finished search. Sending 11002
+    then returns FUNCTION_BUSY and can leave the telescope searching so that
+    stop, including the official app's stop, does nothing.
+    """
     log(
-        f"{name}: plate-solve produced no result; stopping it and trying the slew again",
+        f"{name}: plate-solve produced no result; stopping it before another slew",
         "warning",
     )
-    _stop_tracking_for_goto(f"Stopping stalled plate-solve before retrying {name}")
+    _stop_stalled_plate_solve(name)
+
+
+def _stop_stalled_plate_solve(name: str) -> None:
+    """Stop the search and wait until firmware has left it.
+
+    Raises when the search is still up, so the caller must not send GOTO.
+    """
+    log(f"Stopping stalled plate-solve before retrying {name}")
+    try:
+        if sdk_call("stop_goto") is False:
+            log("Stop plate-solve did not confirm; retrying", "warning")
+            sdk_call("stop_goto")
+    except Exception as exc:
+        log(f"Stop plate-solve skipped: {exc}", "warning")
+    deadline = time.monotonic() + _GOTO_RETRY_STOP_S
+    while time.monotonic() < deadline:
+        if _stop.is_set():
+            raise InterruptedError("Session stopped")
+        snapshot = _tap.snapshot() if _tap is not None else {}
+        if goto_search_cleared(snapshot):
+            _wait_seconds(_GOTO_RETRY_QUIET_S, "Waiting after the plate-solve stopped")
+            snapshot = _tap.snapshot() if _tap is not None else {}
+            if goto_search_cleared(snapshot):
+                return
+        time.sleep(0.25)
+    raise RuntimeError(
+        f"{name} is still searching after stop. Not sending another slew."
+    )
 
 
 def _stop_tracking_for_goto(label: str = "Stopping leftover tracking before GOTO") -> None:

@@ -31,3 +31,7 @@ feat: enhance session management with mosaic group assignment and separation log
 - Implemented `separate_repeated_mosaic_runs` method to split planned repeats sharing the same mosaic ID, ensuring distinct handling of each run.
 - Updated `AppBackend` to integrate new methods for improved session handling and logging of changes in mosaic runs.
 
+feat: enhance goto handling and telemetry state management
+- Introduced `goto_search_cleared` function to determine when the firmware has exited a target search, improving response to GOTO commands.
+- Updated `TelemetryTap` to maintain a synthetic idle state for `goto_released`, preventing premature state changes during ongoing searches.
+- Refactored plate-solving retry logic to ensure retries only occur after confirming the search has cleared, enhancing reliability in GOTO operations.
