@@ -216,6 +216,7 @@ from .services import (
     sky_web_pane_script,
     sky_web_site_script,
     sky_web_template_notes,
+    calendar_time_conflicts,
     session_window,
     sessions_overlap,
     stagger_mosaic_sessions,
@@ -16844,6 +16845,11 @@ class AppBackend(QObject):
             if match:
                 return match
         return self._device_by_id(self._selected_device_id)
+
+    @Slot(float, float, result=bool)
+    def calendarTimeConflicts(self, start_ms: float, end_ms: float) -> bool:
+        """Night-view lane test. A sub-minute tail does not open a second lane."""
+        return calendar_time_conflicts(start_ms, end_ms)
 
     @Slot(str, result=float)
     @Slot(str, str, result=float)

@@ -5988,6 +5988,16 @@ def sessions_overlap(left: Session, right: Session, tz) -> bool:
     return left_start < right_end and right_start < left_end
 
 
+# Night-view lanes. A start is stored on a minute, so a pane whose duration
+# runs a few seconds into the next pane's minute is still back-to-back.
+CALENDAR_OVERLAP_SLACK_MS = 60_000
+
+
+def calendar_time_conflicts(start_ms: float, end_ms: float, slack_ms: float = CALENDAR_OVERLAP_SLACK_MS) -> bool:
+    """True when ``start_ms`` is still inside a block that ends at ``end_ms``."""
+    return float(start_ms) < float(end_ms) - float(slack_ms)
+
+
 def next_free_start(
     occupied: list[tuple[datetime, datetime]],
     start: datetime,

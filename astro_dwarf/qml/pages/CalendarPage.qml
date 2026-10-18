@@ -216,10 +216,11 @@ Item {
             return marked
         return Number(item.start_epoch_ms || 0) + calendarPage.sessionSpanSeconds(item) * 1000
     }
-    // Two sessions share lanes only when they genuinely overlap in time; a 500 ms
-    // slack keeps back-to-back sessions out of each other's lane.
+    // Two sessions share a lane only when they overlap by more than a minute.
+    // Starts are stored on a minute, so a few seconds of leftover duration is
+    // the same back-to-back slot, not a second target running alongside.
     function sessionsOverlap(a, b) {
-        return a.start < b.end - 500 && b.start < a.end - 500
+        return backend.calendarTimeConflicts(a.start, b.end) && backend.calendarTimeConflicts(b.start, a.end)
     }
     // Lane assignment for one cluster of transitively overlapping sessions. Each
     // session then grows rightwards over any lane that stays free for its whole
@@ -229,7 +230,7 @@ Item {
         const placed = []
         for (let i = 0; i < cluster.length; i++) {
             const slot = { item: cluster[i], lane: 0, start: Number(cluster[i].start_epoch_ms), end: calendarPage.sessionEndMs(cluster[i]) }
-            while (slot.lane < laneEnds.length && slot.start < laneEnds[slot.lane] - 500)
+            while (slot.lane < laneEnds.length && backend.calendarTimeConflicts(slot.start, laneEnds[slot.lane]))
                 slot.lane += 1
             if (slot.lane === laneEnds.length)
                 laneEnds.push(slot.end)
@@ -272,7 +273,7 @@ Item {
             let clusterEnd = 0
             for (let i = 0; i < group.length; i++) {
                 const start = Number(group[i].start_epoch_ms)
-                if (cluster.length && start >= clusterEnd - 500) {
+                if (cluster.length && !backend.calendarTimeConflicts(start, clusterEnd)) {
                     calendarPage.packCluster(cluster, d, columns, layout)
                     cluster = []
                     clusterEnd = 0
