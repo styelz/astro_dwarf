@@ -171,8 +171,10 @@ from .services import (
     mosaic_session_footprints,
     mosaic_stitch_cell,
     mosaic_position_angle,
+    assign_scheduled_mosaic_group,
     copy_observing_night,
     copy_session_name,
+    separate_repeated_mosaic_runs,
     duplicate_session_drafts,
     duplicate_session_scope,
     history_ids_to_discard,
@@ -2588,6 +2590,7 @@ class AppBackend(QObject):
         if recovered:
             self._recovered_sessions = {item.id: item.device_id for item in recovered}
             self.add_log("warning", f"Recovered {len(recovered)} interrupted session(s)")
+        self._separate_repeated_mosaic_runs()
         self._sequence_colliding_mosaics()
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
@@ -15548,6 +15551,7 @@ class AppBackend(QObject):
                 frame_count=frame_count if frame_count is not None else session.camera.frame_count,
             )
             sessions.append(replace(session, camera=camera))
+        sessions = assign_scheduled_mosaic_group(sessions, template.target.name or template.name)
         staggered = stagger_mosaic_sessions(sessions, start, device.hardware)
         try:
             self._commit_device_sessions(staggered, device)
@@ -16615,6 +16619,14 @@ class AppBackend(QObject):
         if self._preview_thread.isRunning():
             self._preview_thread.quit()
             self._preview_thread.wait(500)
+
+    def _separate_repeated_mosaic_runs(self) -> None:
+        changed = separate_repeated_mosaic_runs(self.store.sessions.all())
+        if not changed:
+            return
+        for item in changed:
+            self.store.sessions.save(item)
+        self._emit_sessions_changed()
 
     def _sequence_colliding_mosaics(self) -> None:
         changed = False

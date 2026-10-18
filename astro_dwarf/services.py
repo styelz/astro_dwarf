@@ -4761,6 +4761,52 @@ def new_mosaic_group_id(name: str) -> str:
     return f"{_mosaic_group_slug(name)}-{new_id()[:8]}"
 
 
+def assign_scheduled_mosaic_group(sessions: list[Session], label: str = "") -> list[Session]:
+    """Give one template schedule its own mosaic id.
+
+    Cloned panes still carry the template group id. A second NOW or next-free
+    schedule of that template would otherwise join the first run in the list.
+    """
+    if not sessions or not any(str(item.mosaic.group_id or "") for item in sessions):
+        return sessions
+    fresh = new_mosaic_group_id(label or sessions[0].target.name or sessions[0].name)
+    return [replace(item, mosaic=replace(item.mosaic, group_id=fresh)) for item in sessions]
+
+
+def separate_repeated_mosaic_runs(sessions: list[Session]) -> list[Session]:
+    """Split planned repeats that still share one mosaic id.
+
+    A mosaic has one session per pane name. Scheduling the same template again
+    used to reuse that id, so both runs collapsed into one block. The earliest
+    copy of each pane keeps the id. Each later planned copy set gets a new one.
+    A run that has already started stays put. Sessions that do not move are omitted.
+    """
+    buckets: dict[tuple[str, str], list[Session]] = {}
+    for item in sessions:
+        group_id = str(item.mosaic.group_id or "").strip()
+        if group_id:
+            buckets.setdefault((item.device_id, group_id), []).append(item)
+    changed: list[Session] = []
+    for members in buckets.values():
+        by_name: dict[str, list[Session]] = {}
+        for item in members:
+            by_name.setdefault(item.name, []).append(item)
+        if all(len(items) == 1 for items in by_name.values()):
+            continue
+        for items in by_name.values():
+            items.sort(key=lambda item: (item.scheduled_start, item.id))
+        copies = max(len(items) for items in by_name.values())
+        label = members[0].target.name or members[0].name
+        for index in range(1, copies):
+            run = [items[index] for items in by_name.values() if len(items) > index]
+            if not run or any(item.status != SessionStatus.PLANNED for item in run):
+                continue
+            fresh = new_mosaic_group_id(label)
+            for item in run:
+                changed.append(replace(item, mosaic=replace(item.mosaic, group_id=fresh)))
+    return changed
+
+
 def copy_session_name(name: str) -> str:
     text = str(name or "").strip() or "Session"
     if text.lower().endswith(" copy"):

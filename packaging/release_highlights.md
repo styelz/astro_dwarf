@@ -25,3 +25,9 @@ feat: enhance AppBackend with known pointing and session handling improvements
 - Introduced `_active_pointing_session` to manage active sessions and improve session retrieval logic.
 - Enhanced `lockSkyToTrackedTarget` method to utilize known pointing information for better sky lock handling.
 - Implemented `_emit_known_sky_lock` to streamline sky lock emissions based on known coordinates.
+
+feat: enhance session management with mosaic group assignment and separation logic
+- Added `assign_scheduled_mosaic_group` function to assign unique mosaic IDs to scheduled sessions, preventing ID collisions.
+- Implemented `separate_repeated_mosaic_runs` method to split planned repeats sharing the same mosaic ID, ensuring distinct handling of each run.
+- Updated `AppBackend` to integrate new methods for improved session handling and logging of changes in mosaic runs.
+
