@@ -21,7 +21,7 @@ alwaysApply: true
 - QML presentation: `astro_dwarf/qml/`. Backend state and Qt models: `qt_backend.py`. Hardware orchestration: `device_worker.py`. Packet normalization: `device_telemetry.py`.
 - Normalize device telemetry at the worker/backend boundary. QML consumes stable backend fields; it must not decode SDK packets or invent hardware state.
 - Prefer real device telemetry for activity and completion. UI-side pending state is only short-lived command feedback.
-- Do not modify the installed `dwarf_python_api` package. Wrap or adapt SDK behavior in this repo and fail defensively when SDK internals or optional fields differ.
+- Do not modify the installed `dwarf_python_api` package. Wrap or adapt SDK behavior in this repo and fail defensively when SDK internals or optional fields differ. The pin and the modules to read are in `.cursor/rules/dwarf-python-api.mdc`.
 - Preserve multi-device isolation: actions, telemetry, session state, and persisted settings stay scoped to the intended telescope.
 - Keep unattended scheduling non-blocking. Hardware warnings that can be safely bypassed should be logged and surfaced without stalling an overnight run.
 - Reuse existing models, helpers, and QML components. Add an abstraction only to remove meaningful duplication or centralize behavior.
@@ -53,7 +53,7 @@ Sky-frame, pane-number, and PA rules: `.cursor/rules/sky-mosaic-astronomy.mdc`.
 - Auto Parameters persist across PHOTO and DSO. A camera catalog read or a leftover PHOTO exposure must not replace a saved setup. Clear Auto Parameters when a manual exposure, gain, or stack count is applied. Stack progress carries `exp_index` and `gain_index`; the camera-param table can still show the last PHOTO values while the shutter is a DSO exposure.
 - Album delete accepts firmware types `1` photo, `2` video, `3` burst, `4` astro, and `5` panorama. Type `0` and list-filter `6` are ignored. Wrap the body in `datas`. Leave category folders in place. Astronomy deletes the session `stacked.jpg`, burst deletes `0.jpg`, and panorama deletes `pano_thumbnail.jpg`. DWARF Mini does not publish a folder index: list sessions from firmware `filePath` values. Frames inside a Mini session are not browsable. HTTP roots are `/DWARF3`, `/DWARF_mini`, and `/DWARF_II`.
 - Burst count is camera param `16703` on an otherwise empty `ReqBurstPhoto`. Setting it through `perform_set_burst_count_v3` at start calls `connect_socket`, which can block 150 s, so the start packet never goes out. Timelapse duration and interval are seconds. A device-state packet with an empty tele exclusive leaves a wide recording clock that the time notify already published.
-- Scheduled sessions, mosaic panes, and STACK MOSAIC stay on the telephoto camera. The 1×1 live box follows the selected camera.
+- Mosaic panes and STACK MOSAIC stay on the telephoto camera (`mosaic_stack_camera`). A single session uses its stored camera, including wide astro, photo, video, burst, and timelapse. DWARF Mini rejects wide, and a device mosaic on wide is rejected. The 1×1 live box follows the selected camera.
 - Astro autofocus soft-fails (`-15100`, `-15101`, `-15106`) mean the run finished without a lock. Overnight sessions continue at the current or infinity focus.
 - Firmware GOTO replies carry the target name only. Resolve RA/Dec from the catalog in the app. Solar-system GOTO uses the API `SolarSystemTarget` id, excluding Unknown. `CODE_ASTRO_NEED_EQ` (`-11528`) means run polar/EQ before tracking. V3 GOTO is fire-and-forget: `NEED_CALIBRATION` (`-11511`) arrives as the `11002` reply and never starts `goto_state=running`.
 - Panorama framing does not shoot the HUD rectangle yet. A panorama captures the frame last set on that telescope from the mobile app.
@@ -103,6 +103,10 @@ Sky-frame, pane-number, and PA rules: `.cursor/rules/sky-mosaic-astronomy.mdc`.
 - A change that can freeze the HUD, stall the GUI thread, or change connect, tracking, busy, or preview state is checked with the harness. After connect, keep the first `/state` and a second `/state` a few seconds later. If tracking or busy is on and this test did not start it, stop and report that. For a freeze or sluggish report, confirm the window still accepts a harness `page` or `click`, and include `/state` plus a snapshot. Say what that check did not cover.
 - Add the narrowest offline behavior check for the change. Hardware that cannot be exercised locally needs defensive parsing and a synthetic-event test where practical. State the live-device gap.
 - Do not treat generated build artifacts as validation, and do not commit them unless packaging is explicitly requested.
+
+## App memory
+
+Page layout, the night queue, album and history scope, and sky restore live in `.cursor/rules/app-memory.mdc`, with one rule per area beside it. Read that file before assuming a past chat still holds.
 
 ## Historical context
 

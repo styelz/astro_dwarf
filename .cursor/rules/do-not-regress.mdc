@@ -24,5 +24,8 @@ These stay unless this request names them:
 - Panorama framing on the wide camera. Do not resize the tele field. Shot count changes only through the framing rectangle the user set
 - Sky-map load path and restore of the last RA/Dec
 - Preview only for live view. Polar alignment does not start it. Disconnect stops it
+- The first custom-mosaic pane keeps calibrate, focus, polar alignment, and the waits. Later panes only slew and stack
+- Deleting a history row removes the history file and leaves the session in place
+- The scheduler due list is tonight only. Earlier nights stay planned
 
 Before finishing, read `git diff` for every file touched. Put back any line the request did not ask for.
