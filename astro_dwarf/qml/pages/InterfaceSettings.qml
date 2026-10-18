@@ -261,15 +261,6 @@ ColumnLayout {
             }
         }
         FieldHint { text: "Ctrl + / − zoom the whole console. Ctrl+0 resets to 100%. Calendar Ctrl+wheel still zooms the night timeline." }
-        FieldLabel { text: "SKY TOOLS" }
-        HudCheck {
-            Layout.preferredWidth: iface.controlWidth
-            text: "Show SKY tab"
-            checked: layoutSettings.skyToolsEnabled
-            onToggled: layoutSettings.skyToolsEnabled = checked
-            accessibleName: "Show sky tools tab"
-        }
-        FieldHint { text: "Adds a SKY page that uses Stellarium Web to find a target and generate an X-by-Y mosaic plan. Off by default. Unofficial; not affiliated with Stellarium Labs or DwarfLab." }
     }
 
     SettingGroup {

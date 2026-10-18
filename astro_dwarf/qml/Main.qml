@@ -125,7 +125,6 @@ ApplicationWindow {
     readonly property int mediaPageIndex: 4
     readonly property int skyPageIndex: 5
     readonly property int settingsPageIndex: 6
-    readonly property alias skyToolsEnabled: layoutSettings.skyToolsEnabled
     // Native sky map paints above QML. Park it while these dialogs are open.
     readonly property bool appModalOpen: locationDialog.visible
         || settingsLeaveDialog.visible
@@ -419,7 +418,7 @@ ApplicationWindow {
     function syncMacKeyboard() {
         if (!root.macKeyboardReady)
             return
-        const mapLive = root.currentPage === root.skyPageIndex && root.skyToolsEnabled
+        const mapLive = root.currentPage === root.skyPageIndex
         const editor = root.isTextEditor(root.activeFocusItem)
         const dialog = skyRaDecDialog.visible
         backend.setMacWebViewTyping(mapLive && !root.appModalOpen && !dialog && !editor && backend.webViewAvailable)
@@ -427,7 +426,6 @@ ApplicationWindow {
     onActiveFocusItemChanged: root.syncMacKeyboard()
     onAppModalOpenChanged: root.syncMacKeyboard()
     onCurrentPageChanged: root.syncMacKeyboard()
-    onSkyToolsEnabledChanged: root.syncMacKeyboard()
 
     function editorChrome(item) {
         let node = item
@@ -729,12 +727,7 @@ ApplicationWindow {
         id: layoutSettings
         category: "controlLayout"
         property bool navBarOnTop: true
-        property bool skyToolsEnabled: true
         property string navButtonOrder: "[]"
-        onSkyToolsEnabledChanged: {
-            if (!layoutSettings.skyToolsEnabled && root.currentPage === root.skyPageIndex)
-                root.goToPage(0)
-        }
     }
 
     readonly property var navButtonOrderList: {
@@ -1314,7 +1307,6 @@ ApplicationWindow {
             visible: layoutSettings.navBarOnTop
             Layout.topMargin: Theme.s2
             currentIndex: root.currentPage
-            skyToolsEnabled: layoutSettings.skyToolsEnabled
             barOnTop: true
             order: root.navButtonOrderList
             attentionIndex: settingsPage.dirty ? root.settingsPageIndex : -1
@@ -1345,7 +1337,6 @@ ApplicationWindow {
             visible: !layoutSettings.navBarOnTop
             Layout.bottomMargin: Theme.s2
             currentIndex: root.currentPage
-            skyToolsEnabled: layoutSettings.skyToolsEnabled
             barOnTop: false
             order: root.navButtonOrderList
             attentionIndex: settingsPage.dirty ? root.settingsPageIndex : -1

@@ -688,14 +688,12 @@ Item {
                         readonly property bool mosaic: Util.skyShowIsMosaic(backend.currentSession)
                         text: mosaic ? "Show mosaic on sky" : "Show on sky"
                         glyph: "\uE1D2"
-                        enabled: root.skyToolsEnabled && Util.skyShowHasCoordinates(backend.currentSession)
-                        accessibleDescription: !root.skyToolsEnabled
-                                               ? "Turn on sky tools in interface settings first"
-                                               : !Util.skyShowHasCoordinates(backend.currentSession)
-                                                 ? "This session has no equatorial coordinates"
-                                                 : mosaic
-                                                   ? "Open Sky and show this mosaic"
-                                                   : "Open Sky and center this target"
+                        enabled: Util.skyShowHasCoordinates(backend.currentSession)
+                        accessibleDescription: !Util.skyShowHasCoordinates(backend.currentSession)
+                                               ? "This session has no equatorial coordinates"
+                                               : mosaic
+                                                 ? "Open Sky and show this mosaic"
+                                                 : "Open Sky and center this target"
                         onTriggered: skyPage.showScheduleOnSky(backend.currentSession)
                     }
                     HudMenuItem {
@@ -3086,16 +3084,14 @@ Item {
                             readonly property var tracked: backend.trackedSkyTarget
                             readonly property string targetName: String((tracked && tracked.name) || "").trim()
                             visible: root.scopeOnline && !!tracked.dso && !!tracked.tracking
-                            enabled: visible && !!tracked.available && root.skyToolsEnabled && skyPage.webReady
+                            enabled: visible && !!tracked.available && skyPage.webReady
                             text: targetName ? "Lock sky view to " + targetName : "Lock sky view to tracked target"
                             glyph: "\uE1D2"
-                            accessibleDescription: !root.skyToolsEnabled
-                                ? "Turn on sky tools in interface settings first"
-                                : !skyPage.webReady
-                                  ? "Stellarium Web is not available in this window"
-                                  : !tracked.available
-                                    ? "The telescope is tracking, but no target name or coordinates are available"
-                                    : "Select the tracked DSO on the sky map and lock the view to it"
+                            accessibleDescription: !skyPage.webReady
+                                ? "Stellarium Web is not available in this window"
+                                : !tracked.available
+                                  ? "The telescope is tracking, but no target name or coordinates are available"
+                                  : "Select the tracked DSO on the sky map and lock the view to it"
                             onTriggered: skyPage.lockToTrackedTarget()
                         }
                         HudMenuSeparator {}

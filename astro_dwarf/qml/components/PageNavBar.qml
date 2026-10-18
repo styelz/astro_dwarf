@@ -9,7 +9,6 @@ Item {
     property int currentIndex: 0
     property int attentionIndex: -1
     property string attentionDescription: "Needs attention"
-    property bool skyToolsEnabled: false
     property bool barOnTop: true
     // Persisted display order (list of page idx). Supplied by the caller and
     // mirrored into visualOrder; drags mutate visualOrder only, then commit.
@@ -24,20 +23,15 @@ Item {
     Layout.leftMargin: Theme.px(10)
     Layout.rightMargin: Theme.px(10)
     readonly property real spacing: Theme.s2
-    readonly property var pages: {
-        void navBar.skyToolsEnabled
-        const items = [
-            {label: "CONTROL", idx: 0},
-            {label: "CALENDAR", idx: 1},
-            {label: "SESSIONS", idx: 2},
-            {label: "HISTORY", idx: 3},
-            {label: "MEDIA", idx: 4}
-        ]
-        if (navBar.skyToolsEnabled)
-            items.push({label: "SKY", idx: 5})
-        items.push({label: "SETTINGS", idx: 6})
-        return items
-    }
+    readonly property var pages: [
+        {label: "CONTROL", idx: 0},
+        {label: "CALENDAR", idx: 1},
+        {label: "SESSIONS", idx: 2},
+        {label: "HISTORY", idx: 3},
+        {label: "MEDIA", idx: 4},
+        {label: "SKY", idx: 5},
+        {label: "SETTINGS", idx: 6}
+    ]
 
     // Working copy of the display order used for rendering. Kept in sync with
     // the externally-supplied `order` except while a drag is in progress.

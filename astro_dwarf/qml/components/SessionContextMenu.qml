@@ -45,14 +45,12 @@ HudMenu {
         readonly property bool mosaic: Util.skyShowIsMosaic(sessionContextMenu.sessionData)
         text: mosaic ? "Show mosaic on sky" : "Show on sky"
         glyph: "\uE1D2"
-        enabled: root.skyToolsEnabled && Util.skyShowHasCoordinates(sessionContextMenu.sessionData)
-        accessibleDescription: !root.skyToolsEnabled
-                               ? "Turn on sky tools in interface settings first"
-                               : !Util.skyShowHasCoordinates(sessionContextMenu.sessionData)
-                                 ? "This session has no equatorial coordinates"
-                                 : mosaic
-                                   ? "Open Sky and show this mosaic"
-                                   : "Open Sky and center this target"
+        enabled: Util.skyShowHasCoordinates(sessionContextMenu.sessionData)
+        accessibleDescription: !Util.skyShowHasCoordinates(sessionContextMenu.sessionData)
+                               ? "This session has no equatorial coordinates"
+                               : mosaic
+                                 ? "Open Sky and show this mosaic"
+                                 : "Open Sky and center this target"
         onTriggered: skyPage.showScheduleOnSky(sessionContextMenu.sessionData)
     }
     HudMenuItem {

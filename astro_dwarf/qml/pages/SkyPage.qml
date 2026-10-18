@@ -175,7 +175,7 @@ Item {
     readonly property bool mapHasTarget: !!(mapLoader.item && mapLoader.item.hasSelectedTarget)
     readonly property bool mapInitialReady: !!(mapLoader.item && mapLoader.item.initialLoadDone)
     readonly property bool mapInitialFailed: !!(mapLoader.item && mapLoader.item.initialLoadFailed)
-    readonly property bool mapBooting: skyPage.webReady && root.skyToolsEnabled
+    readonly property bool mapBooting: skyPage.webReady
                                        && (skyPage.mapLive || mapLoader.active)
                                        && !skyPage.mapInitialReady
                                        && !skyPage.mapInitialFailed
@@ -323,8 +323,6 @@ Item {
     }
     property bool trackOpensControl: false
     function showScheduleOnSky(item) {
-        if (!root.skyToolsEnabled)
-            return
         const plan = backend.skyShowPlan(item) || ({})
         if (!plan.ok)
             return
@@ -380,7 +378,7 @@ Item {
         const tracked = backend.trackedSkyTarget || ({})
         if (!tracked.available)
             return
-        if (!root.skyToolsEnabled || !skyPage.webReady)
+        if (!skyPage.webReady)
             return
         skyPage.mapKeepAlive = true
         if (root.currentPage !== root.skyPageIndex)
@@ -515,25 +513,14 @@ Item {
     }
 
     function requestMapWarmup() {
-        if (!root.skyToolsEnabled || !skyPage.webReady)
+        if (!skyPage.webReady)
             return
         skyPage.mapKeepAlive = true
     }
 
-    Connections {
-        target: root
-        function onSkyToolsEnabledChanged() {
-            if (!root.skyToolsEnabled)
-                skyPage.mapKeepAlive = false
-            else
-                Qt.callLater(skyPage.requestMapWarmup)
-            backend.setStellariumRcWatch(root.skyToolsEnabled)
-        }
-    }
-
     Component.onCompleted: {
         skyPage.restoreSkySettings()
-        backend.setStellariumRcWatch(root.skyToolsEnabled)
+        backend.setStellariumRcWatch(true)
         Qt.callLater(skyPage.requestMapWarmup)
     }
     Component.onDestruction: backend.setStellariumRcWatch(false)
@@ -829,7 +816,7 @@ Item {
                 // Each provider stays constructed after its first visit.
                 property bool atlasHeld: false
                 property bool webHeld: false
-                readonly property bool mapEngineWanted: skyPage.webReady && root.skyToolsEnabled && (
+                readonly property bool mapEngineWanted: skyPage.webReady && (
                     skyPage.mapLive || skyPage.mapKeepAlive
                 ) && (
                     mapLoader.nativeMapOverlay
