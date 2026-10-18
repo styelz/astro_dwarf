@@ -650,7 +650,7 @@ _PHOTO_ACTIVITY_STATES = {
     "timelapse_state": "timelapse",
     "record_state": "record",
 }
-_STOP_ACTIONS = {"stop_session"}
+_STOP_ACTIONS = {"stop_session", "stop_astro"}
 _CAPTURE_PREVIEW_STEPS = {
     "Start capture",
     "Start wide capture",
@@ -695,6 +695,37 @@ _STACK_RESULT_READY = (
 )
 
 
+def user_stopped_result(result: Any) -> bool:
+    """True when the worker aborted because the operator pressed stop."""
+    text = str(result or "").strip().lower()
+    return text == "session stopped" or text == "stopped by user"
+
+
+def session_finish_plan(*, ok: bool, stop_requested: bool, result: Any) -> dict[str, Any]:
+    """How one session ends after STACK stop or a normal finish.
+
+    A mosaic stop used to arrive as ``Session stopped`` without the stop
+    flag, so the pane was toasted as a failure and the next pane stayed
+    planned. A stop wins even when the worker also reports the pane as
+    finished, so the queue does not chain onward.
+    """
+    stopped = bool(stop_requested) or user_stopped_result(result)
+    if stopped:
+        outcome = "Stopped by user"
+    elif ok:
+        outcome = "Completed"
+    else:
+        outcome = str(result or "Failed")
+    success = bool(ok) and not stopped
+    return {
+        "stopped": stopped,
+        "outcome": outcome,
+        "success": success,
+        "chain": success,
+        "skip_remaining": stopped,
+    }
+
+
 def stacking_preview_result_copy(
     ok: bool,
     stopped: bool,
@@ -703,10 +734,10 @@ def stacking_preview_result_copy(
 ) -> tuple[str, str]:
     """Caption shown over the completed stack after capture ends."""
     name = str(target or "this target").strip() or "this target"
-    if ok:
-        title = "SESSION COMPLETE"
-    elif stopped:
+    if stopped:
         title = "SESSION STOPPED"
+    elif ok:
+        title = "SESSION COMPLETE"
     else:
         title = "SESSION FAILED"
     extra = f"{name} · completed stack from the telescope. This is not live video."
@@ -2166,10 +2197,9 @@ def control_restore_should_defer(
 ) -> bool:
     """True when CONTROL restore would rewrite exposure/gain onto a live run.
 
-    Mosaic STOP uses ``stop_astro``, which is not a ``_STOP_ACTIONS`` pending
-    value. Firmware can still be stacking when the mosaic worker has already
-    gone idle, and a 500 ms restore would then set count/exposure mid-stack.
-    Panorama, recording, and the other live jobs defer the same way.
+    Firmware can still be stacking after ``stop_astro`` returns, and a 500 ms
+    restore would then set count/exposure mid-stack. Panorama, recording, and
+    the other live jobs defer the same way.
     """
     return bool(
         session_active or stopping or worker_busy or mosaic_running or capturing or device_live
@@ -2456,6 +2486,8 @@ class AppBackend(QObject):
         self._active_sessions: dict[str, str] = {}
         self._dark_prompt_device = ""
         self._stop_requested: set[str] = set()
+        self._stack_stop_quiet: set[str] = set()
+        self._mosaic_stop_skipped: dict[str, int] = {}
         self._scheduler_enabled = False
         self._clock_text = datetime.now(self._zone_for()).strftime("%H:%M:%S")
         self._connecting_ids: set[str] = set()
@@ -10534,7 +10566,7 @@ class AppBackend(QObject):
         if worker and worker.connected:
             self._schedule_control_restore(device_id, 500)
         self.mosaicPreviewChanged.emit()
-        self.commandFeedback.emit(device_id, "stack", bool(ok))
+        self.commandFeedback.emit(device_id, "stack", bool(ok) or stopped)
         if ok:
             self.add_log("success", f"Mosaic complete · {total} panes", device_id)
             self._toast("Mosaic complete", "success", f"Stacked {total} panes")
@@ -10550,6 +10582,16 @@ class AppBackend(QObject):
         elif stopped:
             self.add_log("warning", f"Mosaic stopped · pane {index}/{total or index}", device_id)
             self._toast("Mosaic stopped", "warning", f"Stopped on pane {index}" if index else "")
+            if device_id == self._selected_device_id:
+                title, detail = self._stacking_result_copy(False, True, label)
+                self._freeze_stacking_preview_result(
+                    device_id,
+                    title=title,
+                    detail=detail,
+                    target=label,
+                    camera=self._preview_camera_name(device_id),
+                    since=self._stack_result_since_for(device_id),
+                )
             if self._telemetry_capturing(device_id):
                 self.add_log(
                     "warning",
@@ -10744,6 +10786,12 @@ class AppBackend(QObject):
             self.add_log("notice", "Polar positioning stopped", device_id)
             return
         self._complete_activity(device_id, operation, ok)
+        pending_finish = None
+        quiet_stop = False
+        if operation == "stop_astro":
+            quiet_stop = device_id in self._stack_stop_quiet
+            self._stack_stop_quiet.discard(device_id)
+            pending_finish = self._pending_session_finish.pop(device_id, None)
         if ok and operation == "photo_mode":
             self._control_applying.add(device_id)
             self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1})
@@ -10781,7 +10829,18 @@ class AppBackend(QObject):
         if ok and operation in {"indicator_on", "indicator_off"}:
             self._device_indicators[device_id] = operation == "indicator_on"
             self._notify_devices()
-        self.commandFeedback.emit(device_id, operation, bool(ok))
+        user_stop = quiet_stop or (operation == "stop_astro" and user_stopped_result(result))
+        self.commandFeedback.emit(device_id, operation, bool(ok) or user_stop)
+        if pending_finish:
+            self._finalize_session(*pending_finish)
+            owner = self._workers.get(device_id)
+            if owner and device_id not in self._active_sessions:
+                owner.busy = False
+                owner.availabilityChanged.emit()
+        if user_stop:
+            if not ok:
+                self.add_log("warning", f"{label}: {result}", device_id)
+            return
         if ok:
             if operation == "sky_track":
                 fallback = ""
@@ -11028,18 +11087,33 @@ class AppBackend(QObject):
                 payload = {"args": [shots]}
         if operation == "stop_astro":
             live = self._live_mosaic.get(device_id)
-            if self._live_mosaic_running(device_id, live):
+            mosaic_running = self._live_mosaic_running(device_id, live)
+            if mosaic_running:
                 live["stopping"] = True
                 self._hold_live_mosaic_sheet(device_id, int(live.get("current_index") or 0))
                 self.mosaicPreviewChanged.emit()
             elif live and live.get("phase"):
                 self._discard_live_mosaic(device_id)
             session_id = self._active_sessions.get(device_id)
-            if session_id and session_id in self._command_panel_sessions:
-                self._stop_requested.add(session_id)
-                session = self.store.sessions.get(session_id)
-                if session:
+            session = self.store.sessions.get(session_id) if session_id else None
+            if session is None and mosaic_running:
+                current = live.get("current") if live else None
+                if isinstance(current, Session):
+                    session = self.store.sessions.get(current.id) or current
+            if session_id or (session is not None and mosaic_running):
+                # The pad stop is a user stop of this run. Flag it before the
+                # worker returns "Session stopped", and drop later panes now
+                # so the scheduler cannot start the next one.
+                self._stack_stop_quiet.add(device_id)
+                if session_id:
+                    self._stop_requested.add(session_id)
+                if session is not None and session_id:
                     self._apply_session_step(session, "Stopping")
+                if session is not None:
+                    skipped_now = self._skip_remaining_mosaic_panes(session)
+                    if skipped_now:
+                        self._mosaic_stop_skipped[session.id] = len(skipped_now)
+                        self._emit_sessions_changed()
         worker_operation = operation
         if photo_focus:
             worker_operation = "normal_autofocus"
@@ -11062,6 +11136,8 @@ class AppBackend(QObject):
                 columns, rows = self._panorama_frame_grid.get(device_id) or (0, 0)
                 payload = {"args": [*framed, int(columns or 0), int(rows or 0)]}
         worker.send(worker_operation, payload, callback=self._with_pending(device_id, operation, done))
+        if operation == "stop_astro":
+            self._set_pending_detail(device_id, self._initial_stop_detail(device_id))
         if dropping:
             self._drop_device_link(device_id)
 
@@ -16460,7 +16536,12 @@ class AppBackend(QObject):
         if active_device:
             self._active_sessions.pop(active_device, None)
             self._sync_session_activity(active_device, "")
-        stopped = session_id in self._stop_requested
+        plan = session_finish_plan(
+            ok=ok,
+            stop_requested=session_id in self._stop_requested,
+            result=result,
+        )
+        stopped = bool(plan["stopped"])
         self._stop_requested.discard(session_id)
         failed_mosaic_device = ""
         if device_id:
@@ -16480,20 +16561,15 @@ class AppBackend(QObject):
             return
         ended = datetime.now(timezone.utc)
         started = datetime.fromisoformat(session.actual_started_at) if session.actual_started_at else ended
-        if ok:
-            outcome = "Completed"
-        elif stopped:
-            outcome = "Stopped by user"
-        else:
-            outcome = str(result)
+        outcome = str(plan["outcome"])
         final = self.store.transition(
             session.id,
-            SessionStatus.DONE if ok else SessionStatus.ERROR,
+            SessionStatus.DONE if plan["success"] else SessionStatus.ERROR,
             actual_ended_at=ended.isoformat(),
             current_step=outcome,
             outcome=outcome,
         )
-        captured = self._captured_frames_for(session.id, final.camera.frame_count, ok)
+        captured = self._captured_frames_for(session.id, final.camera.frame_count, bool(plan["success"]))
         self._hold_session_capture.discard(final.device_id)
         was_stack_preview = bool(
             final.device_id == self._selected_device_id
@@ -16514,20 +16590,20 @@ class AppBackend(QObject):
             step_seconds=self._finish_session_timing(session.id),
         ))
         elapsed = self._duration_text((ended - started).total_seconds())
-        chained = bool(ok and not stopped and self._chain_mosaic_pane(final))
-        if ok and chained:
+        chained = bool(plan["chain"] and self._chain_mosaic_pane(final))
+        if stopped:
+            skipped = self._skip_remaining_mosaic_panes(final)
+            count = len(skipped) or int(self._mosaic_stop_skipped.pop(final.id, 0) or 0)
+            self.add_log("warning", f"Session stopped · {final.target.name} after {elapsed}", final.device_id)
+            detail = f"Ran {elapsed}"
+            if count:
+                detail = f"Skipped {count} remaining pane{'s' if count != 1 else ''}"
+            self._toast(f"Session stopped · {final.target.name}", "warning", detail)
+        elif ok and chained:
             self.add_log("success", f"Pane complete · {final.target.name} in {elapsed}", final.device_id)
         elif ok:
             self.add_log("success", f"Session complete · {final.target.name} in {elapsed}", final.device_id)
             self._toast(f"Session complete · {final.target.name}", "success", f"Ran {elapsed}")
-        elif stopped:
-            skipped = self._skip_remaining_mosaic_panes(final)
-            self.add_log("warning", f"Session stopped · {final.target.name} after {elapsed}", final.device_id)
-            detail = f"Ran {elapsed}"
-            if skipped:
-                count = len(skipped)
-                detail = f"Skipped {count} remaining pane{'s' if count != 1 else ''}"
-            self._toast(f"Session stopped · {final.target.name}", "warning", detail)
         else:
             self.add_log("error", f"Session failed · {final.target.name}: {outcome}", final.device_id)
             self._toast(f"Session failed · {final.target.name}", "error", outcome)

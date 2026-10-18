@@ -40,3 +40,10 @@ feat: add fixed panes functionality for mosaic handling
 - Introduced `fixed_panes` flag in `AppBackend` to ensure chart centers remain static during mosaic operations, enhancing accuracy in target tracking.
 - Updated JavaScript logic in `services.py` and `sky_atlas.py` to respect the `fixed_panes` setting, preventing unintended movements of the viewing field while the telescope adjusts its angle.
 - Improved comments for clarity on the behavior of fixed panes in relation to the chart and telescope operations.
+
+feat: enhance session interruption handling and user feedback
+- Added checks for session interruption in `_wait_for_capture_end`, `run_session`, and `_stack_mosaic` methods to raise `InterruptedError` when a stop signal is received.
+- Updated `AppBackend` to handle new `stop_astro` action, ensuring proper session termination and user notifications.
+- Enhanced session finish logic to differentiate between user-initiated stops and normal completions, improving clarity in session outcomes.
+- Modified QML properties to reflect the new stop action, ensuring UI accurately represents session states.
+

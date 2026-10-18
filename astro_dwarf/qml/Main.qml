@@ -197,7 +197,7 @@ ApplicationWindow {
         || scopeActivity === "imaging"
         || scopePending === "stack"
     readonly property bool scopeOccupied: scopeImaging || scopePending !== "" || scopeActivity !== "" || previewStarting || scopeStacking
-    readonly property bool scopeStopping: scopePending === "stop_session"
+    readonly property bool scopeStopping: scopePending === "stop_session" || scopePending === "stop_astro"
     readonly property bool cameraLiveEnabled: commandEnabled("set_exposure")
     readonly property bool motionEnabled: commandEnabled("joystick")
 
@@ -258,7 +258,7 @@ ApplicationWindow {
         if (!session || session.status !== "running")
             return false
         const pending = root.devicePending(session.device_id)
-        return pending === "stop_session"
+        return pending === "stop_session" || pending === "stop_astro"
     }
     function scopeActivityText() {
         backend.clockText

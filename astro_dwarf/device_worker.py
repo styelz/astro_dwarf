@@ -3612,6 +3612,8 @@ def _wait_for_capture_end(
             if quiet_since is None:
                 quiet_since = time.monotonic()
             elif time.monotonic() - quiet_since >= _mosaic_idle_timeout_s(snapshot, mosaic_panes):
+                if _stop.is_set():
+                    raise InterruptedError("Session stopped")
                 log(f"{name} finished after {_format_duration(elapsed)}")
                 return
         elif seen:
@@ -3622,14 +3624,20 @@ def _wait_for_capture_end(
                     if mosaic_panes > 1:
                         log(f"{name}: pane gap; waiting for the next mosaic pane")
                 elif time.monotonic() - quiet_since >= _mosaic_idle_timeout_s(snapshot, mosaic_panes):
+                    if _stop.is_set():
+                        raise InterruptedError("Session stopped")
                     log(f"{name} finished after {_format_duration(elapsed)}")
                     return
             elif state in ("stopped", "idle"):
+                if _stop.is_set():
+                    raise InterruptedError("Session stopped")
                 log(f"{name} finished after {_format_duration(elapsed)}")
                 return
             elif quiet_since is None:
                 quiet_since = time.monotonic()
             elif time.monotonic() - quiet_since >= 20.0:
+                if _stop.is_set():
+                    raise InterruptedError("Session stopped")
                 log(f"{name} finished after {_format_duration(elapsed)}")
                 return
         elif elapsed >= _CAPTURE_CONTINUE_AFTER_S and not continued:
@@ -4597,6 +4605,8 @@ def run_session(session: dict[str, Any], prompt_darks: bool = False) -> bool:
                 mosaic=firmware_mosaic and not wide,
                 mosaic_panes=_mosaic_pane_count(session),
             )
+            if _stop.is_set():
+                raise InterruptedError("Session stopped")
             return
         if sdk_call(operation, *args) is False:
             if _stop.is_set():
@@ -7289,6 +7299,8 @@ def _stack_mosaic(
                         on_progress=lambda text, pane=index: report(pane, text),
                         name=f"Waiting for pane {index}",
                     )
+                    if _stop.is_set():
+                        raise InterruptedError("Session stopped")
                     report(index, f"Pane {index}/{total} complete")
                     stacked_previous = True
                     continue
@@ -7340,6 +7352,8 @@ def _stack_mosaic(
                 on_progress=lambda text, pane=index: report(pane, text),
                 name=f"Waiting for pane {index}",
             )
+            if _stop.is_set():
+                raise InterruptedError("Session stopped")
             report(index, f"Pane {index}/{total} complete")
             stacked_previous = True
             if index < total:

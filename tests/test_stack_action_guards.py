@@ -18,8 +18,11 @@ from astro_dwarf.qt_backend import (
     control_restore_should_defer,
     preview_should_preserve_shooting_mode,
     preview_should_skip_go_live,
+    session_finish_plan,
     stacking_blocks_action,
+    stacking_preview_result_copy,
     tracking_blocks_action,
+    user_stopped_result,
 )
 from astro_dwarf.telemetry_view import (
     reconnect_holds_device,
@@ -104,7 +107,7 @@ def test_control_restore_defers_while_firmware_still_stacking() -> None:
     _assert(not control_restore_should_defer(**idle), "idle reconnect may restore CONTROL")
     _assert(
         control_restore_should_defer(**{**idle, "capturing": True}),
-        "stop_astro is not a stop_all pending, so capturing must defer restore",
+        "firmware still stacking must defer restore",
     )
     _assert(
         control_restore_should_defer(**{**idle, "mosaic_running": True}),
@@ -247,6 +250,27 @@ def test_reconnect_joins_live_mode_and_drops_a_restart() -> None:
     _assert(reconnect_join_label(idle_next_night) == "", "idle photo has nothing to join")
 
 
+def test_mosaic_stack_stop_does_not_complete_or_chain() -> None:
+    _assert(user_stopped_result("Session stopped"), "the worker stop text is a user stop")
+    _assert(not user_stopped_result("plate-solve failed"), "a plate-solve error is not a user stop")
+    failed = session_finish_plan(ok=False, stop_requested=False, result="plate-solve failed")
+    _assert(failed["outcome"] == "plate-solve failed", "a real failure keeps its error")
+    _assert(not failed["stopped"] and not failed["chain"] and not failed["skip_remaining"], "a real failure does not skip the queue")
+    completed = session_finish_plan(ok=True, stop_requested=False, result=True)
+    _assert(completed["success"] and completed["chain"] and completed["outcome"] == "Completed", "a finished pane still chains")
+    stopped = session_finish_plan(ok=False, stop_requested=False, result="Session stopped")
+    _assert(stopped["stopped"] and stopped["skip_remaining"] and not stopped["chain"], "Session stopped drops the rest of the mosaic")
+    _assert(stopped["outcome"] == "Stopped by user" and not stopped["success"], "a user stop is not a completed pane")
+    raced = session_finish_plan(ok=True, stop_requested=True, result=True)
+    _assert(raced["stopped"] and not raced["chain"] and not raced["success"], "stop wins when the pane also reports complete")
+    title, _detail = stacking_preview_result_copy(True, True, "Zeta Pavonis pane 1", False)
+    _assert(title == "SESSION STOPPED", "the live view says the session stopped")
+    failed_title, _detail = stacking_preview_result_copy(False, False, "Zeta Pavonis pane 1", False)
+    _assert(failed_title == "SESSION FAILED", "a real failure still says failed")
+    done_title, _detail = stacking_preview_result_copy(True, False, "Zeta Pavonis pane 1", False)
+    _assert(done_title == "SESSION COMPLETE", "a finished session still says complete")
+
+
 def test_photo_mode_auto_enters_dso_for_tracking() -> None:
     _assert(command_required_shooting_mode("sky_track") == 2, "sky track needs DSO")
     _assert(command_required_shooting_mode("track") == 2, "track needs DSO")
@@ -272,5 +296,6 @@ if __name__ == "__main__":
     test_saved_photo_is_not_written_into_dso()
     test_missing_darks_hold_is_skipped()
     test_reconnect_joins_live_mode_and_drops_a_restart()
+    test_mosaic_stack_stop_does_not_complete_or_chain()
     test_photo_mode_auto_enters_dso_for_tracking()
     print("ok")
