@@ -1969,6 +1969,10 @@ SKY_WEB_FOV_JS = r"""
   function fieldFollowsView(p, stel) {
     // The browsing field is the camera at the chart centre. Payload panes are
     // the previous centre, so projecting them makes the box orbit and spin.
+    // fixed_panes is a capture: those centres are what the telescope shoots,
+    // and they must stay put while the parallactic angle turns.
+    if (p && p.fixed_panes)
+      return false;
     var view = null;
     try { view = viewCenter(stel); } catch (err) { view = null; }
     if (!view) view = payloadView(p);

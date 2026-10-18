@@ -1339,6 +1339,11 @@ ATLAS_ASTRO_JS = r"""
     }
     if (!box.dragging)
       box.dragFollows = false;
+    // A settled capture has fixed pane centres. Project them while the chart
+    // sits on the target. A live screen grid would turn with the zenith and
+    // leave the fields being shot. A drag still uses the branches above.
+    if (!box.dragging && payload && payload.fixed_panes)
+      return false;
     return viewCenteredOnTarget(aladin, payload);
   }
   function quadCenter(quad) {

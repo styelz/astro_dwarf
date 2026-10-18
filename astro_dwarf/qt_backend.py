@@ -7336,6 +7336,8 @@ class AppBackend(QObject):
             payload["target_ra_hours"] = float(target.ra_hours)
             payload["target_dec_degrees"] = float(target.dec_degrees)
         if mosaic_active:
+            # The chart must draw these centres, not a live screen grid.
+            payload["fixed_panes"] = True
             layout = self._running_device_mosaic_layout(session, {"members": members})
             if (
                 layout is not None

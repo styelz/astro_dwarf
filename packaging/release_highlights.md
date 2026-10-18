@@ -35,3 +35,8 @@ feat: enhance goto handling and telemetry state management
 - Introduced `goto_search_cleared` function to determine when the firmware has exited a target search, improving response to GOTO commands.
 - Updated `TelemetryTap` to maintain a synthetic idle state for `goto_released`, preventing premature state changes during ongoing searches.
 - Refactored plate-solving retry logic to ensure retries only occur after confirming the search has cleared, enhancing reliability in GOTO operations.
+
+feat: add fixed panes functionality for mosaic handling
+- Introduced `fixed_panes` flag in `AppBackend` to ensure chart centers remain static during mosaic operations, enhancing accuracy in target tracking.
+- Updated JavaScript logic in `services.py` and `sky_atlas.py` to respect the `fixed_panes` setting, preventing unintended movements of the viewing field while the telescope adjusts its angle.
+- Improved comments for clarity on the behavior of fixed panes in relation to the chart and telescope operations.
