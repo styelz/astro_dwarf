@@ -94,16 +94,50 @@ Item {
             return item.group_member_ids
         return item && item.id
     }
+    function groupMemberIds(item) {
+        const ids = []
+        const members = item && item.group_members
+        if (members && members.length) {
+            for (let i = 0; i < members.length; i++) {
+                const id = members[i] && members[i].id
+                if (id)
+                    ids.push(id)
+            }
+            return ids
+        }
+        const key = Util.sessionGroupKey(item)
+        const list = historyPage.filteredHistory || []
+        for (let i = 0; i < list.length; i++) {
+            const row = list[i]
+            if (!row || !row.id)
+                continue
+            if (key && String(row.group_key || "") === key)
+                ids.push(row.id)
+        }
+        return ids
+    }
+    function setMemberDetails(ids, open) {
+        const next = Object.assign({}, historyPage.expandedIds)
+        for (let i = 0; i < ids.length; i++) {
+            if (open)
+                next[ids[i]] = true
+            else
+                delete next[ids[i]]
+        }
+        historyPage.expandedIds = next
+    }
     function toggleGroup(item) {
         const key = Util.sessionGroupKey(item)
         if (!key)
             return
         const next = Object.assign({}, historyPage.expandedGroups)
-        if (next[key])
-            delete next[key]
-        else
+        const open = !next[key]
+        if (open)
             next[key] = true
+        else
+            delete next[key]
         historyPage.expandedGroups = next
+        historyPage.setMemberDetails(historyPage.groupMemberIds(item), open)
     }
     function toggleRow(item) {
         if (item && item.group_collapsed)
@@ -157,26 +191,20 @@ Item {
         return hours >= 10 ? hours.toFixed(0) + "h" : hours.toFixed(1) + "h"
     }
     readonly property int expandedVisibleCount: Util.idSetVisibleCount(historyPage.expandedIds, historyPage.filteredHistory)
-    readonly property bool canExpandAll: historyPage.groupedCount > 0
-                                         ? historyPage.expandedGroupCount < historyPage.groupedCount
-                                         : (historyPage.filteredCount > 0 && historyPage.expandedVisibleCount < historyPage.filteredCount)
-    readonly property bool canCollapseAll: historyPage.groupedCount > 0
-                                           ? historyPage.expandedGroupCount > 0
-                                           : historyPage.expandedVisibleCount > 0
+    readonly property bool canExpandAll: (historyPage.groupedCount > 0 && historyPage.expandedGroupCount < historyPage.groupedCount)
+                                         || (historyPage.filteredCount > 0 && historyPage.expandedVisibleCount < historyPage.filteredCount)
+    readonly property bool canCollapseAll: historyPage.expandedGroupCount > 0 || historyPage.expandedVisibleCount > 0
     function toggleExpanded(id) {
         historyPage.expandedIds = Util.idSetToggle(historyPage.expandedIds, id)
     }
     function expandAll() {
         if (historyPage.groupedCount > 0)
             historyPage.expandedGroups = Util.mosaicGroupKeyMap(historyPage.clusteredHistory)
-        else
-            historyPage.expandedIds = Util.idSetAll(historyPage.filteredHistory, true)
+        historyPage.expandedIds = Util.idSetAll(historyPage.filteredHistory, true)
     }
     function collapseAll() {
-        if (historyPage.groupedCount > 0)
-            historyPage.expandedGroups = ({})
-        else
-            historyPage.expandedIds = ({})
+        historyPage.expandedGroups = ({})
+        historyPage.expandedIds = ({})
     }
     Component.onCompleted: {
         historyPage.syncScopedDevice()
@@ -617,6 +645,7 @@ Item {
                                     anchors.fill: parent
                                     anchors.leftMargin: historyPage.gutterWidth
                                     acceptedButtons: Qt.LeftButton
+                                    preventStealing: true
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: mouse => {
                                         if (mouse.modifiers & Qt.ShiftModifier) {

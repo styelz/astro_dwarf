@@ -585,7 +585,7 @@ Item {
                                         }
                                         TapHandler {
                                             acceptedButtons: Qt.LeftButton
-                                            grabPermissions: PointerHandler.CanTakeOverFromAnything
+                                            gesturePolicy: TapHandler.ReleaseWithinBounds
                                             onTapped: groupExpand.clicked()
                                         }
                                         HoverHandler { id: groupExpandHover }
