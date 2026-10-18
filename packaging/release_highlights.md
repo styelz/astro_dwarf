@@ -3,33 +3,25 @@
 If you find any bugs or have any suggestions for the application, please create an issue here:
 [https://github.com/styelz/astro_dwarf/issues/new/choose](https://github.com/styelz/astro_dwarf/issues/new/choose)
 
-feat: enhance sky atlas functionality with zenith pane leveling and image handling
-- Added `levelZenithPanes` function to ensure zenith panes remain level during rendering, improving visual accuracy.
-- Introduced `imageQuadFromRing` function to correctly order image quadrants based on camera orientation.
-- Updated drawing logic in `paintProjectedFov` to utilize new image handling functions for better alignment.
+refactor: remove skyToolsEnabled property and related logic
+- Eliminated the skyToolsEnabled property from multiple components, simplifying the codebase.
+- Updated navigation and context menu logic to remove dependencies on skyToolsEnabled, enhancing clarity and reducing complexity.
+- Adjusted related properties and functions to ensure consistent behavior without the skyToolsEnabled flag.
 
-feat: enhance mosaic stitching with coarse cataloging and edge pairing improvements
-- Introduced a coarse cataloging mechanism to handle full-frame stills that exceed the fine stitching window, improving alignment accuracy.
-- Updated edge pairing logic to utilize coarse stars and seeds when fine matches are unavailable, enhancing robustness in challenging stitching scenarios.
-- Modified the `_stars` function to allow dynamic limits on star detection, improving flexibility in star handling.
+feat: add calendar time conflict detection for session overlap
+- Introduced `calendarTimeConflicts` method in `AppBackend` to determine if two sessions overlap based on their start and end times.
+- Added `calendar_time_conflicts` function in `services.py` to handle the logic for checking time conflicts with a defined slack period.
+- Updated `CalendarPage.qml` to utilize the new conflict detection logic, ensuring accurate lane assignment for overlapping sessions.
+- Enhanced comments in the QML file for clarity on session overlap criteria.
 
-feat: add completion view readiness logic
-- Introduced `completion_view_ready` function to determine when the finished mosaic picture can be displayed, ensuring it only shows settled pane stills.
-- Updated `AppBackend` to integrate the new completion view logic, including retry mechanisms for completion view readiness.
+feat: enhance HistoryPage and SessionsPage with group member handling and tap gesture improvements
+- Added `groupMemberIds` and `setMemberDetails` functions to manage group member IDs and their expanded states in HistoryPage.
+- Updated `toggleGroup` function to utilize new member handling logic for better group expansion behavior.
+- Improved `canExpandAll` and `canCollapseAll` properties for more intuitive group management.
+- Modified SessionsPage to change tap gesture handling, enhancing user interaction with group elements.
 
-feat: add target panel title functionality to enhance user interface
-- Introduced `target_panel_title` function to dynamically generate the title for the control TARGET panel based on session and device states.
-- Updated `AppBackend` with a new slot `targetPanelTitle` to expose the title generation logic to the QML layer.
-- Modified `ControlPage.qml` to utilize the new `targetPanelTitle` function, improving the display of active session and device information.
-
-feat: enhance mosaic functionality with new display logic and camera handling
-- Introduced `mosaic_replaces_sheet` and `mosaic_session_should_drop_previous_sheet` functions to manage mosaic state transitions effectively.
-- Added `mosaic_keep_camera_until_stack_frame` and `mosaic_camera_hold_timeout_s` functions for improved camera handling during mosaic operations.
-- Updated `mosaic_preview_keep_live_sheet` and related methods to ensure proper handling of live and stored images in the mosaic display.
-- Enhanced `ControlPage.qml` to dynamically determine the camera source for mosaic previews, improving user interface responsiveness.
-
-feat: improve plate-solving handling and mosaic preview logic
-- Introduced `_goto_solve_stalled` and `_retry_stalled_plate_solve` functions to manage plate-solving timeouts and retries effectively.
-- Enhanced `_await_operation` to handle stalled plate-solving scenarios, raising appropriate errors for better error management.
-- Updated mosaic preview logic to ensure the contact sheet remains visible during ongoing sessions and captures, improving user experience.
-- Refactored related functions to streamline the handling of mosaic state transitions and improve clarity in the codebase.
+feat: enhance AppBackend with known pointing and session handling improvements
+- Added `_known_pointing_for_name` method to retrieve coordinates for known pointing names without catalog lookup.
+- Introduced `_active_pointing_session` to manage active sessions and improve session retrieval logic.
+- Enhanced `lockSkyToTrackedTarget` method to utilize known pointing information for better sky lock handling.
+- Implemented `_emit_known_sky_lock` to streamline sky lock emissions based on known coordinates.

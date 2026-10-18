@@ -4999,6 +4999,12 @@ class AppBackend(QObject):
             if self._catalog_resolve_key == f"{device_id}:{text.lower()}":
                 self._catalog_resolve_key = ""
             return
+        known = self._known_pointing_for_name(text, device_id)
+        if known is not None:
+            self._set_preview_coords(known[0], known[1])
+            if self._catalog_resolve_key == f"{device_id}:{text.lower()}":
+                self._catalog_resolve_key = ""
+            return
         if is_mosaic_pane_name(text):
             return
         cached = self._catalog_hit_for(text)
@@ -5123,6 +5129,73 @@ class AppBackend(QObject):
         self._set_sky_target(Target(name=payload["name"], ra_hours=coords[0], dec_degrees=coords[1]))
         self.skyLockRequested.emit(payload)
 
+    def _tracked_name_matches(self, tracked: str, label: str) -> bool:
+        text = str(tracked or "").strip()
+        other = str(label or "").strip()
+        if not text or not other:
+            return False
+        return self._target_names_match(text, other) or sky_names_related(text, other)
+
+    def _active_pointing_session(self, device_id: str) -> Session | None:
+        session_id = self._active_sessions.get(device_id)
+        session = self.store.sessions.get(session_id) if session_id else None
+        if isinstance(session, Session) and self._target_coords(session.target) is not None:
+            return session
+        live = self._live_mosaic.get(device_id) or {}
+        current = live.get("current") if isinstance(live, dict) else None
+        if isinstance(current, Session) and self._target_coords(current.target) is not None:
+            return current
+        return None
+
+    def _known_pointing_for_name(
+        self, name: str, device_id: str = ""
+    ) -> tuple[str, tuple[float, float]] | None:
+        """Coordinates this firmware name already has, without a catalog lookup.
+
+        Stacking reports the parent name ("SKF 105A") while the running pane
+        and the sky target hold the RA/Dec. A parent lock keeps the group
+        centre. A pane name keeps that pane.
+        """
+        text = str(name or "").strip()
+        if not text:
+            return None
+        owner = str(device_id or self._selected_device_id or "")
+        session_hit: tuple[str, tuple[float, float]] | None = None
+        session = self._active_pointing_session(owner) if owner else None
+        if session is not None and (
+            self._tracked_name_matches(text, session.name)
+            or self._tracked_name_matches(text, session.target.name)
+        ):
+            coords = self._target_coords(session.target)
+            label = str(session.name or session.target.name or text).strip() or text
+            if coords is not None:
+                session_hit = (label, coords)
+        sky_hit: tuple[str, tuple[float, float]] | None = None
+        if owner == str(self._selected_device_id or ""):
+            sky = self._sky_target
+            sky_name = str(getattr(sky, "name", "") or "").strip()
+            sky_coords = self._target_coords(sky)
+            if sky_coords is not None and sky_name and self._tracked_name_matches(text, sky_name):
+                sky_hit = (sky_name, sky_coords)
+        if is_mosaic_pane_name(text) and session_hit is not None:
+            return session_hit
+        if sky_hit is not None and not is_mosaic_pane_name(sky_hit[0]):
+            return sky_hit
+        return session_hit or sky_hit
+
+    def _emit_known_sky_lock(self, label: str, coords: tuple[float, float]) -> None:
+        sky = self._sky_target
+        sky_name = str(getattr(sky, "name", "") or "").strip()
+        if (
+            is_mosaic_pane_name(label)
+            and sky_name
+            and not is_mosaic_pane_name(sky_name)
+            and self._target_coords(sky) is not None
+        ):
+            self.skyLockRequested.emit(self._sky_lock_payload(label, coords))
+            return
+        self._emit_sky_lock(label, coords)
+
     @Slot()
     def lockSkyToTrackedTarget(self) -> None:
         target = self.trackedSkyTarget
@@ -5133,11 +5206,15 @@ class AppBackend(QObject):
             return
         name = str(target.get("name") or "").strip() or "Tracked target"
         commanded = self._commanded_sky_coords(name)
-        cached = None if is_mosaic_pane_name(name) else self._catalog_hit_for(name)
-        coords = commanded or self._target_coords(cached) or self._target_coords(target)
-        if coords is not None and commanded is not None:
-            self._emit_sky_lock(name, coords)
+        if commanded is not None:
+            self._emit_sky_lock(name, commanded)
             return
+        known = self._known_pointing_for_name(name)
+        if known is not None:
+            self._emit_known_sky_lock(known[0], known[1])
+            return
+        cached = None if is_mosaic_pane_name(name) else self._catalog_hit_for(name)
+        coords = self._target_coords(cached) or self._target_coords(target)
         if coords is not None and self._is_catalog_hit(cached):
             self._emit_sky_lock(name, coords, list(cached.get("aliases") or []))
             return
