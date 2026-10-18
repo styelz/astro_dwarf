@@ -47,3 +47,7 @@ feat: enhance session interruption handling and user feedback
 - Enhanced session finish logic to differentiate between user-initiated stops and normal completions, improving clarity in session outcomes.
 - Modified QML properties to reflect the new stop action, ensuring UI accurately represents session states.
 
+feat: refactor workflow step handling and enhance autofocus logic
+- Introduced `workflow_step_labels` function to streamline the generation of workflow step labels based on session parameters, improving clarity and maintainability.
+- Updated `_run_session_steps` to utilize the new label generation function, ensuring consistent step ordering and handling.
+- Enhanced autofocus logic to provide clearer feedback on autofocus failures and retries, improving session robustness.

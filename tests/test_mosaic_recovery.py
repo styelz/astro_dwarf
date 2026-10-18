@@ -342,6 +342,142 @@ def test_session_continues_after_astro_autofocus_soft_fail() -> None:
     )
 
 
+def _astro_session(**workflow: bool) -> dict:
+    flags = {
+        "calibrate": False,
+        "autofocus": False,
+        "infinite_focus": False,
+        "polar_align": False,
+        "goto": True,
+        "wait_before_seconds": 0,
+        "wait_after_seconds": 0,
+    }
+    flags.update(workflow)
+    return {
+        "id": "session-focus",
+        "name": "M42",
+        "action": "astro",
+        "target": {"kind": "equatorial", "name": "M42", "ra_hours": 5.5, "dec_degrees": -5.4},
+        "camera": {
+            "camera": "tele",
+            "exposure_seconds": 15,
+            "gain": 60,
+            "frame_count": 10,
+            "binning": 1,
+            "ir_filter": "VIS",
+        },
+        "workflow": flags,
+        "mosaic": {},
+    }
+
+
+def _run_setup_names(workflow: dict[str, bool], focus: str) -> list[str]:
+    import astro_dwarf.device_worker as worker
+    from unittest.mock import patch
+
+    names: list[str] = []
+    attempts = {"af": 0}
+
+    def step(name: str, operation: str | None = None, *args: object, **_kwargs: object) -> None:
+        names.append(name)
+        if operation == "autofocus" and args and args[0] is False:
+            attempts["af"] += 1
+            if focus == "fatal":
+                raise RuntimeError("Auto focus failed: motor stalled")
+            if focus == "soft" and attempts["af"] == 1:
+                raise RuntimeError("Auto focus failed: ASTRO_AUTO_FOCUS_SLOW_ERROR (-15100)")
+
+    saved = (
+        worker._device,
+        worker._tap,
+        worker._prompt_darks,
+        worker._stack_exposure_name,
+        worker._stack_gain,
+        worker._stack_bin_index,
+    )
+    worker._stop.clear()
+    try:
+        with (
+            patch.object(worker, "connect", lambda: True),
+            patch.object(worker, "_wait_seconds", lambda *_a, **_k: None),
+            patch.object(worker, "sdk_call", lambda *_a, **_k: True),
+            patch.object(
+                worker,
+                "_device",
+                {"model": "Dwarf 3", "latitude": -33.0, "longitude": 151.0, "camera": "tele"},
+            ),
+        ):
+            worker._tap = None
+            worker._prompt_darks = False
+            try:
+                worker._run_session_steps(_astro_session(**workflow), step)
+            except RuntimeError as exc:
+                exc.step_names = names  # type: ignore[attr-defined]
+                raise
+    finally:
+        (
+            worker._device,
+            worker._tap,
+            worker._prompt_darks,
+            worker._stack_exposure_name,
+            worker._stack_gain,
+            worker._stack_bin_index,
+        ) = saved
+        worker._stop.clear()
+    return names
+
+
+def test_session_focuses_before_calibration_and_retries_after_a_soft_fail() -> None:
+    locked = _run_setup_names({"calibrate": True, "autofocus": True}, "lock")
+    _assert(locked.index("Auto focus") < locked.index("Polar positioning"), locked)
+    _assert(locked.index("Polar positioning") < locked.index("Calibration"), locked)
+    _assert(locked.index("Calibration") < locked.index("GOTO target"), locked)
+    _assert("Auto focus after calibration" not in locked, locked)
+    _assert("Infinity focus after autofocus failed" not in locked, locked)
+
+    missed = _run_setup_names({"calibrate": True, "autofocus": True}, "soft")
+    _assert(missed.index("Auto focus") < missed.index("Infinity focus after autofocus failed"), missed)
+    _assert(missed.index("Infinity focus after autofocus failed") < missed.index("Polar positioning"), missed)
+    _assert(missed.index("Polar positioning") < missed.index("Calibration"), missed)
+    _assert(missed.index("Calibration") < missed.index("Auto focus after calibration"), missed)
+    _assert(missed.index("Auto focus after calibration") < missed.index("GOTO target"), missed)
+    _assert(missed.count("Auto focus") == 1, missed)
+
+    polar_only = _run_setup_names({"polar_align": True, "autofocus": True}, "lock")
+    _assert("Polar positioning" not in polar_only, polar_only)
+    _assert("Calibration" not in polar_only, polar_only)
+    _assert("Auto focus after calibration" not in polar_only, polar_only)
+    _assert(polar_only.index("Auto focus") < polar_only.index("Polar alignment"), polar_only)
+
+    calibrate_only = _run_setup_names({"calibrate": True}, "lock")
+    _assert("Auto focus" not in calibrate_only, calibrate_only)
+    _assert(calibrate_only.index("Polar positioning") < calibrate_only.index("Calibration"), calibrate_only)
+    _assert(calibrate_only.index("Calibration") < calibrate_only.index("GOTO target"), calibrate_only)
+
+    both = _run_setup_names({"calibrate": True, "autofocus": True, "polar_align": True}, "soft")
+    _assert("Infinity focus after autofocus failed" not in both, both)
+    _assert(both.index("Auto focus") < both.index("Polar positioning"), both)
+    _assert(both.index("Polar positioning") < both.index("Infinity focus before polar alignment"), both)
+    _assert(both.index("Polar alignment") < both.index("Calibration"), both)
+    _assert(both.index("Calibration") < both.index("Auto focus after calibration"), both)
+
+
+def test_hard_focus_failure_stops_before_polar_position() -> None:
+    import astro_dwarf.device_worker as worker
+
+    raised = ""
+    names: list[str] = []
+    try:
+        _run_setup_names({"calibrate": True, "autofocus": True}, "fatal")
+    except RuntimeError as exc:
+        raised = str(exc)
+        names = list(getattr(exc, "step_names", []))
+    _assert("motor stalled" in raised, raised or "session continued")
+    _assert("Polar positioning" not in names, names)
+    _assert("Calibration" not in names, names)
+    _assert(not worker._stop.is_set(), "a focus failure must not latch stop")
+
+
 def test_stop_on_pane_2_keeps_sheet() -> None:
     _assert(live_mosaic_keep_sheet(False, True, 2, 2, {1: object()}), "keep pane 1 after stop")
     _assert(not live_mosaic_keep_sheet(False, True, 2, 2, {}), "empty sheet is not held")
@@ -522,6 +658,8 @@ def main() -> int:
     test_mosaic_pane_names_are_not_catalog_objects()
     test_live_mosaic_persist_roundtrip()
     test_session_continues_after_astro_autofocus_soft_fail()
+    test_session_focuses_before_calibration_and_retries_after_a_soft_fail()
+    test_hard_focus_failure_stops_before_polar_position()
     test_stop_on_pane_2_keeps_sheet()
     test_stop_preview_dismisses_a_stopped_mosaic_sheet()
     test_failed_mosaic_does_not_keep_live_hud()

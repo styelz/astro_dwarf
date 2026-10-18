@@ -21,6 +21,7 @@ from astro_dwarf.domain import (
     history_record_for_run,
     history_records_for_live_mosaic,
     to_dict,
+    workflow_step_labels,
 )
 
 
@@ -204,6 +205,15 @@ def test_history_detail_keeps_filter_gain_and_target() -> None:
     _assert("-61.160" in fields["coords_text"], fields["coords_text"])
 
 
+def test_workflow_labels_focus_before_polar_position() -> None:
+    focused = workflow_step_labels({"calibrate": True, "autofocus": True, "goto": True})
+    _assert(focused == ["AF", "POS", "CAL", "GOTO"], focused)
+    polar_only = workflow_step_labels(Workflow(calibrate=False, autofocus=True, polar_align=True, goto=False))
+    _assert(polar_only == ["AF", "POLAR"], polar_only)
+    calibrate_only = workflow_step_labels({"calibrate": True, "polar_align": True})
+    _assert(calibrate_only[:3] == ["POS", "CAL", "POLAR"], calibrate_only)
+
+
 def test_history_detail_falls_back_to_session() -> None:
     session = Session(
         name="Orion",
@@ -242,6 +252,7 @@ def main() -> int:
     test_live_mosaic_history_keeps_completed_panes_on_failure()
     test_scheduled_history_record_stays_stacked_only()
     test_history_detail_keeps_filter_gain_and_target()
+    test_workflow_labels_focus_before_polar_position()
     test_history_detail_falls_back_to_session()
     print("capture history tests ok")
     return 0

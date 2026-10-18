@@ -3058,20 +3058,35 @@ def _optional_number(value: Any) -> float | None:
         return None
 
 
-def _history_workflow_text(workflow: dict[str, Any]) -> str:
+def workflow_step_labels(workflow: Any) -> list[str]:
+    """Setup labels in session order.
+
+    Polar positioning is listed only when the session calibrates. Autofocus
+    is listed before that slew.
+    """
+
+    def flag(name: str) -> bool:
+        if isinstance(workflow, dict):
+            return bool(workflow.get(name))
+        return bool(getattr(workflow, name, False))
+
     steps: list[str] = []
-    if workflow.get("calibrate") or workflow.get("polar_align"):
-        steps.append("POS")
-    if workflow.get("calibrate"):
-        steps.append("CAL")
-    if workflow.get("autofocus"):
+    if flag("autofocus"):
         steps.append("AF")
-    elif workflow.get("infinite_focus"):
+    elif flag("infinite_focus"):
         steps.append("INF")
-    if workflow.get("polar_align"):
+    if flag("calibrate"):
+        steps.append("POS")
+        steps.append("CAL")
+    if flag("polar_align"):
         steps.append("POLAR")
-    if workflow.get("goto"):
+    if flag("goto"):
         steps.append("GOTO")
+    return steps
+
+
+def _history_workflow_text(workflow: dict[str, Any]) -> str:
+    steps = workflow_step_labels(workflow)
     wait_before = _optional_number(workflow.get("wait_before_seconds")) or 0
     wait_after = _optional_number(workflow.get("wait_after_seconds")) or 0
     if wait_before > 0:

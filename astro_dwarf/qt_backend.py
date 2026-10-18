@@ -109,6 +109,7 @@ from .domain import (
     session_capture_summary,
     stored_capture_fields,
     history_detail_fields,
+    workflow_step_labels,
     history_record_for_run,
     history_record_for_manual_stack,
     history_records_for_live_mosaic,
@@ -3580,19 +3581,7 @@ class AppBackend(QObject):
         camera_bits.append("2K" if int(cam.binning or 1) >= 2 else "4K")
         if cam.camera != Camera.WIDE and ir:
             camera_bits.append(ir)
-        steps: list[str] = []
-        if workflow.calibrate or workflow.polar_align:
-            steps.append("POS")
-        if workflow.calibrate:
-            steps.append("CAL")
-        if workflow.autofocus:
-            steps.append("AF")
-        elif workflow.infinite_focus:
-            steps.append("INF")
-        if workflow.polar_align:
-            steps.append("POLAR")
-        if workflow.goto:
-            steps.append("GOTO")
+        steps = workflow_step_labels(workflow)
         if mosaic.imported_plan or len(members) > 1:
             mosaic_text = f"{len(members)} pane" + ("" if len(members) == 1 else "s")
             if mosaic.grid_text:

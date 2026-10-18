@@ -5131,24 +5131,28 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
     continuing = bool(session.get("mosaic_continue"))
     if not continuing:
         _wait_seconds(workflow.get("wait_before_seconds", 0), "Waiting before workflow", step)
-    # Dwarf 3 calibration plate-solves from the polar-home pose. Skipping this
-    # after a power-on or leftover stop_motors fails with CALIBRATION_FAILED.
-    if workflow.get("calibrate") or workflow.get("polar_align"):
-        step("Polar positioning", "polar_position")
-    # Match astro_dwarf_session: focus, then EQ, then calibration (after stop_goto).
+    # Focus the field already in frame. Calibration plate-solves stars, and the
+    # polar-home slew often leaves a field with none.
     autofocus_failed = False
-    if workflow.get("autofocus"):
+
+    def _run_autofocus(label: str) -> None:
+        nonlocal autofocus_failed
         try:
-            _run_session_op("Auto focus", "autofocus", step, False)
+            _run_session_op(label, "autofocus", step, False)
         except RuntimeError as exc:
             if not _focus_soft_fail(exc):
                 raise
             autofocus_failed = True
             log(
-                f"Auto focus did not lock ({exc}). "
+                f"{label} did not lock ({exc}). "
                 "Continuing so calibration, GOTO, and stacking can still run.",
                 "warning",
             )
+            return
+        autofocus_failed = False
+
+    if workflow.get("autofocus"):
+        _run_autofocus("Auto focus")
     if workflow.get("infinite_focus"):
         _run_session_op("Infinity focus", "autofocus", step, True)
     elif _session_needs_infinity_after_autofocus(workflow, autofocus_failed):
@@ -5156,6 +5160,11 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
             _run_session_op("Infinity focus after autofocus failed", "autofocus", step, True)
         except RuntimeError as exc:
             log(f"Infinity focus fallback skipped: {exc}", "warning")
+    # Dwarf 3 calibration plate-solves from the polar-home pose. Skipping this
+    # after a power-on or leftover stop_motors fails with CALIBRATION_FAILED.
+    # Only a session that calibrates forces that slew.
+    if workflow.get("calibrate"):
+        step("Polar positioning", "polar_position")
     if workflow.get("polar_align"):
         if not workflow.get("infinite_focus"):
             _run_session_op("Infinity focus before polar alignment", "autofocus", step, True)
@@ -5171,6 +5180,8 @@ def _run_session_steps(session: dict[str, Any], step: Any) -> bool:
         _wait_seconds(5, "Waiting for calibration camera settings to apply", step)
         _clear_tracking(step)
         _run_v3_until_ready("Calibration", "calibrate", step)
+        if workflow.get("autofocus") and autofocus_failed:
+            _run_autofocus("Auto focus after calibration")
     if workflow.get("goto") and target.get("ra_hours") is not None:
         session_name = str(session.get("name") or "").strip()
         goto_name = session_name if " pane " in session_name.lower() else str(target.get("name") or "")
