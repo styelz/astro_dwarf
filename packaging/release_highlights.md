@@ -27,3 +27,9 @@ feat: enhance mosaic functionality with new display logic and camera handling
 - Added `mosaic_keep_camera_until_stack_frame` and `mosaic_camera_hold_timeout_s` functions for improved camera handling during mosaic operations.
 - Updated `mosaic_preview_keep_live_sheet` and related methods to ensure proper handling of live and stored images in the mosaic display.
 - Enhanced `ControlPage.qml` to dynamically determine the camera source for mosaic previews, improving user interface responsiveness.
+
+feat: improve plate-solving handling and mosaic preview logic
+- Introduced `_goto_solve_stalled` and `_retry_stalled_plate_solve` functions to manage plate-solving timeouts and retries effectively.
+- Enhanced `_await_operation` to handle stalled plate-solving scenarios, raising appropriate errors for better error management.
+- Updated mosaic preview logic to ensure the contact sheet remains visible during ongoing sessions and captures, improving user experience.
+- Refactored related functions to streamline the handling of mosaic state transitions and improve clarity in the codebase.

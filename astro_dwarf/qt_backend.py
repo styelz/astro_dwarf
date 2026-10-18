@@ -1093,6 +1093,31 @@ def mosaic_disconnected_sheet_should_hold(
     return bool(disconnecting or not connected)
 
 
+def mosaic_stop_preview_keeps_sheet(
+    *,
+    session_running: bool,
+    worker_running: bool,
+    capturing: bool,
+    disconnecting: bool,
+    connected: bool,
+    shutting_down: bool,
+    has_sheet: bool,
+) -> bool:
+    """True when Stop preview must leave the contact sheet up.
+
+    A pane that is still running, an open shutter, a disconnect, or shutdown
+    keeps the cached stills. Planned later panes are not a live mosaic: once
+    the session has stopped, Stop preview dismisses the sheet.
+    """
+    return mosaic_sheet_survives_preview_stop(
+        mosaic_running=bool(session_running or worker_running or capturing),
+        disconnecting=disconnecting,
+        connected=connected,
+        shutting_down=shutting_down,
+        has_sheet=has_sheet,
+    )
+
+
 def mosaic_sheet_survives_preview_stop(
     *,
     mosaic_running: bool,
@@ -6215,8 +6240,16 @@ class AppBackend(QObject):
     def _mosaic_sheet_survives_preview_stop(self) -> bool:
         device_id = str(self._selected_device_id or "")
         worker = self._workers.get(device_id)
-        return mosaic_sheet_survives_preview_stop(
-            mosaic_running=self._mosaic_keep_live_sheet(device_id),
+        live = self._live_mosaic.get(device_id) or {}
+        session, members = self._mosaic_context(device_id)
+        session_running = bool(
+            (session is not None and session.status == SessionStatus.RUNNING)
+            or any(item.status == SessionStatus.RUNNING for item in members)
+        )
+        return mosaic_stop_preview_keeps_sheet(
+            session_running=session_running,
+            worker_running=bool(live.get("worker_running")) and not bool(live.get("stopping")),
+            capturing=self._telemetry_capturing(device_id),
             disconnecting=device_id in self._disconnecting_ids,
             connected=bool(worker and worker.connected),
             shutting_down=self._shut_down,
@@ -8316,6 +8349,14 @@ class AppBackend(QObject):
         self._stop_preview_streams()
         if keep_mosaic:
             self._repopulate_mosaic_sheet_from_cache()
+            return
+        # A stopped mosaic still looks live while later panes are planned.
+        # keep_live then refuses to drop the sheet, so Stop preview appears
+        # to do nothing. Dismiss it once nothing is actually shooting.
+        if self.mosaic_frames.indexes() or self._mosaic_result_held or self._mosaic_pane_urls:
+            self._mosaic_result_dismissed = True
+            self._mosaic_result_held = False
+            self._clear_mosaic_preview()
 
     def _stop_preview_streams(self) -> None:
         self._preview_token += 1

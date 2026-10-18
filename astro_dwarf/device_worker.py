@@ -2969,9 +2969,13 @@ _V3_OPERATION_WAITS: dict[str, tuple[int, str | None, bool, float]] = {
     "goto": (11002, "goto_state", False, 300.0),
     "goto_solar": (11003, "goto_state", False, 300.0),
 }
-# Polar / sparse fields can sit in ASTRO_STATE_PLATE_SOLVING past the 5 min
-# GOTO budget. Keep waiting while telemetry still shows running/solving.
+# A slew that is still moving can run past the 5 min GOTO budget.
+# Plate-solving is different: a healthy solve leaves this state in well
+# under a minute. One that stays there has stopped producing a result, and
+# waiting out the 10 min cap freezes the mosaic. Stop it and send the slew
+# again. The second attempt fails at the same stall instead of waiting.
 _GOTO_SOLVE_TIMEOUT_S = 600.0
+_GOTO_SOLVE_STALL_S = 90.0
 _NON_FATAL_REPLIES = {
     11000: {-11500},  # plate solving retry during calibration
     11002: {-11500},
@@ -2987,8 +2991,19 @@ def _goto_started(state: Any) -> bool:
     return str(state or "") in _GOTO_STARTED
 
 
+def _goto_solve_stalled(state: Any, elapsed_s: float) -> bool:
+    """True when plate-solving has sat with no result long enough to retry.
+
+    ``running`` is still a slew and keeps the long budget. ``solving`` with
+    no stopped/failed/tracking handoff is the hang that used to sit for 10 min.
+    """
+    return str(state or "") == "solving" and float(elapsed_s) >= _GOTO_SOLVE_STALL_S
+
+
 def _goto_keep_waiting_for_solve(state: Any, elapsed_s: float, timeout_s: float) -> bool:
-    """True when the slew is still working past the normal GOTO budget."""
+    """True when the slew is still moving past the normal GOTO budget."""
+    if _goto_solve_stalled(state, elapsed_s):
+        return False
     return bool(_goto_started(state) and elapsed_s > timeout_s and elapsed_s < _GOTO_SOLVE_TIMEOUT_S)
 
 
@@ -3024,6 +3039,7 @@ def _await_operation(
     since: float,
     *,
     ignore_codes: set[int] | frozenset[int] | None = None,
+    stall_is_terminal: bool = False,
 ) -> None:
     """Block until a fire-and-forget V3 operation finishes, fails or times out.
 
@@ -3096,6 +3112,12 @@ def _await_operation(
             logged_tracking_wait = True
         if seen_running and state in ("idle", "stopped") and not goto:
             return
+        if goto and _goto_solve_stalled(state, elapsed):
+            if stall_is_terminal:
+                raise RuntimeError(
+                    f"{name} timed out after {int(elapsed)} s while plate-solving"
+                )
+            raise RuntimeError(f"{name} plate-solve stalled after {int(elapsed)} s")
         if goto and seen_running and elapsed - last_heartbeat >= _CAPTURE_HEARTBEAT_S:
             label = "plate-solving" if state == "solving" else (str(state or "slewing"))
             log(f"Still slewing · {label} · {int(elapsed)}s")
@@ -4575,7 +4597,18 @@ def run_session(session: dict[str, Any], prompt_darks: bool = False) -> bool:
                 raise InterruptedError("Session stopped")
             raise RuntimeError(f"{name} failed")
         if v3_model and operation in _V3_OPERATION_WAITS:
-            _await_operation(name, operation, started)
+            try:
+                _await_operation(name, operation, started)
+            except RuntimeError as exc:
+                if operation not in ("goto", "goto_solar") or not _goto_stalled_error(exc):
+                    raise
+                _retry_stalled_plate_solve(name)
+                started = time.monotonic()
+                if sdk_call(operation, *args) is False:
+                    if _stop.is_set():
+                        raise InterruptedError("Session stopped")
+                    raise RuntimeError(f"{name} failed")
+                _await_operation(name, operation, started, stall_is_terminal=True)
 
     try:
         completed = _run_session_steps(session, step)
@@ -4623,6 +4656,20 @@ def _exit_tracking_if_needed(reason: str) -> None:
         sdk_call("stop_goto")
     except Exception as exc:
         log(f"Stop tracking skipped: {exc}", "debug")
+
+
+def _goto_stalled_error(exc: BaseException) -> bool:
+    """True for the first hung plate-solve, which is stopped and sent again."""
+    return "plate-solve stalled" in str(exc).lower()
+
+
+def _retry_stalled_plate_solve(name: str) -> None:
+    """Stop a plate-solve that never reported a result, then let the caller resend GOTO."""
+    log(
+        f"{name}: plate-solve produced no result; stopping it and trying the slew again",
+        "warning",
+    )
+    _stop_tracking_for_goto(f"Stopping stalled plate-solve before retrying {name}")
 
 
 def _stop_tracking_for_goto(label: str = "Stopping leftover tracking before GOTO") -> None:
@@ -7071,17 +7118,22 @@ def _goto_target(
         _stop_tracking_for_goto(f"Stopping tracking before {name}")
     deadline = time.monotonic() + _GOTO_BUSY_TIMEOUT_S
     camera_retried = False
+    solve_retried = False
     while True:
         started = time.monotonic()
         try:
             if sdk_call("goto", ra, dec, target_name, False) is False:
                 raise RuntimeError(f"{name} failed")
             if v3_model:
-                _await_operation(name, "goto", started)
+                _await_operation(name, "goto", started, stall_is_terminal=solve_retried)
             return
         except RuntimeError as exc:
             if _stop.is_set():
                 raise
+            if _goto_stalled_error(exc) and not solve_retried:
+                solve_retried = True
+                _retry_stalled_plate_solve(name)
+                continue
             if _goto_needs_camera_reopen(exc) and not camera_retried:
                 camera_retried = True
                 deadline = time.monotonic() + _GOTO_BUSY_TIMEOUT_S
@@ -7106,6 +7158,7 @@ def _goto_target(
                         "goto",
                         started,
                         ignore_codes=_CAPTURE_BUSY_CODES,
+                        stall_is_terminal=solve_retried,
                     )
                     return
                 if not released:

@@ -15,6 +15,8 @@ from astro_dwarf.device_worker import (
     _goto_fail_reason,
     _goto_keep_waiting_for_solve,
     _goto_needs_camera_reopen,
+    _goto_solve_stalled,
+    _goto_stalled_error,
     _goto_never_started_error,
     _goto_solve_timeout_error,
     _goto_started,
@@ -32,6 +34,7 @@ from astro_dwarf.device_worker import (
     mosaic_pane_goto_fail_message,
     _CAPTURE_BUSY_RETRY_S,
     _GOTO_BUSY_TIMEOUT_S,
+    _GOTO_SOLVE_STALL_S,
     _GOTO_SOLVE_TIMEOUT_S,
     _MOSAIC_LAST_PANE_IDLE_S,
     _MOSAIC_PANE_GAP_S,
@@ -123,18 +126,27 @@ def test_goto_reopens_camera_when_slew_never_starts() -> None:
     )
     _assert(not _goto_never_started_error(tracking_timeout), "tracking timeout is not no-start")
     _assert(not _goto_needs_camera_reopen(tracking_timeout), "tracking timeout is not a closed camera")
-    solve_timeout = RuntimeError("GOTO pane 3 timed out after 600 s while plate-solving")
+    solve_timeout = RuntimeError("GOTO pane 3 timed out after 90 s while plate-solving")
     _assert(_goto_solve_timeout_error(solve_timeout), "solve timeout token")
     _assert(not _goto_needs_camera_reopen(solve_timeout), "long plate-solve is not a closed camera")
+    stalled = RuntimeError("GOTO target plate-solve stalled after 90 s")
+    _assert(_goto_stalled_error(stalled), "first hang is retried")
+    _assert(not _goto_solve_timeout_error(stalled), "a retry is not the terminal timeout")
+    _assert(not _goto_needs_camera_reopen(stalled), "a stalled solve is not a closed camera")
+    _assert(not _goto_terminal_fail(stalled), "the first stall must be sent again")
 
 
 def test_goto_keeps_waiting_while_plate_solving() -> None:
-    _assert(_GOTO_SOLVE_TIMEOUT_S >= 600.0, "polar plate-solves can exceed 5 min")
-    _assert(_goto_keep_waiting_for_solve("solving", 301.0, 300.0), "still solving past 5m")
+    _assert(_GOTO_SOLVE_TIMEOUT_S >= 600.0, "a slew that is still moving can exceed 5 min")
+    _assert(_GOTO_SOLVE_STALL_S <= 90.0, "a hung plate-solve must not sit for minutes")
+    _assert(_goto_solve_stalled("solving", _GOTO_SOLVE_STALL_S), "solving at the stall is retried")
+    _assert(not _goto_solve_stalled("solving", _GOTO_SOLVE_STALL_S - 1), "a normal solve is still inside the window")
+    _assert(not _goto_solve_stalled("running", 120.0), "slewing is not a stalled solve")
+    _assert(not _goto_keep_waiting_for_solve("solving", 301.0, 300.0), "a stuck plate-solve is not a long slew")
     _assert(_goto_keep_waiting_for_solve("running", 301.0, 300.0), "still slewing past 5m")
     _assert(not _goto_keep_waiting_for_solve("idle", 301.0, 300.0), "idle uses tracking timeout")
     _assert(not _goto_keep_waiting_for_solve("solving", 200.0, 300.0), "before base timeout")
-    _assert(not _goto_keep_waiting_for_solve("solving", _GOTO_SOLVE_TIMEOUT_S, 300.0), "hard cap")
+    _assert(not _goto_keep_waiting_for_solve("running", _GOTO_SOLVE_TIMEOUT_S, 300.0), "hard cap")
 
 
 def test_engine_busy_error_matches_firmware_reply() -> None:
@@ -337,6 +349,145 @@ def test_stop_on_pane_2_keeps_sheet() -> None:
     _assert(live_mosaic_keep_sheet(True, False, 2, 2, {1: object(), 2: object()}), "success keeps sheet")
 
 
+def test_stalled_plate_solve_fails_fast_and_a_short_solve_still_completes() -> None:
+    import astro_dwarf.device_worker as worker
+
+    class Hung:
+        def snapshot(self) -> dict[str, str]:
+            return {"goto_state": "solving", "tracking_state": "idle"}
+
+        def response_after(self, cmd: int, since: float) -> None:
+            return None
+
+    class Finished:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def snapshot(self) -> dict[str, str]:
+            self.reads += 1
+            if self.reads < 4:
+                return {"goto_state": "solving", "tracking_state": "idle"}
+            return {"goto_state": "idle", "tracking_state": "running"}
+
+        def response_after(self, cmd: int, since: float) -> None:
+            return None
+
+    class Slewing:
+        def snapshot(self) -> dict[str, str]:
+            return {"goto_state": "running", "tracking_state": "idle"}
+
+        def response_after(self, cmd: int, since: float) -> None:
+            return None
+
+    clock = {"now": 0.0}
+    previous = (worker._tap, worker.time.monotonic, worker.time.sleep, worker.log, worker._stop.is_set())
+
+    def monotonic() -> float:
+        return clock["now"]
+
+    def sleep(seconds: float) -> None:
+        clock["now"] += float(seconds)
+
+    worker._stop.clear()
+    worker.time.monotonic = monotonic
+    worker.time.sleep = sleep
+    worker.log = lambda *args, **kwargs: None
+    try:
+        worker._tap = Finished()
+        worker._await_operation("GOTO target", "goto", 0.0)
+        _assert(clock["now"] < _GOTO_SOLVE_STALL_S, "a solve that hands off to tracking must not hit the stall")
+
+        clock["now"] = 0.0
+        worker._tap = Hung()
+        try:
+            worker._await_operation("GOTO target", "goto", 0.0)
+        except RuntimeError as exc:
+            _assert("plate-solve stalled" in str(exc), str(exc))
+            _assert(clock["now"] < 120.0, f"stall took {clock['now']}s")
+        else:
+            raise AssertionError("a hung plate-solve returned")
+
+        clock["now"] = 0.0
+        try:
+            worker._await_operation("GOTO target", "goto", 0.0, stall_is_terminal=True)
+        except RuntimeError as exc:
+            _assert("while plate-solving" in str(exc), str(exc))
+            _assert("plate-solve stalled" not in str(exc), str(exc))
+        else:
+            raise AssertionError("the second hang returned")
+
+        clock["now"] = 0.0
+        worker._tap = Slewing()
+        raised = False
+        try:
+            worker._await_operation("GOTO target", "goto", 0.0)
+        except RuntimeError as exc:
+            raised = True
+            _assert("plate-solve stalled" not in str(exc), str(exc))
+            _assert(clock["now"] > 300.0, "a moving slew must keep the long budget")
+        _assert(raised, "a slew that never finishes still has to time out")
+    finally:
+        worker._tap = previous[0]
+        worker.time.monotonic = previous[1]
+        worker.time.sleep = previous[2]
+        worker.log = previous[3]
+        if previous[4]:
+            worker._stop.set()
+
+
+def test_stop_preview_dismisses_a_stopped_mosaic_sheet() -> None:
+    from astro_dwarf.qt_backend import mosaic_stop_preview_keeps_sheet
+
+    _assert(
+        not mosaic_stop_preview_keeps_sheet(
+            session_running=False,
+            worker_running=False,
+            capturing=False,
+            disconnecting=False,
+            connected=True,
+            shutting_down=False,
+            has_sheet=True,
+        ),
+        "a stopped mosaic must leave the preview",
+    )
+    _assert(
+        mosaic_stop_preview_keeps_sheet(
+            session_running=True,
+            worker_running=False,
+            capturing=False,
+            disconnecting=False,
+            connected=True,
+            shutting_down=False,
+            has_sheet=True,
+        ),
+        "a running pane keeps the contact sheet",
+    )
+    _assert(
+        mosaic_stop_preview_keeps_sheet(
+            session_running=False,
+            worker_running=False,
+            capturing=True,
+            disconnecting=False,
+            connected=True,
+            shutting_down=False,
+            has_sheet=True,
+        ),
+        "an open shutter keeps the contact sheet",
+    )
+    _assert(
+        mosaic_stop_preview_keeps_sheet(
+            session_running=False,
+            worker_running=False,
+            capturing=False,
+            disconnecting=True,
+            connected=False,
+            shutting_down=False,
+            has_sheet=True,
+        ),
+        "disconnect keeps cached panes",
+    )
+
+
 def test_failed_mosaic_does_not_keep_live_hud() -> None:
     from astro_dwarf.qt_backend import mosaic_goto_failed_result, mosaic_preview_keep_live_sheet
 
@@ -362,6 +513,7 @@ def main() -> int:
     test_engine_busy_error_matches_firmware_reply()
     test_mosaic_goto_fail_does_not_start_stack()
     test_goto_keeps_waiting_while_plate_solving()
+    test_stalled_plate_solve_fails_fast_and_a_short_solve_still_completes()
     test_goto_started_ignores_leftover_stop()
     test_leftover_stop_skips_joystick_motors()
     test_goto_wait_ignores_leftover_tracking()
@@ -371,6 +523,7 @@ def main() -> int:
     test_live_mosaic_persist_roundtrip()
     test_session_continues_after_astro_autofocus_soft_fail()
     test_stop_on_pane_2_keeps_sheet()
+    test_stop_preview_dismisses_a_stopped_mosaic_sheet()
     test_failed_mosaic_does_not_keep_live_hud()
     print("mosaic recovery tests ok")
     return 0
