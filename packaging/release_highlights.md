@@ -57,4 +57,9 @@ feat: enhance mosaic handling and autofocus logic for improved session accuracy
 - Enhanced GOTO handling by introducing a `goto_released` state to prevent new GOTO commands while a search is ongoing, improving session reliability.
 - Clarified rules in `astro-dwarf.mdc` and `do-not-regress.mdc` regarding session setup and autofocus behavior, ensuring consistent handling across different scenarios.
 - Improved JavaScript logic in `sky-atlas.js` to account for the parallactic angle during mosaic captures, enhancing the accuracy of pane placements.
-- Added unit tests to validate the new autofocus and mosaic handling behaviors, ensuring robustness in session execution.
+
+refactor: streamline mosaic handling and improve camera angle consistency
+- Updated the handling of mosaic panes to ensure that alt-az configurations share a single camera angle while allowing individual angles for each pane to fan the boxes.
+- Enhanced JavaScript logic in `sky-atlas.js` and `services.py` to eliminate unnecessary rotations of panes, ensuring that the photos and contact sheets remain zenith-up.
+- Introduced new functions to calculate the vertical field and camera pane dimensions, aligning the behavior of Aladin and Stellarium for consistent visual outputs.
+- Improved documentation and comments for clarity on the updated mosaic behavior and camera angle management.

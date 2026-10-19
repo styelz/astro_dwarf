@@ -1737,29 +1737,6 @@ SKY_WEB_FOV_JS = r"""
       + labelOnFrame(p, hudCorners(box.width / 2, box.height / 2, size.w, size.h, tilt), stel, box));
     return "center";
   }
-  function zenithPaneRoll(p, stel, dx, dy, paneW, paneH) {
-    // Alt-az camera-up is the zenith at the pane, not at the mosaic centre.
-    // West of the meridian the parallactic angle increases, which is
-    // counterclockwise on the zenith-up chart. EQ stays on one angle.
-    if (overlayMountMode(p) === "EQ" || String(p.pa_source || "") !== "parallactic") return 0;
-    var center = null;
-    try { center = viewCenter(stel); } catch (err) { center = null; }
-    var site = observerLatLonDeg(stel);
-    if (!center || !site || !(paneW > 0) || !(paneH > 0)) return 0;
-    var q0 = parallacticDeg(center.ra_hours, center.dec_degrees, site.lat, site.lon);
-    if (!isFinite(q0)) return 0;
-    q0 = wrapDeg(q0 + (pastZenith(p) ? 180 : 0));
-    var fovH = Number(p.fov_h), fovV = Number(p.fov_v);
-    if (!(fovH > 0) || !(fovV > 0)) return 0;
-    var pt = offsetCamera(center.ra_hours, center.dec_degrees, dx * fovH / paneW, -dy * fovV / paneH, q0);
-    var q = parallacticDeg(pt.ra_hours, pt.dec_degrees, site.lat, site.lon);
-    if (!isFinite(q)) return 0;
-    q = wrapDeg(q + (pastZenith(p) ? 180 : 0));
-    var delta = q - q0;
-    while (delta > 180) delta -= 360;
-    while (delta < -180) delta += 360;
-    return delta;
-  }
   function drawScreenGrid(el, box, p, stel) {
     var size = paneSize(box, p, stel);
     var cols = Math.max(1, Number(p.columns) || 1);
@@ -1792,82 +1769,109 @@ SKY_WEB_FOV_JS = r"""
     }
     var cells = [];
     var index = 0;
-    var rolled = false;
     for (var row = 1; row <= rows; row++) {
       for (var col = 1; col <= cols; col++) {
         index += 1;
         var x = originX + (col1OnRight ? (cols - col) : (col - 1)) * stepX;
         var y = originY + (row1AtTop ? (row - 1) : (rows - row)) * stepY;
-        var roll = zenithCamera
-          ? zenithPaneRoll(p, stel, (x + size.w / 2) - box.width / 2, (y + size.h / 2) - box.height / 2, size.w, size.h)
-          : 0;
-        if (Math.abs(roll) > 0.35) rolled = true;
-        cells.push({index: index, x: x, y: y, roll: roll});
+        cells.push({index: index, x: x, y: y});
       }
     }
     var media = "";
     var labels = "";
     var svg = "";
-    if (!rolled) {
-      for (var n = 0; n < cells.length; n++) {
-        var cell = cells[n];
-        media += paneFillRect(cell.x, cell.y, size.w, size.h, cell.index);
-        if (cells.length > 1) {
-          var pc = rotatePoint(box.width / 2, box.height / 2, cell.x + size.w / 2, cell.y + size.h / 2, tilt);
-          labels += indexText(pc.x, pc.y, cell.index, color, -tilt, Math.min(size.w, size.h));
-        }
-      }
-      svg = mosaicMediaGroup(media);
+    for (var n = 0; n < cells.length; n++) {
+      var cell = cells[n];
+      media += paneFillRect(cell.x, cell.y, size.w, size.h, cell.index);
       if (cells.length > 1) {
-        for (var seamCol = 1; seamCol < cols; seamCol++) {
-          var sx = originX + (seamCol - 1) * stepX + (stepX + size.w) / 2;
-          svg += dottedLine(sx, originY, sx, originY + totalH, color);
-        }
-        for (var seamRow = 1; seamRow < rows; seamRow++) {
-          var sy = originY + (seamRow - 1) * stepY + (stepY + size.h) / 2;
-          svg += dottedLine(originX, sy, originX + totalW, sy, color);
-        }
-      }
-      svg += targetFrameSvg([
-        {x: originX, y: originY},
-        {x: originX + totalW, y: originY},
-        {x: originX + totalW, y: originY + totalH},
-        {x: originX, y: originY + totalH}
-      ], color);
-    } else {
-      for (var k = 0; k < cells.length; k++) {
-        var pane = cells[k];
-        var cx = pane.x + size.w / 2, cy = pane.y + size.h / 2;
-        var corners = [
-          {x: pane.x, y: pane.y},
-          {x: pane.x + size.w, y: pane.y},
-          {x: pane.x + size.w, y: pane.y + size.h},
-          {x: pane.x, y: pane.y + size.h}
-        ];
-        var turned = [];
-        for (var qn = 0; qn < 4; qn++)
-          turned.push(rotatePoint(cx, cy, corners[qn].x, corners[qn].y, pane.roll));
-        var href = paneImageHref(pane.index);
-        var liveHere = livePaneIndex();
-        if (liveHere && pane.index === liveHere)
-          queueMedia({quad: turned, live: true, blend: true});
-        else if (href)
-          queueMedia({quad: turned, href: href, key: "still:" + href.slice(0, 48), blend: true});
-        for (var edge = 0; edge < 4; edge++) {
-          var a = turned[edge], b = turned[(edge + 1) % 4];
-          svg += dottedLine(a.x, a.y, b.x, b.y, color);
-        }
-        svg += targetFrameSvg(turned, color);
-        var lab = rotatePoint(box.width / 2, box.height / 2, cx, cy, tilt);
-        labels += indexText(lab.x, lab.y, pane.index, color, -tilt, Math.min(size.w, size.h));
+        var pc = rotatePoint(box.width / 2, box.height / 2, cell.x + size.w / 2, cell.y + size.h / 2, tilt);
+        labels += indexText(pc.x, pc.y, cell.index, color, -tilt, Math.min(size.w, size.h));
       }
     }
+    svg = mosaicMediaGroup(media);
+    if (cells.length > 1) {
+      for (var seamCol = 1; seamCol < cols; seamCol++) {
+        var sx = originX + (seamCol - 1) * stepX + (stepX + size.w) / 2;
+        svg += dottedLine(sx, originY, sx, originY + totalH, color);
+      }
+      for (var seamRow = 1; seamRow < rows; seamRow++) {
+        var sy = originY + (seamRow - 1) * stepY + (stepY + size.h) / 2;
+        svg += dottedLine(originX, sy, originX + totalW, sy, color);
+      }
+    }
+    svg += targetFrameSvg([
+      {x: originX, y: originY},
+      {x: originX + totalW, y: originY},
+      {x: originX + totalW, y: originY + totalH},
+      {x: originX, y: originY + totalH}
+    ], color);
     if (!mosaicUsesPaneImages())
       svg += liveImageRect((box.width - size.w) / 2, (box.height - size.h) / 2, size.w, size.h);
     paintSvg(el, box, rotateOverlay(box, tilt, svg)
       + labels
       + labelOnFrame(p, hudCorners(box.width / 2, box.height / 2, totalW, totalH, tilt), stel, box));
     return "grid";
+  }
+  function levelZenithDrawn(drawn) {
+    // Same unspin as Aladin levelZenithPanes. A raw view projection still
+    // carries the map roll, so the same corners sit crooked on Stellarium
+    // and level on Aladin. Camera-right goes to screen +x. The panes share
+    // one camera angle, so this does not fan them.
+    if (!drawn || drawn.length < 2) return;
+    var cx = 0, cy = 0, n = 0;
+    for (var i = 0; i < drawn.length; i++) {
+      cx += drawn[i].cx;
+      cy += drawn[i].cy;
+      n += 1;
+    }
+    if (!n) return;
+    cx /= n;
+    cy /= n;
+    var byCell = {};
+    for (var b = 0; b < drawn.length; b++) {
+      var cell = drawn[b];
+      if (cell.row && cell.column)
+        byCell[cell.row + "," + cell.column] = cell;
+    }
+    var residual = 0;
+    var found = false;
+    for (var key in byCell) {
+      var here = byCell[key];
+      var nextCol = byCell[here.row + "," + (here.column + 1)];
+      if (nextCol) {
+        residual = Math.atan2(here.cy - nextCol.cy, here.cx - nextCol.cx);
+        found = true;
+        break;
+      }
+      var below = byCell[(here.row + 1) + "," + here.column];
+      if (below) {
+        residual = Math.atan2(below.cy - here.cy, below.cx - here.cx) - Math.PI / 2;
+        found = true;
+        break;
+      }
+    }
+    if (!found) return;
+    var cos = Math.cos(residual), sin = Math.sin(residual);
+    function unspin(pt) {
+      var dx = pt.x - cx, dy = pt.y - cy;
+      return {x: cx + dx * cos + dy * sin, y: cy - dx * sin + dy * cos};
+    }
+    for (var k = 0; k < drawn.length; k++) {
+      var item = drawn[k];
+      var moved = unspin({x: item.cx, y: item.cy});
+      item.cx = moved.x;
+      item.cy = moved.y;
+      if (item.quad) {
+        var quad = [];
+        for (var c = 0; c < item.quad.length; c++) quad.push(unspin(item.quad[c]));
+        item.quad = quad;
+      }
+      if (item.ring) {
+        var ring = [];
+        for (var r = 0; r < item.ring.length; r++) ring.push(unspin(item.ring[r]));
+        item.ring = ring;
+      }
+    }
   }
   function drawPanes(el, box, p, stel, panes) {
     var color = String(p.color || "#02900A");
@@ -1910,6 +1914,8 @@ SKY_WEB_FOV_JS = r"""
     }
     if (!drawn.length)
       return "";
+    if (overlayMountMode(p) !== "EQ" && String(p.pa_source || "") === "parallactic")
+      levelZenithDrawn(drawn);
     var onScreen = drawn.some(function(item) {
       if (item.cx >= -40 && item.cy >= -40 && item.cx <= box.width + 40 && item.cy <= box.height + 40)
         return true;
@@ -3936,17 +3942,15 @@ def mosaic_session_footprints(
             stored_angles.append(float(getattr(mosaic, "rotation_degrees", 0) or 0.0))
         except (TypeError, ValueError):
             stored_angles.append(0.0)
-    # Alt-az saves the parallactic angle of each pane. A shared 0 is the
-    # older single-angle plan and still uses the centre PA.
-    use_stored = any(abs(angle) > 1e-3 for angle in stored_angles)
-    stored_index = 0
+    # One camera for the whole mosaic. Angles that differ were a parallactic
+    # value per pane; those fan the rectangles and the photos do not.
+    # A shared 0 is the live centre angle. A shared non-zero is that camera.
+    pane_pa = _one_mosaic_camera_angle(stored_angles, pa)
     for item in ordered:
         mosaic = getattr(item, "mosaic", None)
         target = getattr(item, "target", None)
         ra = getattr(target, "ra_hours", None)
         dec = getattr(target, "dec_degrees", None)
-        pane_pa = stored_angles[stored_index] % 360.0 if use_stored else pa
-        stored_index += 1
         if ra is None or dec is None:
             continue
         index = mosaic_pane_number(mosaic, columns, getattr(item, "name", ""))
@@ -5610,60 +5614,30 @@ def _axis_overlap(explicit: float | None, fallback: float) -> float:
     return min(0.95, max(0.0, value))
 
 
-def apply_altaz_pane_angles(
-    panes: list[dict[str, Any]],
-    *,
-    latitude: Any = None,
-    longitude: Any = None,
-    fov_h: float = 0.0,
-    fov_v: float = 0.0,
-    mount_mode: Any = None,
-    when: datetime | None = None,
-    mechanical_altitude: Any = None,
-) -> list[dict[str, Any]]:
-    """Turn each alt-az pane to the zenith at that pointing.
+def _one_mosaic_camera_angle(stored: list[float], centre: float) -> float:
+    """One position angle for every pane of a mosaic.
 
-    Centres stay on the camera grid of the mosaic centre. The head only pans
-    and nods, so a pane west of the meridian is rotated counterclockwise
-    from one on the meridian. EQ keeps the single angle already on the panes.
+    Zeros mean the centre angle (the live parallactic angle on alt-az, the
+    stored equatorial angle otherwise). Non-zero saved angles are averaged.
+    They are not applied one-per-pane: that fans the rectangles.
     """
-    if str(mount_mode or "").strip().upper() == "EQ" or not panes:
-        return panes
     try:
-        if abs(float(latitude or 0)) < 1e-9 and abs(float(longitude or 0)) < 1e-9:
-            return panes
-        width = float(fov_h)
-        height = float(fov_v)
+        shared = float(centre) % 360.0
     except (TypeError, ValueError):
-        return panes
-    if width <= 0 or height <= 0:
-        return panes
-    turned: list[dict[str, Any]] = []
-    for pane in panes:
-        if not isinstance(pane, dict):
-            turned.append(pane)
-            continue
+        shared = 0.0
+    vals: list[float] = []
+    for angle in stored:
         try:
-            ra = float(pane["ra_hours"])
-            dec = float(pane["dec_degrees"])
-        except (TypeError, ValueError, KeyError):
-            turned.append(pane)
+            vals.append(float(angle) % 360.0)
+        except (TypeError, ValueError):
             continue
-        angle = altaz_camera_pa(
-            ra, dec, latitude, longitude, when, mechanical_altitude
-        )
-        if angle is None:
-            turned.append(pane)
-            continue
-        turned.append(
-            {
-                **pane,
-                "position_angle": round(float(angle), 3),
-                "corners": _pane_corners(ra, dec, width, height, angle),
-                "parallactic": True,
-            }
-        )
-    return turned
+    if not vals or not any(abs(((v + 180.0) % 360.0) - 180.0) > 1e-3 for v in vals):
+        return shared
+    sx = sum(cos(radians(v)) for v in vals)
+    sy = sum(sin(radians(v)) for v in vals)
+    if sx * sx + sy * sy < 1e-18:
+        return shared
+    return (atan2(sy, sx) * 180.0 / pi) % 360.0
 
 
 def stitch_capture_position_angle(
@@ -5677,32 +5651,18 @@ def stitch_capture_position_angle(
     captured_at: Any = None,
     mechanical_altitude: Any = None,
 ) -> float:
-    """Camera angle at the time a pane was shot.
+    """The mosaic's one camera angle. Not a parallactic angle per pane.
 
-    The stitch seed does not rotate by this. Contact-sheet JPEGs are already
-    zenith-up, and a parallactic delta turns them apart. The stored plan
-    angle is the fallback when the mount is equatorial or the capture time
-    was not kept.
+    Alt-az JPEGs are already zenith-up on the contact sheet. Recomputing the
+    parallactic angle at each pane's capture time turns the bottom row, and
+    the star match then locks onto the wrong stars. Equatorial frames keep
+    the stored plan angle; the sheet flips those when camera-up is south.
     """
+    del ra_hours, dec_degrees, latitude, longitude, mount_mode, captured_at, mechanical_altitude
     try:
-        stored = float(stored_angle or 0.0) % 360.0
+        return float(stored_angle or 0.0) % 360.0
     except (TypeError, ValueError):
-        stored = 0.0
-    mode = str(mount_mode or "").strip().upper()
-    if mode in {"", "EQ"} or captured_at in (None, ""):
-        return stored
-    try:
-        when = captured_at if isinstance(captured_at, datetime) else datetime.fromisoformat(
-            str(captured_at).replace("Z", "+00:00")
-        )
-    except (TypeError, ValueError):
-        return stored
-    angle = altaz_camera_pa(
-        ra_hours, dec_degrees, latitude, longitude, when, mechanical_altitude
-    )
-    if angle is None:
-        return stored
-    return float(angle)
+        return 0.0
 
 
 def mosaic_pane_footprints(
@@ -5751,16 +5711,13 @@ def mosaic_pane_footprints(
                     "corners": _pane_corners(ra_hours, dec, fov_h, fov_v, pa),
                 }
             )
-    return apply_altaz_pane_angles(
-        panes,
-        latitude=latitude,
-        longitude=longitude,
-        fov_h=fov_h,
-        fov_v=fov_v,
-        mount_mode=mount_mode,
-        when=when,
-        mechanical_altitude=mechanical_altitude,
-    )
+    # One camera angle, already `pa`, on every pane. A parallactic angle at
+    # each pane fans the rectangles. The head is zenith-up, the chart is
+    # zenith-up, and the contact sheet is that same grid. Latitude and time
+    # stay on the signature so callers can pass the site; they do not tilt
+    # individual panes. The live centre angle arrives as position_angle.
+    del latitude, longitude, mount_mode, when, mechanical_altitude
+    return panes
 
 
 def mosaic_panes_match_center(

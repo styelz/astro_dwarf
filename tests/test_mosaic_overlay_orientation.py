@@ -244,6 +244,98 @@ def test_stellarium_js_unifies_one_by_one_and_mosaic_live() -> None:
     _assert("if (mosaic && panes.length)" not in SKY_WEB_FOV_JS, "1×1 must not skip ICRS projection")
 
 
+def test_altaz_mosaic_is_one_camera_angle() -> None:
+    """Alt-az panes share the centre angle. A per-pane angle fans the boxes.
+
+    Beta Hydri's panes differ by about nine degrees of parallactic angle.
+    The photos and the contact sheet are one zenith-up frame, so the
+    rectangles stay parallel. Equatorial mounts keep the one stored angle.
+    """
+    from types import SimpleNamespace
+
+    from astro_dwarf.services import mosaic_session_footprints, stitch_capture_position_angle
+
+    when = datetime(2026, 10, 18, 18, 4, tzinfo=timezone.utc)
+    lat, lon = -37.81667, 144.96667
+    target = Target(name="Beta Hydri", ra_hours=0.438, dec_degrees=-77.25)
+    centre = parallactic_angle_deg(0.438, -77.25, lat, lon, when)
+    _assert(centre is not None and abs(float(centre) - 90.0) < 20.0, centre)
+    panes = mosaic_pane_footprints(
+        target, 2, 2, 2.95, 1.66, 0.15,
+        latitude=lat, longitude=lon, mount_mode="AZ", when=when,
+        position_angle=centre,
+    )
+    angles = {pane["position_angle"] for pane in panes}
+    _assert(angles == {round(float(centre), 3)}, angles)
+    equatorial = mosaic_pane_footprints(
+        target, 2, 2, 2.95, 1.66, 0.15,
+        latitude=lat, longitude=lon, mount_mode="EQ", when=when,
+        position_angle=180,
+    )
+    _assert({pane["position_angle"] for pane in equatorial} == {180.0}, equatorial)
+    saved = [85.4, 83.8, 94.3, 94.0]
+    coords = [(0.609, -75.947), (0.694, -78.439), (0.221, -76.021), (0.224, -78.528)]
+    sessions = []
+    for index, (angle, (ra, dec)) in enumerate(zip(saved, coords), start=1):
+        sessions.append(SimpleNamespace(
+            name=f"pane {index}",
+            target=SimpleNamespace(ra_hours=ra, dec_degrees=dec),
+            mosaic=SimpleNamespace(
+                row=(index - 1) // 2 + 1,
+                column=(index - 1) % 2 + 1,
+                rows=2,
+                columns=2,
+                rotation_degrees=angle,
+                grid_rows=2,
+                grid_columns=2,
+            ),
+        ))
+    drawn = mosaic_session_footprints(sessions, 2.95, 1.66, float(centre))
+    drawn_angles = {pane["position_angle"] for pane in drawn}
+    _assert(len(drawn_angles) == 1, drawn_angles)
+    shared = next(iter(drawn_angles))
+    _assert(83.0 < shared < 95.0, shared)
+    _assert(shared not in saved, (shared, "must not keep one pane's angle and fan the rest"))
+    fresh = stitch_capture_position_angle(
+        0.224, -78.528, 0.0,
+        latitude=lat, longitude=lon, mount_mode="AZ",
+        captured_at=datetime(2026, 10, 18, 18, 24, tzinfo=timezone.utc),
+    )
+    _assert(fresh == 0.0, fresh)
+    kept = stitch_capture_position_angle(
+        0.224, -78.528, 180.0, mount_mode="EQ",
+        captured_at="2026-10-18T18:24:00+00:00",
+    )
+    _assert(abs(kept - 180.0) < 1e-6, kept)
+    _assert("function zenithPaneRoll" not in SKY_WEB_FOV_JS, "Stellarium must not roll each pane")
+    _assert("function zenithCellRolls" not in ATLAS_ASTRO_JS, "Aladin must not roll each pane")
+
+
+def test_both_charts_share_the_vertical_field_and_the_level_grid() -> None:
+    """Aladin and Stellarium size the camera from the vertical field.
+
+    The old Aladin box divided width by getFov()[0] and height by getFov()[1].
+    On a landscape map that is a different rectangle from Stellarium, which
+    scales both axes from the vertical field. Projected alt-az panes on
+    Stellarium also drop the shared map roll, the same unspin Aladin uses.
+    """
+    import math
+
+    _assert("function cameraPanePixels" in ATLAS_ASTRO_JS, "Aladin pane size")
+    _assert("function verticalFieldDeg" in ATLAS_ASTRO_JS, "vertical field, not getFov()[0]")
+    _assert("var panePx = cameraPanePixels(width, height, fovH, fovV, aladin);" in ATLAS_ASTRO_JS, "paintFov uses the shared scale")
+    _assert("(fovH / fovX) * width" not in ATLAS_ASTRO_JS, "per-axis getFov scale is gone")
+    _assert("function levelZenithDrawn" in SKY_WEB_FOV_JS, "Stellarium levels projected panes")
+    _assert("levelZenithDrawn(drawn)" in SKY_WEB_FOV_JS, "drawPanes applies the unspin")
+    half_v = 2 * math.tan(math.radians(70.0) / 4)
+    height = 1080
+    h = (2 * math.tan(math.radians(1.66) / 4) / half_v) * height
+    w = (2 * math.tan(math.radians(2.95) / 4) / half_v) * height
+    _assert(abs(w / h - 2.95 / 1.66) < 0.02, (w, h, "box keeps the tele aspect"))
+    wide = (2.95 / 70.0) * 1920
+    _assert(w < wide * 0.7, (w, wide, "landscape width is not the vertical field stretched across the window"))
+
+
 if __name__ == "__main__":
     test_hud_tilt_is_full_camera_pa_not_south_up_chart()
     test_southern_altaz_one_by_one_upright_at_parallactic()
@@ -253,4 +345,6 @@ if __name__ == "__main__":
     test_altaz_stays_upright_on_both_sides_of_the_south_pole()
     test_aladin_zenith_pane_sits_level_like_stellarium()
     test_stellarium_js_unifies_one_by_one_and_mosaic_live()
+    test_altaz_mosaic_is_one_camera_angle()
+    test_both_charts_share_the_vertical_field_and_the_level_grid()
     print("ok")

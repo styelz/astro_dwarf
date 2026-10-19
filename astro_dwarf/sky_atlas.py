@@ -606,6 +606,34 @@ ATLAS_ASTRO_JS = r"""
     } catch (err) {}
     return 0;
   }
+  function verticalFieldDeg(aladin, width, height) {
+    // Stellarium core.fov is the vertical field. On a landscape map that is
+    // Aladin's smaller axis; on a portrait map it is the larger one.
+    try {
+      var zoom = aladin && aladin.getFov();
+      if (Array.isArray(zoom)) {
+        var fx = Number(zoom[0]), fy = Number(zoom[1]);
+        if (fx > 0 && fy > 0)
+          return height >= width ? Math.max(fx, fy) : Math.min(fx, fy);
+      }
+    } catch (err) {}
+    var inscribed = inscribedFov(aladin);
+    return inscribed > 0 ? inscribed : 70;
+  }
+  function cameraPanePixels(width, height, fovH, fovV, aladin) {
+    // Same scale as Stellarium paneSize: one degree, both axes, from the
+    // vertical field. Dividing each axis by getFov()[0] and [1] made the
+    // Aladin box a different shape from the Stellarium box.
+    var vDeg = verticalFieldDeg(aladin, width, height);
+    var halfV = 2 * Math.tan(vDeg * Math.PI / 180 / 4);
+    var camH = Number(fovH) * Math.PI / 180;
+    var camV = Number(fovV) * Math.PI / 180;
+    if (!(halfV > 0) || !(camH > 0) || !(camV > 0)) return null;
+    var h = (2 * Math.tan(camV / 4) / halfV) * height;
+    var w = (2 * Math.tan(camH / 4) / halfV) * height;
+    if (!(w > 4) || !(h > 4)) return null;
+    return {w: w, h: h};
+  }
   function applyFov(aladin, fov) {
     var n = Number(fov);
     if (!(n > 0) || !aladin || typeof aladin.setFov !== "function") return;
@@ -1201,47 +1229,6 @@ ATLAS_ASTRO_JS = r"""
     ctx.setLineDash([]);
     ctx.lineCap = "butt";
   }
-  function rotateScreen(cx, cy, x, y, deg) {
-    // Positive degrees are counterclockwise. Canvas y grows downward.
-    var rad = -deg * Math.PI / 180;
-    var cos = Math.cos(rad), sin = Math.sin(rad);
-    var dx = x - cx, dy = y - cy;
-    return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos];
-  }
-  function zenithCellRolls(cells, paneW, paneH) {
-    // Each alt-az pane turns with the zenith at that pointing. Moving west
-    // of south increases the parallactic angle, counterclockwise here.
-    var payload = box.payload || {};
-    if (String(payload.mount_mode || "").toUpperCase() === "EQ") return null;
-    if (String(payload.pa_source || "") !== "parallactic" || !box.hasSite) return null;
-    if (!(paneW > 0) || !(paneH > 0) || !cells || cells.length < 2) return null;
-    var pos = liveEq(aladinRef());
-    if (!pos) return null;
-    var fovH = Number(box.fovH), fovV = Number(box.fovV);
-    if (!(fovH > 0) || !(fovV > 0)) return null;
-    var now = new Date();
-    var q0 = parallacticDeg(pos[0], pos[1], box.lat, box.lon, now);
-    var pitch = Number(payload.mechanical_altitude);
-    var past = isFinite(pitch) && pitch > 90 && pitch < 270;
-    if (!isFinite(q0)) return null;
-    q0 = ((q0 + (past ? 180 : 0)) % 360 + 360) % 360;
-    var raH = ((Number(pos[0]) / 15) % 24 + 24) % 24;
-    var dec = Number(pos[1]);
-    var rolls = [];
-    var any = false;
-    for (var i = 0; i < cells.length; i++) {
-      var cx = cells[i].x + paneW / 2;
-      var cy = cells[i].y + paneH / 2;
-      var pt = offsetCamera(raH, dec, cx * fovH / paneW, -cy * fovV / paneH, q0);
-      var q = parallacticDeg(pt.ra_hours * 15, pt.dec_degrees, box.lat, box.lon, now);
-      if (!isFinite(q)) q = q0;
-      if (past) q += 180;
-      var delta = wrapSigned(q - q0);
-      if (Math.abs(delta) > 0.35) any = true;
-      rolls.push(delta);
-    }
-    return any ? rolls : null;
-  }
   function drawScreenMosaic(ctx, width, height, w, h, cols, rows, overlap, tilt, color) {
     var stepX = w * (1 - overlap), stepY = h * (1 - overlap);
     var totalW = stepX * (cols - 1) + w, totalH = stepY * (rows - 1) + h;
@@ -1265,25 +1252,13 @@ ATLAS_ASTRO_JS = r"""
         });
       }
     }
-    var rolls = zenithCamera ? zenithCellRolls(cells, w, h) : null;
-    function paneQuad(cell, roll) {
-      var cx = cell.x + w / 2, cy = cell.y + h / 2;
-      var pts = [[cell.x, cell.y], [cell.x + w, cell.y], [cell.x + w, cell.y + h], [cell.x, cell.y + h]];
-      if (!(Math.abs(roll) > 0.05)) return pts;
-      var spun = [];
-      for (var p = 0; p < 4; p++) spun.push(rotateScreen(cx, cy, pts[p][0], pts[p][1], roll));
-      return spun;
-    }
     if (hasMosaicMedia()) {
       blitMosaicMedia(ctx, width, height, function(mctx) {
         mctx.translate(width / 2, height / 2);
         mctx.rotate(tilt);
         var placed = [];
-        for (var i = 0; i < cells.length; i++) {
-          var placedPane = {index: cells[i].index, x: cells[i].x, y: cells[i].y, w: w, h: h};
-          if (rolls) placedPane.image = paneQuad(cells[i], rolls[i]);
-          placed.push(placedPane);
-        }
+        for (var i = 0; i < cells.length; i++)
+          placed.push({index: cells[i].index, x: cells[i].x, y: cells[i].y, w: w, h: h});
         paintOverlayImages(mctx, placed, null, -w / 2, -h / 2, w, h);
       });
     }
@@ -1291,44 +1266,25 @@ ATLAS_ASTRO_JS = r"""
     ctx.translate(width / 2, height / 2);
     ctx.rotate(tilt);
     var dotted = cols * rows > 1;
-    if (rolls) {
-      for (var r = 0; r < cells.length; r++) {
-        var quad = paneQuad(cells[r], rolls[r]);
-        ctx.beginPath();
-        ctx.moveTo(quad[0][0], quad[0][1]);
-        for (var e = 1; e < quad.length; e++) ctx.lineTo(quad[e][0], quad[e][1]);
-        ctx.closePath();
-        ctx.lineCap = "round";
-        ctx.setLineDash([1, 6.5]);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 2.2;
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.lineCap = "butt";
-        strokeTargetQuad(ctx, quad, color);
-        paintIndex(ctx, cells[r].x + w / 2, cells[r].y + h / 2, cells[r].index, color, Math.min(w, h));
+    if (dotted) {
+      for (var seamCol = 1; seamCol < cols; seamCol++) {
+        var sx = -totalW / 2 + (seamCol - 1) * stepX + (stepX + w) / 2;
+        strokeDotLine(ctx, sx, -totalH / 2, sx, totalH / 2, color);
       }
-    } else {
-      if (dotted) {
-        for (var seamCol = 1; seamCol < cols; seamCol++) {
-          var sx = -totalW / 2 + (seamCol - 1) * stepX + (stepX + w) / 2;
-          strokeDotLine(ctx, sx, -totalH / 2, sx, totalH / 2, color);
-        }
-        for (var seamRow = 1; seamRow < rows; seamRow++) {
-          var sy = -totalH / 2 + (seamRow - 1) * stepY + (stepY + h) / 2;
-          strokeDotLine(ctx, -totalW / 2, sy, totalW / 2, sy, color);
-        }
+      for (var seamRow = 1; seamRow < rows; seamRow++) {
+        var sy = -totalH / 2 + (seamRow - 1) * stepY + (stepY + h) / 2;
+        strokeDotLine(ctx, -totalW / 2, sy, totalW / 2, sy, color);
       }
-      strokeTargetQuad(ctx, [
-        [-totalW / 2, -totalH / 2],
-        [totalW / 2, -totalH / 2],
-        [totalW / 2, totalH / 2],
-        [-totalW / 2, totalH / 2]
-      ], color);
-      if (dotted) {
-        for (var n = 0; n < cells.length; n++)
-          paintIndex(ctx, cells[n].x + w / 2, cells[n].y + h / 2, cells[n].index, color, Math.min(w, h));
-      }
+    }
+    strokeTargetQuad(ctx, [
+      [-totalW / 2, -totalH / 2],
+      [totalW / 2, -totalH / 2],
+      [totalW / 2, totalH / 2],
+      [-totalW / 2, totalH / 2]
+    ], color);
+    if (dotted) {
+      for (var n = 0; n < cells.length; n++)
+        paintIndex(ctx, cells[n].x + w / 2, cells[n].y + h / 2, cells[n].index, color, Math.min(w, h));
     }
     ctx.restore();
     return rotatedRect(width / 2, height / 2, totalW, totalH, tilt);
@@ -1527,8 +1483,8 @@ ATLAS_ASTRO_JS = r"""
       var dx = pt[0] - cx, dy = pt[1] - cy;
       return [cx + dx * cos + dy * sin, cy - dx * sin + dy * cos];
     }
-    // Drop the shared map roll. Keep each pane's own parallactic tilt:
-    // rebuilding every quad as a level rectangle hid the field rotation.
+    // Drop the shared map roll so camera-right lies on screen +x. The panes
+    // already share one camera angle, so they stay parallel.
     var out = [];
     for (var k = 0; k < projected.length; k++) {
       var item = projected[k];
@@ -1590,19 +1546,10 @@ ATLAS_ASTRO_JS = r"""
     var fovV = Number(box.fovV);
     if (!(fovH > 0) || !(fovV > 0)) return;
     var aladin = aladinRef();
-    var fovX = 70;
-    var fovY = 70 * height / Math.max(1, width);
-    if (aladin) {
-      try {
-        var zoom = aladin.getFov();
-        fovX = Number(Array.isArray(zoom) ? zoom[0] : zoom) || fovX;
-        fovY = Number(Array.isArray(zoom) ? zoom[1] : 0);
-        if (!(fovY > 0)) fovY = fovX * height / Math.max(1, width);
-      } catch (err) {}
-    }
-    var w = (fovH / fovX) * width;
-    var h = (fovV / fovY) * height;
-    if (!(w > 4) || !(h > 4)) return;
+    var panePx = cameraPanePixels(width, height, fovH, fovV, aladin);
+    if (!panePx) return;
+    var w = panePx.w;
+    var h = panePx.h;
     var payload = box.payload || {};
     var cols = Math.max(1, Number(payload.columns) || 1);
     var rows = Math.max(1, Number(payload.rows) || 1);
