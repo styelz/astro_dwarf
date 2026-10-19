@@ -39,6 +39,8 @@ Item {
     property string paneInjectedKey: ""
     property bool shown: true
     signal contextMenuRequested(real x, real y)
+    signal hostLinkRequested(string url)
+    signal linkMenuRequested(real x, real y, string url)
     signal menuDismissRequested()
     signal trackRequested()
     readonly property string appReadyScript: "(function(){try{var stel=window._stel;if(!stel||!stel.core||!stel.observer)return\"loading\";var app=document.getElementById(\"app\");if(!app||!app.__vue_app__)return\"loading\";return\"ok\"}catch(e){return\"loading\"}})()"
@@ -347,14 +349,36 @@ Item {
         const marker = "astro-dwarf-host:"
         if (text.indexOf(marker) !== 0)
             return
-        // document.title collapses tabs to spaces, so the old tab split never matched.
-        const parts = text.slice(marker.length).split(/[\t| ]+/)
-        if (parts[0] !== "menu")
-            return
-        map.contextMenuRequested(Number(parts[1]) || 0, Number(parts[2]) || 0)
-        const token = JSON.stringify(text)
-        map.runJavaScript("(function(){var t=" + token
-            + ";if(document.title===t){var h=window.__astroDwarfHostTitle;document.title=h==null?\"\":String(h)}return\"\"})()")
+        // The page script separates fields with spaces. Tabs do not survive WebView.
+        const msg = backend.parseSkyHostTitle(text) || ({})
+        const kind = String(msg.kind || "")
+        if (kind === "menu")
+            map.contextMenuRequested(Number(msg.x) || 0, Number(msg.y) || 0)
+        else if (kind === "open")
+            map.hostLinkRequested(String(msg.url || ""))
+        else if (kind === "link")
+            map.linkMenuRequested(Number(msg.x) || 0, Number(msg.y) || 0, String(msg.url || ""))
+        map.restoreHostTitle()
+    }
+    function restoreHostTitle() {
+        map.runJavaScript("(function(){var title=String(document.title||\"\");if(title.indexOf(\"astro-dwarf-host:\")===0){var h=window.__astroDwarfHostTitle;document.title=h==null?\"\":String(h)}return\"\"})()")
+    }
+    function pollHostLink() {
+        map.runJavaScript(backend.skyWebLinkPollScript, result => {
+            const text = String(result || "").trim()
+            if (!text || text === "undefined" || text === "null")
+                return
+            try {
+                const data = JSON.parse(text)
+                const kind = String(data.kind || "")
+                if (kind === "open")
+                    map.hostLinkRequested(String(data.url || ""))
+                else if (kind === "link")
+                    map.linkMenuRequested(Number(data.x) || 0, Number(data.y) || 0, String(data.url || ""))
+                map.restoreHostTitle()
+            } catch (err) {
+            }
+        })
     }
     function pollContextMenu() {
         map.runJavaScript(backend.skyWebContextPollScript, result => {
@@ -682,6 +706,13 @@ Item {
         }
     }
 
+    Connections {
+        target: map.engineItem && map.engineItem.linkMenuAt ? map.engineItem : null
+        function onLinkMenuAt(x, y, url) {
+            map.linkMenuRequested(Number(x) || 0, Number(y) || 0, String(url || ""))
+        }
+    }
+
     Timer {
         id: revealDelay
         interval: 600
@@ -751,6 +782,7 @@ Item {
         running: map.pageReady && map.shown
         onTriggered: {
             map.pollContextMenu()
+            map.pollHostLink()
             map.pollMenuDismiss()
             map.pollTrackRequest()
             map.pollLiveOpacity()

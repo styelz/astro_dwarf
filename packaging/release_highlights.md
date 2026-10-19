@@ -63,3 +63,8 @@ refactor: streamline mosaic handling and improve camera angle consistency
 - Enhanced JavaScript logic in `sky-atlas.js` and `services.py` to eliminate unnecessary rotations of panes, ensuring that the photos and contact sheets remain zenith-up.
 - Introduced new functions to calculate the vertical field and camera pane dimensions, aligning the behavior of Aladin and Stellarium for consistent visual outputs.
 - Improved documentation and comments for clarity on the updated mosaic behavior and camera angle management.
+
+feat: add cropping functionality to remove black borders in mosaic stitching
+- Introduced `_crop_to_data` function to crop images to the largest inscribed rectangle, effectively removing black borders caused by field rotation near celestial poles.
+- Updated the `_blend` function to utilize the new cropping functionality, ensuring cleaner output images.
+- Improved documentation for clarity on the new cropping logic and its impact on mosaic stitching.

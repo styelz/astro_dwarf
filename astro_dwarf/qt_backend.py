@@ -155,6 +155,9 @@ from .services import (
     mosaic_pane_workflow,
     mosaic_member_seconds,
     choose_pane_stack,
+    first_saved_pane,
+    media_pane_remote_stacks,
+    save_http_image,
     custom_mosaic_completed,
     custom_mosaic_follow_on,
     custom_mosaic_panes_remain,
@@ -202,9 +205,15 @@ from .services import (
     resolve_device_mosaic_pa,
     sky_names_related,
     parse_sky_web_target,
+    parse_sky_host_title,
+    external_link_url,
+    external_link_filename,
+    read_external_link,
+    save_external_bytes,
     resolve_sky_catalog_target,
     parse_in_zone,
     SKY_WEB_CONTEXT_POLL_JS,
+    SKY_WEB_LINK_POLL_JS,
     SKY_WEB_DISMISS_POLL_JS,
     SKY_WEB_DBLCLICK_POLL_JS,
     SKY_WEB_OPACITY_POLL_JS,
@@ -306,6 +315,7 @@ from .stream_preview import (
     load_mosaic_pane_cache,
     mosaic_cache_current,
     mosaic_cache_has_panes,
+    mosaic_pane_cache_dir,
     port_is_open,
     preview_should_ingest_frame,
     preview_window_is_live,
@@ -933,9 +943,9 @@ def command_should_auto_enter_dso(operation: str, shooting_mode: Any) -> bool:
 def preview_needs_rtsp_restart(telemetry: dict[str, Any] | None) -> bool:
     """True when leftover stacking JPEG is occupying the cameras.
 
-    After a stack the Dwarf 3 often leaves ``stream_type=JPEG`` with RTSP
-    ports open but producing no frames. ``enter_camera`` reports success and
-    live view still stays dark. Photo mode starts both RTSP encoders.
+    After a stack the encoder can sit on JPEG while the RTSP ports stay open
+    and produce no frames. Live view reopens the cameras instead of attaching
+    to that encoder. A telescope already in DSO stays in DSO.
     """
     if _preview_capture_running(telemetry):
         return False
@@ -950,10 +960,10 @@ def preview_should_restore_dso(
     telemetry: dict[str, Any] | None,
     persisted_mode: int = 0,
 ) -> bool:
-    """True when leftover-JPEG recovery must return to DSO after photo mode.
+    """True when a photo-mode camera open must put DSO back.
 
-    Photo mode is what restarts RTSP. If the scope was already in DSO, put
-    that shooting mode back once the encoders are live.
+    Starting live view from DSO does not enter PHOTO. This only covers a
+    telescope that was already in DSO and still took the photo-mode path.
     """
     if not preview_needs_rtsp_restart(telemetry):
         return False
@@ -974,8 +984,6 @@ def preview_should_preserve_shooting_mode(
     # Unhomed steppers mean the head was powered off, so a leftover mode 7 does not.
     if telemetry_operation_live(snap) or (mode in {7, 8, 9, 10} and not snap.get("motors_unhomed")):
         return True
-    if preview_needs_rtsp_restart(telemetry):
-        return False
     if mode in _ASTRO_SHOOTING_MODES:
         return True
     if snap.get("tracking_state") == "running":
@@ -991,9 +999,8 @@ def preview_should_skip_go_live(
 
     GoLive is for ending a capture. After GOTO/tracking the scope is already
     in DSO with no stack running; GoLive then leaves DSO on and tele closed,
-    so wide comes back and tele stays dark until firmware recovers.
-    Leftover stacking JPEG still needs GoLive plus photo mode to bring RTSP
-    back.
+    so wide comes back and tele stays dark until firmware recovers. A leftover
+    stacking JPEG in DSO reopens the cameras without GoLive or PHOTO.
     """
     snap = telemetry or {}
     if snap.get("capture_active") or snap.get("capture_state") == "running":
@@ -1294,6 +1301,17 @@ def mosaic_result_should_drop_sheet(
     except (TypeError, ValueError):
         mosaic = False
     return bool(frames_active and mosaic)
+
+
+def stitch_clears_with_preview(source: str, status: str) -> bool:
+    """True when Dismiss or Start stream must take the stitch off the live view.
+
+    A manual STITCH and the automatic finish both sit on that view. An album
+    or history stitch stays. SHEET still returns to the contact sheet on its own.
+    """
+    if str(source or "") not in {"held", "auto"}:
+        return False
+    return str(status or "") in {"done", "working", "failed"}
 
 
 def mosaic_result_pane(current_index: int, phase: str) -> int:
@@ -2432,6 +2450,8 @@ class AppBackend(QObject):
     deviceDiscoveryReady = Signal("QVariantList")
     deviceDiscoveryBusyChanged = Signal()
     _asyncResult = Signal(str, object)
+    _hostFileNotice = Signal(str, str, str)
+    _mediaStitchFetched = Signal(int)
     uiBusyChanged = Signal()
     previewActiveChanged = Signal()
     previewPlayingChanged = Signal()
@@ -2617,6 +2637,9 @@ class AppBackend(QObject):
         self._device_discovery_busy = False
         self._device_discovery_token = 0
         self._asyncResult.connect(self._handle_async_result)
+        self._hostFileNotice.connect(self._on_host_file_notice, Qt.ConnectionType.QueuedConnection)
+        self._last_external_url = ""
+        self._last_external_at = 0.0
         self._sync_shared_device_fields()
         for device in self._devices:
             self._create_worker(device)
@@ -2725,7 +2748,9 @@ class AppBackend(QObject):
         self._stitch_pool.setMaxThreadCount(1)
         self._stitch_signals = StitchSignals(self)
         self._stitch_signals.finished.connect(self._on_stitch_finished)
+        self._mediaStitchFetched.connect(self._on_media_stitch_fetched, Qt.ConnectionType.QueuedConnection)
         self._stitch_token = 0
+        self._media_stitch_job: dict[str, Any] | None = None
         self._stitch_status = ""
         self._stitch_detail = ""
         self._stitch_warning = ""
@@ -4720,6 +4745,10 @@ class AppBackend(QObject):
         return SKY_WEB_CONTEXT_POLL_JS
 
     @Property(str, constant=True)
+    def skyWebLinkPollScript(self) -> str:
+        return SKY_WEB_LINK_POLL_JS
+
+    @Property(str, constant=True)
     def skyWebDismissPollScript(self) -> str:
         return SKY_WEB_DISMISS_POLL_JS
 
@@ -6435,10 +6464,7 @@ class AppBackend(QObject):
         self._reset_mosaic_last_frame_hold()
         self._stack_result_mosaic_pane = 0
         self._mosaic_result_held = False
-        if self._stitch_source == "held":
-            if self._stitch_status == "done" and self._stitch_path:
-                self._persist_finished_stitch(self._stitch_path)
-            self.dismissStitch()
+        self._dismiss_hud_stitch()
         if had:
             self.mosaicPreviewChanged.emit()
 
@@ -7235,6 +7261,10 @@ class AppBackend(QObject):
             },
         )
 
+    def _dismiss_hud_stitch(self) -> None:
+        if stitch_clears_with_preview(self._stitch_source, self._stitch_status):
+            self.dismissStitch()
+
     @Slot()
     def dismissStitch(self) -> None:
         if self._stitch_status == "done" and self._stitch_path:
@@ -7630,12 +7660,45 @@ class AppBackend(QObject):
 
         self._run_async("stellariumPush", work)
 
+    @Slot(str, result="QVariantMap")
+    def parseSkyHostTitle(self, title: str) -> dict[str, Any]:
+        return parse_sky_host_title(title)
+
+    @Slot(str, result=str)
+    def externalLinkFileName(self, url: str) -> str:
+        return external_link_filename(url)
+
     @Slot(str)
     def openExternalUrl(self, url: str) -> None:
-        parsed = urlparse(str(url or "").strip())
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        target = external_link_url(url)
+        if not target:
             return
-        QDesktopServices.openUrl(QUrl(parsed.geturl()))
+        now = time.monotonic()
+        if target == self._last_external_url and now - self._last_external_at < 0.8:
+            return
+        self._last_external_url = target
+        self._last_external_at = now
+        QDesktopServices.openUrl(QUrl(target))
+
+    @Slot(str, str)
+    def saveExternalLink(self, url: str, destination: str) -> None:
+        target = external_link_url(url)
+        path = self._local_path(str(destination or ""))
+        if not target or target.startswith("mailto:") or not str(path) or path.is_dir():
+            return
+
+        def work() -> None:
+            try:
+                save_external_bytes(path, read_external_link(target))
+            except Exception as exc:
+                self._hostFileNotice.emit("Could not save the link", "error", str(exc))
+                return
+            self._hostFileNotice.emit("Link saved", "success", path.name)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_host_file_notice(self, message: str, level: str, detail: str) -> None:
+        self._toast(message, level, detail)
 
     @Property(float, notify=sessionProgressChanged)
     def sessionProgress(self) -> float:
@@ -8060,6 +8123,8 @@ class AppBackend(QObject):
         if self._device_is_stopping(device_id):
             self.add_log("info", "Live view stays paused while the telescope stops", device_id)
             return
+        if not self._mosaic_keep_live_sheet(device_id):
+            self._dismiss_hud_stitch()
         attach_telemetry = self._device_telemetry.get(device_id) or {}
         attach_mode = _shooting_mode_int(attach_telemetry.get("shooting_mode"))
         join_live = telemetry_operation_live(attach_telemetry) or (
@@ -8495,6 +8560,7 @@ class AppBackend(QObject):
         if keep_mosaic:
             self._repopulate_mosaic_sheet_from_cache()
             return
+        self._dismiss_hud_stitch()
         # A stopped mosaic still looks live while later panes are planned.
         # keep_live then refuses to drop the sheet, so Stop preview appears
         # to do nothing. Dismiss it once nothing is actually shooting.
@@ -13486,11 +13552,13 @@ class AppBackend(QObject):
         if not members and self._media_mosaic_group == group:
             members = [item for item in self._media_items if item.get("is_dir")]
         files = self._album_stack_files()
-        pending: list[tuple[Mosaic, str, Path, float | None, float | None]] = []
+        ip = self._media_telescope_ip()
+        pending: list[tuple[Any, ...]] = []
         found_file = False
         for item in members:
             label = str(item.get("target") or item.get("file_name") or "").strip()
-            parsed, _stamp = album_folder_capture(str(item.get("file_path") or item.get("file_name") or ""))
+            folder = str(item.get("file_path") or item.get("file_name") or "")
+            parsed, _stamp = album_folder_capture(folder)
             if not parsed:
                 parsed, _stamp = album_folder_capture(label)
             if parsed:
@@ -13502,7 +13570,17 @@ class AppBackend(QObject):
             mosaic = session.mosaic if session is not None else None
             row = int(mosaic.row or 0) if mosaic is not None else 0
             column = int(mosaic.column or 0) if mosaic is not None else 0
-            if local is None or row < 1 or column < 1 or mosaic is None:
+            urls: list[str] = []
+            cache = ""
+            if local is None:
+                urls = media_pane_remote_stacks(
+                    folder,
+                    ip,
+                    str(item.get("image_url") or ""),
+                    str(item.get("thumbnail_url") or ""),
+                )
+                cache = self._media_cached_pane_path(group, mosaic_pane_number(mosaic, 0, label))
+            if (local is None and not urls and not cache) or row < 1 or column < 1 or mosaic is None or session is None:
                 continue
             pending.append((
                 mosaic,
@@ -13511,6 +13589,8 @@ class AppBackend(QObject):
                 session.target.ra_hours,
                 session.target.dec_degrees,
                 session.actual_started_at,
+                urls,
+                cache,
             ))
         if len(pending) < 2:
             if group.startswith("title:") or "|" in group:
@@ -13518,6 +13598,99 @@ class AppBackend(QObject):
                 self._set_stitch("failed", detail, source="media")
                 return
             self.stitchHistoryGroup(group, str(self._media_device_id or self._selected_device_id or ""))
+            return
+        if any(item[2] is None and item[6] for item in pending):
+            self._fetch_media_stacks(pending, group, tile)
+            return
+        ready = []
+        for mosaic, label, local, ra, dec, captured, _urls, cache in pending:
+            path = local if local is not None else Path(cache)
+            if not path.is_file():
+                continue
+            ready.append((mosaic, label, path, ra, dec, captured))
+        self._queue_media_panes(ready, group, tile)
+
+    def _media_telescope_ip(self) -> str:
+        device_id = str(self._media_device_id or self._selected_device_id or "")
+        if not device_id:
+            return ""
+        try:
+            device = self._device_by_id(device_id)
+        except StopIteration:
+            return ""
+        return str(getattr(device, "ip_address", "") or "").strip()
+
+    def _media_cached_pane_path(self, group: str, index: int) -> str:
+        if index < 1:
+            return ""
+        device_id = str(self._media_device_id or self._selected_device_id or "")
+        folder = mosaic_pane_cache_dir(device_id, group)
+        if folder is None:
+            return ""
+        path = folder / f"{int(index)}.jpg"
+        return str(path) if path.is_file() else ""
+
+    def _fetch_media_stacks(self, pending: list[tuple[Any, ...]], group: str, tile: dict[str, Any] | None) -> None:
+        self._stitch_token += 1
+        token = self._stitch_token
+        safe = "".join(ch for ch in group if ch.isalnum())[:48] or "media"
+        folder = self._stitch_cache_dir() / "device-panes"
+        jobs: list[dict[str, Any]] = []
+        for index, (mosaic, label, local, ra, dec, captured, urls, cache) in enumerate(pending):
+            dest = ""
+            if local is None and urls:
+                pane = mosaic_pane_number(mosaic, 0, label)
+                dest = str(folder / f"{safe}-{pane}-{index}.jpg")
+            jobs.append({
+                "mosaic": mosaic,
+                "name": label,
+                "local": str(local) if local is not None else "",
+                "ra": ra,
+                "dec": dec,
+                "captured": captured,
+                "urls": list(urls),
+                "dest": dest,
+                "cache": cache,
+            })
+        self._media_stitch_job = {"token": token, "group": group, "tile": tile, "jobs": jobs}
+        self._set_stitch("working", "Reading panes", source="media")
+
+        def work() -> None:
+            try:
+                for job in jobs:
+                    if job["local"] or not job["urls"] or not job["dest"]:
+                        continue
+                    try:
+                        save_http_image(job["urls"], Path(job["dest"]))
+                    except Exception:
+                        logging.getLogger(__name__).info("media stitch skipped a pane", exc_info=True)
+            finally:
+                self._mediaStitchFetched.emit(token)
+
+        threading.Thread(target=work, name="media-stitch-fetch", daemon=True).start()
+
+    def _on_media_stitch_fetched(self, token: int) -> None:
+        job = self._media_stitch_job
+        if token != self._stitch_token or not isinstance(job, dict) or int(job.get("token") or 0) != token:
+            return
+        ready: list[tuple[Any, ...]] = []
+        for item in job.get("jobs") or []:
+            chosen = first_saved_pane(
+                str(item.get("local") or ""),
+                str(item.get("dest") or ""),
+                str(item.get("cache") or ""),
+            )
+            if not chosen:
+                continue
+            ready.append((item["mosaic"], item["name"], Path(chosen), item["ra"], item["dec"], item["captured"]))
+        if len(ready) < 2:
+            self._set_stitch("failed", "Could not read the panes on the telescope", source="media")
+            return
+        self._queue_media_panes(ready, str(job.get("group") or ""), job.get("tile") if isinstance(job.get("tile"), dict) else None)
+
+    def _queue_media_panes(self, pending: list[tuple[Any, ...]], group: str, tile: dict[str, Any] | None) -> None:
+        if len(pending) < 2:
+            self._set_stitch("failed", "Could not read the panes on the telescope", source="media")
             return
         grid_rows, grid_columns = mosaic_grid_size(*(item[0] for item in pending))
         panes: list[StitchPane] = []

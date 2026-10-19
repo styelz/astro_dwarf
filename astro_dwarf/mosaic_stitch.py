@@ -589,6 +589,52 @@ def _corners(width: int, height: int) -> Any:
     )
 
 
+def _crop_to_data(image: Any, painted: Any) -> tuple[Any, int, int]:
+    """Crop to the largest inscribed rectangle with no black borders.
+
+    Field rotation near the celestial poles can leave large triangular
+    black wedges at opposite corners. Cropping them gives a clean result.
+    """
+    height, width = painted.shape
+    if not np.any(painted):
+        return image, width, height
+    row_left = np.full(height, width, dtype=np.intp)
+    row_right = np.full(height, -1, dtype=np.intp)
+    for r in range(height):
+        cols = np.nonzero(painted[r])[0]
+        if len(cols) > 0:
+            row_left[r] = int(cols[0])
+            row_right[r] = int(cols[-1])
+    has_data = row_right >= 0
+    best_area = 0
+    best = (0, height, 0, width)
+    for top in range(height):
+        if not has_data[top]:
+            continue
+        left = int(row_left[top])
+        right = int(row_right[top])
+        for bottom in range(top, height):
+            if not has_data[bottom]:
+                break
+            left = max(left, int(row_left[bottom]))
+            right = min(right, int(row_right[bottom]))
+            if right <= left:
+                break
+            w = right - left + 1
+            remaining_h = height - top
+            if w * remaining_h <= best_area:
+                break
+            area = (bottom - top + 1) * w
+            if area > best_area:
+                best_area = area
+                best = (top, bottom + 1, left, right + 1)
+    t, b, l, r = best
+    if best_area <= 0 or (t == 0 and b == height and l == 0 and r == width):
+        return image, width, height
+    cropped = np.ascontiguousarray(image[t:b, l:r])
+    return cropped, r - l, b - t
+
+
 def _blend(prepared: list[dict[str, Any]], solved: dict[int, Any]) -> tuple[Any, int, int]:
     placed: list[tuple[dict[str, Any], Any]] = []
     points = []
@@ -646,4 +692,5 @@ def _blend(prepared: list[dict[str, Any]], solved: dict[int, Any]) -> tuple[Any,
     if np.any(painted):
         canvas[painted] /= weight[painted, None]
     image = np.clip(canvas * 255.0 + 0.5, 0, 255).astype(np.uint8)
-    return image, width, height
+    cropped, cw, ch = _crop_to_data(image, painted)
+    return cropped, cw, ch

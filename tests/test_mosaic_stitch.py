@@ -147,7 +147,7 @@ class MosaicStitchTests(unittest.TestCase):
         )
         self.assertGreater(len(result.jpeg), 100)
         self.assertGreater(result.width, 120)
-        self.assertGreater(result.height, 90)
+        self.assertGreaterEqual(result.height, 90)
 
     def test_low_overlap_warning(self) -> None:
         self.assertIn("15%", overlap_warning(0.1))
@@ -214,6 +214,37 @@ class MosaicStitchTests(unittest.TestCase):
         image = cv2.imdecode(np.frombuffer(result.jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
         self.assertIsNotNone(image)
         self.assertLess(float(np.median(image)), 45.0)
+
+    def test_polar_rotation_crops_black_wedges(self) -> None:
+        """Near-pole mosaics have large field rotation. The crop must remove black wedges."""
+        rng = np.random.default_rng(99)
+        width, height = 480, 270
+        master = _field(width + 400, height + 250, rng, count=180)
+        overlap = 0.2
+        step_x = int(round(width * (1.0 - overlap)))
+        step_y = int(round(height * (1.0 - overlap)))
+        placed = {
+            (0, 0): (0.0, (0.0, 0.0)),
+            (0, 1): (-5.0, (8.0, -3.0)),
+            (1, 0): (4.5, (3.0, -7.0)),
+            (1, 1): (-6.0, (6.0, -5.0)),
+        }
+        panes = []
+        index = 1
+        for row, column in ((0, 0), (0, 1), (1, 0), (1, 1)):
+            crop = master[row * step_y : row * step_y + height, column * step_x : column * step_x + width].copy()
+            degrees, shift = placed[(row, column)]
+            if degrees or shift != (0.0, 0.0):
+                crop = _rotate(crop, degrees, shift)
+            panes.append(StitchPane(index, row + 1, column + 1, crop))
+            index += 1
+        result = stitch_panes(panes, overlap=overlap)
+        uncropped_w = 2 * width - int(round(width * overlap))
+        uncropped_h = 2 * height - int(round(height * overlap))
+        self.assertLessEqual(result.width, uncropped_w + 80)
+        self.assertLessEqual(result.height, uncropped_h + 40)
+        self.assertGreater(result.width, width)
+        self.assertGreater(result.height, height)
 
 
 if __name__ == "__main__":

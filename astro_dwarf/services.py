@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from math import acos, asin, atan2, ceil, cos, pi, radians, sin, tan
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -22,6 +23,8 @@ from .domain import (
     Mosaic,
     Session,
     SessionAction,
+    album_folder_preview_fallback_path,
+    album_http_url,
     album_is_astro_stack_product,
     clamp_firmware_mosaic_scale,
     device_mosaic_from_scales,
@@ -37,9 +40,213 @@ from .domain import (
 )
 
 STELLARIUM_WEB_URL = "https://stellarium-web.org/"
+_EXTERNAL_LINK_BYTES = 8_000_000
+_HTTP_IMAGE_BYTES = 40_000_000
+
+
+def external_link_url(value: Any) -> str:
+    """http(s) or mailto address the host may open. Anything else stays in the map."""
+    text = str(value or "").strip()
+    if not text or any(char in text for char in "\r\n\t"):
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return parsed.geturl()
+    if parsed.scheme == "mailto" and parsed.path:
+        return text
+    return ""
+
+
+def external_link_filename(url: str) -> str:
+    parsed = urlparse(external_link_url(url) or "")
+    name = unquote(parsed.path.rstrip("/").rsplit("/", 1)[-1] if parsed.path else "")
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", name).strip().rstrip(".")
+    if not name or "." not in name:
+        name = (name or "link") + ".html"
+    return name[:120]
+
+
+def read_external_link(url: str, limit: int = _EXTERNAL_LINK_BYTES) -> bytes:
+    target = external_link_url(url)
+    if not target or target.startswith("mailto:"):
+        raise ValueError("link cannot be saved")
+    response = requests.get(
+        target,
+        timeout=30,
+        stream=True,
+        headers={"User-Agent": "AstroDwarf"},
+    )
+    response.raise_for_status()
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        for block in response.iter_content(64 * 1024):
+            if not block:
+                continue
+            total += len(block)
+            if total > limit:
+                raise ValueError("link is too large to save")
+            chunks.append(block)
+    finally:
+        response.close()
+    return b"".join(chunks)
+
+
+def save_external_bytes(destination: Path, payload: bytes, limit: int = _EXTERNAL_LINK_BYTES) -> None:
+    if len(payload) > limit:
+        raise ValueError("link is too large to save")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".part")
+    temporary.write_bytes(payload)
+    temporary.replace(destination)
+
+
+def parse_sky_host_title(title: str) -> dict[str, Any]:
+    """Host messages the sky page writes into document.title."""
+    text = str(title or "")
+    marker = "astro-dwarf-host:"
+    if not text.startswith(marker):
+        return {}
+    parts = [part for part in re.split(r"[\t| ]+", text[len(marker):].strip()) if part]
+    if not parts:
+        return {}
+    kind = parts[0]
+    if kind == "menu" and len(parts) >= 3:
+        return {"kind": "menu", "x": _host_number(parts[1]), "y": _host_number(parts[2])}
+    if kind == "open" and len(parts) >= 2:
+        url = external_link_url(unquote(parts[1]))
+        return {"kind": "open", "url": url} if url else {}
+    if kind == "link" and len(parts) >= 4:
+        url = external_link_url(unquote(parts[3]))
+        if not url:
+            return {}
+        return {
+            "kind": "link",
+            "x": _host_number(parts[1]),
+            "y": _host_number(parts[2]),
+            "url": url,
+        }
+    return {}
+
+
+def _host_number(value: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 # Stellarium Web shows "This site uses cookies... I Agree" and the atlas is WebGL.
-SKY_WEB_BOOT_JS = r"""
-(function() {
+# The App pill and other target=_blank links ask the embedded view for a new
+# window. Windows WebView2 and Linux WebEngine drop that window, and the
+# WebView2 link menu cannot open, copy, or save. This page script hands the
+# address to the host instead.
+SKY_WEB_HOST_LINK_JS = r"""
+function astroDwarfHostLink(href, target, origin, modified) {
+  var url = String(href || "").replace(/^\s+|\s+$/g, "");
+  if (!url || /[\r\n\t]/.test(url))
+    return "";
+  if (/^mailto:/i.test(url))
+    return url;
+  if (!/^https?:\/\//i.test(url))
+    return "";
+  if (modified || /\b_blank\b/i.test(String(target || "")))
+    return url;
+  var here = String(origin || "").toLowerCase();
+  var match = url.match(/^(https?:\/\/[^\/?#]+)/i);
+  var there = match ? match[1].toLowerCase() : "";
+  if (here && there === here)
+    return "";
+  return url;
+}
+"""
+
+SKY_WEB_BOOT_JS = "(function() {\n" + SKY_WEB_HOST_LINK_JS + r"""
+  function installHostLinks() {
+    if (window.__astroDwarfHostLinks)
+      return;
+    window.__astroDwarfHostLinks = true;
+    function publish(kind, extra, pending) {
+      try {
+        var current = String(document.title || "");
+        if (current.indexOf("astro-dwarf-host:") !== 0)
+          window.__astroDwarfHostTitle = current;
+        window.__astroDwarfHostPending = pending;
+        // WebView turns tab characters into spaces, so a tab-separated title
+        // never matches the value read back. Spaces survive that.
+        document.title = "astro-dwarf-host:" + kind + " " + extra + " " + Date.now();
+      } catch (err) {}
+    }
+    function anchorOf(node) {
+      if (!node || !node.closest)
+        return null;
+      try { return node.closest("a[href]"); }
+      catch (err) { return null; }
+    }
+    function openHref(anchor, modified) {
+      if (!anchor)
+        return "";
+      var target = "";
+      var href = "";
+      try { target = anchor.getAttribute("target") || ""; } catch (err) {}
+      try { href = anchor.href || ""; } catch (err2) {}
+      return astroDwarfHostLink(href, target, window.location.origin, !!modified);
+    }
+    document.addEventListener("click", function(ev) {
+      var anchor = anchorOf(ev.target);
+      if (!anchor)
+        return;
+      var modified = !!(ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button === 1);
+      var early = openHref(anchor, modified);
+      if (!early)
+        return;
+      ev.preventDefault();
+      setTimeout(function() {
+        var href = openHref(anchor, modified) || early;
+        publish("open", encodeURIComponent(href), {kind: "open", url: href, x: 0, y: 0, at: Date.now()});
+      }, 0);
+    }, true);
+    document.addEventListener("auxclick", function(ev) {
+      if (ev.button !== 1)
+        return;
+      var anchor = anchorOf(ev.target);
+      var href = openHref(anchor, true);
+      if (!href)
+        return;
+      ev.preventDefault();
+      publish("open", encodeURIComponent(href), {kind: "open", url: href, x: 0, y: 0, at: Date.now()});
+    }, true);
+    document.addEventListener("contextmenu", function(ev) {
+      var anchor = anchorOf(ev.target);
+      if (!anchor)
+        return;
+      var href = "";
+      try { href = anchor.href || ""; } catch (err) {}
+      var link = astroDwarfHostLink(href, "_blank", window.location.origin, true);
+      if (!link)
+        return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (typeof ev.stopImmediatePropagation === "function")
+        ev.stopImmediatePropagation();
+      publish(
+        "link",
+        String(Number(ev.clientX) || 0) + " " + String(Number(ev.clientY) || 0) + " " + encodeURIComponent(link),
+        {kind: "link", url: link, x: Number(ev.clientX) || 0, y: Number(ev.clientY) || 0, at: Date.now()}
+      );
+    }, true);
+    if (typeof window.open === "function" && !window.__astroDwarfWindowOpen) {
+      window.__astroDwarfWindowOpen = window.open;
+      window.open = function(url) {
+        var href = astroDwarfHostLink(String(url || ""), "_blank", window.location.origin, true);
+        if (href) {
+          publish("open", encodeURIComponent(href), {kind: "open", url: href, x: 0, y: 0, at: Date.now()});
+          return null;
+        }
+        return window.__astroDwarfWindowOpen.apply(window, arguments);
+      };
+    }
+  }
   function labelOf(node) {
     return String(node.innerText || node.textContent || node.value || "")
       .replace(/\s+/g, " ").trim();
@@ -48,6 +255,7 @@ SKY_WEB_BOOT_JS = r"""
     return /^i agree$/i.test(text) || /^accept( all)?$/i.test(text) || /^agree$/i.test(text);
   }
   try {
+    installHostLinks();
     var clicked = false;
     var nodes = document.querySelectorAll("button, [role='button'], a, input[type='button'], .v-btn, [class*='btn']");
     for (var i = 0; i < nodes.length; i++) {
@@ -2487,6 +2695,16 @@ SKY_WEB_CONTEXT_POLL_JS = r"""
 """
 
 
+SKY_WEB_LINK_POLL_JS = r"""
+(function(){
+  var pending = window.__astroDwarfHostPending;
+  if (!pending || !pending.kind) return "";
+  window.__astroDwarfHostPending = null;
+  return JSON.stringify(pending);
+})()
+"""
+
+
 SKY_WEB_DISMISS_POLL_JS = r"""
 (function(){
   var ctl = window.__astroDwarfFovCtl;
@@ -4613,6 +4831,89 @@ def choose_pane_stack(paths: list[Path | str], pane_name: str) -> Path | None:
     if images:
         return sorted(images)[0]
     return None
+
+
+def _http_image_bytes(payload: bytes) -> bool:
+    return (
+        payload.startswith(b"\xff\xd8\xff")
+        or payload.startswith(b"\x89PNG\r\n\x1a\n")
+        or payload.startswith(b"II*\x00")
+        or payload.startswith(b"MM\x00*")
+        or payload.startswith(b"SIMPLE")
+    )
+
+
+def first_saved_pane(local: str, downloaded: str, cached: str) -> str:
+    """Local download, then the picture just read from the telescope, then the capture cache."""
+    for candidate in (local, downloaded, cached):
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if path.is_file():
+            return str(path)
+    return ""
+
+
+def media_pane_remote_stacks(folder: str, ip: str, image_url: str = "", thumbnail_url: str = "") -> list[str]:
+    """Pictures of one pane already on the telescope, full stack first."""
+    urls: list[str] = []
+    stacked = album_folder_preview_fallback_path(folder)
+    if stacked:
+        direct = album_http_url(ip, stacked)
+        if direct:
+            urls.append(direct)
+    for candidate in (image_url, thumbnail_url):
+        link = external_link_url(candidate)
+        if link and link not in urls:
+            urls.append(link)
+    return urls
+
+
+def save_http_image(urls: list[str], destination: Path, *, limit: int = _HTTP_IMAGE_BYTES) -> None:
+    """Save the first HTTP image from ``urls``. Raises when none of them is a picture."""
+    last = "Could not read the pane"
+    for raw in urls:
+        target = external_link_url(raw)
+        if not target:
+            continue
+        try:
+            response = requests.get(target, timeout=45, stream=True)
+        except requests.RequestException as exc:
+            last = str(exc) or last
+            continue
+        chunks: list[bytes] = []
+        too_large = False
+        try:
+            if response.status_code >= 400:
+                last = f"HTTP {response.status_code}"
+                continue
+            total = 0
+            for block in response.iter_content(64 * 1024):
+                if not block:
+                    continue
+                total += len(block)
+                if total > limit:
+                    too_large = True
+                    break
+                chunks.append(block)
+        except requests.RequestException as exc:
+            last = str(exc) or last
+            continue
+        finally:
+            response.close()
+        if too_large:
+            last = "The pane is too large"
+            continue
+        payload = b"".join(chunks)
+        if not _http_image_bytes(payload):
+            last = "The telescope did not return an image"
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".part")
+        temporary.write_bytes(payload)
+        temporary.replace(destination)
+        return
+    raise RuntimeError(last)
 
 
 def zoneinfo_from_name(name: str | None) -> ZoneInfo:

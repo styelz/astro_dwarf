@@ -39,6 +39,7 @@ Item {
     property string hay: ""
     property string queue: ""
     property string place: ""
+    property string latest: ""
     Component.onCompleted: {
         const sessions = [
             {id: "m42", target_name: "Orion Nebula", device_name: "DWARF 3", status: "planned", notes: "Ha"},
@@ -71,6 +72,21 @@ Item {
         const session = Util.placeOnNightRequest({kind: "session", id: "m42", mode: "mosaic", deviceId: "scope"}, "", "2026-10-06T23:00")
         const empty = Util.placeOnNightRequest({}, "scope", "2026-10-06T22:00")
         root.place = [template.op, template.id, session.op, session.mode, session.deviceId, empty.ok ? "yes" : "no"].join("|")
+        const timed = [
+            {id: "old", status: "done", start_epoch_ms: 1000, group_key: "session:old"},
+            {id: "p2", status: "done", start_epoch_ms: 1800, group_key: "mosaic|scope", is_grouped: true, pane_index: 2, pane_name: "Pane 2"},
+            {id: "p1", status: "done", start_epoch_ms: 1200, group_key: "mosaic|scope", is_grouped: true, pane_index: 1, pane_name: "Pane 1"},
+            {id: "soon", status: "planned", start_epoch_ms: 3000, group_key: "session:soon"},
+            {id: "run", status: "running", start_epoch_ms: 2500, group_key: "session:run"}
+        ]
+        function ids(list) {
+            return (list || []).map(function(item) { return item.id }).join("+")
+        }
+        const queued = Util.filterSessionQueue(timed, "", false)
+        const finished = Util.filterSessionQueue(timed, "", true)
+        const visible = Util.visibleClusteredSessions(finished, {})
+        const panes = Util.filterSessionQueue(timed, "pane", true)
+        root.latest = [ids(queued), ids(finished), ids(visible), ids(panes)].join("|")
     }
 }
 """
@@ -92,4 +108,8 @@ def test_list_filter_matches_query_and_status() -> None:
     _assert(
         str(host.property("place") or "") == "scheduleTemplate|tele|duplicateSession|mosaic|scope|no",
         host.property("place"),
+    )
+    _assert(
+        str(host.property("latest") or "") == "soon+run|soon+run+p1+p2+old|soon+run+p1+old|p1+p2",
+        host.property("latest"),
     )

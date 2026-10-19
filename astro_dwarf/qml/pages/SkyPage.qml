@@ -1,4 +1,6 @@
 import QtQuick
+import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Layouts
 import QtCore
 import ".."
@@ -9,8 +11,12 @@ Item {
     objectName: "skyPage"
     readonly property bool mapLive: root.currentPage === root.skyPageIndex
     onMapLiveChanged: {
-        if (!skyPage.mapLive && skyMenu.visible)
+        if (skyPage.mapLive)
+            return
+        if (skyMenu.visible)
             skyMenu.close()
+        if (linkMenu.visible)
+            linkMenu.close()
     }
     readonly property bool targetLocked: !!(backend.skyTarget && backend.skyTarget.locked)
     readonly property bool webReady: backend.webViewAvailable && !skyPage.webFailed
@@ -258,6 +264,8 @@ Item {
         if (now - skyPage.lastSkyMenuAt < 250)
             return
         skyPage.lastSkyMenuAt = now
+        if (linkMenu.opened || linkMenu.visible)
+            linkMenu.close()
         if (x === undefined || y === undefined) {
             skyMenu.popup()
             return
@@ -265,6 +273,44 @@ Item {
         skyPage.lastSkyMenuX = x
         skyPage.lastSkyMenuY = y
         skyMenu.popup(mapLoader, x, y)
+    }
+    property string lastLinkUrl: ""
+    property double lastLinkAt: 0
+    function openHostLink(url) {
+        backend.openExternalUrl(String(url || ""))
+    }
+    function openLinkMenu(x, y, url) {
+        const link = String(url || "")
+        if (!link)
+            return
+        const now = Date.now()
+        if (link === skyPage.lastLinkUrl && now - skyPage.lastLinkAt < 400)
+            return
+        skyPage.lastLinkUrl = link
+        skyPage.lastLinkAt = now
+        if (skyMenu.opened || skyMenu.visible)
+            skyMenu.close()
+        linkMenu.url = link
+        if (x === undefined || y === undefined)
+            linkMenu.popup()
+        else
+            linkMenu.popup(mapLoader, Number(x) || 0, Number(y) || 0)
+    }
+    function saveHostLink() {
+        const folder = StandardPaths.writableLocation(StandardPaths.DownloadLocation)
+                       || StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
+        const name = backend.externalLinkFileName(linkMenu.url) || "link.html"
+        const slash = String(folder || "").replace(/\\/g, "/")
+        let base = slash
+        if (slash.length && slash.indexOf("file:") !== 0) {
+            if (/^[A-Za-z]:\//.test(slash))
+                base = "file:///" + slash
+            else if (slash.charAt(0) === "/")
+                base = "file://" + slash
+        }
+        if (base)
+            saveLinkDialog.currentFile = base.replace(/\/$/, "") + "/" + name
+        saveLinkDialog.open()
     }
     function openAtlasMenu() {
         const map = mapLoader.item
@@ -929,6 +975,12 @@ Item {
                 function onContextMenuRequested(x, y) {
                     skyPage.openSkyMenu(x, y)
                 }
+                function onHostLinkRequested(url) {
+                    skyPage.openHostLink(url)
+                }
+                function onLinkMenuRequested(x, y, url) {
+                    skyPage.openLinkMenu(x, y, url)
+                }
                 function onMenuDismissRequested() {
                     if (skyMenu.opened || skyMenu.visible)
                         skyMenu.close()
@@ -1002,6 +1054,45 @@ Item {
                 onDblclickTrackToggled: skyStore.dblclickTrack = !skyStore.dblclickTrack
                 onFovTargetRequested: skyPage.useFovCenterAsTarget()
                 onTrackSelected: skyPage.withSkySources("track", true)
+            }
+
+            HudMenu {
+                id: linkMenu
+                objectName: "linkContextMenu"
+                popupType: Qt.platform.os === "linux" ? Popup.Item : Popup.Window
+                implicitWidth: Theme.px(280)
+                property string url: ""
+
+                HudMenuItem {
+                    objectName: "linkOpenMenuItem"
+                    text: "Open link in new window"
+                    glyph: "\uE8A7"
+                    implicitWidth: Theme.px(280)
+                    onTriggered: skyPage.openHostLink(linkMenu.url)
+                }
+                HudMenuItem {
+                    objectName: "linkSaveMenuItem"
+                    text: "Save link as"
+                    glyph: "\uE74E"
+                    implicitWidth: Theme.px(280)
+                    onTriggered: skyPage.saveHostLink()
+                }
+                HudMenuItem {
+                    objectName: "linkCopyMenuItem"
+                    text: "Copy link"
+                    glyph: "\uE8C8"
+                    implicitWidth: Theme.px(280)
+                    onTriggered: backend.copyText(linkMenu.url)
+                }
+            }
+
+            FileDialog {
+                id: saveLinkDialog
+                title: "Save link as"
+                fileMode: FileDialog.SaveFile
+                nameFilters: ["Web pages (*.html *.htm)", "All files (*.*)"]
+                defaultSuffix: "html"
+                onAccepted: backend.saveExternalLink(linkMenu.url, String(selectedFile))
             }
 
             Rectangle {

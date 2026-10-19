@@ -1135,6 +1135,57 @@ QtObject {
         }
         return out
     }
+    function sessionStartMs(item) {
+        const value = Number(item && item.start_epoch_ms)
+        return Number.isFinite(value) ? value : NaN
+    }
+    function orderLatestSessions(items) {
+        const list = items || []
+        const groups = []
+        const indexByKey = {}
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i]
+            const key = String((item && item.group_key) || ("session:" + (item && item.id)))
+            let slot = indexByKey[key]
+            if (slot === undefined) {
+                slot = groups.length
+                indexByKey[key] = slot
+                groups.push({ items: [], start: NaN, index: i })
+            }
+            const group = groups[slot]
+            group.items.push(item)
+            const start = Util.sessionStartMs(item)
+            if (Number.isFinite(start) && (!Number.isFinite(group.start) || start < group.start))
+                group.start = start
+        }
+        groups.sort(function(a, b) {
+            const aKnown = Number.isFinite(a.start)
+            const bKnown = Number.isFinite(b.start)
+            if (aKnown && bKnown && a.start !== b.start)
+                return b.start - a.start
+            if (aKnown !== bKnown)
+                return aKnown ? -1 : 1
+            return a.index - b.index
+        })
+        const ordered = []
+        for (let g = 0; g < groups.length; g++) {
+            const members = groups[g].items
+            members.sort(function(a, b) {
+                const ai = Number(a && a.pane_index)
+                const bi = Number(b && b.pane_index)
+                const aOk = Number.isFinite(ai)
+                const bOk = Number.isFinite(bi)
+                if (aOk && bOk && ai !== bi)
+                    return ai - bi
+                if (aOk !== bOk)
+                    return aOk ? -1 : 1
+                return String((a && a.pane_name) || "").localeCompare(String((b && b.pane_name) || ""))
+            })
+            for (let m = 0; m < members.length; m++)
+                ordered.push(members[m])
+        }
+        return ordered
+    }
     function filterSessionQueue(items, query, includeFinished) {
         const list = items || []
         const showFinished = !!includeFinished
@@ -1151,7 +1202,9 @@ QtObject {
                 continue
             out.push(item)
         }
-        return out
+        if (!showFinished)
+            return out
+        return Util.orderLatestSessions(out)
     }
     function placeOnNightRequest(recipe, deviceId, startText) {
         const item = recipe || {}

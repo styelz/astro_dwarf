@@ -9,6 +9,7 @@ Item {
     property int abortCount: 0
     signal hostTitle(string title)
     signal contextMenuAt(real x, real y)
+    signal linkMenuAt(real x, real y, string url)
 
     function runJavaScript(script, callback) {
         view.runJavaScript(script, callback)
@@ -42,14 +43,23 @@ Item {
                 root.loadState("failed")
         }
         onNewWindowRequested: function(request) {
-            request.openIn(popupSink)
+            const url = request && request.requestedUrl ? String(request.requestedUrl) : ""
+            backend.openExternalUrl(url)
         }
         // Stellarium's WebGL canvas often never emits a DOM contextmenu on
         // Linux once this request is accepted. The HUD menu has to open here.
+        // A link, including the Stellarium App pill, opens the host link menu.
         // Aladin still gets the DOM event, so its engine item stays on that path.
         onContextMenuRequested: function(request) {
             request.accepted = true
-            root.contextMenuAt(Number(request.x) || 0, Number(request.y) || 0)
+            const point = request && request.position ? request.position : null
+            const x = point ? Number(point.x) || 0 : 0
+            const y = point ? Number(point.y) || 0 : 0
+            const link = request && request.linkUrl ? String(request.linkUrl) : ""
+            if (link.indexOf("http://") === 0 || link.indexOf("https://") === 0 || link.indexOf("mailto:") === 0)
+                root.linkMenuAt(x, y, link)
+            else
+                root.contextMenuAt(x, y)
         }
         onJavaScriptDialogRequested: function(request) {
             request.accepted = true
@@ -69,14 +79,6 @@ Item {
             if (root.abortCount === 8)
                 root.loadState("failed")
         }
-    }
-
-    WebEngineView {
-        id: popupSink
-        visible: false
-        width: 1
-        height: 1
-        profile: skyProfile
     }
 
     WebEngineProfile {

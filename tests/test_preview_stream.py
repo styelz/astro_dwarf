@@ -49,6 +49,7 @@ from astro_dwarf.qt_backend import (
     mosaic_result_pane,
     mosaic_result_should_drop_sheet,
     mosaic_sheet_survives_preview_stop,
+    stitch_clears_with_preview,
     mosaic_should_copy_live_still,
     mosaic_should_hold_last_live_frame,
     mosaic_should_hold_slew_frame,
@@ -411,14 +412,23 @@ def test_preview_attaches_when_rtsp_is_already_live() -> None:
 
 def test_preview_restarts_rtsp_after_stacking_jpeg() -> None:
     leftover = {"stream_type": "JPEG", "shooting_mode": 2}
+    photo_leftover = {"stream_type": "JPEG", "shooting_mode": 1}
     _assert(preview_needs_rtsp_restart(leftover), "idle JPEG leftover must restart RTSP")
     _assert(
-        not preview_should_preserve_shooting_mode(leftover),
-        "DSO leftover JPEG must switch to photo mode to start RTSP",
+        preview_should_preserve_shooting_mode(leftover),
+        "DSO leftover JPEG must stay in DSO while the cameras reopen",
     )
     _assert(
-        not preview_should_skip_go_live(leftover),
-        "leftover stacking JPEG still needs GoLive before photo mode",
+        preview_should_skip_go_live(leftover),
+        "DSO leftover JPEG must not send GoLive",
+    )
+    _assert(
+        not preview_should_preserve_shooting_mode(photo_leftover),
+        "PHOTO leftover JPEG can still open the cameras with photo mode",
+    )
+    _assert(
+        not preview_should_skip_go_live(photo_leftover),
+        "PHOTO leftover JPEG still uses GoLive before photo mode",
     )
     _assert(
         not preview_can_attach_rtsp(leftover, preview_result=True),
@@ -1379,6 +1389,31 @@ def test_mosaic_dismiss_drops_leftover_sheet_and_sky_stills() -> None:
     )
 
 
+def test_stitch_leaves_the_preview_with_dismiss_or_start_stream() -> None:
+    _assert(
+        stitch_clears_with_preview("held", "done"),
+        "Dismiss and Start stream must clear a stitch the operator asked for",
+    )
+    _assert(
+        stitch_clears_with_preview("auto", "done"),
+        "an automatic finish must leave with the same Dismiss and Start stream",
+    )
+    _assert(
+        stitch_clears_with_preview("auto", "working"),
+        "a stitch still matching stars is cancelled when the preview leaves",
+    )
+    _assert(
+        stitch_clears_with_preview("held", "failed"),
+        "a failed stitch caption leaves with the preview",
+    )
+    _assert(
+        not stitch_clears_with_preview("history", "done"),
+        "an album stitch stays when the live view is dismissed",
+    )
+    _assert(not stitch_clears_with_preview("auto", ""), "an idle stitch has nothing to clear")
+    _assert(not stitch_clears_with_preview("", "done"), "a stitch with no owner stays put")
+
+
 def test_finished_device_mosaic_shows_the_live_stitch() -> None:
     from astro_dwarf.domain import Mosaic
 
@@ -1775,6 +1810,7 @@ if __name__ == "__main__":
     test_completion_view_waits_until_the_pane_stills_settle()
     test_mosaic_result_keeps_contact_sheet_until_dismissed()
     test_mosaic_dismiss_drops_leftover_sheet_and_sky_stills()
+    test_stitch_leaves_the_preview_with_dismiss_or_start_stream()
     test_finished_device_mosaic_shows_the_live_stitch()
     test_device_mosaic_hud_uses_scale_not_pane_count()
     test_mosaic_pane_cache_roundtrip()
