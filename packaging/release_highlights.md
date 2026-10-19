@@ -51,3 +51,10 @@ feat: refactor workflow step handling and enhance autofocus logic
 - Introduced `workflow_step_labels` function to streamline the generation of workflow step labels based on session parameters, improving clarity and maintainability.
 - Updated `_run_session_steps` to utilize the new label generation function, ensuring consistent step ordering and handling.
 - Enhanced autofocus logic to provide clearer feedback on autofocus failures and retries, improving session robustness.
+
+feat: enhance mosaic handling and autofocus logic for improved session accuracy
+- Updated autofocus logic to retry after calibration if the initial autofocus fails, ensuring better focus during overnight sessions.
+- Enhanced GOTO handling by introducing a `goto_released` state to prevent new GOTO commands while a search is ongoing, improving session reliability.
+- Clarified rules in `astro-dwarf.mdc` and `do-not-regress.mdc` regarding session setup and autofocus behavior, ensuring consistent handling across different scenarios.
+- Improved JavaScript logic in `sky-atlas.js` to account for the parallactic angle during mosaic captures, enhancing the accuracy of pane placements.
+- Added unit tests to validate the new autofocus and mosaic handling behaviors, ensuring robustness in session execution.

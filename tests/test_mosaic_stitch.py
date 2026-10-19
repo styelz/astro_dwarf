@@ -86,6 +86,39 @@ class MosaicStitchTests(unittest.TestCase):
         self.assertLessEqual(result.residual_px, 1.5)
         self.assertEqual(result.unmatched, [])
 
+    def test_parallactic_spread_stays_on_the_sheet(self) -> None:
+        """Nine degrees of parallactic angle must not spin zenith-up panes apart."""
+        rng = np.random.default_rng(11)
+        width, height = 960, 540
+        master = _field(width + 800, height + 500, rng, count=220)
+        overlap = 0.2
+        step_x = int(round(width * (1.0 - overlap)))
+        step_y = int(round(height * (1.0 - overlap)))
+        placed = {
+            (0, 0): (0.0, (0.0, 0.0), 85.4),
+            (0, 1): (-1.4, (32.0, -8.0), 83.8),
+            (1, 0): (1.6, (6.0, -28.0), 94.3),
+            (1, 1): (0.8, (26.0, -22.0), 94.0),
+        }
+        spun = []
+        level = []
+        index = 1
+        for row, column in ((0, 0), (0, 1), (1, 0), (1, 1)):
+            crop = master[row * step_y : row * step_y + height, column * step_x : column * step_x + width].copy()
+            degrees, shift, angle = placed[(row, column)]
+            if degrees or shift != (0.0, 0.0):
+                crop = _rotate(crop, degrees, shift)
+            spun.append(StitchPane(index, row + 1, column + 1, crop, position_angle=angle))
+            level.append(StitchPane(index, row + 1, column + 1, crop, position_angle=0.0))
+            index += 1
+        with_angles = stitch_panes(spun, overlap=overlap)
+        flat = stitch_panes(level, overlap=overlap)
+        self.assertEqual(with_angles.unmatched, [])
+        self.assertIsNotNone(with_angles.residual_px)
+        self.assertLessEqual(with_angles.residual_px, 1.5)
+        self.assertEqual(with_angles.width, flat.width)
+        self.assertEqual(with_angles.height, flat.height)
+
     def test_starless_edge_keeps_seed(self) -> None:
         left = np.linspace(0.05, 0.2, 80, dtype=np.float32)[None, :].repeat(60, axis=0)
         right = np.linspace(0.2, 0.05, 80, dtype=np.float32)[None, :].repeat(60, axis=0)

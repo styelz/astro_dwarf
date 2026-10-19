@@ -1201,6 +1201,47 @@ ATLAS_ASTRO_JS = r"""
     ctx.setLineDash([]);
     ctx.lineCap = "butt";
   }
+  function rotateScreen(cx, cy, x, y, deg) {
+    // Positive degrees are counterclockwise. Canvas y grows downward.
+    var rad = -deg * Math.PI / 180;
+    var cos = Math.cos(rad), sin = Math.sin(rad);
+    var dx = x - cx, dy = y - cy;
+    return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos];
+  }
+  function zenithCellRolls(cells, paneW, paneH) {
+    // Each alt-az pane turns with the zenith at that pointing. Moving west
+    // of south increases the parallactic angle, counterclockwise here.
+    var payload = box.payload || {};
+    if (String(payload.mount_mode || "").toUpperCase() === "EQ") return null;
+    if (String(payload.pa_source || "") !== "parallactic" || !box.hasSite) return null;
+    if (!(paneW > 0) || !(paneH > 0) || !cells || cells.length < 2) return null;
+    var pos = liveEq(aladinRef());
+    if (!pos) return null;
+    var fovH = Number(box.fovH), fovV = Number(box.fovV);
+    if (!(fovH > 0) || !(fovV > 0)) return null;
+    var now = new Date();
+    var q0 = parallacticDeg(pos[0], pos[1], box.lat, box.lon, now);
+    var pitch = Number(payload.mechanical_altitude);
+    var past = isFinite(pitch) && pitch > 90 && pitch < 270;
+    if (!isFinite(q0)) return null;
+    q0 = ((q0 + (past ? 180 : 0)) % 360 + 360) % 360;
+    var raH = ((Number(pos[0]) / 15) % 24 + 24) % 24;
+    var dec = Number(pos[1]);
+    var rolls = [];
+    var any = false;
+    for (var i = 0; i < cells.length; i++) {
+      var cx = cells[i].x + paneW / 2;
+      var cy = cells[i].y + paneH / 2;
+      var pt = offsetCamera(raH, dec, cx * fovH / paneW, -cy * fovV / paneH, q0);
+      var q = parallacticDeg(pt.ra_hours * 15, pt.dec_degrees, box.lat, box.lon, now);
+      if (!isFinite(q)) q = q0;
+      if (past) q += 180;
+      var delta = wrapSigned(q - q0);
+      if (Math.abs(delta) > 0.35) any = true;
+      rolls.push(delta);
+    }
+    return any ? rolls : null;
+  }
   function drawScreenMosaic(ctx, width, height, w, h, cols, rows, overlap, tilt, color) {
     var stepX = w * (1 - overlap), stepY = h * (1 - overlap);
     var totalW = stepX * (cols - 1) + w, totalH = stepY * (rows - 1) + h;
@@ -1224,13 +1265,25 @@ ATLAS_ASTRO_JS = r"""
         });
       }
     }
+    var rolls = zenithCamera ? zenithCellRolls(cells, w, h) : null;
+    function paneQuad(cell, roll) {
+      var cx = cell.x + w / 2, cy = cell.y + h / 2;
+      var pts = [[cell.x, cell.y], [cell.x + w, cell.y], [cell.x + w, cell.y + h], [cell.x, cell.y + h]];
+      if (!(Math.abs(roll) > 0.05)) return pts;
+      var spun = [];
+      for (var p = 0; p < 4; p++) spun.push(rotateScreen(cx, cy, pts[p][0], pts[p][1], roll));
+      return spun;
+    }
     if (hasMosaicMedia()) {
       blitMosaicMedia(ctx, width, height, function(mctx) {
         mctx.translate(width / 2, height / 2);
         mctx.rotate(tilt);
         var placed = [];
-        for (var i = 0; i < cells.length; i++)
-          placed.push({index: cells[i].index, x: cells[i].x, y: cells[i].y, w: w, h: h});
+        for (var i = 0; i < cells.length; i++) {
+          var placedPane = {index: cells[i].index, x: cells[i].x, y: cells[i].y, w: w, h: h};
+          if (rolls) placedPane.image = paneQuad(cells[i], rolls[i]);
+          placed.push(placedPane);
+        }
         paintOverlayImages(mctx, placed, null, -w / 2, -h / 2, w, h);
       });
     }
@@ -1238,25 +1291,44 @@ ATLAS_ASTRO_JS = r"""
     ctx.translate(width / 2, height / 2);
     ctx.rotate(tilt);
     var dotted = cols * rows > 1;
-    if (dotted) {
-      for (var seamCol = 1; seamCol < cols; seamCol++) {
-        var sx = -totalW / 2 + (seamCol - 1) * stepX + (stepX + w) / 2;
-        strokeDotLine(ctx, sx, -totalH / 2, sx, totalH / 2, color);
+    if (rolls) {
+      for (var r = 0; r < cells.length; r++) {
+        var quad = paneQuad(cells[r], rolls[r]);
+        ctx.beginPath();
+        ctx.moveTo(quad[0][0], quad[0][1]);
+        for (var e = 1; e < quad.length; e++) ctx.lineTo(quad[e][0], quad[e][1]);
+        ctx.closePath();
+        ctx.lineCap = "round";
+        ctx.setLineDash([1, 6.5]);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.2;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineCap = "butt";
+        strokeTargetQuad(ctx, quad, color);
+        paintIndex(ctx, cells[r].x + w / 2, cells[r].y + h / 2, cells[r].index, color, Math.min(w, h));
       }
-      for (var seamRow = 1; seamRow < rows; seamRow++) {
-        var sy = -totalH / 2 + (seamRow - 1) * stepY + (stepY + h) / 2;
-        strokeDotLine(ctx, -totalW / 2, sy, totalW / 2, sy, color);
+    } else {
+      if (dotted) {
+        for (var seamCol = 1; seamCol < cols; seamCol++) {
+          var sx = -totalW / 2 + (seamCol - 1) * stepX + (stepX + w) / 2;
+          strokeDotLine(ctx, sx, -totalH / 2, sx, totalH / 2, color);
+        }
+        for (var seamRow = 1; seamRow < rows; seamRow++) {
+          var sy = -totalH / 2 + (seamRow - 1) * stepY + (stepY + h) / 2;
+          strokeDotLine(ctx, -totalW / 2, sy, totalW / 2, sy, color);
+        }
       }
-    }
-    strokeTargetQuad(ctx, [
-      [-totalW / 2, -totalH / 2],
-      [totalW / 2, -totalH / 2],
-      [totalW / 2, totalH / 2],
-      [-totalW / 2, totalH / 2]
-    ], color);
-    if (dotted) {
-      for (var n = 0; n < cells.length; n++)
-        paintIndex(ctx, cells[n].x + w / 2, cells[n].y + h / 2, cells[n].index, color, Math.min(w, h));
+      strokeTargetQuad(ctx, [
+        [-totalW / 2, -totalH / 2],
+        [totalW / 2, -totalH / 2],
+        [totalW / 2, totalH / 2],
+        [-totalW / 2, totalH / 2]
+      ], color);
+      if (dotted) {
+        for (var n = 0; n < cells.length; n++)
+          paintIndex(ctx, cells[n].x + w / 2, cells[n].y + h / 2, cells[n].index, color, Math.min(w, h));
+      }
     }
     ctx.restore();
     return rotatedRect(width / 2, height / 2, totalW, totalH, tilt);
@@ -1455,33 +1527,23 @@ ATLAS_ASTRO_JS = r"""
       var dx = pt[0] - cx, dy = pt[1] - cy;
       return [cx + dx * cos + dy * sin, cy - dx * sin + dy * cos];
     }
-    var hw = 0, hh = 0;
-    for (var q = 0; q < projected.length; q++) {
-      var quad = projected[q].quad;
-      if (!quad || quad.length < 4) continue;
-      hw = Math.hypot(quad[3][0] - quad[0][0], quad[3][1] - quad[0][1]) / 2;
-      hh = Math.hypot(quad[1][0] - quad[0][0], quad[1][1] - quad[0][1]) / 2;
-      break;
-    }
+    // Drop the shared map roll. Keep each pane's own parallactic tilt:
+    // rebuilding every quad as a level rectangle hid the field rotation.
     var out = [];
     for (var k = 0; k < projected.length; k++) {
       var item = projected[k];
-      var center = item.center || (item.quad ? quadCenter(item.quad) : null);
-      if (!center || !(hw > 1) || !(hh > 1)) {
+      var quad = item.quad;
+      var center = item.center || (quad ? quadCenter(quad) : null);
+      if (!center || !quad || quad.length < 4) {
         out.push(item);
         continue;
       }
-      var p = unspin(center);
-      var ring = [
-        [p[0] + hw, p[1] - hh],
-        [p[0] + hw, p[1] + hh],
-        [p[0] - hw, p[1] + hh],
-        [p[0] - hw, p[1] - hh]
-      ];
+      var ring = [];
+      for (var c = 0; c < quad.length; c++) ring.push(unspin(quad[c]));
       out.push({
         quad: ring,
         image: imageQuadFromRing(ring),
-        center: p,
+        center: unspin(center),
         index: item.index,
         row: item.row,
         column: item.column

@@ -145,6 +145,7 @@ from .services import (
     sky_show_lens,
     sky_show_selects_tele,
     mosaic_pane_footprints,
+    stitch_capture_position_angle,
     mosaic_panes_match_center,
     named_mosaic_center,
     command_panel_workflow,
@@ -4034,6 +4035,32 @@ class AppBackend(QObject):
     def _mosaic_pa(self, target: Target | None = None) -> float:
         return self._mosaic_pa_state(target).degrees
 
+    def _altaz_footprint_kwargs(self) -> dict[str, Any]:
+        device = self._schedule_device()
+        if device is None:
+            return {}
+        telemetry = self._device_telemetry.get(device.id) or {}
+        return {
+            "latitude": device.latitude,
+            "longitude": device.longitude,
+            "mount_mode": telemetry.get("mount_mode"),
+            "mechanical_altitude": telemetry.get("mechanical_altitude"),
+        }
+
+    def _stitch_angle(self, ra: Any, dec: Any, stored: Any, captured_at: Any) -> float:
+        device = self._schedule_device()
+        telemetry = self._device_telemetry.get(device.id) if device is not None else {}
+        return stitch_capture_position_angle(
+            ra,
+            dec,
+            stored,
+            latitude=None if device is None else device.latitude,
+            longitude=None if device is None else device.longitude,
+            mount_mode=(telemetry or {}).get("mount_mode"),
+            captured_at=captured_at,
+            mechanical_altitude=(telemetry or {}).get("mechanical_altitude"),
+        )
+
     def _overlay_pa_target(self, harvested: Target | None) -> Target | None:
         locked = self._sky_target
         if locked is not None and locked.ra_hours is not None and locked.dec_degrees is not None:
@@ -7049,6 +7076,10 @@ class AppBackend(QObject):
                     local = self._stack_for_pane(member.name if member is not None else "")
             if array is None and local is None:
                 continue
+            shot = next(
+                (item for item in members if mosaic_pane_number(item.mosaic, columns, item.name) == index),
+                None,
+            )
             panes.append(
                 StitchPane(
                     index=index,
@@ -7057,7 +7088,12 @@ class AppBackend(QObject):
                     image=array,
                     ra_hours=foot.get("ra_hours"),
                     dec_degrees=foot.get("dec_degrees"),
-                    position_angle=float(foot.get("position_angle") or 0.0),
+                    position_angle=self._stitch_angle(
+                        foot.get("ra_hours"),
+                        foot.get("dec_degrees"),
+                        foot.get("position_angle"),
+                        None if shot is None else shot.actual_started_at,
+                    ),
                     path=str(local) if local is not None else "",
                     flip=flip,
                 )
@@ -7156,13 +7192,16 @@ class AppBackend(QObject):
             )
             ra = session.target.ra_hours if session is not None else snapshot.get("ra_hours")
             dec = session.target.dec_degrees if session is not None else snapshot.get("dec_degrees")
-            pending.append((mosaic, pane_name or target_name, index, str(local), ra, dec))
+            captured = session.actual_started_at if session is not None else None
+            if captured is None and not isinstance(record, dict):
+                captured = getattr(record, "actual_started_at", None)
+            pending.append((mosaic, pane_name or target_name, index, str(local), ra, dec, captured))
         if len(pending) < 2:
             detail = "Pane positions are not stored for this group" if found_file else "Stacks are not downloaded yet"
             self._set_stitch("failed", detail, source="history")
             return
         grid_rows, grid_columns = mosaic_grid_size(*(item[0] for item in pending))
-        for mosaic, name, index, local, ra, dec in pending:
+        for mosaic, name, index, local, ra, dec, captured in pending:
             pane_index = index or mosaic_pane_number(mosaic, grid_columns, name)
             row, column, flip = self._stitch_sheet_cell(pane_index, grid_columns, grid_rows)
             panes.append(
@@ -7173,7 +7212,7 @@ class AppBackend(QObject):
                     image=None,
                     ra_hours=ra,
                     dec_degrees=dec,
-                    position_angle=float(mosaic.rotation_degrees or 0.0),
+                    position_angle=self._stitch_angle(ra, dec, mosaic.rotation_degrees, captured),
                     path=local,
                     flip=flip,
                 )
@@ -7190,7 +7229,7 @@ class AppBackend(QObject):
                 "group_id": group,
                 "title": title,
                 "device_id": owner,
-                "pane_names": [name for _mosaic, name, _index, _local, _ra, _dec in pending],
+                "pane_names": [name for _mosaic, name, _index, _local, _ra, _dec, _captured in pending],
                 "grid_rows": int(grid_rows or 0),
                 "grid_columns": int(grid_columns or 0),
             },
@@ -7425,6 +7464,7 @@ class AppBackend(QObject):
                             overlap_n,
                             south_up=south_up,
                             position_angle=payload["position_angle"],
+                            **self._altaz_footprint_kwargs(),
                         )
                     payload["mode"] = "panes"
                     return payload
@@ -7470,6 +7510,7 @@ class AppBackend(QObject):
                         overlap_n,
                         south_up=south_up,
                         position_angle=payload["position_angle"],
+                        **self._altaz_footprint_kwargs(),
                     )
                 payload["mode"] = "panes"
                 self._sky_mosaic_center = Target(
@@ -10296,6 +10337,7 @@ class AppBackend(QObject):
                     overlap,
                     south_up=self._mosaic_south_up(),
                     position_angle=pa,
+                    **self._altaz_footprint_kwargs(),
                 )
             except ValueError as exc:
                 self._toast("Could not compute mosaic panes", "error", str(exc))
@@ -13462,7 +13504,14 @@ class AppBackend(QObject):
             column = int(mosaic.column or 0) if mosaic is not None else 0
             if local is None or row < 1 or column < 1 or mosaic is None:
                 continue
-            pending.append((mosaic, label, local, session.target.ra_hours, session.target.dec_degrees))
+            pending.append((
+                mosaic,
+                label,
+                local,
+                session.target.ra_hours,
+                session.target.dec_degrees,
+                session.actual_started_at,
+            ))
         if len(pending) < 2:
             if group.startswith("title:") or "|" in group:
                 detail = "Pane positions are not stored for this group" if found_file else "Stacks are not downloaded yet"
@@ -13472,7 +13521,7 @@ class AppBackend(QObject):
             return
         grid_rows, grid_columns = mosaic_grid_size(*(item[0] for item in pending))
         panes: list[StitchPane] = []
-        for mosaic, name, local, ra, dec in pending:
+        for mosaic, name, local, ra, dec, captured in pending:
             pane_index = mosaic_pane_number(mosaic, grid_columns, name)
             row, column, flip = self._stitch_sheet_cell(pane_index, grid_columns, grid_rows)
             panes.append(
@@ -13483,7 +13532,7 @@ class AppBackend(QObject):
                     image=None,
                     ra_hours=ra,
                     dec_degrees=dec,
-                    position_angle=float(mosaic.rotation_degrees or 0.0),
+                    position_angle=self._stitch_angle(ra, dec, mosaic.rotation_degrees, captured),
                     path=str(local),
                     flip=flip,
                 )
@@ -13499,7 +13548,7 @@ class AppBackend(QObject):
                 "group_id": group,
                 "title": title,
                 "device_id": str(self._media_device_id or self._selected_device_id or ""),
-                "pane_names": [name for _mosaic, name, _local, _ra, _dec in pending],
+                "pane_names": [name for _mosaic, name, _local, _ra, _dec, _captured in pending],
                 "grid_rows": int(grid_rows or 0),
                 "grid_columns": int(grid_columns or 0),
             },

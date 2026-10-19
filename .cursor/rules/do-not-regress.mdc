@@ -27,5 +27,9 @@ These stay unless this request names them:
 - The first custom-mosaic pane keeps calibrate, focus, polar alignment, and the waits. Later panes only slew and stack
 - Deleting a history row removes the history file and leaves the session in place
 - The scheduler due list is tonight only. Earlier nights stay planned
+- Setup focuses the field already in frame. Polar positioning runs only when the session calibrates. A failed autofocus retries after calibration
+- A user stop is Stopped by user, skips remaining mosaic panes before the worker returns, and does not chain the next pane
+- Do not send another GOTO while `goto_released` is set. Wait for `goto_search_cleared`
+- A running mosaic keeps its saved pane centres on the chart (`fixed_panes`)
 
 Before finishing, read `git diff` for every file touched. Put back any line the request did not ask for.

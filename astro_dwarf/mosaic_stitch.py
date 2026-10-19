@@ -333,28 +333,25 @@ def _stretch_linear_channel(channel: Any) -> Any:
 
 
 def _seed_placements(prepared: list[dict[str, Any]], overlap_h: float, overlap_v: float) -> dict[int, Any]:
+    """Lay panes on the contact sheet without spinning them.
+
+    The sheet and the camera JPEGs are both zenith-up. A pane position angle
+    is east of north, so seeding a rotation from it turns the bottom row
+    several degrees the wrong way. The star match then accepts that pose:
+    Beta Hydri's bottom panes were 9° apart in parallactic angle and only
+    about 3° apart on the sensor, and the spun seed reported a sub-pixel
+    residual on the wrong stars. The real field rotation is a few degrees
+    and the edge match takes it from this level seed.
+    """
     width = max(item["width"] for item in prepared)
     height = max(item["height"] for item in prepared)
     step_x = width * (1.0 - overlap_h)
     step_y = height * (1.0 - overlap_v)
-    ref_pa = float(prepared[0]["position_angle"])
     seeds: dict[int, Any] = {}
     for item in prepared:
-        dpa = np.deg2rad((float(item["position_angle"]) - ref_pa) % 360.0)
-        if dpa > np.pi:
-            dpa -= 2.0 * np.pi
-        cosine = float(np.cos(dpa))
-        sine = float(np.sin(dpa))
-        cx = (item["width"] - 1) * 0.5
-        cy = (item["height"] - 1) * 0.5
         origin_x = (int(item["column"]) - 1) * step_x
         origin_y = (int(item["row"]) - 1) * step_y
-        center_x = origin_x + cx
-        center_y = origin_y + cy
-        # Similarity about the pane centre, then the planned grid translation.
-        tx = center_x - (cosine * cx - sine * cy)
-        ty = center_y - (sine * cx + cosine * cy)
-        seeds[item["index"]] = np.array([cosine, sine, tx, ty], dtype=np.float64)
+        seeds[item["index"]] = np.array([1.0, 0.0, origin_x, origin_y], dtype=np.float64)
     return seeds
 
 
