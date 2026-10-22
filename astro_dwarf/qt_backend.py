@@ -1049,10 +1049,12 @@ def preview_should_restore_dso(
     telemetry: dict[str, Any] | None,
     persisted_mode: int = 0,
 ) -> bool:
-    """True when a photo-mode camera open must put DSO back.
+    """True when photo mode must restart tele RTSP and then return to DSO.
 
-    Starting live view from DSO does not enter PHOTO. This only covers a
-    telescope that was already in DSO and still took the photo-mode path.
+    GoLive and enter-camera leave a finished stack's encoder on JPEG, so the
+    tele RTSP port accepts the connection and sends no frames. Photo mode is
+    what switches that encoder back to RTSP. The telescope was in DSO, so
+    live view returns there after the encoder restarts.
     """
     if not preview_needs_rtsp_restart(telemetry):
         return False
@@ -1066,7 +1068,11 @@ def preview_should_preserve_shooting_mode(
     telemetry: dict[str, Any] | None,
     persisted_mode: int = 0,
 ) -> bool:
-    """True when live view must not force PHOTO just to open the cameras."""
+    """True when live view must not force PHOTO just to open the cameras.
+
+    A leftover stacking JPEG still returns true. ``preview_reopens_via_photo_mode``
+    is the path that enters PHOTO long enough to restart tele RTSP.
+    """
     snap = telemetry or {}
     mode = _shooting_mode_int(snap.get("shooting_mode"))
     # A live job, an open panorama, or solar mode stays as the telescope left it.
@@ -1080,6 +1086,41 @@ def preview_should_preserve_shooting_mode(
     return persisted_mode == 2 and mode != 1
 
 
+def preview_reopens_via_photo_mode(
+    telemetry: dict[str, Any] | None,
+    persisted_mode: int = 0,
+) -> bool:
+    """True when live view must enter PHOTO so tele leaves the stacking encoder.
+
+    GoLive and enter-camera do not do that. Photo mode does. An idle DSO
+    leftover then returns to DSO. Tracking, a live job, and panorama stay put:
+    photo mode would drop them.
+    """
+    snap = telemetry or {}
+    if telemetry_operation_live(snap) or snap.get("tracking_state") == "running":
+        return False
+    mode = _shooting_mode_int(snap.get("shooting_mode"))
+    if mode in {7, 8, 9, 10} and not snap.get("motors_unhomed"):
+        return False
+    if preview_should_restore_dso(telemetry, persisted_mode):
+        return True
+    return not preview_should_preserve_shooting_mode(telemetry, persisted_mode)
+
+
+def preview_stack_encoder_blocks_tele(telemetry: dict[str, Any] | None) -> bool:
+    """True when idle tele JPEG will not deliver an RTSP picture.
+
+    A running stack, a live job, and sidereal tracking keep that encoder.
+    Live view must not treat those as a dead preview.
+    """
+    snap = telemetry or {}
+    if _preview_capture_running(snap) or telemetry_operation_live(snap):
+        return False
+    if snap.get("tracking_state") == "running":
+        return False
+    return _stream_type_name(snap.get("stream_type")) == "JPEG"
+
+
 def preview_should_skip_go_live(
     telemetry: dict[str, Any] | None,
     persisted_mode: int = 0,
@@ -1088,9 +1129,8 @@ def preview_should_skip_go_live(
 
     GoLive ends a capture. After GOTO or tracking the scope is already in
     DSO with RTSP up; GoLive then leaves tele closed. A leftover stacking
-    JPEG is the finished stack's encoder. Enter-camera alone stays on that
-    encoder and live view receives no frames. GoLive releases it, then the
-    cameras reopen in the same shooting mode.
+    JPEG is the finished stack's encoder. GoLive releases that capture when
+    tracking is idle. Photo mode then starts tele RTSP, and DSO is restored.
     """
     snap = telemetry or {}
     if snap.get("capture_active") or snap.get("capture_state") == "running":
@@ -2858,6 +2898,7 @@ class AppBackend(QObject):
         self._preview_tele_url = ""
         self._preview_wide_url = ""
         self._preview_open_fallback = {"tele": False, "wide": False}
+        self._preview_stack_encoder_bounce = False
         self._preview_stack_mode = False
         self._preview_result = False
         self._preview_result_title = ""
@@ -8519,6 +8560,23 @@ class AppBackend(QObject):
                 if token != self._preview_token:
                     return
                 if restore_dso:
+                    if mode_ok and preview_stack_encoder_blocks_tele(self._device_telemetry.get(device_id)):
+                        self.add_log(
+                            "info",
+                            "DSO left the tele camera on the stacking encoder, so live view stays in PHOTO",
+                            device_id,
+                        )
+
+                        def stayed_in_photo(photo_ok: bool, photo_result: Any) -> None:
+                            if token != self._preview_token:
+                                return
+                            if device.model in (DeviceModel.DWARF_3, DeviceModel.DWARF_MINI):
+                                after_cameras(True, photo_result)
+                                return
+                            self._open_legacy_preview_cameras(worker, device, token, after_cameras)
+
+                        if self._switch_preview_to_photo(device_id, token, stayed_in_photo):
+                            return
                     if mode_ok:
                         self._on_telemetry(
                             device_id,
@@ -8543,24 +8601,29 @@ class AppBackend(QObject):
             open_after_mode()
 
         persisted_mode = device.control_settings.shooting_mode
-        preserve_mode = preview_should_preserve_shooting_mode(
-            self._device_telemetry.get(device_id),
-            persisted_mode,
-        )
         restore_dso = preview_should_restore_dso(
             self._device_telemetry.get(device_id),
             persisted_mode,
         )
 
         def after_live(ok: bool, result: Any) -> None:
+            nonlocal restore_dso
             if token != self._preview_token:
                 return
             if not ok:
                 self.add_log("warning", f"Could not close previous capture: {result}", device_id)
-            if preserve_mode:
+            snap = self._device_telemetry.get(device_id)
+            restore_dso = preview_should_restore_dso(snap, persisted_mode)
+            if not preview_reopens_via_photo_mode(snap, persisted_mode):
                 self.add_log("info", "Opening live cameras without changing shooting mode", device_id)
                 self._open_preview_without_mode_switch(worker, device, token, after_cameras)
                 return
+            if restore_dso:
+                self.add_log(
+                    "info",
+                    "Tele camera is still on the stacking encoder — restarting live view, then returning to DSO",
+                    device_id,
+                )
             worker.send("photo_mode", callback=after_photo)
 
         if preview_should_skip_go_live(
@@ -8698,6 +8761,7 @@ class AppBackend(QObject):
     def _arm_preview_ui(self, status: str) -> int:
         self._clear_preview_result()
         self._preview_open_fallback = {"tele": False, "wide": False}
+        self._preview_stack_encoder_bounce = False
         if self._preview_active or self._preview_playing:
             self._closePreviewStreams.emit()
         self._preview_token += 1
@@ -8881,6 +8945,7 @@ class AppBackend(QObject):
         self._preview_tele_url = ""
         self._preview_wide_url = ""
         self._preview_open_fallback = {"tele": False, "wide": False}
+        self._preview_stack_encoder_bounce = False
         self._set_preview_stack_mode(False)
         self._set_preview_status("")
         self.previewActiveChanged.emit()
@@ -9884,7 +9949,65 @@ class AppBackend(QObject):
     def _on_wide_failed(self, message: str) -> None:
         self._on_camera_preview_failed("wide", message)
 
+    def _switch_preview_to_photo(
+        self,
+        device_id: str,
+        token: int,
+        done: Callable[[bool, Any], None],
+    ) -> bool:
+        """Enter PHOTO once so a dead stacking encoder can send tele RTSP."""
+        if self._preview_stack_encoder_bounce:
+            return False
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            return False
+        self._preview_stack_encoder_bounce = True
+
+        def after(ok: bool, result: Any) -> None:
+            if token != self._preview_token:
+                return
+            if ok:
+                self._on_telemetry(device_id, {"shooting_mode": 1, "shooting_tech": 1, "photo_primed": False})
+            else:
+                self.add_log(
+                    "warning",
+                    f"Live view could not leave the stacking encoder: {result}",
+                    device_id,
+                )
+            done(ok, result)
+
+        worker.send("photo_mode", callback=after)
+        return True
+
+    def _recover_tele_stack_encoder(self, message: str) -> bool:
+        """Switch to PHOTO when tele RTSP is silent because the encoder is still JPEG."""
+        if "No frames received" not in str(message or ""):
+            return False
+        device_id = self._selected_device_id
+        if not preview_stack_encoder_blocks_tele(self._device_telemetry.get(device_id)):
+            return False
+        device = self._device_by_id(device_id)
+        worker = self._workers.get(device_id)
+        if device is None or not worker or not worker.connected or self._preview_stack_encoder_bounce:
+            return False
+        token = self._preview_token
+        tele_url = self._stream_url(device, Camera.TELE)
+        self.add_log(
+            "info",
+            "Tele camera is still on the stacking encoder — switching to PHOTO for live view",
+            device_id,
+        )
+
+        def done(ok: bool, _result: Any) -> None:
+            if token != self._preview_token or not ok or not tele_url:
+                return
+            self._open_secondary_stream(token, "tele", tele_url)
+
+        return self._switch_preview_to_photo(device_id, token, done)
+
     def _on_camera_preview_failed(self, camera: str, message: str) -> None:
+        if camera == "tele" and self._recover_tele_stack_encoder(message):
+            return
         if self._try_preview_open_fallback(camera):
             return
         other_playing = self._preview_wide_playing if camera == "tele" else self._preview_tele_playing

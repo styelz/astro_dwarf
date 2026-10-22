@@ -70,6 +70,8 @@ from astro_dwarf.qt_backend import (
     preview_should_restore_dso,
     preview_should_reuse_player,
     preview_should_skip_go_live,
+    preview_reopens_via_photo_mode,
+    preview_stack_encoder_blocks_tele,
 )
 from astro_dwarf.stream_preview import (
     LiveFrames,
@@ -472,6 +474,42 @@ def test_preview_restarts_rtsp_after_stacking_jpeg() -> None:
     _assert(
         not preview_should_restore_dso({"stream_type": "RTSP", "shooting_mode": 2}),
         "live DSO RTSP does not take the photo-mode detour",
+    )
+    _assert(
+        preview_reopens_via_photo_mode(leftover),
+        "idle DSO JPEG must enter PHOTO so tele RTSP starts",
+    )
+    _assert(
+        not preview_reopens_via_photo_mode({**leftover, "tracking_state": "running"}),
+        "tracking stays in DSO; photo mode would drop it",
+    )
+    _assert(
+        not preview_reopens_via_photo_mode({"stream_type": "RTSP", "shooting_mode": 2}),
+        "DSO that already has RTSP must not enter PHOTO",
+    )
+    _assert(
+        preview_reopens_via_photo_mode({"shooting_mode": 1, "tracking_state": "idle"}),
+        "idle PHOTO still uses the photo-mode camera open",
+    )
+    _assert(
+        not preview_reopens_via_photo_mode({"shooting_mode": 7}),
+        "panorama framing must not enter PHOTO",
+    )
+    _assert(
+        preview_stack_encoder_blocks_tele(leftover),
+        "idle tele JPEG blocks the RTSP picture",
+    )
+    _assert(
+        not preview_stack_encoder_blocks_tele({**leftover, "capture_state": "running"}),
+        "a running stack is allowed to stay on JPEG",
+    )
+    _assert(
+        not preview_stack_encoder_blocks_tele({**leftover, "tracking_state": "running"}),
+        "tracking is not a dead tele encoder",
+    )
+    _assert(
+        not preview_stack_encoder_blocks_tele({"stream_type": "RTSP", "shooting_mode": 2}),
+        "live tele RTSP is not blocked",
     )
 
 
