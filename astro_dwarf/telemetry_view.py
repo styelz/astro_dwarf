@@ -204,6 +204,28 @@ def _camera_params_entry(cameras: Any, index: int) -> dict[str, Any]:
     return {}
 
 
+def chosen_exposure_text(name: Any, *, mode: int | None, index: int | None = None) -> str | None:
+    """Shutter to show. Auto mode's zero index is not a chosen exposure.
+
+    Firmware reports index 0 as 1/10000 and gain 0 while Auto Parameters owns
+    the table. Writing or displaying that pair replaces the camera's last shutter.
+    A manual 1/10000 (mode 1) is a real setting and stays.
+    """
+    text = "" if name in (None, "", "None") else str(name).strip()
+    if mode == 0 and (index == 0 or text in {"1/10000", "0", ""}):
+        return None
+    return text or None
+
+
+def chosen_gain(value: int | None, *, mode: int | None) -> int | None:
+    """Gain to show. Auto mode's 0 is the unset table, not a chosen gain."""
+    if value is None:
+        return None
+    if mode == 0 and value == 0:
+        return None
+    return value
+
+
 def _exposure_text_from_params(exposure: dict[str, Any], model_id: str) -> str | None:
     name = exposure.get("name")
     if name not in (None, "", "None"):
@@ -335,6 +357,10 @@ def explicit_auto_parameter_state(result: Any) -> dict[str, bool]:
             consider(entry, index)
     for entry in data.get("shootingTechSettings") or []:
         consider(entry)
+    # Live DSO catalog: data.autoParams is [{cameraId, isAuto, modeId, techId}].
+    for key in ("autoParams", "auto_params"):
+        for entry in data.get(key) or []:
+            consider(entry)
     return found
 
 
@@ -377,6 +403,9 @@ def auto_parameter_cameras(result: Any) -> list[str]:
             consider(entry, index)
     for entry in data.get("shootingTechSettings") or []:
         consider(entry)
+    for key in ("autoParams", "auto_params"):
+        for entry in data.get(key) or []:
+            consider(entry)
     return found
 
 
@@ -394,7 +423,11 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
             return
         exposure = values.get("exposure")
         if isinstance(exposure, dict):
-            text = _exposure_text_from_params(exposure, model_id)
+            text = chosen_exposure_text(
+                _exposure_text_from_params(exposure, model_id),
+                mode=_as_int(exposure.get("mode", exposure.get("currentMode"))),
+                index=_as_int(exposure.get("value")),
+            )
         elif exposure not in (None, ""):
             text = str(exposure)
         else:
@@ -405,7 +438,10 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
                 changes[f"{prefix}exposure_text"] = text
         gain = values.get("gain")
         if isinstance(gain, dict):
-            gain_value = _as_int(gain.get("value"))
+            gain_value = chosen_gain(
+                _as_int(gain.get("value")),
+                mode=_as_int(gain.get("mode", gain.get("currentMode"))),
+            )
         else:
             gain_value = _as_int(gain)
         if gain_value is not None:
@@ -487,7 +523,11 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
                 changes[f"{prefix}stack_count"] = count
     catalog = result.get("data") if isinstance(result.get("data"), dict) else result
     if isinstance(catalog, dict) and (
-        catalog.get("cameraParams") or catalog.get("cameras") or catalog.get("shootingTechSettings")
+        catalog.get("cameraParams")
+        or catalog.get("cameras")
+        or catalog.get("shootingTechSettings")
+        or catalog.get("autoParams")
+        or catalog.get("auto_params")
     ):
         for camera, flag in explicit_auto_parameter_state(result).items():
             changes[f"auto_parameters_{camera}"] = flag

@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from astro_dwarf.device_worker import camera_param_unchanged, dispatch
+from astro_dwarf.device_worker import camera_param_unchanged, dispatch, photo_auto_sets_exposure_mode, photo_exposure_param_id
 from astro_dwarf.domain import (
     ControlSettings,
     control_settings_from_dict,
@@ -196,6 +196,21 @@ def test_camera_read_reports_auto_and_does_not_clear_it() -> None:
     )
     _assert(explicit.get("auto_parameters_tele") is False, explicit)
     _assert(explicit.get("auto_parameters_wide") is True, explicit)
+    live = camera_params_to_telemetry(
+        {
+            "mode_id": 2,
+            "autoParams": [
+                {"cameraId": 0, "isAuto": True, "modeId": 2, "techId": 2},
+                {"cameraId": 1, "isAuto": False, "modeId": 2, "techId": 2},
+            ],
+            "cameras": {
+                0: {"exposure": {"mode": 1, "name": "15"}, "gain": {"mode": 1, "value": 60}},
+                1: {"exposure": {"mode": 1, "name": "10"}, "gain": {"mode": 1, "value": 40}},
+            },
+        }
+    )
+    _assert(live.get("auto_parameters_tele") is True, live)
+    _assert(live.get("auto_parameters_wide") is False, live)
     cleared: list[str] = []
     original_clear = worker._clear_auto_params
     original_sdk = worker.sdk_call
@@ -211,6 +226,16 @@ def test_camera_read_reports_auto_and_does_not_clear_it() -> None:
     _assert(isinstance(result, dict) and "auto_params_cleared" not in result, result)
 
 
+def test_photo_auto_sets_the_shutter_mode() -> None:
+    _assert(photo_auto_sets_exposure_mode(1, True), "PHOTO auto owns the shutter")
+    _assert(not photo_auto_sets_exposure_mode(1, False), "turning PHOTO auto off restores the saved shutter")
+    _assert(not photo_auto_sets_exposure_mode(2, True), "DSO uses the Auto Parameters packet")
+    _assert(photo_exposure_param_id("tele", "Dwarf 3") == 0x0101000000000001, "tele shutter")
+    _assert(photo_exposure_param_id("wide", "Dwarf 3") == 0x0101100000000001, "wide shutter")
+    _assert(photo_exposure_param_id("wide", "Dwarf Mini") == 0x0101100000000001, "Mini wide shutter")
+    _assert(photo_exposure_param_id("wide", "Dwarf II") == 0x0A01100000000001, "DWARF II wide shutter")
+
+
 if __name__ == "__main__":
     test_stack_format_maps_legacy_indexes()
     test_stack_format_skip_uses_firmware_values()
@@ -221,4 +246,5 @@ if __name__ == "__main__":
     test_empty_mode_enables_auto_parameters()
     test_auto_telemetry_does_not_become_manual()
     test_camera_read_reports_auto_and_does_not_clear_it()
+    test_photo_auto_sets_the_shutter_mode()
     print("ok")

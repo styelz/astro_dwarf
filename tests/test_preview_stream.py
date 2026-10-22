@@ -10,6 +10,8 @@ if str(ROOT) not in sys.path:
 from astro_dwarf.device_worker import camera_param_unchanged, mosaic_pane_change_label, photo_jpeg_leftover
 from astro_dwarf.domain import choose_latest_astro_stack
 from astro_dwarf.qt_backend import (
+    control_connect_pushes_camera_settings,
+    control_restore_includes_camera_push,
     control_restore_should_set_auto_calibration,
     mosaic_capture_continues,
     device_mosaic_join_accepts_frames,
@@ -85,7 +87,7 @@ from astro_dwarf.stream_preview import (
     set_live_frames,
     set_mosaic_frames,
 )
-from astro_dwarf.telemetry_view import auto_parameter_cameras, camera_params_to_telemetry
+from astro_dwarf.telemetry_view import auto_parameter_cameras, camera_params_to_telemetry, chosen_exposure_text, chosen_gain
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -1755,6 +1757,92 @@ def test_stack_count_is_firmware_stack_count_not_a_local_cache() -> None:
     )
 
 
+def test_connect_reads_cameras_and_does_not_push_settings() -> None:
+    """Connect keeps the shutter and white balance already on each camera.
+
+    Auto mode's zero index is 1/10000 and gain 0. That pair is not a setting
+    to write or display. A manual 1/10000 on the other camera still comes through.
+    Switching PHOTO/DSO still loads a saved manual setup.
+    """
+    from astro_dwarf.device_telemetry import (
+        PARAM_ID_PHOTO_TELE_EXPOSURE,
+        PARAM_ID_PHOTO_TELE_GAIN,
+        PARAM_ID_PHOTO_WIDE_EXPOSURE,
+        PARAM_ID_PHOTO_WIDE_GAIN,
+        TelemetryTap,
+        _exposure_name,
+        normalize_client_status,
+    )
+    from astro_dwarf.domain import ControlSettings, shooting_mode_camera_steps
+
+    _assert(control_connect_pushes_camera_settings() is False, "connect must only read")
+    _assert(not control_restore_includes_camera_push("true"), "auto must not rewrite white balance")
+    _assert(control_restore_includes_camera_push("false"), "a manual restore still writes its shutter")
+    _assert(chosen_exposure_text("1/10000", mode=0, index=0) is None, "auto zero shutter")
+    _assert(chosen_gain(0, mode=0) is None, "auto zero gain")
+    _assert(chosen_exposure_text("1/10000", mode=1, index=0) == "1/10000", "manual fast shutter")
+    _assert(chosen_gain(0, mode=1) == 0, "manual gain 0")
+    _assert(chosen_exposure_text("15", mode=0, index=40) == "15", "a real auto shutter is kept")
+    _assert(chosen_gain(60, mode=0) == 60, "a real auto gain is kept")
+
+    catalog = camera_params_to_telemetry(
+        {
+            "mode_id": 1,
+            "cameras": {
+                0: {"exposure": {"mode": 0, "value": 0, "name": "1/10000"}, "gain": {"mode": 0, "value": 0}},
+                1: {"exposure": {"mode": 1, "value": 0, "name": "1/30"}, "gain": {"mode": 1, "value": 40}},
+            },
+        }
+    )
+    _assert("photo_exposure_text" not in catalog, catalog)
+    _assert("photo_gain" not in catalog, catalog)
+    _assert(catalog.get("auto_parameters_tele") is True, catalog)
+    _assert(catalog.get("photo_wide_exposure_text") == "1/30", catalog)
+    _assert(catalog.get("photo_wide_gain") == 40, catalog)
+    _assert("auto_parameters_wide" not in catalog, catalog)
+
+    snap = normalize_client_status(
+        {
+            "CameraParamsDwarf": {
+                str(PARAM_ID_PHOTO_TELE_EXPOSURE): {"value": 0, "mode": 0},
+                str(PARAM_ID_PHOTO_TELE_GAIN): {"value": 0, "mode": 0},
+                str(PARAM_ID_PHOTO_WIDE_EXPOSURE): {"value": 0, "mode": 1},
+                str(PARAM_ID_PHOTO_WIDE_GAIN): {"value": 40, "mode": 1},
+            }
+        }
+    )
+    _assert("photo_exposure_text" not in snap, snap)
+    _assert("photo_gain" not in snap, snap)
+    _assert(snap.get("exposure_auto") is True, snap)
+    _assert(snap.get("photo_wide_exposure_text") == _exposure_name(0, "3"), snap)
+    _assert(snap.get("photo_wide_gain") == 40, snap)
+
+    tap = TelemetryTap(lambda _data: None, model_id="3")
+    hidden = tap._exposure_param_changes(type("Msg", (), {"mode": 0})(), 0, "photo_exposure_text", mark_auto=True)
+    shown = tap._exposure_param_changes(type("Msg", (), {"mode": 1})(), 0, "astro_wide_exposure_text")
+    _assert("photo_exposure_text" not in hidden and hidden.get("exposure_auto") is True, hidden)
+    _assert(shown.get("astro_wide_exposure_text") == _exposure_name(0, "3"), shown)
+    _assert(tap._gain_param_changes(type("Msg", (), {"mode": 0})(), 0, "photo_gain") == {}, "auto gain 0")
+    _assert(tap._gain_param_changes(type("Msg", (), {"mode": 1})(), 0, "wide_gain") == {"wide_gain": 0}, "manual gain 0")
+
+    auto_steps = shooting_mode_camera_steps(
+        ControlSettings(auto_parameters="true"),
+        1,
+        include_wide=True,
+    )
+    _assert(
+        auto_steps == [("auto_parameters", "true", "tele"), ("auto_parameters", "true", "wide")],
+        auto_steps,
+    )
+    manual_steps = shooting_mode_camera_steps(
+        ControlSettings(auto_parameters="false", photo_exposure="1/30", photo_gain="40"),
+        1,
+        include_wide=False,
+    )
+    _assert(("exposure", "1/30", "tele") in manual_steps, manual_steps)
+    _assert(("gain", "40", "tele") in manual_steps, manual_steps)
+
+
 def test_auto_parameters_follow_the_camera_switch() -> None:
     manual = {
         "cameras": {
@@ -1821,6 +1909,7 @@ if __name__ == "__main__":
     test_restore_skips_unknown_auto_calibration()
     test_camera_params_map_ir_and_auto_calibration()
     test_stack_count_is_firmware_stack_count_not_a_local_cache()
+    test_connect_reads_cameras_and_does_not_push_settings()
     test_auto_parameters_follow_the_camera_switch()
     test_panorama_stamp_leaves_tele_in_previous_cell()
     test_panorama_stamp_ignores_one_by_one_grid()

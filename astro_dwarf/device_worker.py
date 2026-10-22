@@ -7048,12 +7048,45 @@ _AUTO_PARAM_TECH = {1: 1, 2: 2}
 _AUTO_PARAM_CAMERA = {"tele": 0, "wide": 1}
 
 
+def photo_exposure_param_id(camera: str, model: str) -> int:
+    """PHOTO shutter parameter. Wide on DWARF II uses its own id."""
+    from dwarf_python_api.lib import dwarf_utils
+
+    if camera == "wide" and model == "Dwarf II":
+        return int(dwarf_utils.PARAM_ID_PHOTO_WIDE_EXPOSURE_D2)
+    if camera == "wide":
+        return int(dwarf_utils.PARAM_ID_PHOTO_WIDE_EXPOSURE)
+    return int(dwarf_utils.PARAM_ID_PHOTO_TELE_EXPOSURE)
+
+
+def photo_auto_sets_exposure_mode(tech: int, enabled: bool) -> bool:
+    """PHOTO has no ``autoParams`` record. Mode 0 is that mode's auto shutter.
+
+    DSO uses ``ReqSetAutoParam`` (tech 2). The same packet in PHOTO leaves
+    the manual shutter where it is.
+    """
+    return int(tech) == 1 and bool(enabled)
+
+
+def _set_photo_exposure_auto(camera: str) -> bool:
+    """Put one PHOTO camera's shutter into firmware auto mode."""
+    from dwarf_python_api.proto import param_pb2
+
+    message = param_pb2.ReqSetExposure()
+    message.param_id = photo_exposure_param_id(camera, str(_device.get("model") or ""))
+    message.mode = 0
+    message.value = 0
+    log(f"Photo auto exposure ({camera})…", "sdk")
+    return send_without_response(message, 16700, 15) is not False
+
+
 def _set_auto_params(camera: str, tech: int, enabled: bool) -> bool:
     """Turn the mobile app's Auto Parameters switch on or off for one camera.
 
     CMD 16706 on the camera-params module. ``camera_type`` 0 is tele and 1 is
     wide, matching the temperature notify. ``is_auto`` false restores manual
-    exposure, gain, and stack count.
+    exposure, gain, and stack count. PHOTO also needs the shutter mode set to
+    auto, because that mode's catalog has no Auto Parameters record.
     """
     from dwarf_python_api.proto import param_pb2
 
@@ -7063,7 +7096,10 @@ def _set_auto_params(camera: str, tech: int, enabled: bool) -> bool:
     message.is_auto = bool(enabled)
     state = "on" if enabled else "off"
     log(f"Auto parameters {state} ({camera})…", "sdk")
-    return send_without_response(message, 16706, 15) is not False
+    ok = send_without_response(message, 16706, 15) is not False
+    if photo_auto_sets_exposure_mode(tech, enabled):
+        ok = _set_photo_exposure_auto(camera) and ok
+    return ok
 
 
 def _clear_auto_params(result: Any, mode_id: int) -> list[str]:

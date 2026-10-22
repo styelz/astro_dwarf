@@ -525,6 +525,25 @@ def _first_enum_field(data: bytes) -> int | None:
         return None
 
 
+def _reported_exposure(name: str, mode: int | None, index: int) -> str | None:
+    from .telemetry_view import chosen_exposure_text
+
+    return chosen_exposure_text(name, mode=mode, index=index)
+
+
+def _reported_gain(value: int, mode: int | None) -> int | None:
+    from .telemetry_view import chosen_gain
+
+    return chosen_gain(value, mode=mode)
+
+
+def _message_mode(message: Any) -> int | None:
+    try:
+        return int(message.mode)
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 def _exposure_name(index: Any, model_id: str) -> str:
     try:
         from dwarf_python_api.lib.data_utils import get_exposure_name_by_index
@@ -2009,26 +2028,51 @@ class TelemetryTap:
             "exposure_progress_at": time.monotonic(),
         }
 
+    def _exposure_param_changes(
+        self,
+        message: Any,
+        value: int,
+        key: str,
+        *,
+        mark_auto: bool = False,
+    ) -> dict[str, Any]:
+        mode = _message_mode(message)
+        text = _reported_exposure(_exposure_name(value, self._model_id), mode, int(value))
+        changes: dict[str, Any] = {}
+        if text:
+            changes[key] = text
+        if mark_auto:
+            changes["exposure_auto"] = mode == 0
+        return changes
+
+    def _gain_param_changes(self, message: Any, value: int, key: str) -> dict[str, Any]:
+        gain = _reported_gain(int(value), _message_mode(message))
+        if gain is None:
+            return {}
+        return {key: gain}
+
     def _decode_general_int_param(self, cmd: int, data: bytes) -> dict[str, Any]:
         message = self._parse("GeneralIntParam", data)
         param_id = int(message.param_id)
         value = int(message.value)
         if param_id in _PHOTO_EXPOSURE_PARAMS:
-            return {"photo_exposure_text": _exposure_name(value, self._model_id), "exposure_auto": int(message.mode) == 0}
+            return self._exposure_param_changes(
+                message, value, "photo_exposure_text", mark_auto=True
+            )
         if param_id in _ASTRO_EXPOSURE_PARAMS:
-            return {"astro_exposure_text": _exposure_name(value, self._model_id)}
+            return self._exposure_param_changes(message, value, "astro_exposure_text")
         if param_id in _PHOTO_GAIN_PARAMS:
-            return {"photo_gain": value}
+            return self._gain_param_changes(message, value, "photo_gain")
         if param_id in _ASTRO_GAIN_PARAMS:
-            return {"astro_gain": value}
+            return self._gain_param_changes(message, value, "astro_gain")
         if param_id in _PHOTO_WIDE_EXPOSURE_PARAMS:
-            return {"photo_wide_exposure_text": _exposure_name(value, self._model_id)}
+            return self._exposure_param_changes(message, value, "photo_wide_exposure_text")
         if param_id in _ASTRO_WIDE_EXPOSURE_PARAMS:
-            return {"astro_wide_exposure_text": _exposure_name(value, self._model_id)}
+            return self._exposure_param_changes(message, value, "astro_wide_exposure_text")
         if param_id in _PHOTO_WIDE_GAIN_PARAMS:
-            return {"photo_wide_gain": value}
+            return self._gain_param_changes(message, value, "photo_wide_gain")
         if param_id in _ASTRO_WIDE_GAIN_PARAMS:
-            return {"astro_wide_gain": value}
+            return self._gain_param_changes(message, value, "astro_wide_gain")
         return {}
 
     # ---------------------------------------------------- full device state
@@ -2330,23 +2374,44 @@ def normalize_client_status(full: dict[str, Any], model_id: str = "3") -> dict[s
                 value = int((entry or {}).get("value"))
             except (TypeError, ValueError, AttributeError):
                 continue
+            raw_mode = (entry or {}).get("mode", None)
+            try:
+                mode = int(raw_mode) if raw_mode is not None else None
+            except (TypeError, ValueError):
+                mode = None
             if param_id in _PHOTO_EXPOSURE_PARAMS:
-                put("photo_exposure_text", _exposure_name(value, model_id))
+                text = _reported_exposure(_exposure_name(value, model_id), mode, value)
+                if text:
+                    put("photo_exposure_text", text)
                 put("exposure_auto", int((entry or {}).get("mode", 1)) == 0)
             elif param_id in _ASTRO_EXPOSURE_PARAMS:
-                put("astro_exposure_text", _exposure_name(value, model_id))
+                text = _reported_exposure(_exposure_name(value, model_id), mode, value)
+                if text:
+                    put("astro_exposure_text", text)
             elif param_id in _PHOTO_GAIN_PARAMS:
-                put("photo_gain", value)
+                gain = _reported_gain(value, mode)
+                if gain is not None:
+                    put("photo_gain", gain)
             elif param_id in _ASTRO_GAIN_PARAMS:
-                put("astro_gain", value)
+                gain = _reported_gain(value, mode)
+                if gain is not None:
+                    put("astro_gain", gain)
             elif param_id in _PHOTO_WIDE_EXPOSURE_PARAMS:
-                put("photo_wide_exposure_text", _exposure_name(value, model_id))
+                text = _reported_exposure(_exposure_name(value, model_id), mode, value)
+                if text:
+                    put("photo_wide_exposure_text", text)
             elif param_id in _ASTRO_WIDE_EXPOSURE_PARAMS:
-                put("astro_wide_exposure_text", _exposure_name(value, model_id))
+                text = _reported_exposure(_exposure_name(value, model_id), mode, value)
+                if text:
+                    put("astro_wide_exposure_text", text)
             elif param_id in _PHOTO_WIDE_GAIN_PARAMS:
-                put("photo_wide_gain", value)
+                gain = _reported_gain(value, mode)
+                if gain is not None:
+                    put("photo_wide_gain", gain)
             elif param_id in _ASTRO_WIDE_GAIN_PARAMS:
-                put("astro_wide_gain", value)
+                gain = _reported_gain(value, mode)
+                if gain is not None:
+                    put("astro_wide_gain", gain)
     return changes
 
 

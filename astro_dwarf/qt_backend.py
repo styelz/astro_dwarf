@@ -2141,6 +2141,22 @@ def mosaic_goto_failed_result(result: Any) -> bool:
     return "goto" in text and "fail" in text
 
 
+def control_connect_pushes_camera_settings() -> bool:
+    """Connect reads each camera. It does not write saved exposure, gain, or white balance.
+
+    Pushing a saved white balance while Auto Parameters is on makes the firmware
+    reject the live streams until Auto Parameters is turned off and the head is
+    rebooted. Sending Auto Parameters again also resets the shutter to 1/10000
+    and the gain to 0.
+    """
+    return False
+
+
+def control_restore_includes_camera_push(auto_parameters: str) -> bool:
+    """A later restore may rewrite a manual setup. It must not while Auto Parameters is on."""
+    return str(auto_parameters or "").strip().lower() not in {"1", "true", "yes", "on"}
+
+
 def control_restore_should_set_auto_calibration(wanted: str, have: Any) -> bool:
     """True only when firmware has reported a different auto-calibration flag.
 
@@ -9934,7 +9950,10 @@ class AppBackend(QObject):
             self._schedule_camera_param_refresh(
                 device_id, delay_ms, keep_auto=self._saved_auto_parameters(device_id)
             )
-            self._schedule_control_restore(device_id, delay_ms + 400)
+            # The camera already has the last exposure, gain, and white balance
+            # for each lens. Writing them again on connect is what fails the streams.
+            if control_connect_pushes_camera_settings():
+                self._schedule_control_restore(device_id, delay_ms + 400)
         else:
             self._toast("Connection failed", "error", fail_text)
             self._disarm_scheduler_if_offline()
@@ -12004,13 +12023,15 @@ class AppBackend(QObject):
                     pass
             steps.append((name, text, camera or default_camera))
 
-        steps.extend(
-            shooting_mode_camera_steps(
-                settings,
-                wanted_mode,
-                include_wide=device.model != DeviceModel.DWARF_MINI,
+        push_camera = control_restore_includes_camera_push(settings.auto_parameters)
+        if push_camera:
+            steps.extend(
+                shooting_mode_camera_steps(
+                    settings,
+                    wanted_mode,
+                    include_wide=device.model != DeviceModel.DWARF_MINI,
+                )
             )
-        )
         add("stack_format", str(firmware_stack_format(settings.stack_format) or ""), telemetry.get("stack_format"))
         add("burst_count", settings.burst_count, telemetry.get("burst_count"))
         add("burst_interval", settings.burst_interval, telemetry.get("burst_interval"))
@@ -12022,16 +12043,17 @@ class AppBackend(QObject):
         ):
             have = telemetry.get("auto_calibration")
             add("auto_calibration", settings.auto_calibration, "true" if have is True else "false")
-        preset = wb_preset_name(settings.wide_wb_scene if wide else settings.wb_scene)
-        have_preset = wb_preset_name(telemetry.get(f"{prefix}wb_scene") if wide else telemetry.get("wb_scene"))
-        if preset and preset != have_preset:
-            steps.append(("wb_preset", preset, default_camera))
-        add("wb", settings.wide_wb_value if wide else settings.wb_value, telemetry.get(f"{prefix}wb_value") if wide else telemetry.get("wb_value"))
-        add("brightness", settings.wide_brightness if wide else settings.brightness, telemetry.get(f"{prefix}brightness") if wide else telemetry.get("brightness"))
-        add("contrast", settings.wide_contrast if wide else settings.contrast, telemetry.get(f"{prefix}contrast") if wide else telemetry.get("contrast"))
-        add("saturation", settings.wide_saturation if wide else settings.saturation, telemetry.get(f"{prefix}saturation") if wide else telemetry.get("saturation"))
-        add("hue", settings.wide_hue if wide else settings.hue, telemetry.get(f"{prefix}hue") if wide else telemetry.get("hue"))
-        add("sharpness", settings.wide_sharpness if wide else settings.sharpness, telemetry.get(f"{prefix}sharpness") if wide else telemetry.get("sharpness"))
+        if push_camera:
+            preset = wb_preset_name(settings.wide_wb_scene if wide else settings.wb_scene)
+            have_preset = wb_preset_name(telemetry.get(f"{prefix}wb_scene") if wide else telemetry.get("wb_scene"))
+            if preset and preset != have_preset:
+                steps.append(("wb_preset", preset, default_camera))
+            add("wb", settings.wide_wb_value if wide else settings.wb_value, telemetry.get(f"{prefix}wb_value") if wide else telemetry.get("wb_value"))
+            add("brightness", settings.wide_brightness if wide else settings.brightness, telemetry.get(f"{prefix}brightness") if wide else telemetry.get("brightness"))
+            add("contrast", settings.wide_contrast if wide else settings.contrast, telemetry.get(f"{prefix}contrast") if wide else telemetry.get("contrast"))
+            add("saturation", settings.wide_saturation if wide else settings.saturation, telemetry.get(f"{prefix}saturation") if wide else telemetry.get("saturation"))
+            add("hue", settings.wide_hue if wide else settings.hue, telemetry.get(f"{prefix}hue") if wide else telemetry.get("hue"))
+            add("sharpness", settings.wide_sharpness if wide else settings.sharpness, telemetry.get(f"{prefix}sharpness") if wide else telemetry.get("sharpness"))
         return steps
 
     def _restore_control_settings(self, device_id: str) -> None:
