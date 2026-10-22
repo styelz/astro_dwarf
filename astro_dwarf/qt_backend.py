@@ -663,6 +663,38 @@ _PHOTO_ACTIVITY_STATES = {
     "record_state": "record",
 }
 _STOP_ACTIONS = {"stop_session", "stop_astro"}
+# The stop command often returns while firmware is still finishing the
+# current exposure. The live-view notice stays up for these until that
+# task has actually settled or the completed card is on screen.
+_STOP_NOTICE_ACTIONS = {
+    "stop_session",
+    "stop_astro",
+    "stop_goto",
+    "stop_calibrate",
+    "stop_autofocus",
+    "stop_polar",
+    "stop_polar_position",
+    "burst_stop",
+    "record_stop",
+    "timelapse_stop",
+    "panorama_stop",
+    "panorama_frame_stop",
+}
+_CAPTURE_STOP_ACTIONS = {"stop_session", "stop_astro"}
+_STOP_NOTICE_LABELS = {
+    "stop_session": "Stopping session",
+    "stop_astro": "Stopping capture",
+    "stop_goto": "Stopping GOTO / tracking",
+    "stop_calibrate": "Stopping calibration",
+    "stop_autofocus": "Stopping autofocus",
+    "stop_polar": "Stopping polar alignment",
+    "stop_polar_position": "Stopping polar positioning",
+    "burst_stop": "Stopping burst",
+    "record_stop": "Stopping recording",
+    "timelapse_stop": "Stopping timelapse",
+    "panorama_stop": "Stopping panorama",
+    "panorama_frame_stop": "Stopping panorama framing",
+}
 _CAPTURE_PREVIEW_STEPS = {
     "Start capture",
     "Start wide capture",
@@ -705,6 +737,63 @@ _STACK_RESULT_LOADING = "Loading completed stack…"
 _STACK_RESULT_READY = (
     "Completed stack from the telescope. This is not live video. Dismiss it, or start live view."
 )
+
+
+def stop_notice_state_busy(operation: str, telemetry: dict[str, Any] | None) -> bool:
+    """True when firmware is still in the job this stop asked to end."""
+    snap = telemetry or {}
+    op = str(operation or "")
+
+    def busy(key: str, *extra: str) -> bool:
+        return str(snap.get(key) or "") in {"running", "stopping", *extra}
+
+    if op == "stop_goto":
+        return busy("goto_state", "solving") or str(snap.get("tracking_state") or "") == "running"
+    if op == "stop_calibrate":
+        return busy("calibration_state", "solving")
+    if op == "stop_autofocus":
+        return busy("autofocus_state")
+    if op in {"stop_polar", "stop_polar_position"}:
+        return busy("eq_state")
+    if op == "burst_stop":
+        return busy("burst_state")
+    if op == "record_stop":
+        return busy("record_state")
+    if op == "timelapse_stop":
+        return busy("timelapse_state")
+    if op == "panorama_stop":
+        return busy("panorama_state")
+    if op == "panorama_frame_stop":
+        return busy("panorama_framing_state")
+    return False
+
+
+def stop_notice_still_needed(
+    operation: str,
+    *,
+    pending: str = "",
+    finished_visible: bool = False,
+    telescope_settled: bool = False,
+    session_running: bool = False,
+    state_busy: bool = False,
+) -> bool:
+    """True while a stop notice should stay up.
+
+    A capture stop stays until the completed card is showing, or until the
+    telescope has reported the capture idle and the session is no longer
+    running. Other stops stay while their command is in flight or firmware
+    is still running or stopping that job.
+    """
+    op = str(operation or "")
+    if op not in _STOP_NOTICE_ACTIONS:
+        return False
+    if op in _CAPTURE_STOP_ACTIONS:
+        if finished_visible:
+            return False
+        if str(pending or "") in _CAPTURE_STOP_ACTIONS or session_running or not telescope_settled:
+            return True
+        return False
+    return str(pending or "") == op or bool(state_busy)
 
 
 def user_stopped_result(result: Any) -> bool:
@@ -997,10 +1086,11 @@ def preview_should_skip_go_live(
 ) -> bool:
     """True when GoLive would close the tele camera for no reason.
 
-    GoLive is for ending a capture. After GOTO/tracking the scope is already
-    in DSO with no stack running; GoLive then leaves DSO on and tele closed,
-    so wide comes back and tele stays dark until firmware recovers. A leftover
-    stacking JPEG in DSO reopens the cameras without GoLive or PHOTO.
+    GoLive ends a capture. After GOTO or tracking the scope is already in
+    DSO with RTSP up; GoLive then leaves tele closed. A leftover stacking
+    JPEG is the finished stack's encoder. Enter-camera alone stays on that
+    encoder and live view receives no frames. GoLive releases it, then the
+    cameras reopen in the same shooting mode.
     """
     snap = telemetry or {}
     if snap.get("capture_active") or snap.get("capture_state") == "running":
@@ -1010,6 +1100,8 @@ def preview_should_skip_go_live(
     mode = _shooting_mode_int(snap.get("shooting_mode"))
     if mode in {7, 8, 9, 10} and not snap.get("motors_unhomed"):
         return True
+    if preview_needs_rtsp_restart(snap) and snap.get("tracking_state") != "running":
+        return False
     return preview_should_preserve_shooting_mode(telemetry, persisted_mode)
 
 
@@ -1105,6 +1197,41 @@ def completion_view_ready(
     except (TypeError, ValueError):
         pending = 1
     return pending <= 0 and not stack_fetching and not enhance_pending
+
+
+def stitch_request(
+    *,
+    status: str,
+    source: str,
+    requested: str,
+    completion_ready: bool,
+    deferred: bool = False,
+) -> str:
+    """Return ``run``, ``defer``, or ``skip`` for one mosaic stitch request.
+
+    The last pane's still is still downloading when the mosaic finishes.
+    Stitching then, and again when that still lands, is the double stitch.
+    A click before the stills settle waits and runs once. A picture already
+    on screen is not stitched again.
+    """
+    state = str(status or "")
+    owner = str(source or "")
+    ask = str(requested or "")
+    if state == "working":
+        if deferred and ask == "held" and owner == "held" and completion_ready:
+            return "run"
+        return "skip"
+    if state == "done":
+        return "skip"
+    if ask == "auto":
+        if state == "failed":
+            return "skip"
+        return "run" if completion_ready else "skip"
+    if ask != "held":
+        return "skip"
+    if not completion_ready:
+        return "defer"
+    return "run"
 
 
 def mosaic_disconnected_sheet_should_hold(
@@ -2535,6 +2662,12 @@ class AppBackend(QObject):
         self._pending_reconnect_ids: set[str] = set()
         self._pending_actions: dict[str, str] = {}
         self._pending_details: dict[str, str] = {}
+        self._stop_notice: dict[str, str] = {}
+        self._stop_notice_detail: dict[str, str] = {}
+        self._stop_notice_target: dict[str, str] = {}
+        self._stop_notice_idle: set[str] = set()
+        self._stop_notice_had_result: dict[str, bool] = {}
+        self._stop_notice_refreshing = False
         self._device_activity: dict[str, str] = {}
         self._device_telemetry: dict[str, dict[str, Any]] = {}
         self._session_capture_base: dict[str, int] = {}
@@ -2772,6 +2905,7 @@ class AppBackend(QObject):
         self._stitch_warning = ""
         self._stitch_path = ""
         self._stitch_source = ""
+        self._stitch_deferred = False
         self._stitch_meta: dict[str, Any] = {}
         self._panorama_pool = QThreadPool(self)
         self._panorama_pool.setMaxThreadCount(1)
@@ -2879,6 +3013,7 @@ class AppBackend(QObject):
                 selected_offline = True
             self._pending_actions.pop(device_id, None)
             self._pending_details.pop(device_id, None)
+            self._clear_stop_notice(device_id)
             self._device_activity.pop(device_id, None)
             self._clear_center_tap(device_id)
             self._device_telemetry.pop(device_id, None)
@@ -3048,6 +3183,8 @@ class AppBackend(QObject):
                 "disconnecting": disconnecting,
                 "pending_action": self._pending_actions.get(device.id, ""),
                 "pending_detail": self._pending_details.get(device.id, ""),
+                "task_stopping": device.id in self._stop_notice,
+                "task_stopping_detail": self._stop_notice_detail.get(device.id, ""),
                 "activity": activity,
                 "activity_detail": telemetry["activity_detail"],
                 "activity_from_device": bool(telemetry["activity"]),
@@ -3219,6 +3356,7 @@ class AppBackend(QObject):
         if data.get("power_off"):
             self._drop_device_link(device_id)
             return
+        self._note_stop_capture_settled(device_id, data)
         self._track_session_capture(device_id, current)
         self._track_manual_capture(device_id, previous, current)
         self._maybe_resume_held_preview(device_id)
@@ -3227,6 +3365,7 @@ class AppBackend(QObject):
         self._remember_control_settings(device_id, current)
         self._sync_preview_for_capture(device_id, previous, current)
         self._sync_mosaic_preview(device_id, previous)
+        self._refresh_stop_notice(device_id)
         if (
             previous.get("tracking_target") != current.get("tracking_target")
             or previous.get("capture_target") != current.get("capture_target")
@@ -3340,6 +3479,8 @@ class AppBackend(QObject):
         if action:
             if current == action:
                 return
+            if action in _STOP_NOTICE_ACTIONS:
+                self._arm_stop_notice(device_id, action)
             self._pending_actions[device_id] = action
             if action not in _STOP_ACTIONS:
                 self._pending_details.pop(device_id, None)
@@ -3355,13 +3496,116 @@ class AppBackend(QObject):
         current = self._pending_details.get(device_id, "")
         if text:
             if current == text:
+                if (
+                    text.lower() != "stop complete"
+                    and device_id in self._stop_notice
+                    and self._stop_notice_detail.get(device_id) != text
+                ):
+                    self._stop_notice_detail[device_id] = text
+                    self._notify_devices()
                 return
             self._pending_details[device_id] = text
+            if text.lower() != "stop complete" and device_id in self._stop_notice:
+                self._stop_notice_detail[device_id] = text
         elif current:
             self._pending_details.pop(device_id, None)
         else:
             return
         self._notify_devices()
+
+    def _arm_stop_notice(self, device_id: str, operation: str) -> None:
+        """Remember a stop after its command returns, until the task is finished."""
+        if operation not in _STOP_NOTICE_ACTIONS:
+            return
+        self._stop_notice[device_id] = operation
+        self._stop_notice_idle.discard(device_id)
+        detail = str(self._pending_details.get(device_id) or "").strip()
+        if not detail or detail.lower() == "stop complete":
+            detail = _STOP_NOTICE_LABELS.get(operation, "Stopping")
+        self._stop_notice_detail[device_id] = detail
+        self._stop_notice_had_result[device_id] = bool(
+            device_id == self._selected_device_id and self._preview_result
+        )
+        telemetry = self._device_telemetry.get(device_id) or {}
+        target = str(telemetry.get("capture_target") or telemetry.get("tracking_target") or "").strip()
+        session_id = self._active_sessions.get(device_id)
+        session = self.store.sessions.get(session_id) if session_id else None
+        if session is not None and session.target.name:
+            target = target or session.target.name
+        self._stop_notice_target[device_id] = target
+
+    def _clear_stop_notice(self, device_id: str) -> None:
+        had = device_id in self._stop_notice
+        self._stop_notice.pop(device_id, None)
+        self._stop_notice_detail.pop(device_id, None)
+        self._stop_notice_target.pop(device_id, None)
+        self._stop_notice_idle.discard(device_id)
+        self._stop_notice_had_result.pop(device_id, None)
+        if had:
+            self._notify_devices()
+
+    def _stop_result_is_fresh(self, device_id: str) -> bool:
+        return bool(
+            device_id == self._selected_device_id
+            and self._preview_result
+            and not self._stop_notice_had_result.get(device_id)
+        )
+
+    def _stop_notice_needed(self, device_id: str, operation: str) -> bool:
+        session_running = bool(self._active_sessions.get(device_id)) or device_id in self._pending_session_finish
+        return stop_notice_still_needed(
+            operation,
+            pending=str(self._pending_actions.get(device_id) or ""),
+            finished_visible=self._stop_result_is_fresh(device_id),
+            telescope_settled=device_id in self._stop_notice_idle,
+            session_running=session_running,
+            state_busy=stop_notice_state_busy(operation, self._device_telemetry.get(device_id)),
+        )
+
+    def _note_stop_capture_settled(self, device_id: str, data: dict[str, Any]) -> None:
+        """A capture packet after Stop is the telescope, not the app clearing its counters."""
+        if self._stop_notice.get(device_id) not in _CAPTURE_STOP_ACTIONS:
+            return
+        if "capture_state" not in data and "capture_active" not in data:
+            return
+        current = self._device_telemetry.get(device_id) or {}
+        busy = bool(
+            current.get("capture_active")
+            or str(current.get("capture_state") or "") in {"running", "stopping"}
+        )
+        if busy:
+            self._stop_notice_idle.discard(device_id)
+        else:
+            self._stop_notice_idle.add(device_id)
+
+    def _publish_stopped_preview(self, device_id: str) -> None:
+        """Show the stopped-session card once the telescope has finished the capture."""
+        if device_id != self._selected_device_id or self._stop_result_is_fresh(device_id):
+            return
+        target = str(self._stop_notice_target.get(device_id) or "").strip()
+        title, detail = self._stacking_result_copy(False, True, target or "this target")
+        self._freeze_stacking_preview_result(
+            device_id,
+            title=title,
+            detail=detail,
+            target=target,
+            camera=self._preview_camera_name(device_id),
+            since=self._stack_result_since_for(device_id),
+        )
+
+    def _refresh_stop_notice(self, device_id: str) -> None:
+        if self._stop_notice_refreshing:
+            return
+        operation = self._stop_notice.get(device_id, "")
+        if not operation or self._stop_notice_needed(device_id, operation):
+            return
+        self._stop_notice_refreshing = True
+        try:
+            if operation in _CAPTURE_STOP_ACTIONS and not self._stop_result_is_fresh(device_id):
+                self._publish_stopped_preview(device_id)
+            self._clear_stop_notice(device_id)
+        finally:
+            self._stop_notice_refreshing = False
 
     def _on_worker_status(self, device_id: str, kind: str, step: str) -> None:
         if kind != "stop" or self._pending_actions.get(device_id) not in _STOP_ACTIONS:
@@ -3415,6 +3659,8 @@ class AppBackend(QObject):
                 self._set_pending_action(device_id, "")
             if callback:
                 callback(ok, result)
+            if action in _STOP_NOTICE_ACTIONS:
+                self._refresh_stop_notice(device_id)
 
         return done
 
@@ -7029,7 +7275,22 @@ class AppBackend(QObject):
 
     @Slot()
     def stitchHeldMosaic(self) -> None:
-        self._stitch_open_sheet("held")
+        decision = stitch_request(
+            status=self._stitch_status,
+            source=self._stitch_source,
+            requested="held",
+            completion_ready=self._completion_view_ready(),
+            deferred=self._stitch_deferred,
+        )
+        if decision == "skip":
+            return
+        if decision == "defer":
+            self._stitch_deferred = True
+            self._set_stitch("working", "Waiting for pane stills", source="held")
+            return
+        continuing = bool(self._stitch_deferred and self._stitch_status == "working")
+        self._stitch_deferred = False
+        self._stitch_open_sheet("held", continue_deferred=continuing)
 
     def _completion_view_ready(self) -> bool:
         enhance_pending = bool(self._mosaic_enhance_inflight) or any(self._preview_enhance_inflight.values())
@@ -7040,14 +7301,25 @@ class AppBackend(QObject):
         )
 
     def _retry_completion_view(self) -> None:
+        if self._stitch_deferred:
+            decision = stitch_request(
+                status=self._stitch_status,
+                source=self._stitch_source,
+                requested="held",
+                completion_ready=self._completion_view_ready(),
+                deferred=True,
+            )
+            if decision != "run":
+                return
+            self._stitch_deferred = False
+            self._stitch_open_sheet("held", continue_deferred=True)
+            return
         device_id = str(self._selected_device_id or "")
         if device_id:
             self._maybe_auto_stitch_sheet(device_id)
 
     def _maybe_auto_stitch_sheet(self, device_id: str, session: Session | None = None) -> None:
         """Show the finished mosaic once the pane stills match the contact sheet."""
-        if self._stitch_status == "working" and self._stitch_source != "auto":
-            return
         if str(device_id or "") != str(self._selected_device_id or ""):
             return
         if self._mosaic_result_dismissed:
@@ -7069,18 +7341,24 @@ class AppBackend(QObject):
             return
         if not custom_mosaic_completed(found, self.store.sessions.all()):
             return
-        if not self._completion_view_ready():
+        if stitch_request(
+            status=self._stitch_status,
+            source=self._stitch_source,
+            requested="auto",
+            completion_ready=self._completion_view_ready(),
+            deferred=self._stitch_deferred,
+        ) != "run":
             return
         self._stitch_open_sheet("auto", quiet=True)
 
-    def _stitch_open_sheet(self, source: str, quiet: bool = False) -> None:
+    def _stitch_open_sheet(self, source: str, quiet: bool = False, *, continue_deferred: bool = False) -> None:
         def fail(detail: str) -> None:
             if not quiet:
                 self._set_stitch("failed", detail, source=source)
 
-        if self._stitch_status == "working" and not (
-            self._stitch_source == "auto" and source in {"auto", "held"}
-        ):
+        if self._stitch_status == "working" and not continue_deferred:
+            return
+        if self._stitch_status == "done" and source == "auto":
             return
         device_id = str(self._selected_device_id or "")
         live = self._live_mosaic.get(device_id) or {}
@@ -7283,6 +7561,7 @@ class AppBackend(QObject):
 
     @Slot()
     def dismissStitch(self) -> None:
+        self._stitch_deferred = False
         if self._stitch_status == "done" and self._stitch_path:
             self._persist_finished_stitch(self._stitch_path)
         self._stitch_token += 1
@@ -8629,6 +8908,7 @@ class AppBackend(QObject):
     def _device_is_stopping(self, device_id: str) -> bool:
         return (
             self._pending_actions.get(device_id) in _STOP_ACTIONS
+            or device_id in self._stop_notice
             or device_id in self._disconnecting_ids
             or device_id in self._cancel_connect_ids
         )
@@ -10084,6 +10364,7 @@ class AppBackend(QObject):
         self._set_activity(device_id, "")
         self._pending_actions.pop(device_id, None)
         self._pending_details.pop(device_id, None)
+        self._clear_stop_notice(device_id)
         self._device_telemetry.pop(device_id, None)
         self._telemetry_updated.pop(device_id, None)
         self._hold_session_capture.discard(device_id)
@@ -11042,6 +11323,9 @@ class AppBackend(QObject):
         worker = self._workers.get(device_id)
         if not worker or not worker.connected:
             return
+        if device_id in self._stop_notice and operation not in _STOP_NOTICE_ACTIONS:
+            self._toast("Wait until the stop finishes", "warning")
+            return
         device = self._device_by_id(device_id)
         if operation == "sky_track" and (not device or not device.location_configured):
             message = "Set an observing location in Settings before starting tracking"
@@ -11773,6 +12057,7 @@ class AppBackend(QObject):
         self._active_sessions.pop(device_id, None)
         self._pending_actions.pop(device_id, None)
         self._pending_details.pop(device_id, None)
+        self._clear_stop_notice(device_id)
         self._device_activity.pop(device_id, None)
         self._device_telemetry.pop(device_id, None)
         self._telemetry_updated.pop(device_id, None)
@@ -16784,6 +17069,8 @@ class AppBackend(QObject):
             self._emit_sessions_changed()
             if restore_preview:
                 self._restore_held_preview(device_id)
+            if device_id:
+                self._refresh_stop_notice(device_id)
             return
         if session.status != SessionStatus.RUNNING:
             # Already finalised (for example the worker died and reported it first).
@@ -16791,6 +17078,7 @@ class AppBackend(QObject):
             self._emit_sessions_changed()
             if restore_preview:
                 self._restore_held_preview(device_id)
+            self._refresh_stop_notice(session.device_id)
             return
         ended = datetime.now(timezone.utc)
         started = datetime.fromisoformat(session.actual_started_at) if session.actual_started_at else ended
@@ -16891,6 +17179,7 @@ class AppBackend(QObject):
             self._maybe_auto_stitch_sheet(final.device_id, final)
         self._notify_devices()
         self._sync_media_lock()
+        self._refresh_stop_notice(final.device_id)
         if restore_preview and not self._preview_result:
             self._restore_held_preview(final.device_id)
 

@@ -47,6 +47,7 @@ from astro_dwarf.qt_backend import (
     terminal_preview_status,
     mosaic_retarget_keeps_joined_frames,
     completion_view_ready,
+    stitch_request,
     mosaic_result_holds_sheet,
     mosaic_result_pane,
     mosaic_result_should_drop_sheet,
@@ -421,8 +422,12 @@ def test_preview_restarts_rtsp_after_stacking_jpeg() -> None:
         "DSO leftover JPEG must stay in DSO while the cameras reopen",
     )
     _assert(
-        preview_should_skip_go_live(leftover),
-        "DSO leftover JPEG must not send GoLive",
+        preview_should_skip_go_live({**leftover, "tracking_state": "running"}),
+        "tracking stays up; GoLive is only for an idle leftover JPEG",
+    )
+    _assert(
+        not preview_should_skip_go_live(leftover),
+        "DSO leftover JPEG needs GoLive before the cameras reopen",
     )
     _assert(
         not preview_should_preserve_shooting_mode(photo_leftover),
@@ -1319,6 +1324,65 @@ def test_sky_mosaic_urls_backfill_from_stored_stills() -> None:
     _assert(all(value.startswith("data:image/jpeg;base64,") for value in urls.values()), urls)
 
 
+def test_stitch_runs_once_when_the_pane_stills_settle() -> None:
+    # A click as soon as the panes finish used to stitch the live frames,
+    # show that picture, then stitch again when the album still landed.
+    _assert(
+        stitch_request(status="", source="", requested="held", completion_ready=False) == "defer",
+        "an early STITCH click waits for the pane stills",
+    )
+    _assert(
+        stitch_request(status="", source="", requested="auto", completion_ready=False) == "skip",
+        "the automatic stitch also waits for those stills",
+    )
+    _assert(
+        stitch_request(
+            status="working", source="held", requested="held", completion_ready=True, deferred=True
+        )
+        == "run",
+        "the waiting click stitches once the stills have landed",
+    )
+    _assert(
+        stitch_request(
+            status="working", source="held", requested="auto", completion_ready=True, deferred=True
+        )
+        == "skip",
+        "the automatic pass must not start a second stitch after that click",
+    )
+    _assert(
+        stitch_request(status="done", source="held", requested="auto", completion_ready=True) == "skip",
+        "a stitch already on screen is not run again",
+    )
+    _assert(
+        stitch_request(status="done", source="auto", requested="auto", completion_ready=True) == "skip",
+        "a finished automatic stitch is not repeated when enhance completes",
+    )
+    _assert(
+        stitch_request(status="working", source="auto", requested="auto", completion_ready=True) == "skip",
+        "an automatic stitch already matching stars is left to finish",
+    )
+    _assert(
+        stitch_request(status="working", source="auto", requested="held", completion_ready=True) == "skip",
+        "a click during the automatic stitch does not start another",
+    )
+    _assert(
+        stitch_request(status="", source="", requested="held", completion_ready=True) == "run",
+        "STITCH runs immediately once the pane stills have settled",
+    )
+    _assert(
+        stitch_request(status="", source="", requested="auto", completion_ready=True) == "run",
+        "the automatic stitch still runs once the sheet has settled",
+    )
+    _assert(
+        stitch_request(status="failed", source="auto", requested="held", completion_ready=True) == "run",
+        "a failed stitch can be tried again from the button",
+    )
+    _assert(
+        stitch_request(status="failed", source="held", requested="auto", completion_ready=True) == "skip",
+        "a failed stitch waits for the button instead of looping",
+    )
+
+
 def test_completion_view_waits_until_the_pane_stills_settle() -> None:
     # Session complete still has the stack fetch in flight. That early sheet
     # is the broken picture. The STITCH button runs after the stills land.
@@ -1895,6 +1959,7 @@ if __name__ == "__main__":
     test_new_mosaic_drops_previous_stills_and_keeps_the_camera()
     test_mosaic_frames_keep_completed_stills()
     test_sky_mosaic_urls_backfill_from_stored_stills()
+    test_stitch_runs_once_when_the_pane_stills_settle()
     test_completion_view_waits_until_the_pane_stills_settle()
     test_mosaic_result_keeps_contact_sheet_until_dismissed()
     test_mosaic_dismiss_drops_leftover_sheet_and_sky_stills()

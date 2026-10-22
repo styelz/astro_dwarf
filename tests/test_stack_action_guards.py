@@ -20,6 +20,8 @@ from astro_dwarf.qt_backend import (
     preview_should_skip_go_live,
     session_finish_plan,
     stacking_blocks_action,
+    stop_notice_state_busy,
+    stop_notice_still_needed,
     stacking_preview_result_copy,
     tracking_blocks_action,
     user_stopped_result,
@@ -271,6 +273,74 @@ def test_mosaic_stack_stop_does_not_complete_or_chain() -> None:
     _assert(done_title == "SESSION COMPLETE", "a finished session still says complete")
 
 
+def test_stop_notice_stays_until_the_task_is_finished() -> None:
+    # The stop command returns before a mosaic exposure has wound down.
+    _assert(
+        stop_notice_still_needed(
+            "stop_astro",
+            pending="",
+            telescope_settled=False,
+            session_running=False,
+        ),
+        "a capture stop stays up after the command returns",
+    )
+    _assert(
+        stop_notice_still_needed(
+            "stop_session",
+            pending="stop_session",
+            telescope_settled=True,
+            session_running=True,
+        ),
+        "a session stop stays up while that session is still running",
+    )
+    _assert(
+        not stop_notice_still_needed(
+            "stop_astro",
+            finished_visible=True,
+            telescope_settled=False,
+            session_running=True,
+        ),
+        "the stopping notice gives way once the completed card is showing",
+    )
+    _assert(
+        not stop_notice_still_needed(
+            "stop_astro",
+            telescope_settled=True,
+            session_running=False,
+        ),
+        "an idle telescope with no running session can show the completed card",
+    )
+    # Neighbor: GOTO and burst stops follow the same rule on their own state.
+    _assert(
+        stop_notice_state_busy("stop_goto", {"goto_state": "stopping"}),
+        "GOTO stop is still busy while firmware is stopping",
+    )
+    _assert(
+        stop_notice_still_needed("stop_goto", pending="", state_busy=True),
+        "GOTO stop stays up after its command returns",
+    )
+    _assert(
+        not stop_notice_still_needed("stop_goto", pending="", state_busy=False),
+        "GOTO stop clears once the slew is idle",
+    )
+    _assert(
+        stop_notice_state_busy("burst_stop", {"burst_state": "running"}),
+        "a burst stop is busy while the burst is running",
+    )
+    _assert(
+        not stop_notice_state_busy("burst_stop", {"burst_state": "idle"}),
+        "a burst stop is finished once the burst is idle",
+    )
+    _assert(
+        stop_notice_state_busy("stop_calibrate", {"calibration_state": "solving"}),
+        "calibration stop stays through the plate solve",
+    )
+    _assert(
+        not stop_notice_still_needed("stack", pending="stack"),
+        "a start command is not a stop notice",
+    )
+
+
 def test_photo_mode_auto_enters_dso_for_tracking() -> None:
     _assert(command_required_shooting_mode("sky_track") == 2, "sky track needs DSO")
     _assert(command_required_shooting_mode("track") == 2, "track needs DSO")
@@ -297,5 +367,6 @@ if __name__ == "__main__":
     test_missing_darks_hold_is_skipped()
     test_reconnect_joins_live_mode_and_drops_a_restart()
     test_mosaic_stack_stop_does_not_complete_or_chain()
+    test_stop_notice_stays_until_the_task_is_finished()
     test_photo_mode_auto_enters_dso_for_tracking()
     print("ok")

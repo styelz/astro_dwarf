@@ -197,7 +197,8 @@ ApplicationWindow {
         || scopeActivity === "imaging"
         || scopePending === "stack"
     readonly property bool scopeOccupied: scopeImaging || scopePending !== "" || scopeActivity !== "" || previewStarting || scopeStacking
-    readonly property bool scopeStopping: scopePending === "stop_session" || scopePending === "stop_astro"
+    readonly property bool scopeStopping: scopePending === "stop_session" || scopePending === "stop_astro" || !!(backend.selectedDevice && backend.selectedDevice.task_stopping)
+    readonly property string scopeStopDetail: scopePendingDetail || String((backend.selectedDevice && backend.selectedDevice.task_stopping_detail) || "")
     readonly property bool cameraLiveEnabled: commandEnabled("set_exposure")
     readonly property bool motionEnabled: commandEnabled("joystick")
 
@@ -254,16 +255,25 @@ ApplicationWindow {
         }
         return ""
     }
+    function deviceTaskStopping(deviceId) {
+        const devices = backend.devices
+        const id = String(deviceId || "")
+        for (let i = 0; i < devices.length; i++) {
+            if (devices[i].id === id)
+                return !!devices[i].task_stopping
+        }
+        return false
+    }
     function sessionStopping(session) {
         if (!session || session.status !== "running")
             return false
         const pending = root.devicePending(session.device_id)
-        return pending === "stop_session" || pending === "stop_astro"
+        return pending === "stop_session" || pending === "stop_astro" || root.deviceTaskStopping(session.device_id)
     }
     function scopeActivityText() {
         backend.clockText
         if (root.scopeStopping)
-            return (root.scopePendingDetail || "Stopping").toUpperCase()
+            return (root.scopeStopDetail || "Stopping").toUpperCase()
         if (root.scopePending)
             return "SENDING · " + root.scopePending.replace(/_/g, " ").toUpperCase()
         const label = Util.activityLabel(root.scopeActivity)
@@ -324,10 +334,12 @@ ApplicationWindow {
             panorama_frame_start: "panorama_frame_stop"
         }
         if (op === "cancel_prime")
-            return true
+            return !root.scopeStopping
         if (op === "stop_session")
             return backend.currentSession.status === "running" && !root.scopeStopping
         const isStop = op === "stop_goto" || op.indexOf("stop_") === 0 || op.slice(-5) === "_stop"
+        if (root.scopeStopping && op !== "stop_session" && !isStop)
+            return false
         if (isStop) {
             if (op === "stop_goto" && root.scopeStacking)
                 return false

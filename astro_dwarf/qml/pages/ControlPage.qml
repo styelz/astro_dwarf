@@ -318,7 +318,7 @@ Item {
                     model: [
                         {label: "ENDPOINT", value: backend.selectedDevice.ip_address || "—", tone: root.scopeOnline ? Theme.textPrimary : Theme.textSecondary},
                         {label: "SCHEDULER", value: backend.schedulerEnabled ? root.nextSessionCountdown() : "Disarmed", tone: backend.schedulerEnabled ? Theme.success : Theme.textSecondary},
-                        {label: "PREVIEW", value: root.scopeStopping ? (root.scopePendingDetail || "Stopping") : (backend.previewResult ? "Completed stack" : (backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped"))), tone: root.scopeStopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary)))},
+                        {label: "PREVIEW", value: root.scopeStopping ? (root.scopeStopDetail || "Stopping") : (backend.previewResult ? "Completed stack" : (backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped"))), tone: root.scopeStopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary)))},
                         {label: "SESSION", value: Util.sessionStepLabel(backend.currentSession, backend.localNow.epoch_ms) || backend.currentSession.current_step || Util.idleScheduleLabel(backend.upcomingSessions, backend.schedulerEnabled, backend.localNow.epoch_ms), tone: backend.currentSession.id ? Theme.accent : Theme.textSecondary},
                         {label: "REMAINING", value: backend.currentSession.id ? Util.durationLabel(Number(backend.currentSession.planned_duration_seconds || 0) * (1 - backend.sessionProgress)) : "—", tone: Theme.textPrimary},
                         {label: "TIMEZONE", value: backend.selectedDevice.timezone_name || "UTC", tone: Theme.textPrimary},
@@ -1409,7 +1409,7 @@ Item {
                     }
                     readonly property string statusText: {
                         if (root.scopeStopping)
-                            return root.scopePendingDetail || "Stopping telescope activity"
+                            return root.scopeStopDetail || "Stopping telescope activity"
                         if (backend.previewHeld)
                             return backend.previewHoldMessage
                         if (backend.previewStatus)
@@ -2638,7 +2638,7 @@ Item {
                                 width: parent.width
                                 wrapMode: Text.Wrap
                                 horizontalAlignment: Text.AlignHCenter
-                                text: "This can take a few seconds while capture, GOTO and motors wind down."
+                                text: "Stopping stays on screen until this task shows completed. The current exposure can finish first."
                                 color: Theme.textSecondary
                                 font.pixelSize: Theme.fontPx(11)
                             }
