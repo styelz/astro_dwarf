@@ -26,6 +26,10 @@ from astro_dwarf.test_harness import (
     should_skip_names,
     should_skip_object,
     walk_objects,
+    _preview_host_flag,
+    _preview_main_camera,
+    _preview_pane_camera,
+    _preview_views_swapped,
 )
 
 
@@ -431,6 +435,40 @@ def test_connect_by_ip_helper_on_harness() -> None:
     backend.connectDevice.assert_called_with("lab")
 
 
+class _Node:
+    def __init__(self, name: str, props: dict | None = None, children: list | None = None) -> None:
+        self._name = name
+        self._props = props or {}
+        self._children = children or []
+
+    def objectName(self) -> str:
+        return self._name
+
+    def property(self, name: str):
+        return self._props.get(name)
+
+    def children(self) -> list:
+        return self._children
+
+
+def test_preview_layout_readers():
+    pane = _Node("livePane", {"camera": "wide"})
+    host = _Node(
+        "previewHost",
+        {"displayWide": True, "viewsSwapped": True, "pipEnabled": False},
+        [pane],
+    )
+    window = _Node("window", {}, [host])
+    _assert(_preview_main_camera(window) == "wide", "main camera follows displayWide")
+    _assert(_preview_views_swapped(window) is True, "swap flag")
+    _assert(_preview_pane_camera(window) == "wide", "live pane camera")
+    _assert(_preview_host_flag(window, "pipEnabled") is False, "pip hidden")
+    host._props["displayWide"] = False
+    _assert(_preview_main_camera(window) == "tele", "tele main when displayWide is off")
+    _assert(_preview_main_camera(_Node("window")) == "tele", "missing host is tele")
+    _assert(_preview_pane_camera(_Node("window")) == "", "missing pane is blank")
+
+
 if __name__ == "__main__":
     test_harness_enabled()
     test_device_ready_ignores_preview()
@@ -444,4 +482,5 @@ if __name__ == "__main__":
     test_click_uses_pad_hook_then_tree()
     test_route_lookup_keeps_each_parser()
     test_connect_by_ip_helper_on_harness()
+    test_preview_layout_readers()
     print("test_test_harness ok")

@@ -427,6 +427,28 @@ def find_named(root: Any, name: str) -> Any | None:
     return None
 
 
+def _preview_host_flag(window: Any, name: str) -> bool:
+    host = find_named(window, "previewHost")
+    if host is None:
+        return False
+    return bool(_property(host, name, False))
+
+
+def _preview_main_camera(window: Any) -> str:
+    return "wide" if _preview_host_flag(window, "displayWide") else "tele"
+
+
+def _preview_views_swapped(window: Any) -> bool:
+    return _preview_host_flag(window, "viewsSwapped")
+
+
+def _preview_pane_camera(window: Any) -> str:
+    pane = find_named(window, "livePane")
+    if pane is None:
+        return ""
+    return str(_property(pane, "camera", "") or "")
+
+
 def _item_window_pos(obj: Any, nx: float = 0.5, ny: float = 0.5) -> Any:
     from PySide6.QtCore import QPoint, QPointF
 
@@ -821,6 +843,11 @@ class TestHarness:
                 "playing": bool(getattr(backend, "previewPlaying", False)),
                 "tele": bool(getattr(backend, "previewTelePlaying", False)),
                 "wide": bool(getattr(backend, "previewWidePlaying", False)),
+                "camera": str(device.get("camera") or "tele"),
+                "main": _preview_main_camera(self.window),
+                "swapped": _preview_views_swapped(self.window),
+                "pane": _preview_pane_camera(self.window),
+                "pip": _preview_host_flag(self.window, "pipEnabled"),
                 "status": str(getattr(backend, "previewStatus", "") or ""),
                 "tele_match_nx": (device.get("telemetry") or {}).get("tele_match_nx"),
                 "tele_match_ny": (device.get("telemetry") or {}).get("tele_match_ny"),

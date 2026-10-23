@@ -851,6 +851,7 @@ Item {
                         Layout.fillWidth: true
                         spacing: Theme.s1
                         HudButton {
+                            objectName: "liveCameraTele"
                             text: "TELE"
                             Layout.fillWidth: true
                             enabled: !root.scopeOccupied && !root.scopeLinking
@@ -859,9 +860,10 @@ Item {
                             accessibleName: "Live camera: Tele"
                             tooltip: "Telephoto lens for capture and settings.\nSWAP only rearranges the live panes; it does not change this."
                                 + lensGroup.tooltipSuffix
-                            onClicked: if (!cameraPanel.teleSelected) backend.setLiveCamera(backend.selectedDeviceId, "tele")
+                            onClicked: previewHost.showLens("tele")
                         }
                         HudButton {
+                            objectName: "liveCameraWide"
                             text: "WIDE"
                             Layout.fillWidth: true
                             visible: !cameraPanel.miniBody
@@ -871,7 +873,7 @@ Item {
                             accessibleName: "Live camera: Wide"
                             tooltip: "Wide-angle lens for capture and settings.\nSWAP only rearranges the live panes; it does not change this.\nWide is fixed-focus; focus controls apply to Tele only."
                                 + lensGroup.tooltipSuffix
-                            onClicked: if (cameraPanel.teleSelected) backend.setLiveCamera(backend.selectedDeviceId, "wide")
+                            onClicked: previewHost.showLens("wide")
                         }
                     }
                 }
@@ -1418,7 +1420,12 @@ Item {
                             return backend.videoUrl || "Telescope connected — start the stream"
                         return "Connect a telescope to start the stream"
                     }
-                    property bool mainWide: String((backend.selectedDevice && backend.selectedDevice.camera) || "tele") === "wide"
+                    // Selected lens. Keep this binding: assigning it from SWAP
+                    // drops the link, and later TELE/WIDE clicks change the
+                    // camera without moving the picture.
+                    readonly property bool cameraWide: String((backend.selectedDevice && backend.selectedDevice.camera) || "tele") === "wide"
+                    property bool viewsSwapped: false
+                    onCameraWideChanged: viewsSwapped = false
                     property bool pipEnabled: true
                     property bool pipRestoreAfterPano: false
                     // The framing canvas already shows the scanned wide image full-frame,
@@ -1443,7 +1450,7 @@ Item {
                     onPanoramaShootingChanged: {
                         if (panoramaShooting) {
                             panoramaKeep = true
-                            mainWide = false
+                            viewsSwapped = cameraWide
                         } else if (!panoramaFrame) {
                             panoramaKeep = false
                             if (pipRestoreAfterPano) {
@@ -1458,7 +1465,7 @@ Item {
                         && !root.scopeTelemetry.capture_active
                         && root.scopePending !== "stack"
                         && !controlPage.mosaicRunning
-                    readonly property bool displayWide: backend.previewStacking ? false : (pipAvailable ? mainWide : backend.previewWidePlaying)
+                    readonly property bool displayWide: backend.previewStacking ? false : (pipAvailable ? (viewsSwapped !== cameraWide) : backend.previewWidePlaying)
                     readonly property string mosaicLiveCamera: {
                         if (backend.previewStacking || backend.previewTelePlaying)
                             return "tele"
@@ -1564,17 +1571,26 @@ Item {
                     function applyDeviceCamera(camera) {
                         const choice = camera === "wide" ? "wide" : "tele"
                         previewCamera = choice
-                        mainWide = choice === "wide"
+                        viewsSwapped = false
+                    }
+                    function showLens(camera) {
+                        const choice = camera === "wide" ? "wide" : "tele"
+                        const selected = String((backend.selectedDevice && backend.selectedDevice.camera) || "tele")
+                        if (selected !== choice)
+                            backend.setLiveCamera(backend.selectedDeviceId, choice)
+                        viewsSwapped = false
+                        if (feedFullscreen)
+                            feedFullscreenCamera = choice
                     }
                     function swapViews() {
                         if (!pipAvailable)
                             return
                         if (feedFullscreen) {
                             feedFullscreenCamera = feedFullscreenCamera === "wide" ? "tele" : "wide"
-                            mainWide = feedFullscreenCamera === "wide"
+                            viewsSwapped = (feedFullscreenCamera === "wide") !== cameraWide
                             return
                         }
-                        mainWide = !mainWide
+                        viewsSwapped = !viewsSwapped
                     }
                     property bool feedFullscreen: false
                     property string feedFullscreenCamera: "tele"
