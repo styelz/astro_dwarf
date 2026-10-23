@@ -1481,6 +1481,65 @@ def stitch_clears_with_preview(source: str, status: str) -> bool:
     return str(status or "") in {"done", "working", "failed"}
 
 
+def completed_stack_pane(*, owned_pane: int, owned_group: str = "", sheet_group: str = "") -> int:
+    """Cell a finished JPEG may fill. Zero means leave the contact sheet alone.
+
+    The album download returns after the next session may already have opened
+    its sheet. A single stack never owned a pane. A pane recorded for one
+    mosaic must not be written into another just because that sheet is on pane 1.
+    """
+    try:
+        owned = int(owned_pane or 0)
+    except (TypeError, ValueError):
+        owned = 0
+    if owned < 1:
+        return 0
+    sheet = str(sheet_group or "")
+    if sheet and str(owned_group or "") != sheet:
+        return 0
+    return owned
+
+
+def foreign_sheet_blocks_stack_result(
+    *,
+    owned_group: str,
+    sheet_group: str,
+    sheet_columns: int,
+    sheet_rows: int,
+) -> bool:
+    """True when the JPEG on the way belongs to a different mosaic than the sheet.
+
+    A 1×1 preview has no contact sheet, so a single stack may still take the
+    full frame. A grid that is already up belongs to the session now running.
+    """
+    try:
+        mosaic = int(sheet_columns or 1) > 1 or int(sheet_rows or 1) > 1
+    except (TypeError, ValueError):
+        return False
+    if not mosaic:
+        return False
+    return str(owned_group or "") != str(sheet_group or "")
+
+
+def next_session_keeps_contact_sheet(*, continuing: bool) -> bool:
+    """The handoff leaves the contact sheet in place.
+
+    A follow-on pane keeps earlier stills. A later single target does too.
+    mosaic_session_should_drop_previous_sheet clears the sheet when the new
+    session is itself a mosaic. The caption still leaves either way.
+    """
+    del continuing
+    return True
+
+
+def next_session_clears_full_frame(*, continuing: bool) -> bool:
+    """A follow-on pane keeps the full-frame JPEG. Anything else drops it.
+
+    The contact-sheet cells are separate and stay until the sheet drop.
+    """
+    return not bool(continuing)
+
+
 def mosaic_result_pane(current_index: int, phase: str) -> int:
     """Pane that owns a finished stack frame.
 
@@ -1964,6 +2023,7 @@ def mosaic_preview_empty() -> dict[str, Any]:
         "total": 0,
         "phase": "",
         "label": "",
+        "group": "",
         "ra_hours": None,
         "dec_degrees": None,
         "completed": [],
@@ -2868,6 +2928,7 @@ class AppBackend(QObject):
         self._mosaic_hold_until = 0.0
         self._mosaic_hold_urls: tuple[str, str] | None = None
         self._stack_result_mosaic_pane = 0
+        self._stack_result_group = ""
         self._mosaic_result_held = False
         self._mosaic_result_dismissed = False
         self._sky_mosaic_columns = 1
@@ -5813,12 +5874,9 @@ class AppBackend(QObject):
         except (TypeError, ValueError):
             index = 0
         pane = mosaic_result_pane(index, str(live.get("phase") or ""))
-        if pane >= 1:
-            return pane
-        try:
-            return int((self.mosaic_frames.snapshot()[3]) or 0)
-        except (TypeError, ValueError, IndexError):
-            return 0
+        # The sheet's current cell is not this capture. After a single stack
+        # the next mosaic opens on pane 1, and a late JPEG was filed there.
+        return pane if pane >= 1 else 0
 
     def _host_mosaic_pane(self, device_id: str = "") -> int:
         """Pane a scheduled custom mosaic is shooting. Zero for a device mosaic."""
@@ -6766,6 +6824,7 @@ class AppBackend(QObject):
         self._mosaic_join_waited = False
         self._reset_mosaic_last_frame_hold()
         self._stack_result_mosaic_pane = 0
+        self._stack_result_group = ""
         self._mosaic_result_held = False
         self._dismiss_hud_stitch()
         if had:
@@ -6941,6 +7000,7 @@ class AppBackend(QObject):
             self._mosaic_blocked_enhance_pane = 0
             self._custom_pane_album_jobs = {}
             self._stack_result_mosaic_pane = 0
+            self._stack_result_group = ""
             self._mosaic_join_locked = False
             self._mosaic_join_seen_capture = None
             self._mosaic_join_waited = False
@@ -7052,6 +7112,7 @@ class AppBackend(QObject):
                 "total": int((live or {}).get("total") or (columns * rows) or 0),
                 "phase": phase,
                 "label": str((live or {}).get("label") or (current_session.name if isinstance(current_session, Session) else "")),
+                "group": str(self.mosaic_frames.group() or ""),
                 "ra_hours": getattr(target, "ra_hours", None) if target is not None else None,
                 "dec_degrees": getattr(target, "dec_degrees", None) if target is not None else None,
                 "completed": sorted(images),
@@ -9068,6 +9129,44 @@ class AppBackend(QObject):
             return
         self._clear_mosaic_preview()
 
+    def _note_stack_result_pane(self, pane: int) -> int:
+        """Remember which mosaic cell this capture owns. Zero for a single stack."""
+        try:
+            owned = int(pane or 0)
+        except (TypeError, ValueError):
+            owned = 0
+        if owned < 1:
+            self._stack_result_mosaic_pane = 0
+            self._stack_result_group = ""
+            return 0
+        self._stack_result_mosaic_pane = owned
+        self._stack_result_group = str(self.mosaic_frames.group() or "")
+        return owned
+
+    def _yield_preview_to_next_session(self, *, continuing: bool) -> None:
+        """Drop the previous capture's caption before the next session owns the view.
+
+        The contact sheet stays here. A new mosaic drops it afterwards.
+        A follow-on pane also keeps the full-frame JPEG. Anything else
+        drops that JPEG so it cannot sit in pane 1.
+        """
+        had_result = bool(
+            self._preview_result
+            or self._stack_result_fetching
+            or self._stack_result_device_id
+            or self._stack_result_mosaic_pane
+        )
+        if not had_result:
+            return
+        self._clear_preview_result(
+            keep_mosaic=next_session_keeps_contact_sheet(continuing=continuing)
+        )
+        if not next_session_clears_full_frame(continuing=continuing):
+            return
+        self.live_images.clear("tele")
+        self.live_images.clear("wide")
+        self._raw_preview_images = {"tele": QImage(), "wide": QImage()}
+
     def _cancel_stack_result_fetch(self) -> None:
         self._stack_result_token += 1
         self._stack_result_timer.stop()
@@ -9080,6 +9179,7 @@ class AppBackend(QObject):
         self._stack_result_started = 0.0
         self._stack_result_final_detail = ""
         self._stack_result_mosaic_pane = 0
+        self._stack_result_group = ""
 
     def _preview_camera_name(self, device_id: str) -> str:
         session_id = self._active_sessions.get(device_id)
@@ -9178,7 +9278,7 @@ class AppBackend(QObject):
             except (TypeError, ValueError):
                 pane = 0
         if pane >= 1:
-            self._stack_result_mosaic_pane = pane
+            self._note_stack_result_pane(pane)
             self._snapshot_mosaic_pane(pane)
             self._mosaic_result_held = True
             self._mosaic_result_dismissed = False
@@ -9212,10 +9312,10 @@ class AppBackend(QObject):
         self.add_log("info", "Capture ended — loading the completed stack", device_id)
         self._sync_mosaic_preview(device_id)
         if not self._stack_result_mosaic_pane:
-            self._stack_result_mosaic_pane = mosaic_finished_pane(
+            self._note_stack_result_pane(mosaic_finished_pane(
                 self._mosaic_stream_pane,
                 self._mosaic_result_pane_for(device_id),
-            )
+            ))
             self._snapshot_mosaic_pane(self._stack_result_mosaic_pane)
         self._start_stack_result_fetch(device_id, target, camera, since)
 
@@ -9236,10 +9336,10 @@ class AppBackend(QObject):
         self._stack_result_since = int(since or self._stack_result_since_for(device_id))
         self._stack_result_started = time.monotonic()
         if not self._stack_result_mosaic_pane:
-            self._stack_result_mosaic_pane = mosaic_finished_pane(
+            self._note_stack_result_pane(mosaic_finished_pane(
                 self._mosaic_stream_pane,
                 self._mosaic_result_pane_for(device_id),
-            )
+            ))
         self._fetch_stack_result_image()
 
     def _fetch_stack_result_image(self) -> None:
@@ -9281,9 +9381,21 @@ class AppBackend(QObject):
             return False
         shown = image.copy()
         self._discard_stack_result_file(path)
-        pane = self._stack_result_mosaic_pane or mosaic_finished_pane(
-            self._mosaic_stream_pane,
-            self._mosaic_result_pane_for(device_id),
+        _active, columns, rows, _current, _images = self.mosaic_frames.snapshot()
+        if foreign_sheet_blocks_stack_result(
+            owned_group=self._stack_result_group,
+            sheet_group=self.mosaic_frames.group(),
+            sheet_columns=columns,
+            sheet_rows=rows,
+        ):
+            # The next mosaic is already on screen. Stop the download retry
+            # without painting this JPEG into it.
+            self._clear_preview_result(keep_mosaic=True)
+            return True
+        pane = completed_stack_pane(
+            owned_pane=self._stack_result_mosaic_pane,
+            owned_group=self._stack_result_group,
+            sheet_group=self.mosaic_frames.group(),
         )
         if pane >= 1 and self._mosaic_frame_is_foreign(pane, shown):
             return False
@@ -9824,9 +9936,10 @@ class AppBackend(QObject):
             self._remember_mosaic_live_frame(camera, image)
             if camera == "tele" and self._preview_result:
                 self._store_mosaic_pane_image(
-                    self._stack_result_mosaic_pane or mosaic_finished_pane(
-                        self._mosaic_stream_pane,
-                        self._mosaic_result_pane_for(),
+                    completed_stack_pane(
+                        owned_pane=self._stack_result_mosaic_pane,
+                        owned_group=self._stack_result_group,
+                        sheet_group=self.mosaic_frames.group(),
                     ),
                     image,
                     replace_frozen=True,
@@ -17054,6 +17167,7 @@ class AppBackend(QObject):
                 self._mosaic_firmware_pane = pane
         if session.mosaic.imported_plan:
             self._orient_running_custom_mosaic(session, follow_on=continuing)
+        self._yield_preview_to_next_session(continuing=continuing)
         if mosaic_session_should_drop_previous_sheet(
             resuming=resuming,
             continuing=continuing,

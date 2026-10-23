@@ -13,9 +13,15 @@ from astro_dwarf.domain import ControlSettings, shooting_mode_camera_steps
 from astro_dwarf.qt_backend import (
     command_required_shooting_mode,
     command_should_auto_enter_dso,
+    completed_stack_pane,
     control_restore_camera_mode,
     control_restore_should_apply_mode,
     control_restore_should_defer,
+    foreign_sheet_blocks_stack_result,
+    mosaic_result_pane,
+    mosaic_session_should_drop_previous_sheet,
+    next_session_clears_full_frame,
+    next_session_keeps_contact_sheet,
     preview_should_preserve_shooting_mode,
     preview_should_skip_go_live,
     session_finish_plan,
@@ -341,6 +347,87 @@ def test_stop_notice_stays_until_the_task_is_finished() -> None:
     )
 
 
+def test_single_stack_does_not_fill_the_next_mosaic() -> None:
+    _assert(
+        completed_stack_pane(owned_pane=0, owned_group="", sheet_group="atria") == 0,
+        "a single stack has no pane",
+    )
+    _assert(
+        completed_stack_pane(owned_pane=1, owned_group="", sheet_group="atria") == 0,
+        "a result that never recorded this mosaic is not pane 1",
+    )
+    _assert(
+        completed_stack_pane(owned_pane=1, owned_group="previous", sheet_group="atria") == 0,
+        "the previous mosaic's pane must not land in the next sheet",
+    )
+    _assert(
+        completed_stack_pane(owned_pane=1, owned_group="atria", sheet_group="atria") == 1,
+        "this mosaic's pane 1 still receives its own JPEG",
+    )
+    _assert(
+        completed_stack_pane(owned_pane=4, owned_group="atria", sheet_group="atria") == 4,
+        "a late JPEG still fills the pane that stacked, after the sheet has moved on",
+    )
+    _assert(
+        foreign_sheet_blocks_stack_result(
+            owned_group="", sheet_group="atria", sheet_columns=2, sheet_rows=2,
+        ),
+        "a single-stack JPEG is blocked once the mosaic grid is up",
+    )
+    _assert(
+        not foreign_sheet_blocks_stack_result(
+            owned_group="atria", sheet_group="atria", sheet_columns=2, sheet_rows=2,
+        ),
+        "the mosaic's own JPEG is not foreign",
+    )
+    _assert(
+        not foreign_sheet_blocks_stack_result(
+            owned_group="", sheet_group="", sheet_columns=1, sheet_rows=1,
+        ),
+        "a single stack may still take the full frame",
+    )
+    _assert(next_session_keeps_contact_sheet(continuing=False), "a later session keeps the contact sheet")
+    _assert(next_session_keeps_contact_sheet(continuing=True), "a follow-on pane keeps the sheet")
+    _assert(next_session_clears_full_frame(continuing=False), "a later session drops the full-frame JPEG")
+    _assert(not next_session_clears_full_frame(continuing=True), "a follow-on pane keeps the full-frame JPEG")
+    _assert(
+        mosaic_session_should_drop_previous_sheet(
+            resuming=False,
+            continuing=False,
+            imported_plan=True,
+            grid_rows=2,
+            grid_columns=2,
+            panes=4,
+        ),
+        "a new mosaic still starts with an empty sheet",
+    )
+    _assert(
+        not mosaic_session_should_drop_previous_sheet(
+            resuming=False,
+            continuing=False,
+            imported_plan=False,
+            grid_rows=0,
+            grid_columns=0,
+            panes=1,
+        ),
+        "a single target leaves the finished sheet up",
+    )
+    _assert(
+        not mosaic_session_should_drop_previous_sheet(
+            resuming=False,
+            continuing=True,
+            imported_plan=True,
+            grid_rows=2,
+            grid_columns=2,
+            panes=4,
+        ),
+        "a follow-on pane does not drop the sheet",
+    )
+    _assert(mosaic_result_pane(1, "goto") == 0, "slewing to pane 1 has not stacked pane 1")
+    _assert(mosaic_result_pane(2, "goto") == 1, "the pane that stacked is the one before the slew")
+    _assert(mosaic_result_pane(1, "stacking") == 1, "the stacking pane still owns its frame")
+
+
 def test_photo_mode_auto_enters_dso_for_tracking() -> None:
     _assert(command_required_shooting_mode("sky_track") == 2, "sky track needs DSO")
     _assert(command_required_shooting_mode("track") == 2, "track needs DSO")
@@ -367,6 +454,7 @@ if __name__ == "__main__":
     test_missing_darks_hold_is_skipped()
     test_reconnect_joins_live_mode_and_drops_a_restart()
     test_mosaic_stack_stop_does_not_complete_or_chain()
+    test_single_stack_does_not_fill_the_next_mosaic()
     test_stop_notice_stays_until_the_task_is_finished()
     test_photo_mode_auto_enters_dso_for_tracking()
     print("ok")

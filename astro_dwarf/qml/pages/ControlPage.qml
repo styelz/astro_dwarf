@@ -1496,11 +1496,38 @@ Item {
                     // A finished device mosaic is already stitched on the live feed.
                     readonly property bool deviceMosaicFinished: !!(backend.mosaicPreview && backend.mosaicPreview.live_feed)
                     property bool showMosaicSheet: true
+                    property string mosaicSheetKey: ""
                     // Device mosaics paint each pane in the field the telescope is
                     // building. The PANE toggle still opens one pane full frame.
                     // Once the telescope finishes, that feed replaces the sheet.
-                    onMosaicActiveChanged: if (mosaicActive && !deviceMosaicFinished) showMosaicSheet = true
+                    // A telemetry blip used to mark the mosaic active again and
+                    // force the sheet back, so the first PANE click did nothing.
+                    function adoptMosaicSheet() {
+                        if (!mosaicActive || deviceMosaicFinished)
+                            return
+                        const preview = backend.mosaicPreview || ({})
+                        const group = String(preview.group || "")
+                        const grid = Number(preview.columns || 0) + "x" + Number(preview.rows || 0)
+                        if (grid === "0x0")
+                            return
+                        const key = group + ":" + grid
+                        if (key === mosaicSheetKey)
+                            return
+                        // The group arriving for the grid already on screen is
+                        // the same run. Do not undo a PANE choice.
+                        if (mosaicSheetKey === (":" + grid)) {
+                            mosaicSheetKey = key
+                            return
+                        }
+                        mosaicSheetKey = key
+                        showMosaicSheet = true
+                    }
+                    onMosaicActiveChanged: adoptMosaicSheet()
                     readonly property bool mosaicSheet: mosaicActive && showMosaicSheet && !deviceMosaicFinished
+                    // A running mosaic owns the view. The previous session's
+                    // SESSION COMPLETE card must not stay on top of it.
+                    readonly property bool runningMosaicHidesResult: controlPage.mosaicRunning
+                        && String(backend.previewResultTitle || "") !== "MOSAIC COMPLETE"
                     readonly property bool paneView: mosaicActive && !showMosaicSheet && !deviceMosaicFinished
                     readonly property bool idlePreviewArt: !backend.previewPlaying && !backend.previewStacking && !backend.previewResult && !previewHost.awaitingFirstStack && !previewHost.mosaicActive && !previewHost.panoramaCanvas
                     readonly property real teleFovH: {
@@ -1873,6 +1900,7 @@ Item {
                         }
                         function onPreviewTelePlayingChanged() { previewHost.leaveFullscreenIfStreamGone() }
                         function onPreviewWidePlayingChanged() { previewHost.leaveFullscreenIfStreamGone() }
+                        function onMosaicPreviewChanged() { previewHost.adoptMosaicSheet() }
                     }
 
                     PanoramaFramePane {
@@ -2353,7 +2381,7 @@ Item {
                         anchors.leftMargin: Theme.px(14)
                         anchors.rightMargin: Theme.px(14)
                         anchors.bottomMargin: Theme.px(46)
-                        visible: backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !readoutStrip.customMosaicResult
+                        visible: backend.previewResult && !previewHost.runningMosaicHidesResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !readoutStrip.customMosaicResult
                         height: resultCaptionCol.implicitHeight + Theme.s4
                         color: Theme.panelFill
                         border.color: Theme.outline
@@ -2898,8 +2926,8 @@ Item {
                         HudButton {
                             objectName: "mosaicViewToggle"
                             visible: previewHost.mosaicActive && previewHost.chromeShown && !previewHost.deviceMosaicFinished
-                            text: previewHost.showMosaicSheet ? "PANE" : "MOSAIC"
-                            tooltip: previewHost.showMosaicSheet
+                            text: previewHost.mosaicSheet ? "PANE" : "MOSAIC"
+                            tooltip: previewHost.mosaicSheet
                                      ? "Show the current pane full frame"
                                      : (mosaicPreview.device
                                         ? "Show the full mosaic as the telescope builds it"
@@ -2907,7 +2935,7 @@ Item {
                             buttonColor: Theme.fillActive
                             foregroundColor: Theme.accent
                             onHoveredChanged: previewHost.holdControls(hovered)
-                            onClicked: previewHost.showMosaicSheet = !previewHost.showMosaicSheet
+                            onClicked: previewHost.showMosaicSheet = !previewHost.mosaicSheet
                         }
                         HudButton {
                             objectName: "pipToggle"
