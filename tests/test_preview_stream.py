@@ -513,6 +513,65 @@ def test_preview_restarts_rtsp_after_stacking_jpeg() -> None:
     )
 
 
+def test_cold_photo_mode_still_enters_the_camera() -> None:
+    """A fresh power-on is already in PHOTO. The live stream still needs ENTER_CAMERA.
+
+    perform_enter_photo_mode() would start with SWITCH_SHOOTING_MODE(1), which
+    does not answer. The API photo test opens the stream with ENTER_CAMERA.
+    """
+    import astro_dwarf.device_worker as device_worker
+    from astro_dwarf.device_telemetry import TelemetryTap
+
+    tap = TelemetryTap(lambda _message: None, flush_interval=0)
+    previous_tap = device_worker._tap
+    previous_enter = device_worker._enter_astro_camera
+    previous_sdk = device_worker.sdk_call
+    entered: list[str] = []
+    switched: list[str] = []
+
+    def enter_camera() -> bool:
+        entered.append("enter")
+        return True
+
+    def sdk_call(operation: str, *args: object) -> bool:
+        switched.append(operation)
+        return True
+
+    device_worker._tap = tap
+    device_worker._enter_astro_camera = enter_camera
+    device_worker.sdk_call = sdk_call
+    try:
+        tap.update({"shooting_mode": 1}, force=True)
+        _assert(device_worker._enter_photo_mode() is True, "cold photo init succeeds")
+        tap.update({"stream_type": "OFF"}, force=True)
+        _assert(device_worker._enter_photo_mode() is True, "an explicit OFF stream still opens")
+        _assert(entered == ["enter", "enter"], "cold PHOTO must call ENTER_CAMERA")
+        _assert(switched == [], "cold PHOTO must not switch shooting mode")
+
+        entered.clear()
+        tap.update({"stream_type": "RTSP"}, force=True)
+        _assert(device_worker._enter_photo_mode() is True, "live RTSP stays put")
+        _assert(entered == [], "live RTSP must not re-enter the camera")
+
+        tap.update({"stream_type": "OFF", "capture_state": "running", "capture_active": True}, force=True)
+        _assert(device_worker._enter_photo_mode() is True, "a running capture stays put")
+        _assert(entered == [], "a running capture must not re-enter the camera")
+
+        tap.update({"capture_state": "idle", "capture_active": False, "stream_type": "JPEG"}, force=True)
+        _assert(device_worker._enter_photo_mode() is True, "JPEG leftover does not take the cold-start shortcut")
+        _assert(entered == [], "JPEG leftover must not pretend ENTER_CAMERA restarts RTSP")
+
+        tap.update({"shooting_mode": 2, "stream_type": "OFF"}, force=True)
+        _assert(device_worker._enter_photo_mode() is True, "leaving DSO still uses the photo handshake")
+        _assert(switched == ["photo_mode"], switched)
+        _assert(entered == [], "a real mode change stays on perform_enter_photo_mode")
+    finally:
+        device_worker._tap = previous_tap
+        device_worker._enter_astro_camera = previous_enter
+        device_worker.sdk_call = previous_sdk
+        tap.reset()
+
+
 def test_photo_jpeg_leftover_skips_blocking_mode_switch() -> None:
     _assert(
         photo_jpeg_leftover({"shooting_mode": 1, "stream_type": "JPEG"}),
@@ -1982,6 +2041,7 @@ if __name__ == "__main__":
     test_preview_skips_golive_after_tracking()
     test_preview_attaches_when_rtsp_is_already_live()
     test_preview_restarts_rtsp_after_stacking_jpeg()
+    test_cold_photo_mode_still_enters_the_camera()
     test_photo_jpeg_leftover_skips_blocking_mode_switch()
     test_autofocus_jpeg_mark_clears_when_a_stack_starts()
     test_autofocus_does_not_mark_an_existing_jpeg()

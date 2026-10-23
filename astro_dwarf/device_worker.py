@@ -5862,11 +5862,24 @@ def _enter_photo_mode() -> Any:
     for enter-camera. Each timeout comes back as code -5, which the SDK treats
     as success, and the encoder never leaves JPEG. While that wait owns the
     command queue, the next GOTO fails with CODE_ASTRO_FUNCTION_BUSY.
+
+    A telescope that just powered on is already in photo mode, with the tele
+    camera closed. ``perform_enter_photo_mode`` starts with
+    SWITCH_SHOOTING_MODE(1), which is not answered in that state. The photo
+    test opens the live stream with ENTER_CAMERA (16404) instead of the old
+    open-camera command. Skip the mode switch and still run that camera init.
+    A live RTSP encoder, a running capture, and a leftover stacking JPEG stay
+    on the paths they already had: ENTER_CAMERA does not leave the JPEG encoder.
     """
     snap = _tap.snapshot() if _tap is not None else {}
     if _shooting_int(snap.get("shooting_mode")) == _PHOTO_SHOOTING_MODE:
-        log("Already in photo mode; skipping shooting-mode switch", "debug")
-        return True
+        capturing = bool(snap.get("capture_active") or snap.get("capture_state") == "running")
+        stream = str(snap.get("stream_type") or "").strip().upper()
+        if capturing or stream in {"RTSP", "JPEG"}:
+            log("Already in photo mode; skipping shooting-mode switch", "debug")
+            return True
+        log("Already in photo mode; initializing the tele camera", "debug")
+        return _enter_astro_camera()
     if photo_jpeg_leftover(snap) or snap.get("jpeg_from_autofocus"):
         # Astro autofocus leaves tele on JPEG with no stack running, and the
         # mode switch still answers. A finished stack can sit on that encoder

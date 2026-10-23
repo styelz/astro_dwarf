@@ -4,6 +4,8 @@
 If you find any bugs or have any suggestions for the application, please create an issue here:
 [https://github.com/styelz/astro_dwarf/issues/new/choose](https://github.com/styelz/astro_dwarf/issues/new/choose)
 
+- **Fixed connection issues.** improve photo mode initialization and handling of camera states.
+
 - **Live video after a restart.** With Auto Parameters turned on, restarting the telescope could stop the live video from coming back. That is fixed.
 
 - **Shutter time and gain.** The exposure and gain on screen now match what the camera is actually using, including when Auto Parameters is on.
