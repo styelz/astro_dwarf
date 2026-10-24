@@ -143,6 +143,7 @@ _ALBUM_LISTING_MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
     "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
+_NESTED_PANE_DIR_RE = re.compile(r"pane\s+\d+", re.IGNORECASE)
 _STACK_JPEG_NAMES = ("stacked.jpg", "stacked.jpeg")
 _STACK_THUMB_NAMES = ("stacked_thumbnail.jpg", "stacked_thumbnail.jpeg")
 _STACK_COUNTER_NAMES = ("img_stacked_counter.png",)
@@ -750,6 +751,119 @@ def album_join_path(folder: str, name: str) -> str:
     if not directory or not file_name:
         return directory or album_http_path(file_name)
     return f"{directory}/{file_name}"
+
+
+def _album_is_deletable_child_session(name: str, path: str) -> bool:
+    """A pane folder inside a mosaic, not Thumbnail or another sidecar directory."""
+    if not album_is_astro_session_folder(path, name):
+        return False
+    label = str(name or "")
+    if "DWARF_RAW" in label.upper():
+        return True
+    return _NESTED_PANE_DIR_RE.search(label) is not None
+
+
+def album_delete_walk_path(path: str) -> str:
+    """Folder whose session subfolders can be deleted with it.
+
+    Category folders and the telescope root stay. Walking those would delete
+    every session under them.
+    """
+    remote = album_http_path(path).rstrip("/")
+    if not remote or album_is_category_folder_path(remote):
+        return ""
+    root = album_root_from_path(remote)
+    if root and remote.upper() == root.upper():
+        return ""
+    return remote
+
+
+def album_nested_session_deletes(
+    folder: str,
+    listing: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Astronomy session folders directly inside `folder`.
+
+    Firmware leaves the parent until those subfolders are deleted.
+    """
+    parent = album_delete_walk_path(folder)
+    if not parent:
+        return []
+    children: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in listing or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("is_dir") is not True and item.get("isDir") is not True:
+            continue
+        name = str(item.get("name") or item.get("fileName") or "").strip()
+        if not name or album_is_skip_dir(name) or album_is_category_name(name):
+            continue
+        path = album_http_path(str(item.get("filePath") or item.get("file_path") or "")).rstrip("/")
+        if not path or path.upper() == parent.upper():
+            path = album_join_path(parent, name).rstrip("/")
+        if not path.upper().startswith(parent.upper() + "/"):
+            continue
+        if not _album_is_deletable_child_session(name, path):
+            continue
+        key = path.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            media_type = int(item.get("mediaType") or item.get("media_type") or ASTRO_MEDIA_TYPE)
+        except (TypeError, ValueError):
+            media_type = ASTRO_MEDIA_TYPE
+        children.append({
+            "filePath": path,
+            "fileName": name,
+            "mediaType": media_type,
+            "isDir": True,
+        })
+    return children
+
+
+def album_delete_batches(
+    items: list[dict[str, Any]] | None,
+    listings: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[list[dict[str, Any]]]:
+    """Child session folders first, then the items the user chose.
+
+    `listings` maps a folder path to directory-index rows. A folder with no
+    listing is deleted as chosen.
+    """
+    found = listings or {}
+    children: list[dict[str, Any]] = []
+    child_keys: set[str] = set()
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("isDir") is not True and item.get("is_dir") is not True:
+            continue
+        remote = album_delete_walk_path(str(item.get("filePath") or item.get("file_path") or ""))
+        if not remote:
+            continue
+        listing = found.get(remote)
+        for child in album_nested_session_deletes(remote, listing):
+            key = album_http_path(child["filePath"]).rstrip("/").upper()
+            if not key or key in child_keys:
+                continue
+            child_keys.add(key)
+            children.append(child)
+    rest: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        remote = album_http_path(str(item.get("filePath") or item.get("file_path") or "")).rstrip("/").upper()
+        if remote and remote in child_keys:
+            continue
+        rest.append(item)
+    batches: list[list[dict[str, Any]]] = []
+    if children:
+        batches.append(children)
+    if rest:
+        batches.append(rest)
+    return batches
 
 
 def album_listing_entries(html_text: str) -> list[dict[str, Any]]:

@@ -163,8 +163,11 @@ from .services import (
     custom_mosaic_panes_remain,
     custom_mosaic_result_pending,
     album_folder_capture,
+    expand_mosaic_delete_ids,
     group_mosaic_media_items,
     load_mosaic_stitch,
+    media_delete_remaining,
+    media_items_after_delete,
     mosaic_group_listing,
     mosaic_media_group_id,
     mosaic_pane_folder_name,
@@ -13074,7 +13077,7 @@ class AppBackend(QObject):
         if not list_ok:
             self._toast("Album delete finished, but the folder could not be refreshed", "warning")
             return True
-        remaining = sum(1 for item in items if str(item.get("id") or "") in pending)
+        remaining = media_delete_remaining(pending, items, self._media_listed_items)
         message, level = album_delete_summary(len(pending), remaining)
         self._toast(message, level)
         return True
@@ -14809,7 +14812,14 @@ class AppBackend(QObject):
     @Slot(list)
     @Slot("QVariantList")
     def deleteMedia(self, item_ids: list) -> None:
-        ids = self._device_media_action_ids(self._normalize_ids(item_ids), "delete")
+        raw = self._normalize_ids(item_ids)
+        if self._media_source == "local":
+            ids = self._device_media_action_ids(raw, "delete")
+        else:
+            ids = expand_mosaic_delete_ids(raw, [*self._media_items, *self._media_listed_items])
+            if not ids:
+                self._device_media_action_ids(raw, "delete")
+                return
         if not ids:
             return
         if self._album_busy:
@@ -14860,6 +14870,21 @@ class AppBackend(QObject):
         if deleted:
             self._toast(f"Deleted {deleted} file{'s' if deleted != 1 else ''}", "success")
 
+    def _media_item_for_delete(self, item_id: str) -> dict[str, Any] | None:
+        wanted = str(item_id or "")
+        if not wanted:
+            return None
+        for collection in (self._media_items, self._media_listed_items):
+            for item in collection:
+                if str(item.get("id") or "") == wanted:
+                    return item
+                if str(item.get("kind") or "") != "mosaic":
+                    continue
+                for member in item.get("members") or []:
+                    if isinstance(member, dict) and str(member.get("id") or "") == wanted:
+                        return member
+        return None
+
     def _delete_device_media(self, item_ids: list[str]) -> None:
         device_id = self._media_device_id or self._selected_device_id
         if self._session_is_capturing(device_id):
@@ -14872,9 +14897,9 @@ class AppBackend(QObject):
             return
         wanted = set(item_ids)
         entries: list[dict[str, Any]] = []
-        for item in self._media_items:
-            item_id = str(item.get("id") or "")
-            if item_id not in wanted:
+        for item_id in item_ids:
+            item = self._media_item_for_delete(item_id)
+            if item is None:
                 continue
             remote = str(item.get("file_path") or item_id)
             if not self._is_device_media_path(remote):
@@ -14893,10 +14918,8 @@ class AppBackend(QObject):
             return
         keep_id = self._media_selected_id if self._media_selected_id not in wanted else ""
         self._album_pending_delete_ids = set(wanted)
-        self._replace_media_items(
-            [item for item in self._media_items if str(item.get("id") or "") not in wanted],
-            keep_id,
-        )
+        self._media_listed_items = media_items_after_delete(self._media_listed_items, wanted)
+        self._replace_media_items(media_items_after_delete(self._media_items, wanted), keep_id)
         request_id = self._media_request_id
         source = self._media_source
         self._set_media_busy("delete")

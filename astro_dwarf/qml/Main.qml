@@ -216,7 +216,7 @@ ApplicationWindow {
         confirmDialog.summary = kind === "deleteSessions"
             ? "Delete " + ids.length + " " + plural + "? Running sessions will be skipped. This cannot be undone."
             : kind === "deleteMedia" && backend.mediaSource !== "local"
-            ? "Delete " + ids.length + " " + plural + " from the telescope? This wipes them from the SD card. Astro, burst, panorama, and folder items remove the whole session. Album category folders stay. Downloaded copies in Local are kept. This cannot be undone."
+            ? "Delete " + ids.length + " " + plural + " from the telescope? This wipes them from the SD card. Astro, burst, panorama, and folder items remove the whole session, including every pane folder inside a mosaic. Album category folders stay. Downloaded copies in Local are kept. This cannot be undone."
             : kind === "deleteMedia"
             ? "Delete " + ids.length + " " + plural + " from the local album? This cannot be undone."
             : "Delete " + ids.length + " " + plural + "? This cannot be undone."

@@ -4691,6 +4691,99 @@ def mosaic_group_listing(
     return listing
 
 
+def expand_mosaic_delete_ids(
+    selected_ids: list[str],
+    items: list[dict[str, Any]],
+) -> list[str]:
+    """Turn a mosaic tile into the pane folders it shows.
+
+    The tile is not a telescope folder. Its panes are. A stitch row stays in
+    the local album.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        if str(item.get("kind") or "") != "mosaic":
+            continue
+        group_id = str(item.get("group_id") or "")
+        if not group_id or group_id in groups:
+            continue
+        groups[group_id] = [
+            member for member in (item.get("members") or []) if isinstance(member, dict)
+        ]
+    chosen: list[str] = []
+    seen: set[str] = set()
+    for raw in selected_ids:
+        text = str(raw or "").strip()
+        if not text or text.startswith("mosaic-stitch:"):
+            continue
+        group_id = mosaic_media_group_id(text)
+        if group_id:
+            for member in groups.get(group_id, []):
+                member_id = str(member.get("id") or member.get("file_path") or "").strip()
+                if not member_id or member_id.startswith("mosaic-stitch:") or member_id in seen:
+                    continue
+                seen.add(member_id)
+                chosen.append(member_id)
+            continue
+        if text not in seen:
+            seen.add(text)
+            chosen.append(text)
+    return chosen
+
+
+def media_items_after_delete(
+    items: list[dict[str, Any]],
+    removed_ids: set[str] | list[str],
+) -> list[dict[str, Any]]:
+    """Drop deleted panes. A mosaic tile leaves with its last pane."""
+    removed = {str(item_id) for item_id in removed_ids if str(item_id)}
+    kept: list[dict[str, Any]] = []
+    for item in items:
+        if str(item.get("id") or "") in removed:
+            continue
+        if str(item.get("kind") or "") != "mosaic":
+            kept.append(item)
+            continue
+        members = [member for member in (item.get("members") or []) if isinstance(member, dict)]
+        left = [member for member in members if str(member.get("id") or "") not in removed]
+        if len(left) == len(members):
+            kept.append(item)
+            continue
+        if len(left) >= 2:
+            kept.append(_mosaic_media_tile(
+                str(item.get("group_id") or ""),
+                str(item.get("target") or "Mosaic"),
+                left,
+            ))
+            continue
+        if len(left) == 1:
+            kept.append(left[0])
+    return kept
+
+
+def media_delete_remaining(
+    pending_ids: set[str] | list[str],
+    items: list[dict[str, Any]] | None,
+    listed_items: list[dict[str, Any]] | None = None,
+) -> int:
+    """How many deleted ids are still in the album list, including panes inside a mosaic tile."""
+    visible: set[str] = set()
+    for collection in (items or [], listed_items or []):
+        for item in collection:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "")
+            if item_id:
+                visible.add(item_id)
+            for member in item.get("members") or []:
+                if not isinstance(member, dict):
+                    continue
+                member_id = str(member.get("id") or "")
+                if member_id:
+                    visible.add(member_id)
+    return sum(1 for item_id in pending_ids if str(item_id) in visible)
+
+
 def mosaic_stitch_listing_item(record: dict[str, Any]) -> dict[str, Any]:
     path = str(record.get("path") or "")
     title = str(record.get("title") or "Mosaic").strip() or "Mosaic"

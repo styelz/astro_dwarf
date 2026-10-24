@@ -57,8 +57,10 @@ from .domain import (
     PHOTO_MEDIA_TYPE,
     album_apply_listing_preview,
     album_canonical_media_type,
+    album_delete_batches,
     album_delete_outcome,
     album_delete_payload,
+    album_delete_walk_path,
     album_is_astro_type,
     album_entry_key,
     album_entry_preview_path,
@@ -6549,14 +6551,37 @@ def album_folder_list(folder: str = "") -> dict[str, Any]:
 def album_delete(items: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     ip = _device_ip()
     _album_model_matches()
-    payload = album_delete_payload(items or [])
-    if not payload["datas"]:
+    listings: dict[str, list[dict[str, Any]]] = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("isDir") is not True and item.get("is_dir") is not True:
+            continue
+        remote = album_delete_walk_path(str(item.get("filePath") or item.get("file_path") or ""))
+        if not remote:
+            continue
+        found = _album_dir_listing(ip, remote)
+        if found is not None:
+            listings[remote] = found
+    batches = album_delete_batches(items, listings)
+    deleted: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+    requested = 0
+    failed = 0
+    for batch in batches:
+        payload = album_delete_payload(batch)
+        if not payload["datas"]:
+            continue
+        result = _http_json(f"http://{ip}:8082/album/delete", payload, timeout=300)
+        outcome = album_delete_outcome(result, len(payload["datas"]))
+        deleted.extend(outcome["deleted"])
+        results.extend(outcome["results"])
+        requested += int(outcome["requested"])
+        failed += int(outcome["failed"])
+    if requested == 0:
         raise RuntimeError("No album files to delete")
-    result = _http_json(f"http://{ip}:8082/album/delete", payload, timeout=300)
-    outcome = album_delete_outcome(result, len(payload["datas"]))
-    deleted = len(outcome["deleted"])
-    log(f"Deleted {deleted} album file{'s' if deleted != 1 else ''} on {ip}")
-    return {"ip": ip, **outcome}
+    log(f"Deleted {len(deleted)} album file{'s' if len(deleted) != 1 else ''} on {ip}")
+    return {"ip": ip, "deleted": deleted, "failed": failed, "results": results, "requested": requested}
 
 
 def album_folder_download(folder: str = "", dest_dir: str = "", preview: str = "") -> dict[str, Any]:

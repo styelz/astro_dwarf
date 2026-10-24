@@ -9,9 +9,11 @@ if str(ROOT) not in sys.path:
 
 from astro_dwarf.domain import (
     album_canonical_media_type,
+    album_delete_batches,
     album_delete_outcome,
     album_delete_payload,
     album_delete_summary,
+    album_delete_walk_path,
     album_is_category_folder_path,
 )
 
@@ -250,6 +252,101 @@ def test_firmware_is_success_false_is_still_accepted() -> None:
     _assert(level == "error", (message, level))
 
 
+def test_mosaic_folder_deletes_pane_subfolders_first() -> None:
+    parent = "/DWARF3/Astronomy/M31 mosaic"
+    pane1 = "DWARF_RAW_TELE_M31 pane 1_EXP_15_GAIN_60_2026-10-09-03-01-05-000"
+    pane2 = "DWARF_RAW_TELE_M31 pane 2_EXP_15_GAIN_60_2026-10-09-03-16-15-000"
+    listing = [
+        {"name": pane1, "is_dir": True},
+        {"name": pane2, "is_dir": True},
+        {"name": "stacked.jpg", "is_dir": False},
+        {"name": "Thumbnail", "is_dir": True},
+    ]
+    batches = album_delete_batches(
+        [{"filePath": parent, "fileName": "M31 mosaic", "mediaType": 4, "isDir": True}],
+        {parent: listing},
+    )
+    _assert(len(batches) == 2, batches)
+    first = album_delete_payload(batches[0])
+    _assert([item["filePath"] for item in first["datas"]] == [
+        f"{parent}/{pane1}/stacked.jpg",
+        f"{parent}/{pane2}/stacked.jpg",
+    ], first)
+    _assert([item["fileName"] for item in first["datas"]] == [pane1, pane2], first)
+    second = album_delete_payload(batches[1])
+    _assert(second["datas"] == [{
+        "mediaType": 4,
+        "filePath": f"{parent}/stacked.jpg",
+        "fileName": "M31 mosaic",
+        "subType": 0,
+    }], second)
+
+
+def test_session_without_subfolders_stays_one_delete() -> None:
+    folder = "/DWARF3/Astronomy/DWARF_RAW_TELE_M31_2026-09-20"
+    listing = [
+        {"name": "stacked.jpg", "is_dir": False},
+        {"name": "stacked_thumbnail.jpg", "is_dir": False},
+        {"name": "Thumbnail", "is_dir": True},
+        {"name": "notes", "is_dir": True},
+    ]
+    batches = album_delete_batches(
+        [{
+            "filePath": folder,
+            "fileName": "DWARF_RAW_TELE_M31_2026-09-20",
+            "mediaType": 4,
+            "isDir": True,
+        }],
+        {folder: listing},
+    )
+    _assert(len(batches) == 1, batches)
+    payload = album_delete_payload(batches[0])
+    _assert(payload["datas"] == [{
+        "mediaType": 4,
+        "filePath": f"{folder}/stacked.jpg",
+        "fileName": "DWARF_RAW_TELE_M31_2026-09-20",
+        "subType": 0,
+    }], payload)
+
+
+def test_category_and_root_are_not_walked() -> None:
+    listing = [{"name": "DWARF_RAW_TELE_M31", "is_dir": True}]
+    _assert(album_delete_walk_path("/DWARF3/Astronomy") == "", "category")
+    _assert(album_delete_walk_path("/DWARF3") == "", "root")
+    batches = album_delete_batches(
+        [{"filePath": "/DWARF3/Astronomy", "fileName": "Astronomy", "isDir": True}],
+        {"/DWARF3/Astronomy": listing},
+    )
+    _assert(len(batches) == 1, batches)
+    _assert(album_delete_payload(batches[0])["datas"] == [], batches)
+
+
+def test_panorama_tile_folders_stay_with_the_session() -> None:
+    parent = "/DWARF3/Panorama/PANO_1"
+    listing = [
+        {"name": "1", "is_dir": True},
+        {"name": "2", "is_dir": True},
+        {"name": "pano_thumbnail.jpg", "is_dir": False},
+    ]
+    batches = album_delete_batches(
+        [{"filePath": parent, "fileName": "PANO_1", "mediaType": 5, "isDir": True}],
+        {parent: listing},
+    )
+    _assert(len(batches) == 1, batches)
+    payload = album_delete_payload(batches[0])
+    _assert(payload["datas"] == [{
+        "mediaType": 5,
+        "filePath": f"{parent}/pano_thumbnail.jpg",
+        "fileName": "PANO_1",
+        "subType": 0,
+    }], payload)
+
+
+def test_photo_delete_is_unchanged_without_a_listing() -> None:
+    item = {"filePath": "/DWARF3/Normal_Photos/shot.jpg", "fileName": "shot.jpg", "mediaType": 1}
+    _assert(album_delete_batches([item], {}) == [[item]], "photo stays one batch")
+
+
 def test_ignored_media_type_has_no_is_success() -> None:
     outcome = album_delete_outcome(
         {
@@ -274,5 +371,10 @@ if __name__ == "__main__":
     test_category_folders_are_not_sent_to_firmware()
     test_burst_folder_maps_to_first_frame()
     test_firmware_is_success_false_is_still_accepted()
+    test_mosaic_folder_deletes_pane_subfolders_first()
+    test_session_without_subfolders_stays_one_delete()
+    test_category_and_root_are_not_walked()
+    test_panorama_tile_folders_stay_with_the_session()
+    test_photo_delete_is_unchanged_without_a_listing()
     test_ignored_media_type_has_no_is_success()
     print("ok")
