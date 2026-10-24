@@ -24,8 +24,11 @@ from .domain import (
     Session,
     SessionAction,
     album_folder_preview_fallback_path,
+    album_http_path,
     album_http_url,
+    album_is_astro_session_folder,
     album_is_astro_stack_product,
+    album_session_dir,
     clamp_firmware_mosaic_scale,
     device_mosaic_from_scales,
     firmware_mosaic_overlap,
@@ -4914,6 +4917,498 @@ def save_http_image(urls: list[str], destination: Path, *, limit: int = _HTTP_IM
         temporary.replace(destination)
         return
     raise RuntimeError(last)
+
+
+_MEDIA_STITCH_POSITIONS = "Pane positions are not stored for this group"
+_MEDIA_STITCH_DOWNLOAD = "Stacks are not downloaded yet"
+_SHOTS_INFO_BYTES = 65_536
+
+
+def _media_number(value: Any, default: float = 0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _media_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def media_pane_shots_url(folder: str, ip: str) -> str:
+    """Tiny capture note for one pane folder. It is not a stacked image."""
+    directory = album_session_dir(folder) or album_http_path(folder).rstrip("/")
+    if not directory or not album_is_astro_session_folder(directory):
+        return ""
+    return album_http_url(ip, f"{directory}/shotsInfo.json")
+
+
+def parse_shots_info(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    """RA hours, Dec degrees, and how many frames landed in the stack.
+
+    Firmware stores RA in hours. A degree value for these targets would be
+    far outside 0–24 and is rejected rather than treated as a sky position.
+    """
+    if not isinstance(payload, dict):
+        return None
+    try:
+        ra = float(payload.get("RA"))
+        dec = float(payload.get("DEC"))
+    except (TypeError, ValueError):
+        return None
+    if ra < 0 or ra >= 24 or dec < -90 or dec > 90:
+        return None
+    target = str(payload.get("target") or "").strip()
+    stacked = payload.get("shotsStacked")
+    try:
+        shots_stacked = int(stacked) if stacked is not None and stacked != "" else -1
+    except (TypeError, ValueError):
+        shots_stacked = -1
+    return {
+        "target": target,
+        "ra_hours": ra,
+        "dec_degrees": dec,
+        "shots_stacked": shots_stacked,
+    }
+
+
+def read_shots_info(url: str) -> dict[str, Any] | None:
+    """Read one pane's shotsInfo.json. Missing and non-JSON replies stay empty."""
+    target = external_link_url(url)
+    if not target:
+        return None
+    try:
+        response = requests.get(target, timeout=20)
+    except requests.RequestException:
+        return None
+    try:
+        if response.status_code >= 400:
+            return None
+        data = json.loads(response.content[:_SHOTS_INFO_BYTES].decode("utf-8", "replace"))
+    except (ValueError, UnicodeError):
+        return None
+    finally:
+        response.close()
+    if not isinstance(data, dict):
+        return None
+    return parse_shots_info(data)
+
+
+def _sky_step(ra0: float, dec0: float, ra1: float, dec1: float) -> tuple[float, float]:
+    """East and north degrees from one pane centre to the next."""
+    dra = ((ra1 - ra0 + 12.0) % 24.0) - 12.0
+    east = dra * 15.0 * cos(radians((dec0 + dec1) / 2.0))
+    north = dec1 - dec0
+    return east, north
+
+
+def _step_spread(steps: list[tuple[float, float]]) -> float:
+    if not steps:
+        return 0.0
+    mean_x = sum(item[0] for item in steps) / len(steps)
+    mean_y = sum(item[1] for item in steps) / len(steps)
+    return sum((item[0] - mean_x) ** 2 + (item[1] - mean_y) ** 2 for item in steps) / len(steps)
+
+
+def infer_mosaic_columns(points: list[tuple[int, float, float]]) -> int:
+    """Column count whose pane-index grid matches the sky steps.
+
+    Pane names already say which cell if the column count is known. Stored
+    plans carry that count. When they do not, each candidate count is scored
+    by how steady the step to the next column is, and how steady the step to
+    the next row is. A 2×2 read as one long row mixes those two steps and loses.
+    """
+    by_index: dict[int, tuple[float, float]] = {}
+    for index, ra, dec in points:
+        pane = _media_int(index)
+        if pane < 1 or pane in by_index:
+            continue
+        try:
+            by_index[pane] = (float(ra), float(dec))
+        except (TypeError, ValueError):
+            continue
+    if len(by_index) < 3:
+        return 0
+    highest = max(by_index)
+    best_columns = 0
+    best_score: float | None = None
+    for columns in range(1, highest + 1):
+        cells: dict[tuple[int, int], tuple[float, float]] = {}
+        for index, point in by_index.items():
+            row = (index - 1) // columns + 1
+            column = (index - 1) % columns + 1
+            cells[(row, column)] = point
+        across: list[tuple[float, float]] = []
+        down: list[tuple[float, float]] = []
+        for (row, column), (ra, dec) in cells.items():
+            right = cells.get((row, column + 1))
+            below = cells.get((row + 1, column))
+            if right is not None:
+                across.append(_sky_step(ra, dec, right[0], right[1]))
+            if below is not None:
+                down.append(_sky_step(ra, dec, below[0], below[1]))
+        if len(across) + len(down) < 2:
+            continue
+        score = _step_spread(across) + _step_spread(down)
+        if across and down:
+            mean_h = (
+                sum(item[0] for item in across) / len(across),
+                sum(item[1] for item in across) / len(across),
+            )
+            mean_v = (
+                sum(item[0] for item in down) / len(down),
+                sum(item[1] for item in down) / len(down),
+            )
+            span_h = (mean_h[0] ** 2 + mean_h[1] ** 2) ** 0.5
+            span_v = (mean_v[0] ** 2 + mean_v[1] ** 2) ** 0.5
+            if span_h < 0.05 or span_v < 0.05:
+                score += 10.0
+            else:
+                aligned = abs(mean_h[0] * mean_v[0] + mean_h[1] * mean_v[1]) / (span_h * span_v)
+                score += aligned * (span_h + span_v)
+        else:
+            score += 0.25
+        if best_score is None or score < best_score:
+            best_score = score
+            best_columns = columns
+    return best_columns
+
+
+def _synthetic_media_group(group_id: str) -> tuple[str, str] | None:
+    text = str(group_id or "").strip()
+    if text.startswith("title:"):
+        title = text[6:].strip()
+        return (title, "") if title else None
+    if "|" in text:
+        title, _, night = text.partition("|")
+        title = title.strip()
+        if title:
+            return title, night.strip()[:10]
+    return None
+
+
+def _geometry_pane_name(record: dict[str, Any]) -> str:
+    name = str(record.get("pane_name") or "").strip()
+    if is_mosaic_pane_name(name):
+        return name
+    return mosaic_pane_folder_name(
+        target_name=str(record.get("title") or name),
+        group_id=str(record.get("group_id") or ""),
+        row=_media_int(record.get("row")),
+        column=_media_int(record.get("column")),
+        grid_columns=_media_int(record.get("grid_columns")),
+    )
+
+
+def _closest_geometry(records: list[dict[str, Any]], captured: str) -> dict[str, Any] | None:
+    if not records:
+        return None
+    if len(records) == 1:
+        return records[0]
+    if captured:
+        chosen = _closest_capture_membership(records, captured)
+        if chosen is not None:
+            return chosen
+        best: dict[str, Any] | None = None
+        best_delta: float | None = None
+        for record in records:
+            delta = _capture_delta_seconds(captured, str(record.get("started_local") or ""))
+            if delta is None:
+                continue
+            if best_delta is None or delta < best_delta:
+                best = record
+                best_delta = delta
+        if best is not None:
+            return best
+    return records[0]
+
+
+def _pick_media_geometry(
+    label: str,
+    captured: str,
+    group_id: str,
+    records: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    name = str(label or "").strip().casefold()
+    if not name:
+        return None
+    named = [record for record in records if _geometry_pane_name(record).casefold() == name]
+    synthetic = _synthetic_media_group(group_id)
+    if synthetic is None and group_id:
+        same = [record for record in named if str(record.get("group_id") or "") == group_id]
+        if same:
+            return _closest_geometry(same, captured)
+    if synthetic is not None:
+        title, night = synthetic
+        titled = [
+            record
+            for record in named
+            if str(record.get("title") or "").casefold() == title.casefold()
+        ]
+        if night:
+            matched = [record for record in titled if _night_matches(night, str(record.get("night") or ""))]
+            if matched:
+                titled = matched
+        if titled:
+            return _closest_geometry(titled, captured)
+    if not named:
+        return None
+    if captured:
+        chosen = _closest_capture_membership(named, captured)
+        if chosen is not None:
+            return chosen
+    groups = {str(record.get("group_id") or "") for record in named if record.get("group_id")}
+    if len(groups) == 1:
+        return _closest_geometry(named, captured)
+    return None
+
+
+def _known_media_grid(group_id: str, records: list[dict[str, Any]]) -> tuple[int, int]:
+    synthetic = _synthetic_media_group(group_id)
+    rows = 0
+    columns = 0
+    for record in records:
+        if synthetic is None:
+            if group_id and str(record.get("group_id") or "") != group_id:
+                continue
+        else:
+            title, night = synthetic
+            if str(record.get("title") or "").casefold() != title.casefold():
+                continue
+            if night and not _night_matches(night, str(record.get("night") or "")):
+                continue
+        rows = max(rows, _media_int(record.get("grid_rows")))
+        columns = max(columns, _media_int(record.get("grid_columns")))
+    return rows, columns
+
+
+def _pane_cell(index: int, columns: int) -> tuple[int, int]:
+    cols = max(1, int(columns))
+    return (index - 1) // cols + 1, (index - 1) % cols + 1
+
+
+def _shots_for_folder(folder: str, shots: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    if not shots:
+        return {}
+    found = shots.get(folder)
+    if isinstance(found, dict):
+        return found
+    session = album_session_dir(folder)
+    found = shots.get(session) if session else None
+    return found if isinstance(found, dict) else {}
+
+
+def _prefer_media_pane(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """Keep the pane that actually stacked, then the one closest to the planned start."""
+    try:
+        left_stacked = int(left.get("shots_stacked"))
+    except (TypeError, ValueError):
+        left_stacked = -1
+    try:
+        right_stacked = int(right.get("shots_stacked"))
+    except (TypeError, ValueError):
+        right_stacked = -1
+    if left_stacked == 0 and right_stacked > 0:
+        return right
+    if right_stacked == 0 and left_stacked > 0:
+        return left
+    left_delta = _capture_delta_seconds(str(left.get("stamp") or ""), str(left.get("started_local") or ""))
+    right_delta = _capture_delta_seconds(str(right.get("stamp") or ""), str(right.get("started_local") or ""))
+    if left_delta is not None and right_delta is not None and left_delta != right_delta:
+        return left if left_delta < right_delta else right
+    if str(left.get("stamp") or "") != str(right.get("stamp") or ""):
+        return left if str(left.get("stamp") or "") > str(right.get("stamp") or "") else right
+    return left
+
+
+def plan_media_stitch(
+    members: list[dict[str, Any]],
+    records: list[dict[str, Any]],
+    local_files: list[Path | str],
+    ip: str,
+    group_id: str,
+    *,
+    shots: dict[str, dict[str, Any]] | None = None,
+    shots_checked: bool = False,
+) -> dict[str, Any]:
+    """Choose one image and a grid cell per pane.
+
+    A local stack wins. Otherwise the telescope's stacked.jpg is enough;
+    the individual frames stay on the scope. Row and column come from the
+    saved plan when it matches the folder. A repeated pane keeps the run
+    that stacked. With no plan, pane numbers plus shotsInfo coordinates
+    pick the column count.
+    """
+    notes = shots or {}
+    known_rows, known_columns = _known_media_grid(group_id, records)
+    candidates: list[dict[str, Any]] = []
+    for item in members:
+        if not isinstance(item, dict):
+            continue
+        folder = str(item.get("file_path") or item.get("file_name") or "")
+        label = str(item.get("target") or item.get("file_name") or "").strip()
+        parsed, stamp = album_folder_capture(folder)
+        if not parsed:
+            parsed, stamp = album_folder_capture(label)
+        if parsed:
+            label = parsed
+        info = _shots_for_folder(folder, notes)
+        if info and is_mosaic_pane_name(str(info.get("target") or "")) and not is_mosaic_pane_name(label):
+            label = str(info.get("target") or "").strip()
+        index = mosaic_pane_index(label) or 0
+        record = _pick_media_geometry(label, stamp, group_id, records)
+        row = _media_int(record.get("row")) if record else 0
+        column = _media_int(record.get("column")) if record else 0
+        grid_rows = _media_int(record.get("grid_rows")) if record else 0
+        grid_columns = _media_int(record.get("grid_columns")) if record else 0
+        rotation = _media_number(record.get("rotation_degrees")) if record else 0.0
+        ra = record.get("ra_hours") if record else None
+        dec = record.get("dec_degrees") if record else None
+        captured = record.get("captured") if record else stamp
+        started = str(record.get("started_local") or "") if record else ""
+        if info:
+            if ra is None:
+                ra = info.get("ra_hours")
+            if dec is None:
+                dec = info.get("dec_degrees")
+        if (row < 1 or column < 1) and index >= 1 and grid_columns >= 1:
+            row, column = _pane_cell(index, grid_columns)
+            grid_rows = max(grid_rows, row)
+        elif (
+            (row < 1 or column < 1)
+            and index >= 1
+            and known_columns >= 1
+            and _synthetic_media_group(group_id) is None
+        ):
+            row, column = _pane_cell(index, known_columns)
+            grid_columns = known_columns
+            grid_rows = max(known_rows, row)
+        local = choose_pane_stack(local_files, label)
+        cache = str(item.get("cache_path") or "")
+        if local is None and cache and Path(cache).is_file():
+            local = Path(cache)
+        urls: list[str] = []
+        if local is None:
+            urls = media_pane_remote_stacks(
+                folder,
+                ip,
+                str(item.get("image_url") or ""),
+                str(item.get("thumbnail_url") or ""),
+            )
+        try:
+            shots_stacked = int(info.get("shots_stacked")) if info else -1
+        except (TypeError, ValueError):
+            shots_stacked = -1
+        candidates.append({
+            "label": label,
+            "folder": folder,
+            "stamp": stamp,
+            "index": index,
+            "row": row,
+            "column": column,
+            "grid_rows": grid_rows or row,
+            "grid_columns": grid_columns or column,
+            "rotation_degrees": rotation,
+            "ra_hours": ra,
+            "dec_degrees": dec,
+            "captured": captured,
+            "started_local": started,
+            "local": str(local) if local is not None else "",
+            "urls": urls,
+            "shot_url": media_pane_shots_url(folder, ip),
+            "shots_stacked": shots_stacked,
+        })
+    if shots_checked:
+        points: list[tuple[int, float, float]] = []
+        seen_index: set[int] = set()
+        for candidate in candidates:
+            pane = int(candidate["index"] or 0)
+            if pane < 1 or pane in seen_index:
+                continue
+            if candidate["ra_hours"] is None or candidate["dec_degrees"] is None:
+                continue
+            try:
+                points.append((pane, float(candidate["ra_hours"]), float(candidate["dec_degrees"])))
+            except (TypeError, ValueError):
+                continue
+            seen_index.add(pane)
+        columns = infer_mosaic_columns(points)
+        if columns >= 1:
+            for candidate in candidates:
+                if int(candidate["row"] or 0) >= 1 and int(candidate["column"] or 0) >= 1:
+                    continue
+                pane = int(candidate["index"] or 0)
+                if pane < 1:
+                    continue
+                row, column = _pane_cell(pane, columns)
+                candidate["row"] = row
+                candidate["column"] = column
+                candidate["grid_columns"] = columns
+                candidate["grid_rows"] = max(_media_int(candidate.get("grid_rows")), row)
+    keys: list[tuple[Any, ...]] = []
+    for candidate in candidates:
+        if int(candidate["index"] or 0) >= 1:
+            keys.append(("index", int(candidate["index"])))
+        elif int(candidate["row"] or 0) >= 1:
+            keys.append(("cell", int(candidate["row"]), int(candidate["column"])))
+    duplicate = len(keys) != len(set(keys))
+    missing_cell = any(
+        int(candidate["index"] or 0) >= 1 and int(candidate["row"] or 0) < 1
+        for candidate in candidates
+    )
+    indexed = {int(candidate["index"]) for candidate in candidates if int(candidate["index"] or 0) >= 1}
+    can_infer = missing_cell and len(indexed) >= 3
+    shot_urls = {
+        str(candidate["folder"]): str(candidate["shot_url"])
+        for candidate in candidates
+        if candidate.get("folder") and candidate.get("shot_url")
+    }
+    if not shots_checked and shot_urls and (duplicate or can_infer):
+        return {"panes": [], "needs_shots": True, "shot_urls": shot_urls, "detail": ""}
+    kept: dict[tuple[int, int], dict[str, Any]] = {}
+    for candidate in candidates:
+        row = int(candidate["row"] or 0)
+        column = int(candidate["column"] or 0)
+        if row < 1 or column < 1:
+            continue
+        if not candidate["local"] and not candidate["urls"]:
+            continue
+        key = (row, column)
+        previous = kept.get(key)
+        if previous is None:
+            kept[key] = candidate
+            continue
+        winner = _prefer_media_pane(previous, candidate)
+        loser = candidate if winner is previous else previous
+        extra = [
+            url
+            for url in list(winner.get("fallback_urls") or []) + list(loser.get("urls") or []) + list(loser.get("fallback_urls") or [])
+            if url and url not in list(winner.get("urls") or [])
+        ]
+        winner = dict(winner)
+        winner["fallback_urls"] = extra
+        kept[key] = winner
+    panes = list(kept.values())
+    if len(panes) >= 2:
+        return {"panes": panes, "needs_shots": False, "shot_urls": {}, "detail": ""}
+    with_image = [candidate for candidate in candidates if candidate["local"] or candidate["urls"]]
+    with_cell = [
+        candidate
+        for candidate in candidates
+        if int(candidate["row"] or 0) >= 1 and int(candidate["column"] or 0) >= 1
+    ]
+    if with_image and len(with_cell) < 2:
+        detail = _MEDIA_STITCH_POSITIONS
+    elif len(with_image) < 2:
+        detail = _MEDIA_STITCH_DOWNLOAD
+    elif any(candidate not in with_cell for candidate in with_image):
+        detail = _MEDIA_STITCH_POSITIONS
+    else:
+        detail = _MEDIA_STITCH_DOWNLOAD
+    return {"panes": panes, "needs_shots": False, "shot_urls": {}, "detail": detail}
 
 
 def zoneinfo_from_name(name: str | None) -> ZoneInfo:

@@ -155,8 +155,8 @@ from .services import (
     mosaic_pane_workflow,
     mosaic_member_seconds,
     choose_pane_stack,
-    first_saved_pane,
-    media_pane_remote_stacks,
+    plan_media_stitch,
+    read_shots_info,
     save_http_image,
     custom_mosaic_completed,
     custom_mosaic_follow_on,
@@ -14058,21 +14058,68 @@ class AppBackend(QObject):
         self._replace_media_items(shown)
         self._emit_media()
 
-    def _session_for_media_pane(self, label: str, group_id: str) -> Session | None:
-        name = str(label or "").strip().casefold()
-        if not name:
-            return None
-        matches = [
-            session
-            for session in self.store.sessions.all()
-            if str(session.name or "").strip().casefold() == name
-        ]
-        exact = [session for session in matches if str(session.mosaic.group_id or "") == group_id]
-        if exact:
-            return exact[0]
-        if len(matches) == 1:
-            return matches[0]
-        return None
+    def _media_stitch_records(self) -> list[dict[str, Any]]:
+        """Saved pane cells. History still has them after the session is gone."""
+        owner = str(self._media_device_id or self._selected_device_id or "")
+        rows: list[dict[str, Any]] = []
+
+        def night_for(start: str, device_id: str) -> str:
+            try:
+                return observing_date(start, self._cutoff_hour(), self._zone_for_id(device_id))
+            except (TypeError, ValueError):
+                return ""
+
+        for session in self.store.sessions.all():
+            if owner and session.device_id != owner:
+                continue
+            mosaic = session.mosaic
+            row = int(mosaic.row or 0)
+            column = int(mosaic.column or 0)
+            if row < 1 or column < 1:
+                continue
+            group = str(mosaic.group_id or "")
+            rows.append({
+                "group_id": group,
+                "title": mosaic_group_title(session.target.name or session.name, group),
+                "pane_name": session.name,
+                "night": night_for(str(session.scheduled_start or ""), session.device_id),
+                "started_local": self._local_capture_stamp(str(session.actual_started_at or ""), session.device_id),
+                "row": row,
+                "column": column,
+                "grid_rows": int(mosaic.grid_rows or 0),
+                "grid_columns": int(mosaic.grid_columns or 0),
+                "rotation_degrees": float(mosaic.rotation_degrees or 0),
+                "ra_hours": session.target.ra_hours,
+                "dec_degrees": session.target.dec_degrees,
+                "captured": session.actual_started_at,
+            })
+        for record in self.store.history.all():
+            if owner and record.device_id != owner:
+                continue
+            settings = record.mosaic_settings if isinstance(record.mosaic_settings, dict) else {}
+            row = int(settings.get("row") or 0)
+            column = int(settings.get("column") or 0)
+            if row < 1 or column < 1:
+                continue
+            group = str(record.mosaic_group_id or "")
+            target = str(record.target_name or "")
+            snapshot = record.target_snapshot if isinstance(record.target_snapshot, dict) else {}
+            rows.append({
+                "group_id": group,
+                "title": mosaic_group_title(target, group),
+                "pane_name": target if is_mosaic_pane_name(target) else "",
+                "night": night_for(str(record.scheduled_start or ""), record.device_id),
+                "started_local": self._local_capture_stamp(str(record.actual_started_at or ""), record.device_id),
+                "row": row,
+                "column": column,
+                "grid_rows": int(settings.get("grid_rows") or 0),
+                "grid_columns": int(settings.get("grid_columns") or 0),
+                "rotation_degrees": float(settings.get("rotation_degrees") or 0),
+                "ra_hours": snapshot.get("ra_hours"),
+                "dec_degrees": snapshot.get("dec_degrees"),
+                "captured": record.actual_started_at,
+            })
+        return rows
 
     @Slot(str)
     def stitchMediaGroup(self, group_id: str) -> None:
@@ -14096,62 +14143,30 @@ class AppBackend(QObject):
             members = [item for item in self._media_items if item.get("is_dir")]
         files = self._album_stack_files()
         ip = self._media_telescope_ip()
-        pending: list[tuple[Any, ...]] = []
-        found_file = False
+        records = self._media_stitch_records()
+        prepared: list[dict[str, Any]] = []
         for item in members:
-            label = str(item.get("target") or item.get("file_name") or "").strip()
-            folder = str(item.get("file_path") or item.get("file_name") or "")
+            copy = dict(item)
+            label = str(copy.get("target") or copy.get("file_name") or "").strip()
+            folder = str(copy.get("file_path") or copy.get("file_name") or "")
             parsed, _stamp = album_folder_capture(folder)
             if not parsed:
                 parsed, _stamp = album_folder_capture(label)
-            if parsed:
-                label = parsed
-            local = self._stack_for_pane(label, files)
-            if local is not None:
-                found_file = True
-            session = self._session_for_media_pane(label, group)
-            mosaic = session.mosaic if session is not None else None
-            row = int(mosaic.row or 0) if mosaic is not None else 0
-            column = int(mosaic.column or 0) if mosaic is not None else 0
-            urls: list[str] = []
-            cache = ""
-            if local is None:
-                urls = media_pane_remote_stacks(
-                    folder,
-                    ip,
-                    str(item.get("image_url") or ""),
-                    str(item.get("thumbnail_url") or ""),
-                )
-                cache = self._media_cached_pane_path(group, mosaic_pane_number(mosaic, 0, label))
-            if (local is None and not urls and not cache) or row < 1 or column < 1 or mosaic is None or session is None:
-                continue
-            pending.append((
-                mosaic,
-                label,
-                local,
-                session.target.ra_hours,
-                session.target.dec_degrees,
-                session.actual_started_at,
-                urls,
-                cache,
-            ))
-        if len(pending) < 2:
-            if group.startswith("title:") or "|" in group:
-                detail = "Pane positions are not stored for this group" if found_file else "Stacks are not downloaded yet"
-                self._set_stitch("failed", detail, source="media")
+            copy["cache_path"] = self._media_cached_pane_path(group, mosaic_pane_index(parsed or label) or 0)
+            prepared.append(copy)
+        plan = plan_media_stitch(prepared, records, files, ip, group)
+        remote = any(not pane.get("local") and pane.get("urls") for pane in plan["panes"])
+        if plan["needs_shots"] or remote:
+            self._fetch_media_stacks(plan, group, tile, records, prepared, files, ip)
+            return
+        if len(plan["panes"]) < 2:
+            detail = str(plan.get("detail") or "Pane positions are not stored for this group")
+            if detail == "Stacks are not downloaded yet" and not (group.startswith("title:") or "|" in group):
+                self.stitchHistoryGroup(group, str(self._media_device_id or self._selected_device_id or ""))
                 return
-            self.stitchHistoryGroup(group, str(self._media_device_id or self._selected_device_id or ""))
+            self._set_stitch("failed", detail, source="media")
             return
-        if any(item[2] is None and item[6] for item in pending):
-            self._fetch_media_stacks(pending, group, tile)
-            return
-        ready = []
-        for mosaic, label, local, ra, dec, captured, _urls, cache in pending:
-            path = local if local is not None else Path(cache)
-            if not path.is_file():
-                continue
-            ready.append((mosaic, label, path, ra, dec, captured))
-        self._queue_media_panes(ready, group, tile)
+        self._queue_planned_media(plan["panes"], group, tile)
 
     def _media_telescope_ip(self) -> str:
         device_id = str(self._media_device_id or self._selected_device_id or "")
@@ -14173,40 +14188,97 @@ class AppBackend(QObject):
         path = folder / f"{int(index)}.jpg"
         return str(path) if path.is_file() else ""
 
-    def _fetch_media_stacks(self, pending: list[tuple[Any, ...]], group: str, tile: dict[str, Any] | None) -> None:
+    def _queue_planned_media(self, panes: list[dict[str, Any]], group: str, tile: dict[str, Any] | None) -> None:
+        ready: list[tuple[Any, ...]] = []
+        for pane in panes:
+            path = str(pane.get("local") or "")
+            if not path or not Path(path).is_file():
+                path = str(pane.get("dest") or "")
+            if not path or not Path(path).is_file():
+                continue
+            try:
+                rotation = float(pane.get("rotation_degrees") or 0)
+            except (TypeError, ValueError):
+                rotation = 0.0
+            mosaic = Mosaic(
+                row=int(pane.get("row") or 0),
+                column=int(pane.get("column") or 0),
+                grid_rows=int(pane.get("grid_rows") or 0),
+                grid_columns=int(pane.get("grid_columns") or 0),
+                rotation_degrees=rotation,
+            )
+            ready.append((
+                mosaic,
+                str(pane.get("label") or ""),
+                Path(path),
+                pane.get("ra_hours"),
+                pane.get("dec_degrees"),
+                pane.get("captured"),
+            ))
+        self._queue_media_panes(ready, group, tile)
+
+    def _fetch_media_stacks(
+        self,
+        plan: dict[str, Any],
+        group: str,
+        tile: dict[str, Any] | None,
+        records: list[dict[str, Any]],
+        members: list[dict[str, Any]],
+        files: list[Path],
+        ip: str,
+    ) -> None:
         self._stitch_token += 1
         token = self._stitch_token
         safe = "".join(ch for ch in group if ch.isalnum())[:48] or "media"
-        folder = self._stitch_cache_dir() / "device-panes"
-        jobs: list[dict[str, Any]] = []
-        for index, (mosaic, label, local, ra, dec, captured, urls, cache) in enumerate(pending):
-            dest = ""
-            if local is None and urls:
-                pane = mosaic_pane_number(mosaic, 0, label)
-                dest = str(folder / f"{safe}-{pane}-{index}.jpg")
-            jobs.append({
-                "mosaic": mosaic,
-                "name": label,
-                "local": str(local) if local is not None else "",
-                "ra": ra,
-                "dec": dec,
-                "captured": captured,
-                "urls": list(urls),
-                "dest": dest,
-                "cache": cache,
-            })
-        self._media_stitch_job = {"token": token, "group": group, "tile": tile, "jobs": jobs}
+        dest_dir = self._stitch_cache_dir() / "device-panes"
+        holder: dict[str, Any] = {"plan": plan, "error": ""}
+        self._media_stitch_job = {"token": token, "group": group, "tile": tile, "holder": holder}
         self._set_stitch("working", "Reading panes", source="media")
 
         def work() -> None:
             try:
-                for job in jobs:
-                    if job["local"] or not job["urls"] or not job["dest"]:
-                        continue
-                    try:
-                        save_http_image(job["urls"], Path(job["dest"]))
-                    except Exception:
-                        logging.getLogger(__name__).info("media stitch skipped a pane", exc_info=True)
+                current = plan
+                if current.get("needs_shots"):
+                    shots: dict[str, dict[str, Any]] = {}
+                    for folder, url in (current.get("shot_urls") or {}).items():
+                        info = read_shots_info(str(url))
+                        if info:
+                            shots[str(folder)] = info
+                    current = plan_media_stitch(
+                        members,
+                        records,
+                        files,
+                        ip,
+                        group,
+                        shots=shots,
+                        shots_checked=True,
+                    )
+                panes: list[dict[str, Any]] = []
+                for pane in current.get("panes") or []:
+                    saved = dict(pane)
+                    saved["dest"] = ""
+                    urls = list(saved.get("urls") or []) + list(saved.get("fallback_urls") or [])
+                    if not saved.get("local") and urls:
+                        dest = dest_dir / f"{safe}-{int(saved.get('row') or 0)}-{int(saved.get('column') or 0)}.jpg"
+                        try:
+                            save_http_image(urls, dest)
+                            saved["dest"] = str(dest)
+                        except Exception:
+                            logging.getLogger(__name__).info("media stitch skipped a pane", exc_info=True)
+                    panes.append(saved)
+                ready = [
+                    pane
+                    for pane in panes
+                    if (pane.get("local") and Path(str(pane.get("local"))).is_file())
+                    or (pane.get("dest") and Path(str(pane.get("dest"))).is_file())
+                ]
+                holder["plan"] = {"panes": ready, "detail": str(current.get("detail") or "")}
+                if len(ready) < 2:
+                    holder["error"] = str(current.get("detail") or "") or "Could not read the panes on the telescope"
+            except Exception:
+                logging.getLogger(__name__).info("media stitch could not read the panes", exc_info=True)
+                if not holder.get("error"):
+                    holder["error"] = "Could not read the panes on the telescope"
             finally:
                 self._mediaStitchFetched.emit(token)
 
@@ -14216,20 +14288,16 @@ class AppBackend(QObject):
         job = self._media_stitch_job
         if token != self._stitch_token or not isinstance(job, dict) or int(job.get("token") or 0) != token:
             return
-        ready: list[tuple[Any, ...]] = []
-        for item in job.get("jobs") or []:
-            chosen = first_saved_pane(
-                str(item.get("local") or ""),
-                str(item.get("dest") or ""),
-                str(item.get("cache") or ""),
-            )
-            if not chosen:
-                continue
-            ready.append((item["mosaic"], item["name"], Path(chosen), item["ra"], item["dec"], item["captured"]))
-        if len(ready) < 2:
-            self._set_stitch("failed", "Could not read the panes on the telescope", source="media")
+        holder = job.get("holder") if isinstance(job.get("holder"), dict) else {}
+        if holder.get("error"):
+            self._set_stitch("failed", str(holder.get("error") or ""), source="media")
             return
-        self._queue_media_panes(ready, str(job.get("group") or ""), job.get("tile") if isinstance(job.get("tile"), dict) else None)
+        plan = holder.get("plan") if isinstance(holder.get("plan"), dict) else {}
+        self._queue_planned_media(
+            list(plan.get("panes") or []),
+            str(job.get("group") or ""),
+            job.get("tile") if isinstance(job.get("tile"), dict) else None,
+        )
 
     def _queue_media_panes(self, pending: list[tuple[Any, ...]], group: str, tile: dict[str, Any] | None) -> None:
         if len(pending) < 2:
