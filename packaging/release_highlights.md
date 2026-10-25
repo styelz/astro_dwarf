@@ -6,3 +6,6 @@ If you find any bugs or have any suggestions for the application, please create 
 
 - **feat:** enhance media stitching and session management in backend, album deletion process with improved batch handling
 
+- **feat:** enhance control socket management and connection handling. Connection retries for 45 seconds.
+
+

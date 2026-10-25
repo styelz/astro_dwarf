@@ -226,6 +226,37 @@ def test_camera_read_reports_auto_and_does_not_clear_it() -> None:
     _assert(isinstance(result, dict) and "auto_params_cleared" not in result, result)
 
 
+def test_white_balance_auto_is_its_own_mode() -> None:
+    from astro_dwarf.domain import wb_preset_name, wb_restore_includes_kelvin, wb_scene_is_auto, wb_set_args
+
+    _assert(wb_preset_name(0) == "Incandescent", "scene 0 stays the first preset")
+    _assert(wb_preset_name(3) == "Sunlight", "scene index")
+    _assert(wb_preset_name("Sunlight") == "Sunlight", "preset name")
+    _assert(wb_scene_is_auto("Auto") and wb_scene_is_auto(10), "auto scene")
+    _assert(not wb_scene_is_auto(0) and not wb_scene_is_auto("Cloudy"), "a preset is not auto")
+    _assert(wb_preset_name(10) == "Auto", "firmware scene 10")
+    _assert(wb_set_args("wb_preset", "Auto") == ("set_wb", [0, 0]), "auto uses mode 0")
+    _assert(wb_set_args("wb_preset", "Cloudy") == ("set_wb_preset", ["Cloudy"]), "preset stays mode 2")
+    _assert(wb_set_args("wb", "4500") == ("set_wb", [4500, 1]), "kelvin uses manual mode")
+    _assert(not wb_restore_includes_kelvin(10), "auto restore must not lock the measured kelvin")
+    _assert(wb_restore_includes_kelvin(0), "a preset restore can still write kelvin")
+    changes = camera_params_to_telemetry(
+        {
+            "mode_id": 1,
+            "cameras": {
+                0: {"wb": {"mode": 0, "value": 3067, "scene": 10}},
+                1: {"wb": {"mode": 2, "value": 2800, "scene": 0}},
+            },
+        }
+    )
+    _assert(changes.get("wb_mode") == 0 and changes.get("wb_scene") == 10, changes)
+    _assert(changes.get("wide_wb_mode") == 2 and changes.get("wide_wb_scene") == 0, changes)
+    preset = camera_params_to_telemetry(
+        {"mode_id": 1, "cameras": {0: {"wb": {"mode": 2, "value": 5000, "scene": 3}}}}
+    )
+    _assert(preset.get("wb_scene") == 3 and preset.get("wb_mode") == 2, preset)
+
+
 def test_photo_auto_sets_the_shutter_mode() -> None:
     _assert(photo_auto_sets_exposure_mode(1, True), "PHOTO auto owns the shutter")
     _assert(not photo_auto_sets_exposure_mode(1, False), "turning PHOTO auto off restores the saved shutter")
@@ -247,4 +278,5 @@ if __name__ == "__main__":
     test_auto_telemetry_does_not_become_manual()
     test_camera_read_reports_auto_and_does_not_clear_it()
     test_photo_auto_sets_the_shutter_mode()
+    test_white_balance_auto_is_its_own_mode()
     print("ok")

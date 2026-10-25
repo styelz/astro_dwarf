@@ -1987,6 +1987,11 @@ WB_PRESET_NAMES: tuple[str, ...] = (
     "Shadow",
     "Twilight",
 )
+# Firmware currentMode 0. The catalog reports sceneValue 10 while that mode is on.
+WB_AUTO_NAME = "Auto"
+WB_AUTO_SCENE = 10
+WB_AUTO_MODE = 0
+WB_MANUAL_MODE = 1
 IR_FILTER_NAMES: tuple[str, ...] = ("VIS Filter", "Astro Filter", "Duo-Band Filter")
 
 
@@ -2039,7 +2044,19 @@ def ir_filter_name_from_index(value: Any, *, mini: bool = False) -> str:
     return {0: "VIS Filter", 1: "Astro Filter", 2: "Duo-Band Filter"}.get(index, "")
 
 
+def wb_scene_is_auto(value: Any) -> bool:
+    """True for the Auto choice and for the scene the camera reports in that mode."""
+    if isinstance(value, str) and value.strip().lower() == WB_AUTO_NAME.lower():
+        return True
+    try:
+        return int(float(value)) == WB_AUTO_SCENE
+    except (TypeError, ValueError):
+        return False
+
+
 def wb_preset_name(value: Any) -> str:
+    if wb_scene_is_auto(value):
+        return WB_AUTO_NAME
     if isinstance(value, str) and value.strip() and not value.strip().isdigit():
         text = value.strip()
         for name in WB_PRESET_NAMES:
@@ -2053,6 +2070,36 @@ def wb_preset_name(value: Any) -> str:
     if 0 <= index < len(WB_PRESET_NAMES):
         return WB_PRESET_NAMES[index]
     return ""
+
+
+def wb_scene_index(value: Any) -> int | None:
+    """Scene number stored for the combo. Auto is the firmware sentinel, not a preset index."""
+    if wb_scene_is_auto(value):
+        return WB_AUTO_SCENE
+    name = wb_preset_name(value)
+    for index, preset in enumerate(WB_PRESET_NAMES):
+        if preset == name:
+            return index
+    return None
+
+
+def wb_set_args(name: str, value: str) -> tuple[str, list[Any]] | None:
+    """Worker call for the white-balance combo or the Kelvin field.
+
+    Mode 0 is automatic. Mode 2 is a scene preset. Mode 1 is a fixed Kelvin.
+    """
+    if name == "wb_preset":
+        if wb_scene_is_auto(value):
+            return "set_wb", [0, WB_AUTO_MODE]
+        return "set_wb_preset", [str(value)]
+    if name == "wb":
+        return "set_wb", [int(value), WB_MANUAL_MODE]
+    return None
+
+
+def wb_restore_includes_kelvin(scene: Any) -> bool:
+    """A saved Auto scene must not be followed by a Kelvin write."""
+    return not wb_scene_is_auto(scene)
 
 
 @dataclass(slots=True)

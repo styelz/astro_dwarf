@@ -1282,15 +1282,30 @@ Item {
                     Layout.fillWidth: true
                     enabled: root.commandEnabled("set_wb_preset")
                     accessibleName: "White-balance preset"
-                    tooltip: "White-balance scene preset for the tele camera."
-                    model: ["Incandescent", "Warm Fluorescent", "Fluorescent", "Sunlight", "Cloudy", "Shadow", "Twilight"]
+                    tooltip: "Auto tracks the light. The other entries are fixed scene presets."
+                    model: ["Auto", "Incandescent", "Warm Fluorescent", "Fluorescent", "Sunlight", "Cloudy", "Shadow", "Twilight"]
                     onActivated: backend.setCameraParam(backend.selectedDeviceId, "wb_preset", currentText)
+                    readonly property int liveMode: {
+                        const value = backend.selectedDevice.camera === "wide"
+                            ? root.scopeTelemetry.wide_wb_mode
+                            : root.scopeTelemetry.wb_mode
+                        const mode = Number(value)
+                        return isFinite(mode) ? mode : -1
+                    }
                     readonly property int liveIndex: {
+                        if (liveMode === 0)
+                            return 0
+                        if (liveMode === 1)
+                            return -1
                         const value = backend.selectedDevice.camera === "wide"
                             ? root.scopeTelemetry.wide_wb_scene
                             : root.scopeTelemetry.wb_scene
-                        const index = Number(value)
-                        return isFinite(index) && index >= 0 && index < count ? index : -1
+                        if (String(value).toLowerCase() === "auto")
+                            return 0
+                        const scene = Number(value)
+                        if (scene === 10)
+                            return 0
+                        return isFinite(scene) && scene >= 0 && scene < 7 ? scene + 1 : -1
                     }
                     onLiveIndexChanged: if (liveIndex >= 0) currentIndex = liveIndex
                 }
@@ -1301,7 +1316,7 @@ Item {
                     enabled: root.commandEnabled("set_wb")
                     placeholderText: "Kelvin 2800–7500"
                     accessibleName: "White-balance Kelvin"
-                    tooltip: "Color temperature in Kelvin (2800–7500).\nOverrides the scene preset."
+                    tooltip: "Fixed color temperature in Kelvin (2800–7500).\nLeaves Auto and selects this temperature."
                     readonly property string liveValue: {
                         const value = backend.selectedDevice.camera === "wide"
                             ? root.scopeTelemetry.wide_wb_value

@@ -455,6 +455,9 @@ def camera_params_to_telemetry(result: Any, model_id: str = "3") -> dict[str, An
         wb_scene = _as_int(white_balance.get("scene"))
         if wb_scene is not None:
             changes[f"{prefix}wb_scene"] = wb_scene
+        wb_mode = _as_int(white_balance.get("mode", white_balance.get("currentMode")))
+        if wb_mode is not None:
+            changes[f"{prefix}wb_mode"] = wb_mode
         for name in ("brightness", "contrast", "saturation", "hue", "sharpness"):
             number = _as_int(values.get(name))
             if number is not None:

@@ -100,6 +100,10 @@ from .domain import (
     default_device_name,
     is_first_device_setup,
     wb_preset_name,
+    wb_restore_includes_kelvin,
+    wb_scene_index,
+    wb_scene_is_auto,
+    wb_set_args,
     next_device_color,
     normalize_device_color,
     parse_mosaic_pa,
@@ -12568,11 +12572,13 @@ class AppBackend(QObject):
             have = telemetry.get("auto_calibration")
             add("auto_calibration", settings.auto_calibration, "true" if have is True else "false")
         if push_camera:
-            preset = wb_preset_name(settings.wide_wb_scene if wide else settings.wb_scene)
+            saved_scene = settings.wide_wb_scene if wide else settings.wb_scene
+            preset = wb_preset_name(saved_scene)
             have_preset = wb_preset_name(telemetry.get(f"{prefix}wb_scene") if wide else telemetry.get("wb_scene"))
             if preset and preset != have_preset:
                 steps.append(("wb_preset", preset, default_camera))
-            add("wb", settings.wide_wb_value if wide else settings.wb_value, telemetry.get(f"{prefix}wb_value") if wide else telemetry.get("wb_value"))
+            if wb_restore_includes_kelvin(saved_scene):
+                add("wb", settings.wide_wb_value if wide else settings.wb_value, telemetry.get(f"{prefix}wb_value") if wide else telemetry.get("wb_value"))
             add("brightness", settings.wide_brightness if wide else settings.brightness, telemetry.get(f"{prefix}brightness") if wide else telemetry.get("brightness"))
             add("contrast", settings.wide_contrast if wide else settings.contrast, telemetry.get(f"{prefix}contrast") if wide else telemetry.get("contrast"))
             add("saturation", settings.wide_saturation if wide else settings.saturation, telemetry.get(f"{prefix}saturation") if wide else telemetry.get("saturation"))
@@ -12782,10 +12788,11 @@ class AppBackend(QObject):
                         callback(True, None)
                     return False
                 operation, args = "set_ir", [value]
-            elif name == "wb_preset":
-                operation, args = "set_wb_preset", [value]
-            elif name == "wb":
-                operation, args = "set_wb", [int(value), 0]
+            elif name in {"wb_preset", "wb"}:
+                spec = wb_set_args(name, value)
+                if spec is None:
+                    raise ValueError(name)
+                operation, args = spec
             elif name in {"brightness", "contrast", "saturation", "hue", "sharpness"}:
                 operation, args = f"set_{name}", [int(value)]
             elif name == "burst_count":
@@ -12886,9 +12893,16 @@ class AppBackend(QObject):
         elif name == "auto_calibration":
             self._patch_control_settings(device_id, auto_calibration=value)
         elif name == "wb_preset":
-            self._patch_control_settings(device_id, **({"wide_wb_scene" if wide else "wb_scene": value}))
+            scene = wb_scene_index(value)
+            scene_key = "wide_wb_scene" if wide else "wb_scene"
+            mode_key = "wide_wb_mode" if wide else "wb_mode"
+            stored = str(scene) if scene is not None else value
+            self._patch_control_settings(device_id, **({scene_key: stored}))
+            if scene is not None:
+                self._on_telemetry(device_id, {scene_key: scene, mode_key: 0 if wb_scene_is_auto(scene) else 2})
         elif name == "wb":
             self._patch_control_settings(device_id, **({"wide_wb_value" if wide else "wb_value": value}))
+            self._on_telemetry(device_id, {"wide_wb_mode" if wide else "wb_mode": 1})
         elif name in {"brightness", "contrast", "saturation", "hue", "sharpness"}:
             self._patch_control_settings(device_id, **({f"wide_{name}" if wide else name: value}))
         if name in {"exposure", "gain", "ir", "count"}:
