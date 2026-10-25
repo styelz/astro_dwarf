@@ -457,6 +457,7 @@ ColumnLayout {
         ThemePreview {
             Layout.columnSpan: 3
             Layout.fillWidth: true
+            visible: !iface.themeLocked
             highlightRole: iface.tintRole
             onRolePicked: function (key) { iface.tintRole = key }
         }

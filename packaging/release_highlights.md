@@ -1,6 +1,5 @@
 <u>Work In Progress Release</u>
 
-
 If you find any bugs or have any suggestions for the application, please create an issue here:
 [https://github.com/styelz/astro_dwarf/issues/new/choose](https://github.com/styelz/astro_dwarf/issues/new/choose)
 
@@ -8,4 +7,6 @@ If you find any bugs or have any suggestions for the application, please create 
 
 - **feat:** enhance control socket management and connection handling. Connection retries for 45 seconds.
 
+- **feat:** update white balance handling and introduce auto mode
 
+- **feat:** update InterfaceSettings to conditionally display theme preview

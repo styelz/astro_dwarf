@@ -428,8 +428,147 @@ def test_astro_edits_stay_on_astro() -> None:
         host.restore()
 
 
+def _create_interface_page():
+    app = _app()
+    engine = QQmlEngine()
+    engine.addImportPath(str(QML_DIR))
+
+    class _Backend(QObject):
+        pass
+
+    backend = _Backend()
+    engine._backend = backend
+    engine.rootContext().setContextProperty("backend", backend)
+    source = """
+import QtQuick
+import ".."
+import "../pages"
+Item {
+    id: root
+    width: 980
+    height: 1600
+    property string savedSnapshot: ""
+    property string namesSnapshot: ""
+    property string deletedSnapshot: ""
+    property string paletteSnapshot: ""
+    property real hueSnapshot: 0
+    property real brightSnapshot: 0
+    property string activeSnapshot: ""
+    property bool builtinApplied: false
+    property bool customApplied: false
+
+    function capture() {
+        root.savedSnapshot = Theme.savedThemesJson
+        root.namesSnapshot = Theme.themeNamesJson
+        root.deletedSnapshot = Theme.deletedExampleThemesJson
+        root.paletteSnapshot = Theme.paletteJson
+        root.hueSnapshot = Theme.hue
+        root.brightSnapshot = Theme.brightness
+        root.activeSnapshot = Theme.activeThemeId
+    }
+
+    function showBuiltin() {
+        root.builtinApplied = Theme.applyTheme("astro")
+    }
+
+    function showCustom() {
+        root.customApplied = Theme.applyTheme("custom1")
+    }
+
+    function restore() {
+        Theme.savedThemesJson = root.savedSnapshot
+        Theme.themeNamesJson = root.namesSnapshot
+        Theme.deletedExampleThemesJson = root.deletedSnapshot
+        Theme.paletteJson = root.paletteSnapshot
+        Theme.hue = root.hueSnapshot
+        Theme.brightness = root.brightSnapshot
+        Theme.activeThemeId = root.activeSnapshot
+    }
+
+    InterfaceSettings {
+        id: page
+        width: root.width
+    }
+
+    Component.onCompleted: root.capture()
+}
+"""
+    component = QQmlComponent(engine)
+    component.setData(source.encode("utf-8"), QUrl.fromLocalFile(str(QML_DIR / "pages" / "interface_preview_probe.qml")))
+    item = component.create()
+    errors = [err.toString() for err in component.errors()]
+    _assert(component.status() == QQmlComponent.Status.Ready and item is not None,
+            "interface page failed: " + "; ".join(errors))
+    app.processEvents()
+    return engine, component, item
+
+
+def _page(root):
+    from PySide6.QtQuick import QQuickItem
+
+    page = root.findChild(QQuickItem, "interfaceSettings")
+    _assert(page is not None, "missing interface settings")
+    return page
+
+
+def _visual(root, name: str):
+    stack = [_page(root)]
+    while stack:
+        item = stack.pop()
+        if item.objectName() == name:
+            return item
+        stack.extend(item.childItems())
+    _assert(False, "missing " + name)
+    return None
+
+
+def _colours_visible(root) -> bool:
+    stack = [_page(root)]
+    while stack:
+        item = stack.pop()
+        if str(item.property("text") or "") == "COLOURS":
+            group = item.parentItem()
+            if group is not None and group.parentItem() is not None:
+                group = group.parentItem()
+            return bool(group.property("visible"))
+        stack.extend(item.childItems())
+    _assert(False, "missing COLOURS group")
+    return False
+
+
+def test_theme_preview_hides_until_custom_theme() -> None:
+    _engine, _component, host = _create_interface_page()
+    try:
+        host.showBuiltin()
+        _app().processEvents()
+        _assert(host.property("builtinApplied") is True, "astro theme did not apply")
+        preview = _visual(host, "themePreview")
+        save_as = _visual(host, "themeSaveAs")
+        zoom = _visual(host, "appZoom")
+        astro = _visual(host, "themeChip_astro")
+        custom = _visual(host, "themeChip_custom1")
+        _assert(preview.property("visible") is False, "preview stayed visible on a built-in theme")
+        _assert(_colours_visible(host) is False, "colour editor showed on a built-in theme")
+        _assert(save_as.property("visible") is True, "save as hid with the built-in theme")
+        _assert(zoom.property("visible") is True, "zoom hid with the built-in theme")
+        _assert(astro.property("visible") is True, "built-in chip hid")
+        _assert(custom.property("visible") is True, "custom chip hid while a built-in theme was selected")
+        host.showCustom()
+        _app().processEvents()
+        _assert(host.property("customApplied") is True, "custom theme did not apply")
+        _assert(preview.property("visible") is True, "preview hid on a custom theme")
+        _assert(_colours_visible(host) is True, "colour editor hid on a custom theme")
+        _assert(save_as.property("visible") is True, "save as hid with the custom theme")
+        _assert(zoom.property("visible") is True, "zoom hid with the custom theme")
+        _assert(astro.property("visible") is True, "built-in chip hid after selecting a custom theme")
+        _assert(custom.property("visible") is True, "custom chip hid after it was selected")
+    finally:
+        host.restore()
+
+
 if __name__ == "__main__":
     test_preview_samples_select_their_colours()
     test_builtin_theme_update_keeps_one_chip()
     test_astro_edits_stay_on_astro()
+    test_theme_preview_hides_until_custom_theme()
     print("ok")
