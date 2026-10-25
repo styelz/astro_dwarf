@@ -2324,6 +2324,16 @@ def _host_reachable(host: str, port: int = 8092, timeout: float = 1.5) -> bool:
         return False
 
 
+# Control websocket. The stream preview uses 8092; connect does not.
+_CONTROL_PORT = 9900
+# Lab DWARF at 192.168.1.42 on 25 Oct 2026: port 9900 accepted again 48.3 s
+# after reboot was confirmed. A few extra seconds cover a head that wakes
+# at the end of that sample. Three probes land on this window, and the
+# last one is the give-up.
+_CONNECT_STARTUP_S = 52.0
+_CONNECT_STARTUP_TRIES = 3
+
+
 def _choose_hotspot_ssid(preferred: str) -> str:
     visible = _visible_wifi_ssids()
     candidates: list[str] = []
@@ -2718,8 +2728,19 @@ def _mark_disconnected() -> None:
         _tap.reset()
 
 
+def _control_client_open() -> bool:
+    """True once the SDK websocket has finished opening."""
+    client, loop = _sdk_socket()
+    if client is None or loop is None:
+        return False
+    return bool(getattr(client, "start_client", False))
+
+
 def _safe_disconnect() -> None:
     _mark_disconnected()
+    # No client was opened, so there is nothing for the SDK to close.
+    if not _control_client_open():
+        return
     try:
         sdk_call("disconnect")
     except Exception:
@@ -2761,17 +2782,27 @@ def _raise_if_device_occupied() -> None:
     raise RuntimeError(DEVICE_OCCUPIED_MESSAGE)
 
 
-def _claim_host() -> None:
-    """Ask firmware for master lock. V3 often ACKs with no payload."""
+def _claim_host() -> bool:
+    """Ask firmware for master lock.
+
+    False means the control socket never opened, so the handshake must stop.
+    A live DWARF 3 often ACKs the lock with no payload; that still continues.
+    """
     try:
-        if sdk_call("host_master") is False:
-            if device_occupied():
-                return
-            log("MASTER LOCK: no response (expected on V3). Continuing.", "warning")
+        result = sdk_call("host_master")
     except NotImplementedError as exc:
         log(str(exc), "warning")
+        return True
     except Exception as exc:
         log(f"MASTER LOCK skipped: {exc}", "warning")
+        return _control_client_open()
+    if result is False:
+        if device_occupied():
+            return True
+        if not _control_client_open():
+            return False
+        log("MASTER LOCK: no response (expected on V3). Continuing.", "warning")
+    return True
 
 
 def _handshake() -> dict[str, Any] | None:
@@ -2780,7 +2811,8 @@ def _handshake() -> dict[str, Any] | None:
         # Reboot/power-down POWER_OFF arrives after the disconnect reset.
         # Start this link clean so a later connect does not replay it.
         _tap.reset()
-    _claim_host()
+    if not _claim_host():
+        return None
     _raise_if_device_occupied()
     _check_connect_cancelled()
     if sdk_call("time") is False:
@@ -2799,7 +2831,8 @@ def _handshake() -> dict[str, Any] | None:
         # A leftover websocket from this app, or the first lock arriving
         # before we were assigned host, can report follower on connect.
         log("Device reported follower mode; retrying master lock", "debug")
-        _claim_host()
+        if not _claim_host():
+            return None
         try:
             sdk_call("device_state")
         except NotImplementedError as exc:
@@ -2881,6 +2914,35 @@ def provision_bluetooth() -> str:
     return ip
 
 
+def _wait_for_control_port(ip: str) -> bool:
+    """Probe the control port up to three times across one reboot.
+
+    The last probe is the measured ready time. A port that accepts sooner
+    stops the wait. A miss before the last try says the telescope may
+    still be starting.
+    """
+    tries = _CONNECT_STARTUP_TRIES
+    if tries < 1:
+        return False
+    started = time.monotonic()
+    gap = _CONNECT_STARTUP_S / (tries - 1) if tries > 1 else 0.0
+    for attempt in range(1, tries + 1):
+        _check_connect_cancelled()
+        if _host_reachable(ip, _CONTROL_PORT, 1.5):
+            return True
+        if attempt >= tries:
+            return False
+        log(
+            f"The telescope at {ip} may still be starting up. Retrying ({attempt}/{tries})…",
+            "warning",
+        )
+        target = started + gap * attempt
+        remaining = target - time.monotonic()
+        if remaining > 0 and _stop.wait(remaining):
+            _check_connect_cancelled()
+    return False
+
+
 def connect() -> bool | dict[str, Any]:
     # Mark in-flight even if stdin already did, so disconnect can abort this
     # call. A leftover session stop must not abort a fresh connect; a cancel
@@ -2904,7 +2966,7 @@ def _connect() -> bool | dict[str, Any]:
         log(f"Connecting to {ip}…")
         if ip == _AP_IP and not _host_reachable(ip):
             _ensure_hotspot_link(ip)
-        telemetry = _handshake()
+        telemetry = _handshake() if _wait_for_control_port(ip) else None
         if telemetry is not None:
             return {"ip_address": ip, "telemetry": telemetry}
         _check_connect_cancelled()
