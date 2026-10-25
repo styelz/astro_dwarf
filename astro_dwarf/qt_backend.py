@@ -1121,9 +1121,9 @@ PREVIEW_TRACKING_BLOCK_MESSAGE = "Tracking must be stopped before live preview w
 def preview_tracking_blocks_live_view(telemetry: dict[str, Any] | None) -> bool:
     """True when sidereal tracking is holding the finished stack's tele encoder.
 
-    Live view has to enter PHOTO to leave that JPEG, and PHOTO drops tracking.
-    GoLive and enter-camera leave the port open and send no frames. A running
-    capture, a slew, and a tele camera already on RTSP can still show a picture.
+    GoLive releases that capture and enter-camera restarts tele RTSP without
+    dropping sidereal tracking.  Used to route the preview start through
+    go_live + enter_camera instead of the photo-mode path.
     """
     snap = telemetry or {}
     if str(snap.get("tracking_state") or "") != "running":
@@ -1155,8 +1155,9 @@ def preview_should_skip_go_live(
 
     GoLive ends a capture. After GOTO or tracking the scope is already in
     DSO with RTSP up; GoLive then leaves tele closed. A leftover stacking
-    JPEG is the finished stack's encoder. GoLive releases that capture when
-    tracking is idle. Photo mode then starts tele RTSP, and DSO is restored.
+    JPEG is the finished stack's encoder. GoLive releases that capture
+    regardless of tracking state; enter-camera then restarts tele RTSP
+    without dropping sidereal tracking.
     """
     snap = telemetry or {}
     if snap.get("capture_active") or snap.get("capture_state") == "running":
@@ -1166,7 +1167,7 @@ def preview_should_skip_go_live(
     mode = _shooting_mode_int(snap.get("shooting_mode"))
     if mode in {7, 8, 9, 10} and not snap.get("motors_unhomed"):
         return True
-    if preview_needs_rtsp_restart(snap) and snap.get("tracking_state") != "running":
+    if preview_needs_rtsp_restart(snap):
         return False
     return preview_should_preserve_shooting_mode(telemetry, persisted_mode)
 
@@ -3494,12 +3495,7 @@ class AppBackend(QObject):
         self._track_session_capture(device_id, current)
         self._track_manual_capture(device_id, previous, current)
         self._maybe_resume_held_preview(device_id)
-        if device_id == self._selected_device_id and preview_tracking_blocks_live_view(current):
-            # A start that began before the JPEG report arrived would sit on
-            # STARTING with the RTSP port open and no frames.
-            if self._preview_active and not self._preview_playing:
-                self._block_preview_for_tracking(device_id)
-        elif self._preview_tracking_blocked and device_id == self._selected_device_id:
+        if self._preview_tracking_blocked and device_id == self._selected_device_id:
             self._clear_preview_tracking_block()
         self._maybe_resume_interrupted_session(device_id)
         self._maybe_resume_interrupted_mosaic(device_id)
@@ -8621,9 +8617,6 @@ class AppBackend(QObject):
         if self._device_is_stopping(device_id):
             self.add_log("info", "Live view stays paused while the telescope stops", device_id)
             return
-        if preview_tracking_blocks_live_view(self._device_telemetry.get(device_id)):
-            self._block_preview_for_tracking(device_id)
-            return
         if not self._mosaic_keep_live_sheet(device_id):
             self._dismiss_hud_stitch()
         attach_telemetry = self._device_telemetry.get(device_id) or {}
@@ -10234,11 +10227,18 @@ class AppBackend(QObject):
         return True
 
     def _recover_tele_stack_encoder(self, message: str) -> bool:
-        """Switch to PHOTO when tele RTSP is silent because the encoder is still JPEG."""
+        """Restart tele RTSP when silent because the encoder is still JPEG.
+
+        Without tracking: switch to PHOTO to leave the stacking encoder.
+        With tracking: send GoLive + enter-camera so tracking stays up.
+        """
         if "No frames received" not in str(message or ""):
             return False
         device_id = self._selected_device_id
-        if not preview_stack_encoder_blocks_tele(self._device_telemetry.get(device_id)):
+        telemetry = self._device_telemetry.get(device_id)
+        if preview_tracking_blocks_live_view(telemetry):
+            return self._restart_tele_for_tracking(device_id)
+        if not preview_stack_encoder_blocks_tele(telemetry):
             return False
         device = self._device_by_id(device_id)
         worker = self._workers.get(device_id)
@@ -10258,6 +10258,45 @@ class AppBackend(QObject):
             self._open_secondary_stream(token, "tele", tele_url)
 
         return self._switch_preview_to_photo(device_id, token, done)
+
+    def _restart_tele_for_tracking(self, device_id: str) -> bool:
+        """Reopen the tele camera while sidereal tracking continues.
+
+        After a finished stack the tele encoder stays on JPEG.  GoLive
+        releases the capture function and enter-camera restarts tele RTSP
+        without dropping sidereal tracking.
+        """
+        if self._preview_stack_encoder_bounce:
+            return False
+        worker = self._workers.get(device_id)
+        device = self._device_by_id(device_id)
+        if not worker or not worker.connected or device is None:
+            return False
+        self._preview_stack_encoder_bounce = True
+        token = self._preview_token
+        tele_url = self._stream_url(device, Camera.TELE)
+        self.add_log(
+            "info",
+            "Tele encoder is still on stacking JPEG — reopening camera while tracking continues",
+            device_id,
+        )
+
+        def after_enter(ok: bool, result: Any) -> None:
+            if token != self._preview_token:
+                return
+            if not ok:
+                self.add_log("warning", f"Could not reopen camera during tracking: {result}", device_id)
+                return
+            if tele_url:
+                self._open_secondary_stream(token, "tele", tele_url)
+
+        def after_go_live(ok: bool, _result: Any) -> None:
+            if token != self._preview_token:
+                return
+            worker.send("enter_camera", callback=after_enter)
+
+        worker.send("go_live", callback=after_go_live)
+        return True
 
     def _on_camera_preview_failed(self, camera: str, message: str) -> None:
         if camera == "tele" and self._recover_tele_stack_encoder(message):

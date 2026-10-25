@@ -426,8 +426,8 @@ def test_preview_restarts_rtsp_after_stacking_jpeg() -> None:
         "DSO leftover JPEG must stay in DSO while the cameras reopen",
     )
     _assert(
-        preview_should_skip_go_live({**leftover, "tracking_state": "running"}),
-        "tracking stays up; GoLive is only for an idle leftover JPEG",
+        not preview_should_skip_go_live({**leftover, "tracking_state": "running"}),
+        "tracking + JPEG leftover still needs GoLive to release the capture",
     )
     _assert(
         not preview_should_skip_go_live(leftover),
@@ -515,15 +515,11 @@ def test_preview_restarts_rtsp_after_stacking_jpeg() -> None:
     )
 
 
-def test_tracking_on_stack_jpeg_blocks_live_view() -> None:
-    _assert(
-        PREVIEW_TRACKING_BLOCK_MESSAGE == "Tracking must be stopped before live preview will work.",
-        PREVIEW_TRACKING_BLOCK_MESSAGE,
-    )
+def test_tracking_on_stack_jpeg_routes_camera_restart() -> None:
     leftover = {"stream_type": "JPEG", "shooting_mode": 2, "tracking_state": "running"}
     _assert(
         preview_tracking_blocks_live_view(leftover),
-        "tracking on a finished stack's tele JPEG must block live view",
+        "tracking on a finished stack's tele JPEG must be detected for camera restart",
     )
     _assert(
         preview_tracking_blocks_live_view({"stream_type": "jpeg", "tracking_state": "running"}),
@@ -531,7 +527,11 @@ def test_tracking_on_stack_jpeg_blocks_live_view() -> None:
     )
     _assert(
         not preview_reopens_via_photo_mode(leftover),
-        "that block must still refuse PHOTO, which would drop the track",
+        "PHOTO would drop the track; enter-camera is used instead",
+    )
+    _assert(
+        not preview_should_skip_go_live(leftover),
+        "GoLive must release the stacking capture even while tracking",
     )
     _assert(
         not preview_tracking_blocks_live_view(
@@ -559,9 +559,9 @@ def test_tracking_on_stack_jpeg_blocks_live_view() -> None:
         not preview_tracking_blocks_live_view(
             {"stream_type": "JPEG", "tracking_state": "running", "goto_state": "solving"}
         ),
-        "a plate-solve is not the stopped-tracking message",
+        "a plate-solve is not a tracking restart",
     )
-    _assert(not preview_tracking_blocks_live_view({}), "missing telemetry is not a tracking block")
+    _assert(not preview_tracking_blocks_live_view({}), "missing telemetry is not a tracking restart")
 
 
 def test_tracking_notice_shows_only_while_blocked() -> None:
@@ -613,7 +613,7 @@ Item {
         message is not None and str(message.property("text") or "") == PREVIEW_TRACKING_BLOCK_MESSAGE,
         "message text",
     )
-    _assert(hint is not None and "TRACK" in str(hint.property("text") or ""), "hint names TRACK")
+    _assert(hint is not None and "restart" in str(hint.property("text") or "").lower(), "hint describes camera restart")
     blocked.setProperty("blocked", False)
     clear.setProperty("blocked", True)
     app.processEvents()
@@ -2149,7 +2149,7 @@ if __name__ == "__main__":
     test_preview_skips_golive_after_tracking()
     test_preview_attaches_when_rtsp_is_already_live()
     test_preview_restarts_rtsp_after_stacking_jpeg()
-    test_tracking_on_stack_jpeg_blocks_live_view()
+    test_tracking_on_stack_jpeg_routes_camera_restart()
     test_tracking_notice_shows_only_while_blocked()
     test_cold_photo_mode_still_enters_the_camera()
     test_photo_jpeg_leftover_skips_blocking_mode_switch()

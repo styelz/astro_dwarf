@@ -1,8 +1,8 @@
 import QtQuick
 import ".."
 
-// Shown on the live view when sidereal tracking still holds the stacking JPEG.
-// Entering PHOTO would restart the picture stream and drop that track.
+// Shown briefly while live view restarts the camera after a finished stack.
+// GoLive releases the capture; enter-camera restarts RTSP without dropping tracking.
 Column {
     id: notice
     spacing: Theme.px(10)
@@ -38,7 +38,7 @@ Column {
         width: parent.width
         wrapMode: Text.Wrap
         horizontalAlignment: Text.AlignHCenter
-        text: "Use TRACK to stop sidereal tracking."
+        text: "Restarting the camera — this should clear momentarily."
         color: Theme.textSecondary
         font.pixelSize: Theme.fontPx(11)
     }
