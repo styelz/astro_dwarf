@@ -10,3 +10,6 @@ If you find any bugs or have any suggestions for the application, please create 
 - **feat:** update white balance handling and introduce auto mode
 
 - **feat:** update InterfaceSettings to conditionally display theme preview
+
+- **feat:** implement auto-stretch functionality for image previews
+

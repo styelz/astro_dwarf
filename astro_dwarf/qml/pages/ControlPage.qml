@@ -318,7 +318,7 @@ Item {
                     model: [
                         {label: "ENDPOINT", value: backend.selectedDevice.ip_address || "—", tone: root.scopeOnline ? Theme.textPrimary : Theme.textSecondary},
                         {label: "SCHEDULER", value: backend.schedulerEnabled ? root.nextSessionCountdown() : "Disarmed", tone: backend.schedulerEnabled ? Theme.success : Theme.textSecondary},
-                        {label: "PREVIEW", value: root.scopeStopping ? (root.scopeStopDetail || "Stopping") : (backend.previewResult ? "Completed stack" : (backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped"))), tone: root.scopeStopping ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary)))},
+                        {label: "PREVIEW", value: root.scopeStopping ? (root.scopeStopDetail || "Stopping") : (backend.previewTrackingBlocked && !backend.previewPlaying ? "Stop tracking" : (backend.previewResult ? "Completed stack" : (backend.previewHeld ? "Paused for session" : (backend.previewActive ? (backend.previewPlaying ? "Live" : backend.previewStatus || "Starting") : "Stopped")))), tone: root.scopeStopping ? Theme.warning : (backend.previewTrackingBlocked && !backend.previewPlaying ? Theme.warning : (backend.previewResult ? Theme.success : (backend.previewPlaying ? Theme.danger : (backend.previewHeld || backend.previewActive ? Theme.warning : Theme.textSecondary))))},
                         {label: "SESSION", value: Util.sessionStepLabel(backend.currentSession, backend.localNow.epoch_ms) || backend.currentSession.current_step || Util.idleScheduleLabel(backend.upcomingSessions, backend.schedulerEnabled, backend.localNow.epoch_ms), tone: backend.currentSession.id ? Theme.accent : Theme.textSecondary},
                         {label: "REMAINING", value: backend.currentSession.id ? Util.durationLabel(Number(backend.currentSession.planned_duration_seconds || 0) * (1 - backend.sessionProgress)) : "—", tone: Theme.textPrimary},
                         {label: "TIMEZONE", value: backend.selectedDevice.timezone_name || "UTC", tone: Theme.textPrimary},
@@ -1705,7 +1705,7 @@ Item {
                     }
                     readonly property bool previewFailed: root.previewFailed
                     readonly property bool previewStartEnabled: backend.selectedDevice.connected && !root.scopeLinking && !root.scopeStopping && (!backend.previewActive || backend.previewPlaying || previewFailed)
-                    readonly property bool startBriefVisible: root.previewStarting && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicActive && !previewHost.panoramaCanvas
+                    readonly property bool startBriefVisible: root.previewStarting && !backend.previewHeld && !backend.previewResult && !backend.previewTrackingBlocked && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.mosaicActive && !previewHost.panoramaCanvas
                     readonly property bool startBriefCompact: height < Theme.px(280)
                     readonly property string actionLabel: {
                         if (!backend.previewActive || backend.previewPlaying)
@@ -2480,11 +2480,27 @@ Item {
                             font.pixelSize: Theme.fontPx(11)
                         }
                     }
+                    Item {
+                        objectName: "previewTrackingNotice"
+                        z: 7
+                        anchors.fill: parent
+                        visible: backend.previewTrackingBlocked && !backend.previewPlaying && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.panoramaCanvas
+                        Rectangle {
+                            anchors.fill: parent
+                            color: Theme.scrim
+                            opacity: 0.55
+                        }
+                        PreviewTrackingNotice {
+                            anchors.centerIn: parent
+                            blocked: parent.visible
+                            message: backend.previewTrackingMessage
+                        }
+                    }
                     Column {
                         z: 5
                         anchors.centerIn: parent
                         spacing: Theme.s2
-                        visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.startBriefVisible && !previewHost.mosaicActive && !previewHost.panoramaCanvas
+                        visible: !backend.previewPlaying && !backend.previewHeld && !backend.previewResult && !backend.previewTrackingBlocked && !root.scopeStopping && !previewHost.awaitingFirstStack && !previewHost.startBriefVisible && !previewHost.mosaicActive && !previewHost.panoramaCanvas
                         Text { anchors.horizontalCenter: parent.horizontalCenter; text: "LIVE VIDEO"; color: Theme.textPrimary; font.pixelSize: Theme.fontLg; font.letterSpacing: 3; font.bold: true }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter

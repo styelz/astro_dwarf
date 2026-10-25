@@ -306,6 +306,7 @@ from .media_preview import (
     DEFAULT_BLACK_PCT,
     DEFAULT_MID,
     DEFAULT_WHITE_PCT,
+    AutoStretchJob,
     CacheStretchJob,
     MediaPreviewSignals,
     is_preview_cache_valid,
@@ -1112,6 +1113,24 @@ def preview_reopens_via_photo_mode(
     if preview_should_restore_dso(telemetry, persisted_mode):
         return True
     return not preview_should_preserve_shooting_mode(telemetry, persisted_mode)
+
+
+PREVIEW_TRACKING_BLOCK_MESSAGE = "Tracking must be stopped before live preview will work."
+
+
+def preview_tracking_blocks_live_view(telemetry: dict[str, Any] | None) -> bool:
+    """True when sidereal tracking is holding the finished stack's tele encoder.
+
+    Live view has to enter PHOTO to leave that JPEG, and PHOTO drops tracking.
+    GoLive and enter-camera leave the port open and send no frames. A running
+    capture, a slew, and a tele camera already on RTSP can still show a picture.
+    """
+    snap = telemetry or {}
+    if str(snap.get("tracking_state") or "") != "running":
+        return False
+    if _preview_capture_running(snap) or telemetry_operation_live(snap):
+        return False
+    return _stream_type_name(snap.get("stream_type")) == "JPEG"
 
 
 def preview_stack_encoder_blocks_tele(telemetry: dict[str, Any] | None) -> bool:
@@ -2709,6 +2728,7 @@ class AppBackend(QObject):
     previewTelePlayingChanged = Signal()
     previewWidePlayingChanged = Signal()
     previewHoldChanged = Signal()
+    previewTrackingBlockedChanged = Signal()
     previewStackingChanged = Signal()
     previewResultChanged = Signal()
     centerTapBusyChanged = Signal()
@@ -2723,6 +2743,7 @@ class AppBackend(QObject):
     enhanceSkyCrushChanged = Signal()
     enhanceCacheChanged = Signal()
     mediaPreviewChanged = Signal()
+    autoStretchParamsChanged = Signal()
     mediaChanged = Signal()
     mediaItemsChanged = Signal()
     appSettingsChanged = Signal()
@@ -2963,6 +2984,7 @@ class AppBackend(QObject):
         self._mac_keyboard_attempts = 0
         self._preview_hold_device_id = ""
         self._preview_hold_target = ""
+        self._preview_tracking_blocked = False
         self._preview_tele_url = ""
         self._preview_wide_url = ""
         self._preview_open_fallback = {"tele": False, "wide": False}
@@ -3002,6 +3024,9 @@ class AppBackend(QObject):
         self._media_preview_failed: set[str] = set()
         self._media_preview_signals = MediaPreviewSignals(self)
         self._media_preview_signals.finished.connect(self._on_media_preview_ready)
+        self._media_preview_signals.auto_ready.connect(self._on_auto_stretch_ready)
+        self._auto_stretch_params: dict[str, tuple[float, float, float]] = {}
+        self._auto_stretch_inflight: set[str] = set()
         self._stitch_pool = QThreadPool(self)
         self._stitch_pool.setMaxThreadCount(1)
         self._stitch_signals = StitchSignals(self)
@@ -3469,6 +3494,13 @@ class AppBackend(QObject):
         self._track_session_capture(device_id, current)
         self._track_manual_capture(device_id, previous, current)
         self._maybe_resume_held_preview(device_id)
+        if device_id == self._selected_device_id and preview_tracking_blocks_live_view(current):
+            # A start that began before the JPEG report arrived would sit on
+            # STARTING with the RTSP port open and no frames.
+            if self._preview_active and not self._preview_playing:
+                self._block_preview_for_tracking(device_id)
+        elif self._preview_tracking_blocked and device_id == self._selected_device_id:
+            self._clear_preview_tracking_block()
         self._maybe_resume_interrupted_session(device_id)
         self._maybe_resume_interrupted_mosaic(device_id)
         self._remember_control_settings(device_id, current)
@@ -8205,6 +8237,16 @@ class AppBackend(QObject):
     def previewHeld(self) -> bool:
         return bool(self._preview_hold_device_id) and self._preview_hold_device_id == self._selected_device_id
 
+    @Property(bool, notify=previewTrackingBlockedChanged)
+    def previewTrackingBlocked(self) -> bool:
+        return self._preview_tracking_blocked
+
+    @Property(str, notify=previewTrackingBlockedChanged)
+    def previewTrackingMessage(self) -> str:
+        if not self._preview_tracking_blocked:
+            return ""
+        return PREVIEW_TRACKING_BLOCK_MESSAGE
+
     @Property(bool, notify=previewStackingChanged)
     def previewStacking(self) -> bool:
         return bool(self._preview_stack_mode)
@@ -8412,6 +8454,58 @@ class AppBackend(QObject):
         self._media_preview_rev += 1
         self.mediaPreviewChanged.emit()
 
+    @Slot(str)
+    def requestAutoStretch(self, url: str) -> None:
+        """Request auto-stretch computation.  Result arrives via autoStretchParamsChanged."""
+        text = canonical_image_url(str(url or "").strip()) or str(url or "").strip()
+        if not text or not stretch_available():
+            return
+        if text in self._auto_stretch_params:
+            self.autoStretchParamsChanged.emit()
+            return
+        if text in self._auto_stretch_inflight:
+            return
+        self._auto_stretch_inflight.add(text)
+        self._media_preview_pool.start(
+            AutoStretchJob(text, text, self._media_preview_dir(), self._media_preview_signals)
+        )
+
+    @Slot(str, result=str)
+    def mediaAutoStretchParams(self, url: str) -> str:
+        """Return JSON ``{"black": …, "white": …, "mid": …}`` or ``""``."""
+        text = canonical_image_url(str(url or "").strip()) or str(url or "").strip()
+        if not text:
+            return ""
+        params = self._auto_stretch_params.get(text)
+        if params is None:
+            return ""
+        return json.dumps({"black": params[0], "white": params[1], "mid": params[2]})
+
+    def _on_auto_stretch_ready(
+        self, canonical_url: str, black: float, white: float, mid: float, key: str
+    ) -> None:
+        canonical_url = str(canonical_url or "")
+        key = str(key or "")
+        self._auto_stretch_inflight.discard(canonical_url)
+        if black < 0 or white < 0 or mid < 0:
+            if key:
+                self._media_preview_failed.add(key)
+            self._media_preview_rev += 1
+            self.mediaPreviewChanged.emit()
+            self.autoStretchParamsChanged.emit()
+            return
+        self._auto_stretch_params[canonical_url] = (float(black), float(white), float(mid))
+        if key:
+            self._media_preview_inflight.discard(key)
+            dest = self._media_preview_dir() / f"{key}.jpg"
+            if is_preview_cache_valid(dest):
+                self._media_preview_failed.discard(key)
+            else:
+                self._media_preview_failed.add(key)
+        self.autoStretchParamsChanged.emit()
+        self._media_preview_rev += 1
+        self.mediaPreviewChanged.emit()
+
     def _enhance_cache_dir(self) -> Path:
         folder = self.store.root / "enhance-cache"
         folder.mkdir(parents=True, exist_ok=True)
@@ -8526,6 +8620,9 @@ class AppBackend(QObject):
             return
         if self._device_is_stopping(device_id):
             self.add_log("info", "Live view stays paused while the telescope stops", device_id)
+            return
+        if preview_tracking_blocks_live_view(self._device_telemetry.get(device_id)):
+            self._block_preview_for_tracking(device_id)
             return
         if not self._mosaic_keep_live_sheet(device_id):
             self._dismiss_hud_stitch()
@@ -8976,8 +9073,45 @@ class AppBackend(QObject):
                 return
             self._openTeleStream.emit(url)
 
+    def _block_preview_for_tracking(self, device_id: str) -> None:
+        """Leave the stacking JPEG alone and say why live view cannot start."""
+        self.add_log(
+            "info",
+            "Live view stays off while tracking holds the stacking encoder",
+            device_id,
+        )
+        if self._preview_active and not self._preview_playing:
+            self._preview_token += 1
+            self._pending_retarget = None
+            self._retarget_timer.stop()
+            self._closePreviewStreams.emit()
+            self._preview_active = False
+            self._preview_tele_playing = False
+            self._preview_wide_playing = False
+            self._preview_tele_url = ""
+            self._preview_wide_url = ""
+            self._preview_open_fallback = {"tele": False, "wide": False}
+            self._preview_stack_encoder_bounce = False
+            self._set_preview_stack_mode(False)
+            self.previewActiveChanged.emit()
+            self.previewTelePlayingChanged.emit()
+            self.previewWidePlayingChanged.emit()
+        if not self._preview_tracking_blocked:
+            self._preview_tracking_blocked = True
+            self.previewTrackingBlockedChanged.emit()
+        self._set_preview_status(PREVIEW_TRACKING_BLOCK_MESSAGE)
+
+    def _clear_preview_tracking_block(self) -> None:
+        if not self._preview_tracking_blocked:
+            return
+        self._preview_tracking_blocked = False
+        self.previewTrackingBlockedChanged.emit()
+        if self._preview_status == PREVIEW_TRACKING_BLOCK_MESSAGE:
+            self._set_preview_status("")
+
     @Slot()
     def stopPreview(self) -> None:
+        self._clear_preview_tracking_block()
         keep_mosaic = self._mosaic_sheet_survives_preview_stop()
         if keep_mosaic:
             self._flush_mosaic_pane_cache()

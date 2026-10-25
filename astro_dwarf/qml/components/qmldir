@@ -35,6 +35,7 @@ SettingGroup 1.0 SettingGroup.qml
 PaletteSwatch 1.0 PaletteSwatch.qml
 ThemePresetChip 1.0 ThemePresetChip.qml
 ThemePreview 1.0 ThemePreview.qml
+PreviewTrackingNotice 1.0 PreviewTrackingNotice.qml
 HudSlider 1.0 HudSlider.qml
 HudSpinBox 1.0 HudSpinBox.qml
 EmptyHint 1.0 EmptyHint.qml

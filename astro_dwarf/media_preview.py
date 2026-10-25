@@ -395,8 +395,65 @@ def write_stretch_preview(
     return dest
 
 
+def compute_auto_stretch(
+    arr,
+) -> tuple[float, float, float]:
+    """Compute optimal stretch percentiles from image pixel statistics.
+
+    Uses a median / MAD approach similar to PixInsight's Screen Transfer
+    Function:
+    - Black: clip at the noise floor (median − 2.8 × MAD)
+    - White: 100 % (never clip highlights in astro images)
+    - Mid: gamma that lifts the normalised median to ≈ 0.25 target brightness
+    """
+    if np is None:
+        return (DEFAULT_BLACK_PCT, 100.0, DEFAULT_MID)
+    work = _downsample(np.ascontiguousarray(arr))
+    finite = work[np.isfinite(work)]
+    if finite.size == 0:
+        return (DEFAULT_BLACK_PCT, 100.0, DEFAULT_MID)
+
+    vmin = float(np.min(finite))
+    vmax = float(np.max(finite))
+    if vmax <= vmin:
+        return (DEFAULT_BLACK_PCT, 100.0, DEFAULT_MID)
+
+    normalised = (finite - np.float32(vmin)) / np.float32(vmax - vmin)
+    med = float(np.median(normalised))
+    mad = float(np.median(np.abs(normalised - np.float32(med))))
+
+    # Shadow clip: median − 2.8 × MAD
+    shadow = max(med - 2.8 * mad, 0.0)
+    clip_value = vmin + shadow * (vmax - vmin)
+
+    sorted_vals = np.sort(finite.ravel())
+    idx = int(np.searchsorted(sorted_vals, clip_value))
+    black_pct = float(idx / sorted_vals.size * 100.0)
+    black_pct = max(0.0, min(12.0, round(black_pct * 10) / 10))
+
+    white_pct = 100.0
+
+    lo = clip_value
+    hi = vmax
+    if hi <= lo:
+        return (black_pct, white_pct, DEFAULT_MID)
+
+    med_val = float(np.median(finite))
+    norm_med = max(1e-6, min(1.0 - 1e-6, (med_val - lo) / (hi - lo)))
+
+    target = 0.25
+    if norm_med >= target:
+        mid_v = max(0.40, min(0.65, norm_med))
+    else:
+        mid_v = math.exp(math.log(0.5) * math.log(norm_med) / math.log(target))
+        mid_v = max(0.15, min(0.65, round(mid_v * 100) / 100))
+
+    return (black_pct, white_pct, mid_v)
+
+
 class MediaPreviewSignals(QObject):
     finished = Signal(str)
+    auto_ready = Signal(str, float, float, float, str)
 
 
 class CacheStretchJob(QRunnable):
@@ -438,3 +495,49 @@ class CacheStretchJob(QRunnable):
             self._signals.finished.emit(self._key)
         except RuntimeError:
             pass
+
+
+class AutoStretchJob(QRunnable):
+    """Load an image, compute optimal stretch params, and cache the preview."""
+
+    def __init__(
+        self,
+        canonical_url: str,
+        url: str,
+        cache_dir: Path,
+        signals: MediaPreviewSignals,
+    ):
+        super().__init__()
+        self._canonical = canonical_url
+        self._url = url
+        self._cache_dir = Path(cache_dir)
+        self._signals = signals
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        try:
+            if not stretch_available():
+                raise RuntimeError("numpy is not installed; cannot preview FITS")
+            arr = load_stretch_array(self._url)
+            black, white, mid = compute_auto_stretch(arr)
+            key = stretch_cache_key(self._url, black, white, mid)
+            dest = self._cache_dir / f"{key}.jpg"
+            if not is_preview_cache_valid(dest):
+                image = apply_stretch(arr, black, white, mid)
+                if image is None or image.isNull():
+                    raise RuntimeError("Auto stretch returned an empty image")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                tmp = dest.with_suffix(".part.jpg")
+                if not QImage(image).save(str(tmp), "JPG", 90):
+                    raise RuntimeError("Could not write auto-stretch preview")
+                tmp.replace(dest)
+            self._signals.auto_ready.emit(self._canonical, black, white, mid, key)
+        except Exception as exc:
+            if isinstance(exc, urllib.error.HTTPError):
+                _log.debug("Auto stretch skipped for %s: HTTP %s", self._canonical, exc.code)
+            else:
+                _log.exception("Auto stretch failed for %s", self._canonical)
+            try:
+                self._signals.auto_ready.emit(self._canonical, -1.0, -1.0, -1.0, "")
+            except RuntimeError:
+                pass

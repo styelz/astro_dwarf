@@ -72,6 +72,8 @@ from astro_dwarf.qt_backend import (
     preview_should_skip_go_live,
     preview_reopens_via_photo_mode,
     preview_stack_encoder_blocks_tele,
+    preview_tracking_blocks_live_view,
+    PREVIEW_TRACKING_BLOCK_MESSAGE,
 )
 from astro_dwarf.stream_preview import (
     LiveFrames,
@@ -511,6 +513,112 @@ def test_preview_restarts_rtsp_after_stacking_jpeg() -> None:
         not preview_stack_encoder_blocks_tele({"stream_type": "RTSP", "shooting_mode": 2}),
         "live tele RTSP is not blocked",
     )
+
+
+def test_tracking_on_stack_jpeg_blocks_live_view() -> None:
+    _assert(
+        PREVIEW_TRACKING_BLOCK_MESSAGE == "Tracking must be stopped before live preview will work.",
+        PREVIEW_TRACKING_BLOCK_MESSAGE,
+    )
+    leftover = {"stream_type": "JPEG", "shooting_mode": 2, "tracking_state": "running"}
+    _assert(
+        preview_tracking_blocks_live_view(leftover),
+        "tracking on a finished stack's tele JPEG must block live view",
+    )
+    _assert(
+        preview_tracking_blocks_live_view({"stream_type": "jpeg", "tracking_state": "running"}),
+        "firmware stream type is case-insensitive",
+    )
+    _assert(
+        not preview_reopens_via_photo_mode(leftover),
+        "that block must still refuse PHOTO, which would drop the track",
+    )
+    _assert(
+        not preview_tracking_blocks_live_view(
+            {"stream_type": "RTSP", "shooting_mode": 2, "tracking_state": "running"}
+        ),
+        "tracking with live tele RTSP can still open",
+    )
+    _assert(
+        not preview_tracking_blocks_live_view({"stream_type": "JPEG", "shooting_mode": 2, "tracking_state": "idle"}),
+        "an idle leftover JPEG still takes the photo-mode restart",
+    )
+    _assert(
+        not preview_tracking_blocks_live_view(
+            {"stream_type": "JPEG", "tracking_state": "running", "capture_state": "running"}
+        ),
+        "a running stack keeps the stacking preview",
+    )
+    _assert(
+        not preview_tracking_blocks_live_view(
+            {"stream_type": "RTSP", "stream_type_wide": "JPEG", "tracking_state": "running"}
+        ),
+        "wide JPEG does not block a tele RTSP picture",
+    )
+    _assert(
+        not preview_tracking_blocks_live_view(
+            {"stream_type": "JPEG", "tracking_state": "running", "goto_state": "solving"}
+        ),
+        "a plate-solve is not the stopped-tracking message",
+    )
+    _assert(not preview_tracking_blocks_live_view({}), "missing telemetry is not a tracking block")
+
+
+def test_tracking_notice_shows_only_while_blocked() -> None:
+    from PySide6.QtCore import QObject, QUrl
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtQml import QQmlComponent, QQmlEngine
+
+    app = QGuiApplication.instance() or QGuiApplication([])
+    engine = QQmlEngine()
+    engine.addImportPath(str(ROOT / "astro_dwarf" / "qml"))
+    source = """
+import QtQuick
+Item {
+    width: 800
+    height: 420
+    PreviewTrackingNotice {
+        objectName: "blockedNotice"
+        anchors.centerIn: parent
+        blocked: true
+        message: "Tracking must be stopped before live preview will work."
+    }
+    PreviewTrackingNotice {
+        objectName: "clearNotice"
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        blocked: false
+        message: "Tracking must be stopped before live preview will work."
+    }
+}
+"""
+    component = QQmlComponent(engine)
+    probe = ROOT / "astro_dwarf" / "qml" / "components" / "preview_tracking_probe.qml"
+    component.setData(source.encode("utf-8"), QUrl.fromLocalFile(str(probe)))
+    host = component.create()
+    errors = [err.toString() for err in component.errors()]
+    _assert(
+        component.status() == QQmlComponent.Status.Ready and host is not None,
+        "notice failed: " + "; ".join(errors),
+    )
+    app.processEvents()
+    blocked = host.findChild(QObject, "blockedNotice")
+    clear = host.findChild(QObject, "clearNotice")
+    _assert(blocked is not None and clear is not None, "both notices must load")
+    _assert(blocked.property("visible") is True, "blocked notice must show on the preview")
+    _assert(clear.property("visible") is False, "the other notice stays hidden")
+    message = blocked.findChild(QObject, "previewTrackingMessage")
+    hint = blocked.findChild(QObject, "previewTrackingHint")
+    _assert(
+        message is not None and str(message.property("text") or "") == PREVIEW_TRACKING_BLOCK_MESSAGE,
+        "message text",
+    )
+    _assert(hint is not None and "TRACK" in str(hint.property("text") or ""), "hint names TRACK")
+    blocked.setProperty("blocked", False)
+    clear.setProperty("blocked", True)
+    app.processEvents()
+    _assert(blocked.property("visible") is False, "clearing the block hides the notice")
+    _assert(clear.property("visible") is True, "the other notice can show on its own")
 
 
 def test_cold_photo_mode_still_enters_the_camera() -> None:
@@ -2041,6 +2149,8 @@ if __name__ == "__main__":
     test_preview_skips_golive_after_tracking()
     test_preview_attaches_when_rtsp_is_already_live()
     test_preview_restarts_rtsp_after_stacking_jpeg()
+    test_tracking_on_stack_jpeg_blocks_live_view()
+    test_tracking_notice_shows_only_while_blocked()
     test_cold_photo_mode_still_enters_the_camera()
     test_photo_jpeg_leftover_skips_blocking_mode_switch()
     test_autofocus_jpeg_mark_clears_when_a_stack_starts()

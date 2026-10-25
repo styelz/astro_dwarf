@@ -632,11 +632,16 @@ Item {
         property bool imageFailed: false
         property bool videoMuted: false
         property real stretchBlack: 1.0
-        property real stretchWhite: 99.8
+        property real stretchWhite: 100.0
         property real stretchMid: 0.32
         property real appliedBlack: 1.0
-        property real appliedWhite: 99.8
+        property real appliedWhite: 100.0
         property real appliedMid: 0.32
+        property real autoBlack: -1
+        property real autoWhite: -1
+        property real autoMid: -1
+        property bool autoRequested: false
+        property bool autoFailed: false
         readonly property bool isVideo: Util.isVideoMedia(mediaPage.selected)
         readonly property bool isPanorama: Util.mediaKind(mediaPage.selected) === "panorama"
         readonly property bool panoramaForSelection: lightbox.isPanorama && backend.panoramaSession === lightbox.selectedKey
@@ -670,7 +675,7 @@ Item {
             return viewerImage.progress
         }
         readonly property string viewerLoadText: isVideo ? "LOADING VIDEO"
-            : (canStretch ? (isFits ? "STRETCHING FITS" : "STRETCHING")
+            : (canStretch ? (autoRequested && autoBlack < 0 ? "AUTO STRETCH" : (isFits ? "STRETCHING FITS" : "STRETCHING"))
                : (enhanceOn ? (viewDeep ? "DEEP CLEAN" : "SMOOTHING") : "LOADING"))
         readonly property bool enhanceOn: lightbox.viewEnhance && !lightbox.canStretch && !lightbox.isPanorama && Util.shouldEnhanceMedia(mediaPage.selected)
         readonly property string selectedKey: String((mediaPage.selected && mediaPage.selected.id) || "")
@@ -690,6 +695,20 @@ Item {
             target: Theme
             function onEnhanceImagesChanged() { lightbox.syncEnhanceFromTheme() }
             function onDeepCleanImagesChanged() { lightbox.syncEnhanceFromTheme() }
+        }
+        Connections {
+            target: backend
+            function onAutoStretchParamsChanged() {
+                if (!lightbox.visible || !lightbox.canStretch || !lightbox.rawUrl)
+                    return
+                if (lightbox.autoBlack >= 0)
+                    return
+                const params = backend.mediaAutoStretchParams(lightbox.rawUrl)
+                if (params)
+                    lightbox.applyAutoParams(params)
+                else if (lightbox.autoRequested)
+                    lightbox.autoFailed = true
+            }
         }
         readonly property bool enhanceFailed: {
             backend.enhanceCacheGeneration
@@ -746,15 +765,64 @@ Item {
             backend.mediaPreviewGeneration
             if (!lightbox.canStretch || !lightbox.rawUrl)
                 return ""
+            if (lightbox.autoRequested && lightbox.autoBlack < 0 && !lightbox.autoFailed)
+                return ""
             return backend.mediaStretchSource(lightbox.rawUrl, lightbox.appliedBlack, lightbox.appliedWhite, lightbox.appliedMid)
         }
         function resetStretch() {
+            autoBlack = -1
+            autoWhite = -1
+            autoMid = -1
+            autoFailed = false
+            autoRequested = true
             stretchBlack = 1.0
-            stretchWhite = 99.8
+            stretchWhite = 100.0
             stretchMid = 0.32
             appliedBlack = 1.0
-            appliedWhite = 99.8
+            appliedWhite = 100.0
             appliedMid = 0.32
+        }
+        function beginAutoStretch() {
+            if (!lightbox.canStretch || !lightbox.rawUrl) {
+                autoRequested = false
+                return
+            }
+            const params = backend.mediaAutoStretchParams(lightbox.rawUrl)
+            if (params) {
+                lightbox.applyAutoParams(params)
+                return
+            }
+            backend.requestAutoStretch(lightbox.rawUrl)
+        }
+        function applyAutoParams(jsonStr) {
+            try {
+                const p = JSON.parse(jsonStr)
+                if (p.black < 0) {
+                    autoFailed = true
+                    return
+                }
+                autoBlack = p.black
+                autoWhite = p.white
+                autoMid = p.mid
+                stretchBlack = p.black
+                stretchWhite = p.white
+                stretchMid = p.mid
+                appliedBlack = p.black
+                appliedWhite = p.white
+                appliedMid = p.mid
+            } catch (e) {
+                autoFailed = true
+            }
+        }
+        function revertToAuto() {
+            if (autoBlack >= 0) {
+                stretchBlack = autoBlack
+                stretchWhite = autoWhite
+                stretchMid = autoMid
+                appliedBlack = autoBlack
+                appliedWhite = autoWhite
+                appliedMid = autoMid
+            }
         }
         function applyStretchSoon() {
             stretchDebounce.restart()
@@ -793,8 +861,12 @@ Item {
                 return "VIDEO"
             if (lightbox.isPanorama)
                 return lightbox.panoramaWorking ? "STITCHING" : (backend.panoramaQuality === "sharp" ? "PANO SHARP" : "PANO")
-            if (lightbox.canStretch)
-                return lightbox.stretchFailed ? "STRETCH FAILED" : (lightbox.isFits ? "FITS" : "STRETCH")
+            if (lightbox.canStretch) {
+                if (lightbox.stretchFailed)
+                    return "STRETCH FAILED"
+                const label = lightbox.isFits ? "FITS" : "STRETCH"
+                return lightbox.autoBlack >= 0 ? label + " AUTO" : label
+            }
             if (lightbox.enhanceFailed)
                 return "ENHANCE FAILED"
             return lightbox.enhanceOn ? "SMOOTHED" : "RAW"
@@ -810,6 +882,7 @@ Item {
             lightbox.resetStretch()
             clipPlayer.stop()
             lightbox.ensurePanorama()
+            lightbox.beginAutoStretch()
         }
         onClosed: clipPlayer.stop()
         onOpened: {
@@ -1212,10 +1285,10 @@ Item {
                             onValueChanged: if (pressed) lightbox.stretchMid = value
                         }
                         HudButton {
-                            objectName: "lightboxFitsReset"
-                            text: "RESET"
-                            tooltip: "Restore the default FITS stretch"
-                            onClicked: lightbox.resetStretch()
+                            objectName: "lightboxFitsAuto"
+                            text: "AUTO"
+                            tooltip: "Recompute optimal stretch from the image histogram"
+                            onClicked: lightbox.revertToAuto()
                         }
                     }
                 }
