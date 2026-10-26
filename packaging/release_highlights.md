@@ -14,3 +14,5 @@ If you find any bugs or have any suggestions for the application, please create 
 - **feat:** implement auto-stretch functionality for image previews
 
 - **feat:** improve handling of live preview not being available after stacking until the tracking is stopped or targer changed.
+
+- **feat:** add handling for calibration frame paths in album processing

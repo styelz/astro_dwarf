@@ -131,6 +131,7 @@ _ALBUM_CATEGORY_NAMES = {
     "videos",
 }
 _ALBUM_SKIP_DIR_NAMES = {
+    "cali_frame",
     "system volume information",
     "thumbnail",
     "thumbnails",
@@ -359,6 +360,8 @@ def album_delete_payload(items: list[dict[str, Any]] | None) -> dict[str, Any]:
             sub_type = 0
         is_dir = item.get("isDir", item.get("is_dir")) is True
         media_type = album_canonical_media_type(file_path, file_name, media_type, is_dir)
+        if album_is_cali_frame_path(file_path, file_name):
+            continue
         if album_is_category_folder_path(file_path, file_name):
             continue
         file_path = album_delete_remote_path(file_path, media_type)
@@ -494,6 +497,12 @@ def album_is_skip_dir(name: str = "") -> bool:
     return not token or token in {".", ".."} or token in _ALBUM_SKIP_DIR_NAMES
 
 
+def album_is_cali_frame_path(path: str = "", name: str = "") -> bool:
+    """True for the calibration-frame folder and everything stored inside it."""
+    text = f"{album_http_path(path)}/{name}".replace("\\", "/")
+    return any(part.upper() == "CALI_FRAME" for part in text.split("/") if part)
+
+
 def album_folder_root(model: DeviceModel | str = "", resolved: str = "") -> str:
     found = album_root_from_path(resolved)
     if found:
@@ -535,6 +544,8 @@ def album_is_astro_session_folder(path: str = "", name: str = "") -> bool:
     label = str(name or PurePosixPath(directory).name).strip()
     if not directory or album_is_category_name(label) or album_is_skip_dir(label):
         return False
+    if album_is_cali_frame_path(directory, label):
+        return False
     return album_is_astro_media(directory, label)
 
 
@@ -570,6 +581,8 @@ def album_is_astro_stack_product(path: str = "", name: str = "") -> bool:
 
 def album_folder_preview_path(folder: str) -> str:
     """Astronomy session folders keep stacked_thumbnail.jpg at the session root."""
+    if album_is_cali_frame_path(folder):
+        return ""
     directory = album_http_path(folder).rstrip("/")
     if album_is_inside_thumbnail_dir(directory):
         directory = album_session_dir(directory)
@@ -580,6 +593,8 @@ def album_folder_preview_path(folder: str) -> str:
 
 def album_folder_preview_fallback_path(folder: str) -> str:
     """Full stacked.jpg used when the session thumbnail is missing."""
+    if album_is_cali_frame_path(folder):
+        return ""
     directory = album_http_path(folder).rstrip("/")
     if album_is_inside_thumbnail_dir(directory):
         directory = album_session_dir(directory)
@@ -596,6 +611,8 @@ def album_item_preview_path(folder: str, name: str, *, is_dir: bool = False) -> 
     JPEG sidecars for the individual TIFF/FITS frames. Photo stills keep the
     firmware Thumbnail/ sidecar with the same file name.
     """
+    if album_is_cali_frame_path(folder, name):
+        return ""
     directory = album_http_path(folder).rstrip("/")
     file_name = str(name or "").replace("\\", "/").split("/")[-1]
     remote = album_join_path(directory, file_name) if file_name else directory
@@ -629,6 +646,8 @@ def album_entry_preview_path(entry: dict[str, Any] | None, folder: str = "") -> 
         return ""
     name = str(entry.get("fileName") or "").strip()
     remote = str(entry.get("filePath") or "").strip()
+    if album_is_cali_frame_path(remote or folder, name):
+        return ""
     is_dir = entry.get("isDir") is True
     session = album_session_dir(remote or name or folder)
     if is_dir or (
@@ -649,6 +668,8 @@ def album_entry_preview_path(entry: dict[str, Any] | None, folder: str = "") -> 
 
 def album_sidecar_thumbnail_path(folder: str, name: str) -> str:
     """Firmware photo thumbs live in Thumbnail/ with the same JPEG/PNG name."""
+    if album_is_cali_frame_path(folder, name):
+        return ""
     file_name = str(name or "").replace("\\", "/").split("/")[-1]
     if not album_is_stack_display_image(file_name):
         return ""
@@ -662,6 +683,8 @@ def album_sidecar_thumbnail_path(folder: str, name: str) -> str:
 
 def album_frame_sidecar_path(folder: str, name: str) -> str:
     """Astro TIFF/FITS frames have JPEG thumbs in Thumbnail/ with a .jpg suffix."""
+    if album_is_cali_frame_path(folder, name):
+        return ""
     file_name = str(name or "").replace("\\", "/").split("/")[-1]
     if not album_is_heavy_preview(file_name):
         return ""
@@ -722,6 +745,8 @@ def album_media_kind(path: str = "", name: str = "", media_type: Any = None) -> 
 
 
 def album_needs_preview_check(path: str = "", name: str = "", media_type: Any = None) -> bool:
+    if album_is_cali_frame_path(path, name):
+        return False
     if album_media_kind(path, name, media_type) in {"burst", "panorama", "astro"}:
         return True
     try:
@@ -770,7 +795,7 @@ def album_delete_walk_path(path: str) -> str:
     every session under them.
     """
     remote = album_http_path(path).rstrip("/")
-    if not remote or album_is_category_folder_path(remote):
+    if not remote or album_is_category_folder_path(remote) or album_is_cali_frame_path(remote):
         return ""
     root = album_root_from_path(remote)
     if root and remote.upper() == root.upper():
@@ -944,7 +969,7 @@ def album_unindexed_listing(
         if not isinstance(entry, dict):
             continue
         remote = album_http_path(str(entry.get("filePath") or entry.get("thumbnailPath") or ""))
-        if not remote or not album_path_in_root(remote, base):
+        if not remote or not album_path_in_root(remote, base) or album_is_cali_frame_path(remote):
             continue
         try:
             media_type = int(entry.get("mediaType") or 0)
@@ -1044,6 +1069,8 @@ def album_listed_file_preview(folder: str, file_name: str, names: list[str] | No
     Stack products stay on the small session thumbnail: stacked.jpg and the
     stacked-16 PNG are the same picture at a much larger size.
     """
+    if album_is_cali_frame_path(folder, file_name):
+        return ""
     listed = {str(item).lower(): str(item) for item in (names or []) if str(item).strip()}
     name = PurePosixPath(str(file_name or "").replace("\\", "/")).name
     lower = name.lower()
@@ -1069,6 +1096,11 @@ def album_apply_listing_preview(entry: dict[str, Any], names: list[str]) -> dict
     remote = str(out.get("filePath") or "").strip()
     thumb = str(out.get("thumbnailPath") or "").strip()
     name = str(out.get("fileName") or "").strip()
+    if album_is_cali_frame_path(remote, name) or album_is_cali_frame_path(thumb):
+        out["thumbnailPath"] = ""
+        out["fileAvailable"] = False
+        out["previewResolved"] = True
+        return out
     folder = album_session_dir(thumb or remote or name)
     preview = album_preview_name(names)
     listed = {str(item).lower(): str(item) for item in names if str(item).strip()}
@@ -1125,6 +1157,8 @@ def album_folder_download_paths(
         if not album_is_media_file(remote, name):
             continue
         path = album_http_path(remote)
+        if album_is_cali_frame_path(path, name):
+            continue
         key = path.upper()
         if not path or key in seen:
             continue
@@ -1148,6 +1182,8 @@ def album_sharpest_tile_folder(entries: list[dict[str, Any]] | None) -> str:
             continue
         remote = str(entry.get("filePath") or entry.get("file_path") or "").strip()
         name = str(entry.get("fileName") or entry.get("name") or PurePosixPath(album_http_path(remote)).name).strip()
+        if album_is_cali_frame_path(remote, name):
+            continue
         if name not in {"1", "2", "3", "4", "5"} or not remote:
             continue
         found.append((int(name), album_http_path(remote)))
@@ -1246,6 +1282,8 @@ def album_stack_result_path(entry: dict[str, Any] | None, listing_names: list[st
         return ""
     remote = str(entry.get("filePath") or "").strip()
     thumb = str(entry.get("thumbnailPath") or "").strip()
+    if album_is_cali_frame_path(remote) or album_is_cali_frame_path(thumb):
+        return ""
     if album_is_stack_display_image(remote):
         return album_http_path(remote)
     if album_is_stack_display_image(thumb):
@@ -1274,6 +1312,11 @@ def choose_latest_astro_stack(
     min_mtime = int(since or 0) - int(skew_s or 0)
     scored: list[tuple[tuple[int, int], dict[str, Any]]] = []
     for entry in entries:
+        if album_is_cali_frame_path(
+            str(entry.get("filePath") or ""),
+            str(entry.get("fileName") or ""),
+        ):
+            continue
         mtime = album_stack_session_mtime(entry)
         if since and mtime and mtime < min_mtime:
             continue

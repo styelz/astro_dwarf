@@ -70,12 +70,14 @@ from .domain import (
     album_sharpest_tile_folder,
     album_model_prefix_candidates,
     album_root_from_entries,
+    album_root_from_path,
     album_unindexed_listing,
     album_http_path,
     album_http_url,
     album_is_astro_media,
     album_is_astro_session_folder,
     album_is_astronomy_category_folder,
+    album_is_cali_frame_path,
     album_is_category_name,
     album_is_media_file,
     album_is_skip_dir,
@@ -6206,6 +6208,8 @@ def _album_resolve_session_previews(ip: str, entries: list[dict[str, Any]]) -> l
         thumb = str(entry.get("thumbnailPath") or "").strip()
         remote = str(entry.get("filePath") or "").strip()
         name = str(entry.get("fileName") or "").strip()
+        if album_is_cali_frame_path(remote or thumb, name):
+            continue
         if entry.get("previewResolved") or not album_needs_preview_check(
             remote or thumb,
             name,
@@ -6510,10 +6514,15 @@ def _album_discover_root(ip: str, entries: list[dict[str, Any]]) -> tuple[str, b
 def _album_confirm_files(ip: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     confirmed: list[dict[str, Any]] = []
     for entry in entries:
+        remote = str(entry.get("filePath") or "").strip()
+        name = str(entry.get("fileName") or "").strip()
+        if album_is_cali_frame_path(remote, name) or album_is_cali_frame_path(
+            str(entry.get("thumbnailPath") or "")
+        ):
+            continue
         if entry.get("isDir"):
             confirmed.append(entry)
             continue
-        remote = str(entry.get("filePath") or "").strip()
         if not remote or not _album_http_exists(ip, remote):
             continue
         updated = dict(entry)
@@ -6528,6 +6537,17 @@ def _album_confirm_files(ip: str, entries: list[dict[str, Any]]) -> list[dict[st
 
 def album_folder_list(folder: str = "") -> dict[str, Any]:
     ip = _device_ip()
+    requested = album_http_path(folder).rstrip("/")
+    if album_is_cali_frame_path(requested):
+        root = album_root_from_path(requested)
+        return {
+            "ip": ip,
+            "directory": requested,
+            "parent": album_folder_parent(requested, root),
+            "root": root,
+            "sessions": [],
+            "notice": "",
+        }
     _album_model_matches()
     api_entries = _album_all_media_infos(ip)
     root, indexed = _album_discover_root(ip, api_entries)
@@ -6651,6 +6671,8 @@ def album_folder_download(folder: str = "", dest_dir: str = "", preview: str = "
     remote_folder = album_http_path(folder).rstrip("/")
     if not remote_folder:
         raise RuntimeError("No session folder to download")
+    if album_is_cali_frame_path(remote_folder):
+        raise RuntimeError("This folder has no files to download")
     listing = album_folder_list(remote_folder)
     entries = listing.get("sessions") if isinstance(listing, dict) else None
     listed = entries if isinstance(entries, list) else []
@@ -6711,6 +6733,8 @@ def astro_session_download(file_path: str = "", dest_dir: str = "") -> dict[str,
     remote = str(file_path or "").strip()
     if not remote:
         raise RuntimeError("No session file path to download")
+    if album_is_cali_frame_path(remote):
+        raise RuntimeError("This folder has no files to download")
     url = _media_url(ip, remote)
     folder = Path(dest_dir) if dest_dir else Path(tempfile.mkdtemp(prefix="astro-dwarf-album-"))
     folder.mkdir(parents=True, exist_ok=True)
