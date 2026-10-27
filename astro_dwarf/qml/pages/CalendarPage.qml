@@ -34,10 +34,15 @@ Item {
     }
     property var contextSession: ({})
     property var contextItems: []
+    property var contextHistory: ({})
     function openSessionMenu(session, items) {
         contextSession = session || ({})
         contextItems = items || []
         sessionMenu.popup()
+    }
+    function openHistoryMenu(item) {
+        contextHistory = item || ({})
+        historyMenu.popup()
     }
     function editItem(item) {
         sessionDialog.openExisting(item)
@@ -854,8 +859,10 @@ Item {
                                             pressedAction: function() { calendarPage.setSingleDay(dayCell.cellDate) }
                                         }
                                         TapHandler { acceptedButtons: Qt.RightButton; onTapped: {
-                                            if (sessionChip.modelData.from_history)
+                                            if (sessionChip.modelData.from_history) {
+                                                calendarPage.openHistoryMenu(sessionChip.modelData)
                                                 return
+                                            }
                                             calendarPage.openSessionMenu(sessionChip.modelData, dayCell.daySessions)
                                         } }
                                     }
@@ -1397,6 +1404,7 @@ Item {
                             delegate: Rectangle {
                                 id: timelineSession
                                 required property var modelData
+                                objectName: "calendar-night-" + modelData.id
                                 property string sessionId: modelData.id
                                 readonly property var slot: {
                                     const _layout = calendarPage.nightLayout
@@ -1504,8 +1512,10 @@ Item {
                                     }
                                 }
                                 TapHandler { acceptedButtons: Qt.RightButton; onTapped: {
-                                    if (timelineSession.modelData.from_history)
+                                    if (timelineSession.modelData.from_history) {
+                                        calendarPage.openHistoryMenu(timelineSession.modelData)
                                         return
+                                    }
                                     calendarPage.openSessionMenu(timelineSession.modelData, calendarPage.nightSessions)
                                 } }
                             }
@@ -1979,8 +1989,10 @@ Item {
                             TapHandler {
                                 acceptedButtons: Qt.RightButton
                                 onTapped: {
-                                    if (daySessionRow.modelData.from_history)
+                                    if (daySessionRow.modelData.from_history) {
+                                        calendarPage.openHistoryMenu(daySessionRow.modelData)
                                         return
+                                    }
                                     calendarPage.openSessionMenu(daySessionRow.modelData, nightPanel.nightSessions)
                                 }
                             }
@@ -2016,6 +2028,31 @@ Item {
         onUnselectAllRequested: {
             calendarPage.selectedIds = ({})
             calendarPage.selectionAnchorId = ""
+        }
+    }
+    HudMenu {
+        id: historyMenu
+        objectName: "calendarHistoryMenu"
+        readonly property bool customMosaic: !!(calendarPage.contextHistory && calendarPage.contextHistory.custom_mosaic)
+        HudMenuItem {
+            objectName: "history-rerun-session"
+            text: historyMenu.customMosaic ? "Re-run mosaic" : "Re-run as session"
+            glyph: "\uE768"
+            enabled: !!(calendarPage.contextHistory && calendarPage.contextHistory.id)
+            accessibleDescription: historyMenu.customMosaic
+                                   ? "Schedule every pane of this mosaic as new sessions"
+                                   : "Schedule this run as a new session"
+            onTriggered: backend.scheduleHistory(String(calendarPage.contextHistory.id || ""))
+        }
+        HudMenuItem {
+            objectName: "history-create-template"
+            text: historyMenu.customMosaic ? "Create mosaic template" : "Create template"
+            glyph: "\uE8C8"
+            enabled: !!(calendarPage.contextHistory && calendarPage.contextHistory.id)
+            accessibleDescription: historyMenu.customMosaic
+                                   ? "Save every pane of this mosaic as one template"
+                                   : "Save this run as a template"
+            onTriggered: backend.templateFromHistory(String(calendarPage.contextHistory.id || ""))
         }
     }
 }

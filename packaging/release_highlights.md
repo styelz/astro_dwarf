@@ -15,3 +15,4 @@ If you find any bugs or have any suggestions for the application, please create 
 - On a narrow window, the calendar title shortens and the control pad scrolls instead of clipping.
 - Added RUN button to Up Next panel first item.
 - Default control page layout no longer clips the STOP SESSION button on the target panel.
+- History sessions on the calendar night view can be replayed or used to create a template.

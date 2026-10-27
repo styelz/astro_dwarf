@@ -190,6 +190,10 @@ from .services import (
     duplicate_session_drafts,
     duplicate_session_scope,
     history_ids_to_discard,
+    history_record_is_custom_mosaic,
+    history_replay_plan,
+    history_replay_sessions,
+    history_replay_templates,
     mosaic_south_up,
     next_free_start,
     observing_date,
@@ -4181,6 +4185,9 @@ class AppBackend(QObject):
             else:
                 data["group_key"] = f"session:{record.id}"
                 data["is_grouped"] = False
+            data["custom_mosaic"] = history_record_is_custom_mosaic(record) or bool(
+                session is not None and session.mosaic.imported_plan and str(session.mosaic.group_id or "")
+            )
             result.append(data)
         return self._decorate_history_groups(result)
 
@@ -15933,6 +15940,88 @@ class AppBackend(QObject):
         if deleted:
             self._emit_history_changed()
             self._toast(f"Deleted {deleted} recorded run{'s' if deleted != 1 else ''}", "success")
+
+    def _history_replay(self, record_id: str) -> tuple[str, list[Session], Device] | None:
+        wanted = str(record_id or "").strip()
+        if not wanted:
+            return None
+        records = list(self.store.history.all())
+        clicked = next((item for item in records if item.id == wanted), None)
+        if clicked is None:
+            return None
+        device = self._schedule_device(clicked.device_id)
+        if device is None:
+            return None
+        mode, sources = history_replay_plan(
+            records,
+            self.store.sessions.all(),
+            wanted,
+            cutoff_hour=self._cutoff_hour(),
+            tz=self._zone_for(device),
+        )
+        if not sources:
+            return None
+        return mode, sources, device
+
+    @Slot(str, result=bool)
+    def scheduleHistory(self, record_id: str) -> bool:
+        """Place a history run on the calendar as planned sessions."""
+        replay = self._history_replay(record_id)
+        if replay is None:
+            self._toast("That history run is no longer available", "warning")
+            return False
+        mode, sources, device = replay
+        tz = self._zone_for(device)
+        now = datetime.now(tz).replace(second=0, microsecond=0)
+        drafts = history_replay_sessions(
+            mode,
+            sources,
+            device_id=device.id,
+            scheduled_start=store_local_iso(now, tz),
+        )
+        if not drafts:
+            self._toast("That history run is no longer available", "warning")
+            return False
+        span = self._duplicate_span(drafts, device, now)
+        start = next_free_start(self._occupied_windows(device.id, set()), now, span)
+        timed = self._time_duplicate_drafts(drafts, device, start)
+        try:
+            self._commit_device_sessions(timed, device)
+        except ValueError as exc:
+            self._toast(str(exc), "warning")
+            return False
+        count = len(timed)
+        if mode == "mosaic":
+            self._toast(
+                f"Scheduled {count} mosaic pane{'s' if count != 1 else ''} on {device.name}",
+                "success",
+            )
+        else:
+            self._toast(f"Scheduled a session on {device.name}", "success")
+        return True
+
+    @Slot(str, result=bool)
+    def templateFromHistory(self, record_id: str) -> bool:
+        """Save a history run as a template. A custom mosaic saves every pane."""
+        replay = self._history_replay(record_id)
+        if replay is None:
+            self._toast("That history run is no longer available", "warning")
+            return False
+        mode, sources, _device = replay
+        templates = history_replay_templates(mode, sources)
+        if not templates:
+            self._toast("That history run is no longer available", "warning")
+            return False
+        saved_ids = []
+        for template in templates:
+            self.store.templates.save(template)
+            saved_ids.append(template.id)
+        self.templatesChanged.emit()
+        if mode == "mosaic":
+            self._toast_templates("Saved mosaic template", saved_ids)
+        else:
+            self._toast_templates("Saved session template", saved_ids)
+        return True
 
     def _duplicate_setup(self, session_id: str, mode: str, device_id: str, name: str = ""):
         source = self.store.sessions.get(session_id)

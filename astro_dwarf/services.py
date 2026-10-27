@@ -24,6 +24,8 @@ from .domain import (
     Session,
     SessionAction,
     album_folder_preview_fallback_path,
+    camera_from_dict,
+    stored_capture_fields,
     album_http_path,
     album_http_url,
     album_is_astro_session_folder,
@@ -5870,6 +5872,462 @@ def history_ids_to_discard(records: list[Any], session_ids: list[str], discard: 
     if not discard:
         return []
     return history_ids_for_sessions(records, session_ids)
+
+
+def history_record_is_custom_mosaic(record: Any) -> bool:
+    """True for an imported pane plan. A firmware scale mosaic is one session."""
+    settings = dict(getattr(record, "mosaic_settings", None) or {})
+    try:
+        rows = int(settings.get("grid_rows") or 0)
+        columns = int(settings.get("grid_columns") or 0)
+    except (TypeError, ValueError):
+        rows = columns = 0
+    if rows >= 1 and columns >= 1:
+        return True
+    group = str(getattr(record, "mosaic_group_id", "") or "").strip()
+    return bool(group) and is_mosaic_pane_name(str(getattr(record, "target_name", "") or ""))
+
+
+def _history_session(sessions: list[Session], record: Any) -> Session | None:
+    session_id = str(getattr(record, "session_id", "") or "")
+    if not session_id:
+        return None
+    for item in sessions:
+        if item.id == session_id:
+            return item
+    return None
+
+
+def _session_is_custom_mosaic(session: Session | None) -> bool:
+    return bool(
+        session is not None
+        and session.mosaic.imported_plan
+        and str(session.mosaic.group_id or "").strip()
+    )
+
+
+def _history_night(record: Any, cutoff_hour: int, tz: Any) -> str:
+    stamp = str(getattr(record, "actual_started_at", None) or getattr(record, "scheduled_start", "") or "")
+    try:
+        return observing_date(stamp, cutoff_hour, tz)
+    except (TypeError, ValueError, OSError):
+        return stamp[:10]
+
+
+def _history_custom_key(record: Any, night: str) -> tuple[str, str, str] | None:
+    if not history_record_is_custom_mosaic(record):
+        return None
+    device_id = str(getattr(record, "device_id", "") or "")
+    group = str(getattr(record, "mosaic_group_id", "") or "").strip()
+    if group:
+        return (device_id, group, night)
+    title = mosaic_group_title(str(getattr(record, "target_name", "") or ""))
+    return (device_id, f"title:{title}", night)
+
+
+def _history_pane_sort(record: Any) -> tuple[int, int, int, str]:
+    settings = dict(getattr(record, "mosaic_settings", None) or {})
+    try:
+        row = int(settings.get("row") or 0)
+        column = int(settings.get("column") or 0)
+    except (TypeError, ValueError):
+        row = column = 0
+    name = str(getattr(record, "target_name", "") or "")
+    if row >= 1 and column >= 1:
+        return (0, row, column, name)
+    return (1, pane_sort_key(name)[0], 0, name)
+
+
+def _history_int(data: dict[str, Any], name: str, default: int) -> int:
+    try:
+        return int(data.get(name) if data.get(name) is not None else default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _history_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number
+
+
+def _workflow_from_history(record: Any, live: Session | None) -> Workflow:
+    raw = dict(getattr(record, "workflow", None) or {})
+    if not raw and live is not None:
+        return live.workflow
+    cleaned: dict[str, Any] = {}
+    for key in Workflow.__dataclass_fields__:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if key.endswith("_seconds"):
+            number = _history_float(value)
+            if number is not None:
+                cleaned[key] = number
+        else:
+            cleaned[key] = bool(value)
+    return Workflow(**cleaned)
+
+
+def _workflow_weight(workflow: Workflow) -> int:
+    return (
+        int(workflow.calibrate)
+        + int(workflow.autofocus)
+        + int(workflow.infinite_focus)
+        + int(workflow.polar_align)
+        + int(workflow.goto)
+        + int(workflow.wait_before_seconds > 0)
+        + int(workflow.wait_after_seconds > 0)
+    )
+
+
+def _camera_from_history(record: Any, live: Session | None) -> CameraSettings:
+    raw = dict(getattr(record, "camera_settings", None) or {})
+    if not raw and live is not None:
+        camera = live.camera
+    else:
+        try:
+            camera = camera_from_dict(raw) if raw else CameraSettings()
+        except (TypeError, ValueError):
+            camera = live.camera if live is not None else CameraSettings()
+    exposure = _history_float(raw.get("exposure_seconds"))
+    if exposure is None or exposure <= 0:
+        exposure = _history_float(getattr(record, "exposure_seconds", None))
+    if exposure is not None and exposure > 0:
+        camera = replace(camera, exposure_seconds=exposure)
+    frames = _history_int(raw, "frame_count", 0)
+    if frames < 1:
+        frames = _history_int({"frame_count": getattr(record, "frame_count", 0)}, "frame_count", 0)
+    if frames >= 1:
+        camera = replace(camera, frame_count=frames)
+    return camera
+
+
+def _mosaic_from_history(data: Any, group_id: str | None) -> Mosaic:
+    raw = dict(data or {})
+    return Mosaic(
+        rows=max(1, _history_int(raw, "rows", 1)),
+        columns=max(1, _history_int(raw, "columns", 1)),
+        rotation_degrees=_history_float(raw.get("rotation_degrees")) or 0.0,
+        horizontal_scale=_history_int(raw, "horizontal_scale", 150),
+        vertical_scale=_history_int(raw, "vertical_scale", 150),
+        group_id=group_id,
+        grid_rows=max(0, _history_int(raw, "grid_rows", 0)),
+        grid_columns=max(0, _history_int(raw, "grid_columns", 0)),
+        row=max(0, _history_int(raw, "row", 0)),
+        column=max(0, _history_int(raw, "column", 0)),
+    )
+
+
+def _target_from_history(record: Any, live: Session | None, name: str) -> Target:
+    snap = dict(getattr(record, "target_snapshot", None) or {})
+    if not snap and live is not None:
+        return replace(live.target, name=name or live.target.name)
+    kind_text = str(snap.get("kind") or TargetKind.EQUATORIAL.value)
+    try:
+        kind = TargetKind(kind_text)
+    except ValueError:
+        kind = TargetKind.EQUATORIAL
+    solar = str(snap.get("solar_name") or "").strip() or None
+    return Target(
+        name=name or str(getattr(record, "target_name", "") or "History"),
+        kind=kind,
+        ra_hours=_history_float(snap.get("ra_hours")),
+        dec_degrees=_history_float(snap.get("dec_degrees")),
+        solar_name=solar if kind == TargetKind.SOLAR else None,
+    )
+
+
+def _action_from_history(record: Any, live: Session | None) -> dict[str, Any]:
+    if live is not None:
+        return stored_capture_fields(live)
+    text = str(getattr(record, "summary", "") or "").strip().upper()
+    action = SessionAction.ASTRO
+    if text.startswith("PHOTO"):
+        action = SessionAction.PHOTO
+    elif text.startswith("VIDEO"):
+        action = SessionAction.VIDEO
+    elif text.startswith("BURST"):
+        action = SessionAction.BURST
+    elif text.startswith("TIMELAPSE"):
+        action = SessionAction.TIMELAPSE
+    return stored_capture_fields({"action": action.value})
+
+
+def _pane_label(record: Any, parent: str) -> str:
+    name = str(getattr(record, "target_name", "") or "")
+    if is_mosaic_pane_name(name):
+        return name
+    settings = dict(getattr(record, "mosaic_settings", None) or {})
+    row = _history_int(settings, "row", 0)
+    column = _history_int(settings, "column", 0)
+    grid_columns = _history_int(settings, "grid_columns", 0)
+    if row >= 1 and column >= 1 and grid_columns >= 1:
+        index = (row - 1) * grid_columns + column
+        return f"{parent} pane {index}"
+    return name or parent or "History"
+
+
+def _session_from_history_record(
+    record: Any,
+    sessions: list[Session],
+    *,
+    mosaic: bool,
+    index: int,
+    setup: Workflow | None,
+    group_id: str | None,
+) -> Session:
+    live = _history_session(sessions, record)
+    if mosaic:
+        parent = mosaic_group_title(
+            str(getattr(record, "target_name", "") or ""),
+            str(getattr(record, "mosaic_group_id", "") or ""),
+        ) or "Mosaic"
+        name = _pane_label(record, parent)
+        workflow = mosaic_pane_workflow(setup or _workflow_from_history(record, live), index)
+        mosaic_value = _mosaic_from_history(getattr(record, "mosaic_settings", {}), group_id)
+        target = _target_from_history(record, live, parent)
+    else:
+        name = str(getattr(record, "target_name", "") or (live.name if live is not None else "") or "History")
+        workflow = _workflow_from_history(record, live)
+        mosaic_value = replace(_mosaic_from_history(getattr(record, "mosaic_settings", {}), None), group_id=None)
+        target = _target_from_history(record, live, name)
+    notes = str(getattr(record, "notes", "") or "")
+    if not notes and live is not None:
+        notes = live.notes
+    return Session(
+        name=name,
+        target=target,
+        device_id=str(getattr(record, "device_id", "") or (live.device_id if live is not None else "")),
+        scheduled_start=str(getattr(record, "scheduled_start", "") or "1970-01-01T00:00"),
+        camera=_camera_from_history(record, live),
+        workflow=workflow,
+        mosaic=mosaic_value,
+        notes=notes,
+        status=SessionStatus.PLANNED,
+        **_action_from_history(record, live),
+    )
+
+
+def _history_pane_slot(record: Any) -> tuple[Any, ...]:
+    """One slot per mosaic cell. A repeated run of that cell is not a new pane."""
+    settings = dict(getattr(record, "mosaic_settings", None) or {})
+    row = _history_int(settings, "row", 0)
+    column = _history_int(settings, "column", 0)
+    if row >= 1 and column >= 1:
+        return ("cell", row, column)
+    index = mosaic_pane_index(str(getattr(record, "target_name", "") or ""))
+    if index:
+        return ("index", index)
+    return ("id", str(getattr(record, "id", "") or ""))
+
+
+def _history_record_rank(record: Any) -> str:
+    return str(
+        getattr(record, "recorded_at", "")
+        or getattr(record, "actual_started_at", "")
+        or getattr(record, "scheduled_start", "")
+        or ""
+    )
+
+
+def _collapse_history_panes(records: list[Any]) -> list[Any]:
+    chosen: dict[tuple[Any, ...], Any] = {}
+    for record in records:
+        slot = _history_pane_slot(record)
+        current = chosen.get(slot)
+        if current is None or _history_record_rank(record) >= _history_record_rank(current):
+            chosen[slot] = record
+    return list(chosen.values())
+
+
+def _session_pane_slot(session: Session) -> tuple[Any, ...]:
+    if session.mosaic.row >= 1 and session.mosaic.column >= 1:
+        return ("cell", session.mosaic.row, session.mosaic.column)
+    index = mosaic_pane_index(session.name)
+    if index:
+        return ("index", index)
+    return ("id", session.id)
+
+
+def _collapse_mosaic_sessions(sessions: list[Session]) -> list[Session]:
+    chosen: dict[tuple[Any, ...], Session] = {}
+    for item in sessions:
+        slot = _session_pane_slot(item)
+        current = chosen.get(slot)
+        if current is None or _workflow_weight(item.workflow) > _workflow_weight(current.workflow):
+            chosen[slot] = item
+    return list(chosen.values())
+
+
+def history_replay_plan(
+    records: list[Any],
+    sessions: list[Session],
+    record_id: str,
+    *,
+    cutoff_hour: int = 12,
+    tz: Any = None,
+) -> tuple[str, list[Session]]:
+    """Sources for one history run.
+
+    A custom mosaic returns every pane of that run. It does not return a
+    single pane. A firmware mosaic and a plain target return one session.
+    """
+    wanted = str(record_id or "").strip()
+    clicked = next((item for item in records if str(getattr(item, "id", "") or "") == wanted), None)
+    if clicked is None:
+        return "session", []
+    live = _history_session(sessions, clicked)
+    custom = history_record_is_custom_mosaic(clicked) or _session_is_custom_mosaic(live)
+    if not custom:
+        if live is not None:
+            return "session", [live]
+        return "session", [
+            _session_from_history_record(
+                clicked, sessions, mosaic=False, index=0, setup=None, group_id=None
+            )
+        ]
+    device_id = str(getattr(clicked, "device_id", "") or "")
+    group = ""
+    if _session_is_custom_mosaic(live):
+        group = str(live.mosaic.group_id or "")
+        device_id = live.device_id
+    if not group:
+        group = str(getattr(clicked, "mosaic_group_id", "") or "").strip()
+    night = _history_night(clicked, cutoff_hour, tz)
+    key = _history_custom_key(clicked, night)
+    if key is None and group:
+        key = (device_id, group, night)
+    members: list[Any] = []
+    for record in records:
+        record_night = _history_night(record, cutoff_hour, tz)
+        record_key = _history_custom_key(record, record_night)
+        same_group = (
+            bool(group)
+            and history_record_is_custom_mosaic(record)
+            and str(getattr(record, "mosaic_group_id", "") or "") == group
+            and str(getattr(record, "device_id", "") or "") == device_id
+            and record_night == night
+        )
+        if record_key == key or same_group:
+            members.append(record)
+    if not members:
+        members = [clicked]
+    members = _collapse_history_panes(members)
+    if group:
+        siblings = [
+            item
+            for item in sessions
+            if item.device_id == device_id
+            and str(item.mosaic.group_id or "") == group
+            and item.mosaic.imported_plan
+        ]
+        clicked_id = str(getattr(clicked, "session_id", "") or "")
+        siblings = _collapse_mosaic_sessions(siblings)
+        if siblings and any(item.id == clicked_id for item in siblings) and len(siblings) >= len(members):
+            ordered = sorted(siblings, key=lambda item: (pane_sort_key(item.name), item.scheduled_start, item.id))
+            return "mosaic", ordered
+    members.sort(key=_history_pane_sort)
+    best = Workflow()
+    best_weight = -1
+    for record in members:
+        workflow = _workflow_from_history(record, _history_session(sessions, record))
+        weight = _workflow_weight(workflow)
+        if weight > best_weight:
+            best = workflow
+            best_weight = weight
+    label = mosaic_group_title(str(getattr(clicked, "target_name", "") or ""), group) or "mosaic"
+    shared = new_mosaic_group_id(label)
+    built = [
+        _session_from_history_record(
+            record,
+            sessions,
+            mosaic=True,
+            index=index,
+            setup=best,
+            group_id=shared,
+        )
+        for index, record in enumerate(members)
+    ]
+    return "mosaic", built
+
+
+def history_replay_sessions(
+    mode: str,
+    sources: list[Session],
+    *,
+    device_id: str,
+    scheduled_start: str,
+) -> list[Session]:
+    """Planned copies. Mosaic mode keeps every pane and assigns a new group."""
+    if not sources:
+        return []
+    owner = str(device_id or sources[0].device_id)
+    start = str(scheduled_start or sources[0].scheduled_start)
+    if mode == "mosaic" and len(sources) > 1:
+        _scope, drafts = duplicate_session_drafts(
+            sources[0],
+            sources,
+            mode="mosaic",
+            device_id=owner,
+            scheduled_start=start,
+        )
+        return drafts
+    if mode == "mosaic":
+        source = sources[0]
+        group = new_mosaic_group_id(source.target.name or source.name)
+        return [replace(
+            source,
+            id=new_id(),
+            device_id=owner,
+            scheduled_start=start,
+            mosaic=replace(source.mosaic, group_id=group),
+            status=SessionStatus.PLANNED,
+            current_step="Waiting",
+            actual_started_at=None,
+            actual_ended_at=None,
+            outcome="",
+            created_at=utc_now(),
+        )]
+    _scope, drafts = duplicate_session_drafts(
+        sources[0],
+        sources,
+        mode="session",
+        device_id=owner,
+        scheduled_start=start,
+    )
+    return drafts
+
+
+def history_replay_templates(mode: str, sources: list[Session]) -> list[SessionTemplate]:
+    """One template, or one template per custom-mosaic pane sharing a group."""
+    if not sources:
+        return []
+    ordered = (
+        sorted(sources, key=lambda item: pane_sort_key(item.name))
+        if mode == "mosaic"
+        else list(sources)
+    )
+    group = new_mosaic_group_id(ordered[0].target.name or ordered[0].name) if mode == "mosaic" else None
+    templates: list[SessionTemplate] = []
+    for source in ordered:
+        mosaic = replace(source.mosaic, group_id=group)
+        templates.append(SessionTemplate(
+            name=source.name or source.target.name or "History",
+            target=source.target,
+            camera=source.camera,
+            workflow=source.workflow,
+            mosaic=mosaic,
+            notes=source.notes,
+            **stored_capture_fields(source),
+        ))
+    return templates
 
 
 def copy_observing_night(
