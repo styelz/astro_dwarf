@@ -326,6 +326,7 @@ from .stream_preview import (
     mosaic_pane_cache_dir,
     port_is_open,
     preview_should_ingest_frame,
+    preview_surface_live,
     preview_window_is_live,
     save_mosaic_pane_cache,
     set_live_frames,
@@ -3063,6 +3064,7 @@ class AppBackend(QObject):
         self._panorama_total = 0
         self._shut_down = False
         self._preview_thread = QThread(self)
+        self._live_view_shown = True
         self._tele_player = StreamPlayer()
         self._wide_player = StreamPlayer()
         self._tele_player.moveToThread(self._preview_thread)
@@ -9905,6 +9907,22 @@ class AppBackend(QObject):
         self._apply_mac_keyboard()
 
     @Slot(bool)
+    def setLiveViewShown(self, shown: bool) -> None:
+        """Stop copying preview frames while the live view page is not current."""
+        self._live_view_shown = bool(shown)
+        self._apply_preview_ingest()
+
+    def _panorama_preview_needed(self) -> bool:
+        telemetry = self._device_telemetry.get(self._selected_device_id) or {}
+        return str(telemetry.get("panorama_state") or "") == "running"
+
+    def _apply_preview_ingest(self) -> None:
+        shown = bool(self._live_view_shown)
+        tele = shown or self._panorama_preview_needed()
+        self._tele_player.setIngestEnabled(tele)
+        self._wide_player.setIngestEnabled(shown)
+
+    @Slot(bool)
     def setMacWebViewTyping(self, enabled: bool) -> None:
         """Let the sky map or the QML fields own the macOS keyboard."""
         enabled = bool(enabled)
@@ -10128,7 +10146,10 @@ class AppBackend(QObject):
         first_frame = (camera == "wide" and not self._preview_wide_playing) or (
             camera == "tele" and not self._preview_tele_playing
         )
-        window_live = preview_window_is_live(self._preview_window)
+        window_live = preview_surface_live(
+            preview_window_is_live(self._preview_window),
+            self._live_view_shown,
+        )
         now = time.monotonic()
         panorama_running = False
         if not window_live and camera == "tele":
@@ -13816,6 +13837,8 @@ class AppBackend(QObject):
             self._panorama_shot_progress[device_id] = updated
         state = str(current.get("panorama_state") or previous.get("panorama_state") or "")
         prev_state = str(previous.get("panorama_state") or "")
+        if state != prev_state and device_id == self._selected_device_id:
+            self._apply_preview_ingest()
         if (
             state == "running"
             and prev_state != "running"

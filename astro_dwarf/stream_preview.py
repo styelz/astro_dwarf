@@ -1778,6 +1778,11 @@ class PanoramaStampItem(QQuickPaintedItem):
         painter.drawImage(rect, live)
 
 
+def preview_surface_live(window_live: bool, page_shown: bool) -> bool:
+    """The live view is on screen only while its page is current and the window is up."""
+    return bool(window_live) and bool(page_shown)
+
+
 def preview_window_is_live(window) -> bool:
     """False when the window is hidden, minimized, or in the background."""
     app = QGuiApplication.instance()
@@ -1920,6 +1925,7 @@ class StreamPlayer(QObject):
         self._keep_alive = False
         self._cancelled = False
         self._got_frame = False
+        self._ingest_enabled = True
         self._splitter = JpegSplitter()
         self._stderr = ""
         self._pid = 0
@@ -1933,6 +1939,18 @@ class StreamPlayer(QObject):
         self._watchdog = QTimer(self)
         self._watchdog.setSingleShot(True)
         self._watchdog.timeout.connect(self._on_watchdog)
+
+    def setIngestEnabled(self, enabled: bool) -> None:
+        """Skip JPEG decode once a frame has arrived and the live view is hidden.
+
+        Two 4K streams keep the GIL in ``QImage.copy`` and the GUI thread
+        stops taking clicks. The first frame still lands so the stream can
+        open. Turning ingest back on resumes with the next packet.
+        """
+        self._ingest_enabled = bool(enabled)
+
+    def _decode_wanted(self) -> bool:
+        return self._ingest_enabled or not self._got_frame
 
     def _stream_alive(self) -> bool:
         if self._cancelled or not self._url:
@@ -2079,6 +2097,8 @@ class StreamPlayer(QObject):
     def _on_jpeg_bytes(self, data: object) -> None:
         if self._cancelled or not isinstance(data, (bytes, bytearray)) or not data:
             return
+        if not self._decode_wanted():
+            return
         image = decode_jpeg_frame(bytes(data))
         if image.isNull():
             return
@@ -2161,6 +2181,8 @@ class StreamPlayer(QObject):
             return
         frames = self._splitter.feed(bytes(self._process.readAllStandardOutput()))
         if not frames:
+            return
+        if not self._decode_wanted():
             return
         image = decode_jpeg_frame(frames[-1])
         if image.isNull():

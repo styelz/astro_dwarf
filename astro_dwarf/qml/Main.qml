@@ -437,7 +437,10 @@ ApplicationWindow {
     }
     onActiveFocusItemChanged: root.syncMacKeyboard()
     onAppModalOpenChanged: root.syncMacKeyboard()
-    onCurrentPageChanged: root.syncMacKeyboard()
+    onCurrentPageChanged: {
+        root.syncMacKeyboard()
+        backend.setLiveViewShown(root.currentPage === root.controlPageIndex)
+    }
 
     function editorChrome(item) {
         let node = item

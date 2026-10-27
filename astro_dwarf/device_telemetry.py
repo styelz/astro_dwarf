@@ -409,15 +409,13 @@ def normalize_picture_matching(x: int, y: int, width: int, height: int) -> dict[
     """Normalize a tele-in-wide rectangle without a position-dependent span."""
     if width <= 0 or height <= 0:
         return {}
-    # Live Dual Lenses Locating is 1920x1080. Some firmware reports the same
-    # rectangle in the 3840x2160 still frame — roughly twice as large even
-    # when a left/top box still fits inside 1920x1080.
-    high_resolution = (
-        x + width > _PICTURE_MATCHING_W
-        or y + height > _PICTURE_MATCHING_H
-        or width > _PICTURE_MATCHING_W / 10
-        or height > _PICTURE_MATCHING_H / 10
-    )
+    # A failed match reports the whole sensor. That is not a tele footprint.
+    if (width, height) in {(_PICTURE_MATCHING_W, _PICTURE_MATCHING_H), (_PICTURE_MATCHING_W * 2, _PICTURE_MATCHING_H * 2)}:
+        return {}
+    # Live Dual Lenses Locating is 1920x1080. A rectangle that extends past
+    # that frame is the same box in the 3840x2160 still. A live box can be
+    # wider than 10% of 1920 and still belong in the live frame.
+    high_resolution = x + width > _PICTURE_MATCHING_W or y + height > _PICTURE_MATCHING_H
     scale = 2 if high_resolution else 1
     span_w = _PICTURE_MATCHING_W * scale
     span_h = _PICTURE_MATCHING_H * scale

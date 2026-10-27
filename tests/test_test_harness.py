@@ -234,6 +234,25 @@ def test_walk_includes_child_items() -> None:
     names = {obj.objectName() for obj in walk_objects(root) if hasattr(obj, "objectName")}
     _assert("pad-power_down" in names, "childItems reached the pad")
 
+    class WebView:
+        def __init__(self) -> None:
+            self._kids = [Button("inside-web", None, text="HIDDEN")]
+
+        def children(self) -> list:
+            return list(self._kids)
+
+        def objectName(self) -> str:
+            return "skyWeb"
+
+        def parent(self):
+            return root
+
+    web = WebView()
+    root._children.append(web)
+    names = {obj.objectName() for obj in walk_objects(root) if hasattr(obj, "objectName")}
+    _assert("skyWeb" in names, "the web view itself is visited")
+    _assert("inside-web" not in names, "web view children are not walked")
+
 
 def test_click_uses_pad_hook_then_tree() -> None:
     from PySide6.QtCore import QCoreApplication

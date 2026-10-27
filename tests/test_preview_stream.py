@@ -315,6 +315,14 @@ def test_panorama_stamp_ignores_one_by_one_grid() -> None:
     del app
 
 
+def test_hidden_page_is_not_a_live_preview_surface() -> None:
+    from astro_dwarf.stream_preview import preview_surface_live
+
+    _assert(preview_surface_live(True, True), "control page keeps the stream")
+    _assert(not preview_surface_live(True, False), "another page drops preview copies")
+    _assert(not preview_surface_live(False, True), "a hidden window still drops frames")
+
+
 def test_preview_keeps_panorama_tele_while_unfocused() -> None:
     _assert(preview_should_ingest_frame(True, first_frame=False, camera="tele"), "focused preview")
     _assert(

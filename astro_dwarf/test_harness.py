@@ -311,26 +311,24 @@ def _qml_plain(value: Any) -> Any:
     return value
 
 
+def _walk_stops(obj: Any) -> bool:
+    """Web views enumerate a native tree that stalls the GUI thread."""
+    kind = type(obj).__name__
+    return "WebEngine" in kind or "WebView" in kind
+
+
 def walk_objects(root: Any) -> list[Any]:
     found: list[Any] = []
     stack = [root]
     seen: set[int] = set()
-    finder = getattr(root, "findChildren", None)
-    if callable(finder) and not _is_mock(finder):
-        try:
-            from PySide6.QtCore import QObject
-
-            extra = finder(QObject)
-            if isinstance(extra, (list, tuple)):
-                stack.extend(child for child in extra if child is not None and not _is_mock(child))
-        except Exception:
-            pass
     while stack:
         obj = stack.pop()
         if obj is None or id(obj) in seen or _is_mock(obj):
             continue
         seen.add(id(obj))
         found.append(obj)
+        if _walk_stops(obj):
+            continue
         for child in reversed(_iter_children(obj)):
             stack.append(child)
     return found

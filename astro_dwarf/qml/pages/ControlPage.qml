@@ -1020,7 +1020,7 @@ Item {
                             return value && value !== "—" ? String(value) : ""
                         }
                         readonly property bool matchesDevice: text.trim() !== "" && deviceValue !== "" && text.trim() === deviceValue
-                        readonly property string liveValue: deviceValue || String(cameraPanel.captureDefaults.exposure_seconds)
+                        readonly property string liveValue: deviceValue
                         onLiveValueChanged: if (!activeFocus) text = liveValue
                         Component.onCompleted: text = liveValue
                         onEditingFinished: {
@@ -1054,7 +1054,7 @@ Item {
                             return ""
                         }
                         readonly property bool matchesDevice: text.trim() !== "" && deviceValue !== "" && text.trim() === deviceValue
-                        readonly property string liveValue: deviceValue || String(cameraPanel.captureDefaults.gain)
+                        readonly property string liveValue: deviceValue
                         onLiveValueChanged: if (!activeFocus) text = liveValue
                         Component.onCompleted: text = liveValue
                         onEditingFinished: {
@@ -1097,7 +1097,7 @@ Item {
                             return ""
                         }
                         readonly property bool matchesDevice: text.trim() !== "" && deviceValue !== "" && text.trim() === deviceValue
-                        readonly property string liveValue: deviceValue || String(cameraPanel.captureDefaults.frame_count)
+                        readonly property string liveValue: deviceValue
                         onLiveValueChanged: if (!activeFocus) text = liveValue
                         Component.onCompleted: text = liveValue
                         onEditingFinished: {

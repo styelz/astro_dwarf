@@ -253,14 +253,17 @@ Item {
             readonly property bool tight: width < Theme.px(760)
             title: "HISTORY"
             subtitle: {
-                const n = historyPage.scopedHistory.length
+                const total = historyPage.scopedHistory.length
+                const n = historyPage.filteredCount
                 const scope = historyPage.viewingAllDevices
                     ? ((backend.devices || []).length > 1 ? "all telescopes" : "")
                     : (backend.selectedDevice.name || "this telescope")
-                if (n === 0)
+                if (total === 0)
                     return scope
                         ? "Completed runs for " + scope + " appear here with timing, frames and outcome"
                         : "Completed runs appear here with timing, frames and outcome"
+                if (n === 0)
+                    return "No runs match this search." + (scope ? "  ·  " + scope : "")
                 return n + " recorded run" + (n === 1 ? "" : "s")
                     + (scope ? "  ·  " + scope : "")
                     + "  ·  click a row for timing, frames and outcome details"

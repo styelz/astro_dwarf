@@ -156,12 +156,12 @@ def test_worker_skips_matching_astro_exposure() -> None:
         "photo leftover alone must not skip a DSO set",
     )
     _assert(
-        not camera_param_unchanged("set_exposure", ["15", "3", "tele"], {"exposure_text": "15"}, {}),
-        "a HUD exposure matching the saved DSO value must still be written",
+        camera_param_unchanged("set_exposure", ["15", "3", "tele"], {"exposure_text": "15"}, {}),
+        "an exposure the device already reports is left alone",
     )
     _assert(
-        not camera_param_unchanged("set_gain", [60, "tele"], {"gain": 60}, {}),
-        "a HUD gain matching the saved DSO value must still be written",
+        camera_param_unchanged("set_gain", [60, "tele"], {"gain": 60}, {}),
+        "a gain the device already reports is left alone",
     )
 
 
