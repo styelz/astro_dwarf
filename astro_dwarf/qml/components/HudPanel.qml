@@ -9,11 +9,14 @@ Item {
     property alias title: heading.text
     property alias headerExtra: headerExtraRow.data
     property alias overlay: overlayHost.data
+    // Stays under the scrolled body. Hidden while every footer child is hidden,
+    // so panels that do not set one keep their previous height.
+    property alias footer: footerCol.data
     property color fill: Theme.panelFill
     property color titleColor: Theme.accent
     default property alias contents: body.data
     implicitWidth: Theme.px(240)
-    implicitHeight: (headerRow.visible ? headerRow.implicitHeight + Theme.px(17) : 0) + body.implicitHeight + Theme.px(24)
+    implicitHeight: (headerRow.visible ? headerRow.implicitHeight + Theme.px(17) : 0) + body.implicitHeight + (footerCol.visible ? footerCol.implicitHeight + Theme.s2 : 0) + Theme.px(24)
     clip: true
 
     property string panelId: ""
@@ -255,12 +258,27 @@ Item {
             }
             ScrollHint { flick: panelFlick; active: panelHover.hovered }
         }
+        ColumnLayout {
+            id: footerCol
+            Layout.fillWidth: true
+            spacing: Theme.s2
+            visible: {
+                const kids = children
+                for (let i = 0; i < kids.length; i++) {
+                    const kid = kids[i]
+                    if (kid && kid.visible && kid.implicitHeight > 0)
+                        return true
+                }
+                return false
+            }
+        }
     }
     Item {
         id: overlayHost
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
+        anchors.bottomMargin: footerCol.visible ? footerCol.height + Theme.s3 : 0
         anchors.top: parent.top
         anchors.topMargin: headerRow.visible ? Theme.s3 + headerRow.height + Theme.s2 : 0
         z: 5

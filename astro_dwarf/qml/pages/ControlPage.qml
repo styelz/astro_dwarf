@@ -71,6 +71,21 @@ Item {
         selectedUpcomingIds = result.map
         selectionAnchorId = result.anchor
     }
+    function upcomingRunVisible(session, index) {
+        if (!session || String(session.status || "") === "running")
+            return false
+        const currentId = String((backend.currentSession && backend.currentSession.id) || "")
+        if (currentId !== "")
+            return false
+        // A custom mosaic starts on its first pane. Later panes only slew and stack.
+        if (!session.is_grouped)
+            return true
+        const row = Number(index)
+        if (!Number.isFinite(row) || row <= 0)
+            return true
+        const prev = (controlPage.clusteredUpcoming || [])[row - 1]
+        return !prev || String(prev.group_key || "") !== String(session.group_key || "")
+    }
     readonly property var mosaicPreview: backend.mosaicPreview || ({})
     readonly property bool mosaicRunning: {
         const phase = String(mosaicPreview.phase || "")
@@ -511,7 +526,9 @@ Item {
                 id: targetPanel
                 panelId: "target"
                 title: "TARGET"
-                SplitView.preferredHeight: Theme.px(174)
+                // 174 is the idle block. The stop control sits under it and has to
+                // fit in the default column, not under the fold.
+                SplitView.preferredHeight: Theme.px(174) + Theme.controlHeight + Theme.s2
                 SplitView.minimumHeight: Theme.px(80)
                 overlay: [
                     TapHandler {
@@ -662,7 +679,8 @@ Item {
                         }
                     }
                 }
-                HudButton {
+                footer: HudButton {
+                    objectName: "stopSessionButton"
                     Layout.fillWidth: true
                     visible: backend.currentSession.status === "running"
                     text: "STOP SESSION"
@@ -4356,8 +4374,33 @@ Item {
                                                 const seconds = Math.floor(((isNaN(startMs) ? new Date(modelData.scheduled_start).getTime() : startMs) - Date.now()) / 1000)
                                                 return modelData.start_time + " · " + modelData.duration_text + (seconds > 0 ? " · T−" + Util.durationLabel(seconds) : " · DUE")
                                             }
-                                            color: due ? Theme.warning : Theme.textSecondary; font.pixelSize: Theme.fontPx(9)
+                                            color: due ? Theme.warning : Theme.textSecondary
+                                            font.pixelSize: Theme.fontPx(9)
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
                                         }
+                                    }
+                                    HudButton {
+                                        objectName: "runUpcoming-" + String(upcomingRow.modelData.id || "")
+                                        text: "RUN"
+                                        Accessible.name: "Run " + (upcomingRow.modelData.pane_name || upcomingRow.modelData.target_name || "session")
+                                        visible: {
+                                            backend.currentSession
+                                            return controlPage.upcomingRunVisible(upcomingRow.modelData, upcomingWrap.index)
+                                        }
+                                        implicitHeight: Theme.compactControlHeight
+                                        implicitWidth: Theme.px(44)
+                                        Layout.preferredWidth: Theme.px(44)
+                                        Layout.maximumWidth: Theme.px(44)
+                                        Layout.alignment: Qt.AlignVCenter
+                                        font.pixelSize: Theme.fontXs
+                                        leftPadding: Theme.px(6)
+                                        rightPadding: Theme.px(6)
+                                        enabled: !!backend.selectedDevice.connected
+                                        tooltip: enabled ? "" : "Connect the telescope to run"
+                                        busyText: "STARTING…"
+                                        busyMs: 1400
+                                        onClicked: backend.runNow(String(upcomingRow.modelData.id || ""))
                                     }
                                 }
                                 TapHandler {

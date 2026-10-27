@@ -13,3 +13,5 @@ If you find any bugs or have any suggestions for the application, please create 
 - Calibration frames stay out of the album.
 - Live view pauses when you leave that page.
 - On a narrow window, the calendar title shortens and the control pad scrolls instead of clipping.
+- Added RUN button to Up Next panel first item.
+- Default control page layout no longer clips the STOP SESSION button on the target panel.
