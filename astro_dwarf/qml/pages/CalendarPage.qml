@@ -544,13 +544,16 @@ Item {
                 id: calendarHeader
                 readonly property bool tight: width < Theme.px(860)
                 title: calendarPage.viewMode === 0
-                    ? Qt.formatDate(calendarPage.shownMonth, "MMMM yyyy").toUpperCase()
-                    : Qt.formatDate(calendarPage.selectedDate, "dddd d MMMM").toUpperCase()
+                    ? Qt.formatDate(calendarPage.shownMonth, calendarHeader.tight ? "MMM yyyy" : "MMMM yyyy").toUpperCase()
+                    : Qt.formatDate(calendarPage.selectedDate, calendarHeader.tight ? "ddd d MMM" : "dddd d MMMM").toUpperCase()
                 subtitle: {
                     const planned = Util.calendarPlannedCount(calendarPage.calendarBuckets)
                     const nightCount = calendarPage.viewMode === 0 ? calendarPage.sidebarSessions.length : calendarPage.nightSessions.length
                     const nightLabel = calendarPage.viewMode === 0 && calendarPage.selectedDayCount > 1 ? "on selected nights" : "on the selected night"
                     const scope = calendarPage.showAllDevices ? "all telescopes" : (backend.selectedDevice.name || "this telescope")
+                    const counts = planned + " planned · " + nightCount + " " + nightLabel
+                    if (calendarHeader.tight)
+                        return counts
                     return planned + " planned session" + (planned === 1 ? "" : "s") + "  ·  " + nightCount + " " + nightLabel + "  ·  " + scope + "  ·  night rolls over at " + String(calendarPage.cutoffHour).padStart(2, "0") + ":00  ·  " + (backend.selectedDevice.timezone_name || "UTC")
                 }
                 HudButton { text: "MONTH"; buttonColor: calendarPage.viewMode === 0 ? Theme.fillActive : Theme.surfaceHigh; foregroundColor: calendarPage.viewMode === 0 ? Theme.accent : Theme.textSecondary; onClicked: calendarPage.viewMode = 0 }

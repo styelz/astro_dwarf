@@ -3298,6 +3298,11 @@ Item {
                                 return options[i]
                         return 3
                     }
+                    readonly property int rowCount: Math.max(1, Math.ceil(padCount / Math.max(1, columns)))
+                    // Keep every row this tall. A short panel scrolls instead of clipping the rest.
+                    readonly property real naturalHeight: rowCount * Theme.px(58) + Math.max(0, rowCount - 1) * rowSpacing
+                    Layout.preferredHeight: naturalHeight
+                    Layout.minimumHeight: naturalHeight
                     columnSpacing: Theme.s2
                     rowSpacing: Theme.s2
                     Repeater {

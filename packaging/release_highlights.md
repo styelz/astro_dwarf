@@ -3,18 +3,13 @@
 If you find any bugs or have any suggestions for the application, please create an issue here:
 [https://github.com/styelz/astro_dwarf/issues/new/choose](https://github.com/styelz/astro_dwarf/issues/new/choose)
 
-- **feat:** enhance media stitching and session management in backend, album deletion process with improved batch handling
-
-- **feat:** enhance control socket management and connection handling. Connection retries for 45 seconds.
-
-- **feat:** update white balance handling and introduce auto mode
-
-- **feat:** update InterfaceSettings to conditionally display theme preview
-
-- **feat:** implement auto-stretch functionality for image previews
-
-- **feat:** improve handling of live preview not being available after stacking until the tracking is stopped or targer changed.
-
-- **feat:** add handling for calibration frame paths in album processing
-
-- **feat:** improve live view handling and telemetry integration
+- Mosaic stitch uses each pane's stack and the saved grid.
+- Deleting a mosaic removes its pane folders first.
+- Connect keeps trying for about 50 seconds while the telescope starts.
+- White balance has an Auto setting.
+- Built-in themes hide the colour preview.
+- Image previews can auto-stretch.
+- After a stack, live view can restart without stopping tracking.
+- Calibration frames stay out of the album.
+- Live view pauses when you leave that page.
+- On a narrow window, the calendar title shortens and the control pad scrolls instead of clipping.
