@@ -15,6 +15,8 @@ Dialog {
     property string templateName: ""
     property string deviceId: ""
     property var templateData: ({})
+    property string followSessionId: ""
+    property string followStart: ""
     readonly property int sessionsTick: backend.sessions.length
     readonly property var windowHint: {
         sessionsTick
@@ -32,11 +34,18 @@ Dialog {
     function defaultStart() {
         return backend.deviceNowStamp(scheduleDialog.deviceId || backend.selectedDeviceId)
     }
+    function armNextFree() {
+        const hint = scheduleDialog.windowHint || {}
+        followStart = String(hint.next_free || "")
+        followSessionId = String(hint.next_free_after_id || "")
+        startTime.text = followStart
+    }
     function confirm() {
         if (!canSchedule)
             return
+        const follows = startTime.text.trim() === followStart ? followSessionId : ""
         if (backend.scheduleTemplate(templateId, startTime.text.trim(), scheduleDialog.deviceId,
-                                     Number(exposure.text), Number(frames.text)))
+                                     Number(exposure.text), Number(frames.text), follows))
             close()
     }
     function syncDevice() {
@@ -72,6 +81,8 @@ Dialog {
         templateData = item
         deviceId = backend.selectedDeviceId
         syncDevice()
+        followSessionId = ""
+        followStart = ""
         startTime.text = scheduleDialog.defaultStart()
         scheduleDialog.fillCapture(deviceId)
         open()
@@ -138,6 +149,10 @@ Dialog {
                 deviceId: scheduleDialog.deviceId
                 Layout.fillWidth: true
                 onAccepted: scheduleDialog.confirm()
+                onTextChanged: {
+                    if (text.trim() !== scheduleDialog.followStart)
+                        scheduleDialog.followSessionId = ""
+                }
             }
             HudButton {
                 text: "NOW"
@@ -204,8 +219,17 @@ Dialog {
                 visible: !!(scheduleDialog.windowHint.next_free)
                 text: "USE NEXT FREE  " + (scheduleDialog.windowHint.next_free_time || "")
                 Layout.fillWidth: true
-                onClicked: startTime.text = scheduleDialog.windowHint.next_free
+                onClicked: scheduleDialog.armNextFree()
             }
+        }
+        Text {
+            visible: scheduleDialog.followSessionId !== "" && startTime.text.trim() === scheduleDialog.followStart
+            text: "Starts when that session finishes."
+            color: Theme.accent
+            font.pixelSize: Theme.fontPx(11)
+            font.family: Theme.fontMono
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
         }
         RowLayout {
             Layout.alignment: Qt.AlignRight

@@ -5849,6 +5849,7 @@ def duplicate_session_drafts(
             actual_started_at=None,
             actual_ended_at=None,
             outcome="",
+            follows_session_id="",
             created_at=utc_now(),
         ))
     return scope, drafts
@@ -6296,6 +6297,7 @@ def history_replay_sessions(
             actual_started_at=None,
             actual_ended_at=None,
             outcome="",
+            follows_session_id="",
             created_at=utc_now(),
         )]
     _scope, drafts = duplicate_session_drafts(
@@ -6390,6 +6392,7 @@ def copy_observing_night(
             actual_started_at=None,
             actual_ended_at=None,
             outcome="",
+            follows_session_id="",
             created_at=utc_now(),
         ))
     return drafts
@@ -7552,6 +7555,104 @@ CALENDAR_OVERLAP_SLACK_MS = 60_000
 def calendar_time_conflicts(start_ms: float, end_ms: float, slack_ms: float = CALENDAR_OVERLAP_SLACK_MS) -> bool:
     """True when ``start_ms`` is still inside a block that ends at ``end_ms``."""
     return float(start_ms) < float(end_ms) - float(slack_ms)
+
+
+def followed_session_id(
+    sessions: list[Session],
+    device_id: str,
+    free: datetime,
+    tz,
+) -> str:
+    """Planned or running session on this telescope whose block ends at ``free``."""
+    try:
+        slot = free.astimezone(tz) if free.tzinfo else free.replace(tzinfo=tz)
+    except (TypeError, ValueError, OSError):
+        return ""
+    slot = slot.replace(second=0, microsecond=0)
+    chosen: Session | None = None
+    chosen_start: datetime | None = None
+    for item in sessions:
+        if item.device_id != device_id or item.status not in (SessionStatus.PLANNED, SessionStatus.RUNNING):
+            continue
+        try:
+            start, end = session_window(item, tz)
+        except (TypeError, ValueError, OSError):
+            continue
+        if end != slot:
+            continue
+        if chosen is None or chosen_start is None or start >= chosen_start:
+            chosen = item
+            chosen_start = start
+    return chosen.id if chosen is not None else ""
+
+
+def attach_free_follow(
+    sessions: list[Session],
+    owner: Session | None,
+    follows_session_id: str,
+) -> list[Session]:
+    """Mark the first new row to start when ``owner`` finishes, if the start matches its end.
+
+    Use Next Free stores that clock time as an estimate. The link lets the
+    scheduler start the row sooner when the estimate runs long. A start that
+    is not that end stays on the clock.
+    """
+    cleared = [replace(item, follows_session_id="") for item in sessions]
+    followed_id = str(follows_session_id or "").strip()
+    if not followed_id or owner is None or owner.id != followed_id or not cleared:
+        return cleared
+    if owner.status not in (SessionStatus.PLANNED, SessionStatus.RUNNING):
+        return cleared
+    first = min(cleared, key=lambda item: (item.scheduled_start, item.id))
+    if first.device_id != owner.device_id:
+        return cleared
+    try:
+        zone = parse_in_zone(first.scheduled_start, ZoneInfo("UTC")).tzinfo
+        if zone is None:
+            return cleared
+        _start, end = session_window(owner, zone)
+        slot = parse_in_zone(first.scheduled_start, zone).replace(second=0, microsecond=0)
+    except (TypeError, ValueError, OSError):
+        return cleared
+    if abs(slot - end) > timedelta(minutes=1):
+        return cleared
+    return [
+        replace(item, follows_session_id=followed_id) if item.id == first.id else item
+        for item in cleared
+    ]
+
+
+def free_follow_is_ready(
+    candidate: Session,
+    sessions: list[Session],
+    now: datetime,
+    cutoff_hour: int = 12,
+) -> bool:
+    """True when Use Next Free should start ``candidate`` before its clock time.
+
+    The saved start is the estimated end of the session it follows. Once that
+    session has finished, the leftover estimate is not a reason to wait.
+    """
+    followed_id = str(candidate.follows_session_id or "").strip()
+    if not followed_id or now.tzinfo is None or candidate.status != SessionStatus.PLANNED:
+        return False
+    followed = next((item for item in sessions if item.id == followed_id), None)
+    if followed is None or followed.device_id != candidate.device_id:
+        return False
+    if followed.status not in (SessionStatus.DONE, SessionStatus.ERROR, SessionStatus.SKIPPED):
+        return False
+    zone = now.tzinfo
+    try:
+        night = observing_date(candidate.scheduled_start, cutoff_hour, zone)
+        if observing_date(now.isoformat(), cutoff_hour, zone) != night:
+            return False
+        if observing_date(followed.scheduled_start, cutoff_hour, zone) != night:
+            return False
+        _start, end = session_window(followed, zone)
+        slot = parse_in_zone(candidate.scheduled_start, zone).replace(second=0, microsecond=0)
+    except (TypeError, ValueError, OSError):
+        return False
+    return abs(slot - end) <= timedelta(minutes=1)
 
 
 def next_free_start(

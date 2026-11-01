@@ -2778,6 +2778,7 @@ class Session:
     created_at: str = field(default_factory=utc_now)
     device_schedule_id: str = ""
     device_schedule_state: str = ""
+    follows_session_id: str = ""
 
 
 @dataclass(slots=True)
@@ -3155,6 +3156,7 @@ def session_from_dict(data: dict[str, Any]) -> Session:
     data["timelapse_video_seconds"] = _positive_float(data.get("timelapse_video_seconds"), 30)
     data["device_schedule_id"] = str(data.get("device_schedule_id") or "")
     data["device_schedule_state"] = str(data.get("device_schedule_state") or "")
+    data["follows_session_id"] = str(data.get("follows_session_id") or "")
     allowed = set(Session.__dataclass_fields__)
     return Session(**{key: value for key, value in data.items() if key in allowed})
 

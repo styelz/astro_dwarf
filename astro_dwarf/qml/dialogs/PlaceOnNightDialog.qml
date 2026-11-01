@@ -11,6 +11,8 @@ Dialog {
     property string preferredMode: ""
     property string deviceId: ""
     property string startText: ""
+    property string followSessionId: ""
+    property string followStart: ""
     readonly property int sessionsTick: backend.sessions.length + backend.templates.length
     readonly property var recipes: {
         placeDialog.sessionsTick
@@ -179,17 +181,29 @@ Dialog {
             placeDialog.deviceId = deviceBox.valueAt(0) || backend.selectedDeviceId
         }
     }
+    function armNextFree() {
+        const hint = placeDialog.windowHint || {}
+        followStart = String(hint.next_free || "")
+        followSessionId = String(hint.next_free_after_id || "")
+        startTime.text = followStart
+    }
+    function followsForConfirm() {
+        if (startTime.text.trim() !== followStart)
+            return ""
+        return followSessionId
+    }
     function confirm() {
         if (!placeDialog.canPlace)
             return
-        const request = Util.placeOnNightRequest(placeDialog.currentRecipe, placeDialog.deviceId, startTime.text)
+        const request = Util.placeOnNightRequest(
+            placeDialog.currentRecipe, placeDialog.deviceId, startTime.text, placeDialog.followsForConfirm())
         if (!request.ok)
             return
         let placed = false
         if (request.op === "scheduleTemplate")
-            placed = backend.scheduleTemplate(request.id, request.start, request.deviceId)
+            placed = backend.scheduleTemplate(request.id, request.start, request.deviceId, request.followsId)
         else if (request.op === "duplicateSession")
-            placed = backend.duplicateSession(request.id, request.start, request.deviceId, "", request.mode)
+            placed = backend.duplicateSession(request.id, request.start, request.deviceId, "", request.mode, request.followsId)
         if (placed)
             close()
     }
@@ -224,6 +238,8 @@ Dialog {
         open()
     }
     onOpened: {
+        placeDialog.followSessionId = ""
+        placeDialog.followStart = ""
         placeDialog.syncDevice()
         placeDialog.syncRecipeIndex()
         startTime.text = placeDialog.startText
@@ -300,6 +316,10 @@ Dialog {
                 deviceId: placeDialog.deviceId
                 Layout.fillWidth: true
                 onAccepted: placeDialog.confirm()
+                onTextChanged: {
+                    if (text.trim() !== placeDialog.followStart)
+                        placeDialog.followSessionId = ""
+                }
             }
             HudButton {
                 text: "NOW"
@@ -338,8 +358,17 @@ Dialog {
                 visible: !!(placeDialog.windowHint.next_free)
                 text: "USE NEXT FREE  " + (placeDialog.windowHint.next_free_time || "")
                 Layout.fillWidth: true
-                onClicked: startTime.text = placeDialog.windowHint.next_free
+                onClicked: placeDialog.armNextFree()
             }
+        }
+        Text {
+            visible: placeDialog.followSessionId !== "" && startTime.text.trim() === placeDialog.followStart
+            text: "Starts when that session finishes."
+            color: Theme.accent
+            font.pixelSize: Theme.fontPx(11)
+            font.family: Theme.fontMono
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
         }
         RowLayout {
             Layout.alignment: Qt.AlignRight

@@ -1206,16 +1206,17 @@ QtObject {
             return out
         return Util.orderLatestSessions(out)
     }
-    function placeOnNightRequest(recipe, deviceId, startText) {
+    function placeOnNightRequest(recipe, deviceId, startText, followsId) {
         const item = recipe || {}
         const kind = String(item.kind || "")
         const id = String(item.id || "")
         const start = String(startText || "").trim()
         const device = String(deviceId || item.deviceId || "")
+        const follows = String(followsId || "")
         if (!id || !start)
             return { ok: false }
         if (kind === "template")
-            return { ok: true, op: "scheduleTemplate", id: id, start: start, deviceId: device }
+            return { ok: true, op: "scheduleTemplate", id: id, start: start, deviceId: device, followsId: follows }
         if (kind === "session")
             return {
                 ok: true,
@@ -1223,7 +1224,8 @@ QtObject {
                 id: id,
                 start: start,
                 deviceId: device,
-                mode: String(item.mode || "session")
+                mode: String(item.mode || "session"),
+                followsId: follows
             }
         return { ok: false }
     }

@@ -11,6 +11,8 @@ Dialog {
     property string duplicateMode: "session"
     property string deviceId: ""
     property var sessionData: ({})
+    property string followSessionId: ""
+    property string followStart: ""
     readonly property int sessionsTick: backend.sessions.length
     readonly property var windowHint: {
         sessionsTick
@@ -41,12 +43,19 @@ Dialog {
             return "DUPLICATE PANE"
         return "DUPLICATE SESSION"
     }
+    function armNextFree() {
+        const hint = duplicateDialog.windowHint || {}
+        followStart = String(hint.next_free || "")
+        followSessionId = String(hint.next_free_after_id || "")
+        startTime.text = followStart
+    }
     function confirm() {
         if (!canDuplicate)
             return
+        const follows = startTime.text.trim() === followStart ? followSessionId : ""
         if (backend.duplicateSession(duplicateDialog.sessionId, startTime.text.trim(),
                                      duplicateDialog.deviceId, nameField.text.trim(),
-                                     duplicateDialog.duplicateMode))
+                                     duplicateDialog.duplicateMode, follows))
             close()
     }
     function syncDevice() {
@@ -71,6 +80,8 @@ Dialog {
         deviceId = String(item.device_id || backend.selectedDeviceId)
         syncDevice()
         const hint = backend.duplicatePreview(sessionId, duplicateMode, deviceId, "")
+        followSessionId = ""
+        followStart = ""
         nameField.text = String((hint && hint.default_name) || "")
         startTime.text = String((hint && hint.suggested_start) || duplicateDialog.defaultStart())
         open()
@@ -177,6 +188,10 @@ Dialog {
                 deviceId: duplicateDialog.deviceId
                 Layout.fillWidth: true
                 onAccepted: duplicateDialog.confirm()
+                onTextChanged: {
+                    if (text.trim() !== duplicateDialog.followStart)
+                        duplicateDialog.followSessionId = ""
+                }
             }
             HudButton {
                 text: "NOW"
@@ -215,8 +230,17 @@ Dialog {
                 visible: !!(duplicateDialog.windowHint.next_free)
                 text: "USE NEXT FREE  " + (duplicateDialog.windowHint.next_free_time || "")
                 Layout.fillWidth: true
-                onClicked: startTime.text = duplicateDialog.windowHint.next_free
+                onClicked: duplicateDialog.armNextFree()
             }
+        }
+        Text {
+            visible: duplicateDialog.followSessionId !== "" && startTime.text.trim() === duplicateDialog.followStart
+            text: "Starts when that session finishes."
+            color: Theme.accent
+            font.pixelSize: Theme.fontPx(11)
+            font.family: Theme.fontMono
+            wrapMode: Text.Wrap
+            Layout.fillWidth: true
         }
         RowLayout {
             Layout.alignment: Qt.AlignRight

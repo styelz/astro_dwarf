@@ -195,6 +195,9 @@ from .services import (
     history_replay_sessions,
     history_replay_templates,
     mosaic_south_up,
+    attach_free_follow,
+    followed_session_id,
+    free_follow_is_ready,
     next_free_start,
     observing_date,
     planned_tonight,
@@ -15710,6 +15713,7 @@ class AppBackend(QObject):
             actual_ended_at=None,
             outcome="",
             template_id=None,
+            follows_session_id=self._kept_follows(existing, self._store_session_time(values["scheduled_start"], device), device),
             created_at=existing.created_at if existing else datetime.now(timezone.utc).isoformat(),
         )
 
@@ -15740,6 +15744,7 @@ class AppBackend(QObject):
             actual_ended_at=None,
             outcome="",
             template_id=existing.template_id if existing else None,
+            follows_session_id=self._kept_follows(existing, self._store_session_time(values["scheduled_start"], device), device),
             created_at=existing.created_at if existing else datetime.now(timezone.utc).isoformat(),
         )
 
@@ -15775,6 +15780,7 @@ class AppBackend(QObject):
                             sibling,
                             device_id=device.id,
                             scheduled_start=store_local_iso(sib_start, new_tz),
+                            follows_session_id="" if delta or existing.device_id != device.id else sibling.follows_session_id,
                         )
                     else:
                         proposed[sibling.id] = sibling
@@ -16170,6 +16176,7 @@ class AppBackend(QObject):
     @Slot(str, str, str, result=bool)
     @Slot(str, str, str, str, result=bool)
     @Slot(str, str, str, str, str, result=bool)
+    @Slot(str, str, str, str, str, str, result=bool)
     def duplicateSession(
         self,
         session_id: str,
@@ -16177,6 +16184,7 @@ class AppBackend(QObject):
         device_id: str = "",
         name: str = "",
         mode: str = "",
+        follows_session_id: str = "",
     ) -> bool:
         setup = self._duplicate_setup(session_id, mode, device_id, name)
         if not setup:
@@ -16190,6 +16198,11 @@ class AppBackend(QObject):
             self._toast("Enter a start time like 2026-09-10T22:00", "error")
             return False
         timed = self._time_duplicate_drafts(drafts, device, start)
+        timed = attach_free_follow(
+            timed,
+            self.store.sessions.get(str(follows_session_id or "").strip()),
+            follows_session_id,
+        )
         try:
             self._commit_device_sessions(timed, device)
         except ValueError as exc:
@@ -16515,7 +16528,7 @@ class AppBackend(QObject):
                 updated = item
                 if delta:
                     start = parse_in_zone(item.scheduled_start, tz) + delta
-                    updated = replace(item, scheduled_start=store_local_iso(start, tz))
+                    updated = replace(item, scheduled_start=store_local_iso(start, tz), follows_session_id="")
                 prev = originals.get(item.id)
                 start_changed = (
                     not prev
@@ -16580,7 +16593,11 @@ class AppBackend(QObject):
         for item in self._session_group(session):
             item_tz = self._zone_for_id(item.device_id)
             start = parse_in_zone(item.scheduled_start, item_tz) + delta
-            proposed.append(replace(item, scheduled_start=store_local_iso(start, item_tz)))
+            proposed.append(replace(
+                item,
+                scheduled_start=store_local_iso(start, item_tz),
+                follows_session_id="",
+            ))
         try:
             self._commit_device_sessions(proposed, device)
         except ValueError as exc:
@@ -16667,7 +16684,14 @@ class AppBackend(QObject):
         for item in ordered:
             span = timedelta(seconds=max(60, float(item.planned_duration_seconds or 0)))
             free = next_free_start(occupied, cursor, span)
-            self.store.sessions.save(replace(item, scheduled_start=store_local_iso(free, tz)))
+            kept_follow = item.follows_session_id
+            if free != parse_in_zone(item.scheduled_start, tz).replace(second=0, microsecond=0):
+                kept_follow = ""
+            self.store.sessions.save(replace(
+                item,
+                scheduled_start=store_local_iso(free, tz),
+                follows_session_id=kept_follow,
+            ))
             occupied.append((free, free + span))
             cursor = free + span
         self._emit_sessions_changed()
@@ -16724,6 +16748,7 @@ class AppBackend(QObject):
             "conflict": conflict,
             "next_free": free.strftime("%Y-%m-%dT%H:%M") if snapped else "",
             "next_free_time": free.strftime("%H:%M") if snapped else "",
+            "next_free_after_id": followed_session_id(self.store.sessions.all(), device.id, free, tz) if snapped else "",
         }
 
     @Slot(str, str, str, float, int, result="QVariantMap")
@@ -16762,15 +16787,22 @@ class AppBackend(QObject):
 
     @Slot(str, str, result=bool)
     @Slot(str, str, str, result=bool)
+    @Slot(str, str, str, str, result=bool)
     @Slot(str, str, str, float, int, result=bool)
+    @Slot(str, str, str, float, int, str, result=bool)
     def scheduleTemplate(
         self,
         template_id: str,
         scheduled_start: str,
         device_id: str = "",
-        exposure_seconds: float | None = None,
+        exposure_seconds: float | str | None = None,
         frame_count: int | None = None,
+        follows_session_id: str = "",
     ) -> bool:
+        if isinstance(exposure_seconds, str):
+            follows_session_id = follows_session_id or exposure_seconds
+            exposure_seconds = None
+            frame_count = None
         template = self.store.templates.get(template_id)
         if not template:
             return False
@@ -16806,6 +16838,11 @@ class AppBackend(QObject):
             sessions.append(replace(session, camera=camera))
         sessions = assign_scheduled_mosaic_group(sessions, template.target.name or template.name)
         staggered = stagger_mosaic_sessions(sessions, start, device.hardware)
+        staggered = attach_free_follow(
+            staggered,
+            self.store.sessions.get(str(follows_session_id or "").strip()),
+            follows_session_id,
+        )
         try:
             self._commit_device_sessions(staggered, device)
         except ValueError as exc:
@@ -17238,6 +17275,22 @@ class AppBackend(QObject):
             return None
         return candidate
 
+    def _early_free_follow(self, device_id: str, now: datetime) -> Session | None:
+        """Use Next Free row to start once the session it was packed behind has finished."""
+        upcoming = self.store.upcoming(device_id)
+        tonight = planned_tonight(upcoming, now, self._cutoff_hour())
+        if not tonight:
+            return None
+        candidate = tonight[0]
+        try:
+            if parse_in_zone(candidate.scheduled_start, now.tzinfo) <= now:
+                return None
+        except (TypeError, ValueError):
+            return None
+        if not free_follow_is_ready(candidate, self.store.sessions.all(), now, self._cutoff_hour()):
+            return None
+        return candidate
+
     def _skip_remaining_mosaic_panes(self, stopped: Session) -> list[Session]:
         """Drop the rest of a custom mosaic when the operator stops one pane."""
         pending = remaining_mosaic_panes(stopped, self.store.sessions.all())
@@ -17335,8 +17388,12 @@ class AppBackend(QObject):
                 self._discard_live_mosaic(device.id)
             if firmware_capturing:
                 continue
+            early_follow = False
             if session is None and not due:
                 early = self._early_mosaic_pane(device.id, now)
+                if early is None:
+                    early = self._early_free_follow(device.id, now)
+                    early_follow = early is not None
                 if early is not None:
                     session = early
                     due = True
@@ -17345,6 +17402,8 @@ class AppBackend(QObject):
             if session.id in self._recovered_sessions:
                 self._maybe_resume_interrupted_session(device.id)
                 continue
+            if early_follow:
+                self.add_log("notice", f"Next free · {session.name}", device.id)
             self._start_session(worker, session)
 
     def _recovered_session_for(self, device_id: str, telemetry: dict[str, Any]) -> Session | None:
@@ -18245,6 +18304,20 @@ class AppBackend(QObject):
 
     def _now_local(self, device: Device | None = None) -> datetime:
         return datetime.now(self._zone_for(device))
+
+    def _kept_follows(self, existing: Session | None, scheduled_start: str, device: Device) -> str:
+        """Keep a Use Next Free link when the saved start minute did not change."""
+        if existing is None:
+            return ""
+        try:
+            tz = self._zone_for(device)
+            old = parse_in_zone(existing.scheduled_start, tz).replace(second=0, microsecond=0)
+            new = parse_in_zone(scheduled_start, tz).replace(second=0, microsecond=0)
+        except (TypeError, ValueError, OSError):
+            return ""
+        if old != new:
+            return ""
+        return str(existing.follows_session_id or "")
 
     def _store_session_time(self, value: datetime | str, device: Device | None = None) -> str:
         tz = self._zone_for(device)
