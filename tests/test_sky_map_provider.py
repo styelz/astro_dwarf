@@ -9,10 +9,12 @@ if str(ROOT) not in sys.path:
 
 from astro_dwarf.domain import (
     DEFAULT_SKY_MAP_PROVIDER,
+    DEFAULT_STELLARIUM_URL,
     SKY_MAP_PROVIDER_ALADIN,
     SKY_MAP_PROVIDER_STELLARIUM_WEB,
     app_settings_from_dict,
     normalized_sky_map_provider,
+    normalized_stellarium_url,
     to_dict,
 )
 from astro_dwarf.services import SKY_WEB_DISMISS_POLL_JS, sky_web_fov_script, sky_web_live_script
@@ -44,6 +46,20 @@ def test_provider_defaults_to_stellarium_web() -> None:
     settings = app_settings_from_dict({})
     _assert(settings.sky_map_provider == DEFAULT_SKY_MAP_PROVIDER, settings.sky_map_provider)
     _assert(settings.sky_map_provider == SKY_MAP_PROVIDER_STELLARIUM_WEB, settings.sky_map_provider)
+
+
+def test_stellarium_url_stays_http() -> None:
+    _assert(normalized_stellarium_url("") == DEFAULT_STELLARIUM_URL, "blank")
+    _assert(normalized_stellarium_url("   ") == DEFAULT_STELLARIUM_URL, "whitespace")
+    kept = "http://192.168.1.20:8090"
+    _assert(normalized_stellarium_url(kept) == kept, "http host")
+    _assert(normalized_stellarium_url("https://stellarium.local/api") == "https://stellarium.local/api", "https")
+    _assert(normalized_stellarium_url("file:///tmp/stellarium") == DEFAULT_STELLARIUM_URL, "file scheme")
+    _assert(normalized_stellarium_url("http://") == DEFAULT_STELLARIUM_URL, "missing host")
+    loaded = app_settings_from_dict({"stellarium_url": "javascript:alert(1)"})
+    _assert(loaded.stellarium_url == DEFAULT_STELLARIUM_URL, loaded.stellarium_url)
+    kept_settings = app_settings_from_dict({"stellarium_url": kept})
+    _assert(kept_settings.stellarium_url == kept, kept_settings.stellarium_url)
 
 
 def test_provider_aliases_and_unknown() -> None:
@@ -187,6 +203,7 @@ def test_map_left_click_dismisses_context_menu() -> None:
 
 if __name__ == "__main__":
     test_provider_defaults_to_stellarium_web()
+    test_stellarium_url_stays_http()
     test_provider_aliases_and_unknown()
     test_provider_round_trip()
     test_atlas_harvest_json()

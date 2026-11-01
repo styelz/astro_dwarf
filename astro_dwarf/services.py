@@ -5686,7 +5686,8 @@ def next_mosaic_run_pane(
 ) -> Session | None:
     """Next same-night pane to start the moment ``finished`` completes.
 
-    None when another target is queued first, or the next pane is on a later night.
+    None when another target tonight is queued first, or the next pane is on a later night.
+    A planned row from an earlier night stays planned and does not hold the chain.
     """
     group = str(finished.mosaic.group_id or "")
     if not group or now.tzinfo is None:
@@ -5728,6 +5729,8 @@ def next_mosaic_run_pane(
         if item.id == nxt.id:
             continue
         try:
+            if observing_date(item.scheduled_start, cutoff_hour, zone) != night:
+                continue
             start = parse_in_zone(item.scheduled_start, zone)
         except (TypeError, ValueError):
             continue

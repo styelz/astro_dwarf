@@ -4800,7 +4800,7 @@ def _stop_tracking_for_goto(label: str = "Stopping leftover tracking before GOTO
     calibrate/GOTO then sits in CALIBRATION_FAILED / motor-need-reset.
     """
     snapshot = _tap.snapshot() if _tap is not None else {}
-    if snapshot.get("tracking_state") != "running" and not _goto_busy(snapshot):
+    if goto_search_cleared(snapshot):
         return
     log(label)
     try:
@@ -4810,16 +4810,20 @@ def _stop_tracking_for_goto(label: str = "Stopping leftover tracking before GOTO
                 log("Stop tracking still did not confirm; waiting for leftover tracking to drop", "warning")
     except Exception as exc:
         log(f"Stop tracking skipped: {exc}", "warning")
-    deadline = time.monotonic() + 40.0
+    deadline = time.monotonic() + _GOTO_RETRY_STOP_S
     while time.monotonic() < deadline:
         if _stop.is_set():
             raise InterruptedError("Session stopped")
         snapshot = _tap.snapshot() if _tap is not None else {}
-        if snapshot.get("tracking_state") != "running" and not _goto_busy(snapshot):
+        if goto_search_cleared(snapshot):
             # Telemetry goes idle before the astro engine will accept 11002.
             # A pane stack plus stop_goto was still FUNCTION_BUSY 9s later.
+            # A synthetic idle after STOPPING is not that clear: the search
+            # can still be up, and the next 11002 must wait.
             _wait_seconds(_CAPTURE_BUSY_RETRY_S, "Waiting after stop GOTO")
-            return
+            snapshot = _tap.snapshot() if _tap is not None else {}
+            if goto_search_cleared(snapshot):
+                return
         time.sleep(0.25)
     raise RuntimeError(
         "Could not stop leftover tracking before the next slew. "
@@ -6858,6 +6862,9 @@ def _start_goto_for_tracking(ra: float, dec: float, name: str) -> None:
         # Live TRACK is not a session. A stop latch from a finished session
         # must not abort the FUNCTION_BUSY retry.
         _stop.clear()
+    snapshot = _tap.snapshot() if _tap is not None else {}
+    if not goto_search_cleared(snapshot):
+        _stop_stalled_plate_solve(name)
     started = time.monotonic()
     if sdk_call("goto", ra, dec, name, False) is False:
         raise RuntimeError("GOTO to start tracking failed")

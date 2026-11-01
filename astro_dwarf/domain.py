@@ -8,7 +8,7 @@ from fractions import Fraction
 from html import unescape
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
 
 from .location import has_site_coordinates
@@ -2821,8 +2821,14 @@ def clamp_cutoff_hour(value: Any, default: int = DEFAULT_OBSERVING_DAY_CUTOFF_HO
 
 
 def normalized_stellarium_url(value: Any, default: str = DEFAULT_STELLARIUM_URL) -> str:
+    """Keep an http(s) Stellarium URL. Anything else falls back to localhost."""
     text = str(value or "").strip()
-    return text or default
+    if not text:
+        return default
+    parsed = urlparse(text)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return text
+    return default
 
 
 def normalized_sky_map_provider(value: Any, default: str = DEFAULT_SKY_MAP_PROVIDER) -> str:
@@ -2966,10 +2972,20 @@ def device_from_dict(data: dict[str, Any]) -> Device:
     return Device(**{key: value for key, value in data.items() if key in allowed})
 
 
+def _known_fields(kind: Any, data: Any) -> dict[str, Any]:
+    """Drop keys a stored dataclass does not accept.
+
+    A newer file, or a hand edit, used to raise ``TypeError`` on load.
+    ``JsonRepository`` then skipped the file and the row vanished.
+    """
+    allowed = set(kind.__dataclass_fields__)
+    return {key: value for key, value in dict(data or {}).items() if key in allowed}
+
+
 def target_from_dict(data: dict[str, Any]) -> Target:
     data = dict(data)
     data["kind"] = TargetKind(data.get("kind", TargetKind.EQUATORIAL))
-    return Target(**data)
+    return Target(**_known_fields(Target, data))
 
 
 def firmware_binning(value: Any) -> int:
@@ -3036,17 +3052,17 @@ def firmware_exposure_name(value: Any) -> str:
 def camera_from_dict(data: dict[str, Any]) -> CameraSettings:
     data = dict(data)
     data["camera"] = Camera(data.get("camera", Camera.TELE))
-    return CameraSettings(**data)
+    return CameraSettings(**_known_fields(CameraSettings, data))
 
 
 def template_from_dict(data: dict[str, Any]) -> SessionTemplate:
     data = dict(data)
     data["target"] = target_from_dict(data["target"])
     data["camera"] = camera_from_dict(data.get("camera", {}))
-    data["workflow"] = Workflow(**data.get("workflow", {}))
-    data["mosaic"] = Mosaic(**data.get("mosaic", {}))
+    data["workflow"] = Workflow(**_known_fields(Workflow, data.get("workflow", {})))
+    data["mosaic"] = Mosaic(**_known_fields(Mosaic, data.get("mosaic", {})))
     data.update(stored_capture_fields(data))
-    return SessionTemplate(**data)
+    return SessionTemplate(**_known_fields(SessionTemplate, data))
 
 
 def session_action_from_value(value: Any) -> SessionAction:
@@ -3128,8 +3144,8 @@ def session_from_dict(data: dict[str, Any]) -> Session:
     data = dict(data)
     data["target"] = target_from_dict(data["target"])
     data["camera"] = camera_from_dict(data.get("camera", {}))
-    data["workflow"] = Workflow(**data.get("workflow", {}))
-    data["mosaic"] = Mosaic(**data.get("mosaic", {}))
+    data["workflow"] = Workflow(**_known_fields(Workflow, data.get("workflow", {})))
+    data["mosaic"] = Mosaic(**_known_fields(Mosaic, data.get("mosaic", {})))
     data["status"] = SessionStatus(data.get("status", SessionStatus.PLANNED))
     data["action"] = session_action_from_value(data.get("action"))
     data["burst_count"] = _positive_int(data.get("burst_count"), 10)

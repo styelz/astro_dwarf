@@ -840,6 +840,23 @@ def session_finish_plan(*, ok: bool, stop_requested: bool, result: Any) -> dict[
     }
 
 
+def session_run_started(value: Any, ended: datetime) -> datetime:
+    """Start clock for a finished run.
+
+    A missing or unreadable stamp must not skip the status change. A naive
+    stamp is treated as UTC so the duration subtracts cleanly.
+    """
+    if not value:
+        return ended
+    try:
+        started = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return ended
+    if started.tzinfo is None:
+        return started.replace(tzinfo=timezone.utc)
+    return started
+
+
 def stacking_preview_result_copy(
     ok: bool,
     stopped: bool,
@@ -8213,7 +8230,9 @@ class AppBackend(QObject):
 
     @Property(str, notify=selectedDeviceChanged)
     def videoUrl(self) -> str:
-        device = next(item for item in self._devices if item.id == self._selected_device_id)
+        device = self._device_by_id(self._selected_device_id)
+        if device is None:
+            return ""
         stacking = self._preview_stacking(device.id)
         camera = Camera.TELE if stacking else device.camera
         return self._stream_url(device, camera, stacking=stacking)
@@ -17678,9 +17697,12 @@ class AppBackend(QObject):
             and not self._preview_playing
         )
         self._clear_preview_hold()
-        if active_device:
-            self._active_sessions.pop(active_device, None)
-            self._sync_session_activity(active_device, "")
+
+        def release_active() -> None:
+            if active_device:
+                self._active_sessions.pop(active_device, None)
+                self._sync_session_activity(active_device, "")
+
         plan = session_finish_plan(
             ok=ok,
             stop_requested=session_id in self._stop_requested,
@@ -17692,6 +17714,7 @@ class AppBackend(QObject):
         if device_id:
             self._firmware_mosaic_phase.pop(device_id, None)
         if not session:
+            release_active()
             self._session_timing.pop(session_id, None)
             self._emit_sessions_changed()
             if restore_preview:
@@ -17701,6 +17724,7 @@ class AppBackend(QObject):
             return
         if session.status != SessionStatus.RUNNING:
             # Already finalised (for example the worker died and reported it first).
+            release_active()
             self._session_timing.pop(session_id, None)
             self._emit_sessions_changed()
             if restore_preview:
@@ -17708,7 +17732,7 @@ class AppBackend(QObject):
             self._refresh_stop_notice(session.device_id)
             return
         ended = datetime.now(timezone.utc)
-        started = datetime.fromisoformat(session.actual_started_at) if session.actual_started_at else ended
+        started = session_run_started(session.actual_started_at, ended)
         outcome = str(plan["outcome"])
         final = self.store.transition(
             session.id,
@@ -17717,6 +17741,7 @@ class AppBackend(QObject):
             current_step=outcome,
             outcome=outcome,
         )
+        release_active()
         captured = self._captured_frames_for(session.id, final.camera.frame_count, bool(plan["success"]))
         self._hold_session_capture.discard(final.device_id)
         was_stack_preview = bool(
@@ -18069,8 +18094,8 @@ class AppBackend(QObject):
             return planned if ok else 0
         return min(planned, captured)
 
-    def _device_by_id(self, device_id: str) -> Device:
-        return next(item for item in self._devices if item.id == device_id)
+    def _device_by_id(self, device_id: str) -> Device | None:
+        return next((item for item in self._devices if item.id == device_id), None)
 
     def _cutoff_hour(self) -> int:
         return clamp_cutoff_hour(self._settings.observing_day_cutoff_hour)
