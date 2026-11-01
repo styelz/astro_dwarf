@@ -27,6 +27,8 @@ Dialog {
     property string errorText: ""
     property string deviceId: ""
     property bool suppressReply: false
+    property int timeoutSeconds: 0
+    property int secondsLeft: 0
     readonly property bool capturing: phase === "capturing"
     readonly property bool canTake: gainOk && exposureOk && !capturing
     readonly property string settingsLine: cameraLabel + " · " + exposureText + " · GAIN " + gainText
@@ -48,7 +50,8 @@ Dialog {
 
     function applyPrompt(payload) {
         const data = payload || ({})
-        if (String(data.phase || "") === "closed") {
+        const nextPhase = String(data.phase || "")
+        if (nextPhase === "closed" || nextPhase === "timeout") {
             darkFrameDialog.dismiss()
             return
         }
@@ -71,6 +74,9 @@ Dialog {
         darkFrameDialog.blockReason = String(data.block_reason || "")
         darkFrameDialog.errorText = String(data.error || "")
         darkFrameDialog.deviceId = String(data.device_id || "")
+        darkFrameDialog.timeoutSeconds = Number(data.timeout_s || 0)
+        if (darkFrameDialog.phase === "ask")
+            darkFrameDialog.secondsLeft = darkFrameDialog.timeoutSeconds
         if (!darkFrameDialog.visible)
             darkFrameDialog.open()
     }
@@ -111,6 +117,18 @@ Dialog {
         spacing: Theme.s3
         Accessible.name: darkFrameDialog.headingText
         Accessible.description: darkFrameDialog.steps
+        Timer {
+            interval: 1000
+            repeat: true
+            running: darkFrameDialog.visible && !darkFrameDialog.capturing
+                     && darkFrameDialog.timeoutSeconds > 0 && darkFrameDialog.secondsLeft > 0
+            onTriggered: {
+                if (darkFrameDialog.secondsLeft <= 1)
+                    darkFrameDialog.secondsLeft = 0
+                else
+                    darkFrameDialog.secondsLeft -= 1
+            }
+        }
         Text {
             text: darkFrameDialog.headingText
             color: Theme.warning
@@ -158,6 +176,18 @@ Dialog {
             color: Theme.danger
             wrapMode: Text.Wrap
             Layout.fillWidth: true
+        }
+        Text {
+            objectName: "darkCountdown"
+            visible: !darkFrameDialog.capturing && darkFrameDialog.timeoutSeconds > 0
+            text: darkFrameDialog.secondsLeft > 0
+                  ? ("CONTINUING WITHOUT DARKS IN " + darkFrameDialog.secondsLeft + "s")
+                  : "CONTINUING WITHOUT DARKS"
+            color: Theme.warning
+            font.pixelSize: Theme.fontSm
+            font.letterSpacing: Theme.tracking1
+            Layout.fillWidth: true
+            Accessible.name: text
         }
         RowLayout {
             Layout.alignment: Qt.AlignRight

@@ -3322,14 +3322,18 @@ _MOSAIC_LAST_PANE_IDLE_S = 8.0
 # After GOTO, tracking needs a few seconds before the last live frame is on-target.
 _MOSAIC_TRACK_SETTLE_S = 5.0
 _RECOVERED_CAPTURE_WAIT_S = 6.0
-# A person-started stack waits here. The stdin thread delivers the answer
-# because the command thread is blocked inside the capture start.
+# A person-started stack waits here. A schedule run waits at most
+# `_dark_prompt_timeout_s`, then continues without darks. The stdin thread
+# delivers the answer because the command thread is blocked inside the capture start.
 _dark_prompt = threading.Event()
 _dark_lock = threading.Lock()
 _dark_token = 0
 _dark_choice: str | None = None
 _dark_run_choice: str | None = None
 _prompt_darks = False
+_dark_prompt_timeout_s = 0.0
+# Every dark modal counts down this long, then continues without darks.
+_DARK_PROMPT_LIMIT_S = 60.0
 _stack_exposure_name = ""
 _stack_gain: int | None = None
 _stack_bin_index = 0
@@ -3952,11 +3956,16 @@ def build_dark_capture_message(exp_index: int, gain: int, bin_index: int, cap_si
     return message
 
 
-def _begin_dark_prompt_run(prompt: bool) -> None:
+def _begin_dark_prompt_run(prompt: bool, timeout_s: float = 0) -> None:
     """Arm or skip the dark modal for this stack, and forget the last answer."""
-    global _prompt_darks, _dark_run_choice
+    global _prompt_darks, _dark_run_choice, _dark_prompt_timeout_s
     _prompt_darks = bool(prompt)
     _dark_run_choice = None
+    try:
+        limit = float(timeout_s or 0)
+    except (TypeError, ValueError):
+        limit = 0.0
+    _dark_prompt_timeout_s = limit if _prompt_darks and limit > 0 else 0.0
 
 
 def _clear_stack_exposure() -> None:
@@ -4056,6 +4065,7 @@ def _emit_dark_prompt(
     done: int = 0,
     elapsed_s: int = 0,
     frame_s: int = 0,
+    timeout_s: int = 0,
 ) -> None:
     gain = settings.get("gain")
     emit({
@@ -4079,6 +4089,7 @@ def _emit_dark_prompt(
         "exposure_ok": bool(settings.get("exposure_ok")),
         "block_reason": str(settings.get("block_reason") or ""),
         "error": str(error or ""),
+        "timeout_s": int(timeout_s or 0),
     })
 
 
@@ -4096,8 +4107,15 @@ def _next_dark_token() -> int:
     return token
 
 
-def _wait_dark_choice(token: int) -> str:
+def _wait_dark_choice(token: int, timeout_s: float = 0) -> str:
     global _dark_choice
+    deadline = None
+    try:
+        limit = float(timeout_s or 0)
+    except (TypeError, ValueError):
+        limit = 0.0
+    if limit > 0:
+        deadline = time.monotonic() + limit
     while True:
         if _dark_prompt.wait(0.25):
             with _dark_lock:
@@ -4109,6 +4127,8 @@ def _wait_dark_choice(token: int) -> str:
             return choice
         if _stop.is_set():
             return "stopped"
+        if deadline is not None and time.monotonic() >= deadline:
+            return "timeout"
 
 
 def _dark_cancel_requested(token: int) -> bool:
@@ -4293,7 +4313,7 @@ def _offer_darks_before_alignment(name: str, *, wide: bool) -> None:
 
 def _offer_darks_before_manual_alignment(name: str) -> None:
     """HUD calibrate / track / polar. An unattended session does not ask."""
-    global _prompt_darks, _dark_run_choice
+    global _prompt_darks, _dark_run_choice, _dark_prompt_timeout_s
     if _session_active.is_set():
         return
     # stop_all used to leave _stop set after the session was already gone.
@@ -4306,12 +4326,15 @@ def _offer_darks_before_manual_alignment(name: str) -> None:
     if _dark_run_choice == "cancel":
         _dark_run_choice = None
     saved = _prompt_darks
+    saved_timeout = _dark_prompt_timeout_s
     _prompt_darks = True
+    _dark_prompt_timeout_s = _DARK_PROMPT_LIMIT_S
     try:
         wide = str(_device.get("camera") or "") == "wide"
         _offer_darks_before_alignment(name, wide=wide)
     finally:
         _prompt_darks = saved
+        _dark_prompt_timeout_s = saved_timeout
 
 
 def _release_engine_for_darks(name: str) -> None:
@@ -4477,14 +4500,20 @@ def _handle_missing_darks(name: str, code: int, *, wide: bool) -> str:
             raise InterruptedError("Session stopped")
         settings = _dark_capture_settings(wide)
         token = _next_dark_token()
-        _emit_dark_prompt("ask", token, code, settings, error)
-        choice = _wait_dark_choice(token)
+        limit = _dark_prompt_timeout_s if _dark_prompt_timeout_s > 0 else 0
+        _emit_dark_prompt("ask", token, code, settings, error, timeout_s=int(limit or 0))
+        choice = _wait_dark_choice(token, limit)
         if choice == "stopped" or _stop.is_set():
             _close_dark_prompt(token)
             raise InterruptedError("Session stopped")
-        if choice == "continue":
+        if choice in {"continue", "timeout"}:
             _dark_run_choice = "continue"
-            _close_dark_prompt(token)
+            if choice == "timeout":
+                waited = int(limit) if limit else 0
+                log(f"{name}: dark prompt timed out after {waited}s; continuing without dark frames", "notice")
+                _emit_dark_prompt("timeout", token, code, settings)
+            else:
+                _close_dark_prompt(token)
             return "continue"
         if choice != "capture":
             _dark_run_choice = "cancel"
@@ -4531,7 +4560,8 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
     - Engine busy (GOTO/calibration still winding down): wait and retry.
     - Tele camera closed after GO LIVE or a finished stack: open it and retry.
     - Missing or mismatched darks: ask when a person started the stack, then
-      take darks or continue shooting. Scheduled runs continue without asking.
+      take darks or continue shooting. A schedule run asks once and times out
+      into continue-shooting; later sessions in that run do not ask.
     - Anything else: fail with the decoded error name and code.
     """
     command = _CAPTURE_STARTS[operation]
@@ -4623,9 +4653,9 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
         raise RuntimeError(f"{name} failed: {_error_name(code)}")
 
 
-def run_session(session: dict[str, Any], prompt_darks: bool = False) -> bool:
-    global _session_phase, _stop_phase, _dark_run_choice
-    _begin_dark_prompt_run(prompt_darks)
+def run_session(session: dict[str, Any], prompt_darks: bool = False, dark_timeout_s: float = 0) -> bool:
+    global _session_phase, _stop_phase, _dark_run_choice, _dark_prompt_timeout_s
+    _begin_dark_prompt_run(prompt_darks, dark_timeout_s)
     _stop.clear()
     _session_active.set()
     _session_phase = None
@@ -4704,6 +4734,7 @@ def run_session(session: dict[str, Any], prompt_darks: bool = False) -> bool:
             _close_dark_prompt(_dark_token)
         if not completed:
             _dark_run_choice = None
+        _dark_prompt_timeout_s = 0
         if leftover:
             _stop_phase = phase
             try:
@@ -7310,7 +7341,7 @@ def _start_manual_stack(camera: str = "", count: Any = None, stack_format: Any =
         # stop_all leaves _stop set after the session is gone. A live stack
         # is not a session; that latch must not cancel the dark-frame prompt.
         _stop.clear()
-    _begin_dark_prompt_run(True)
+    _begin_dark_prompt_run(True, _DARK_PROMPT_LIMIT_S)
     _clear_stack_exposure()
     snapshot = _tap.snapshot() if _tap is not None else {}
     if _capture_running(snapshot):
@@ -7417,7 +7448,7 @@ def _stack_mosaic(
 ) -> bool:
     """GOTO each planned pane and stack it. Stoppable like a session."""
     global _session_phase, _stop_phase
-    _begin_dark_prompt_run(prompt_darks)
+    _begin_dark_prompt_run(prompt_darks, _DARK_PROMPT_LIMIT_S if prompt_darks else 0)
     _clear_stack_exposure()
     if not isinstance(panes, list) or not panes:
         raise RuntimeError("Mosaic has no panes")
@@ -7620,7 +7651,11 @@ def dispatch(message: dict[str, Any]) -> Any:
             session["stack_format"] = message.get("stack_format")
         if message.get("mosaic_continue"):
             session["mosaic_continue"] = True
-        return run_session(session, prompt_darks=bool(message.get("prompt_darks")))
+        return run_session(
+            session,
+            prompt_darks=bool(message.get("prompt_darks")),
+            dark_timeout_s=float(message.get("dark_timeout_s") or 0),
+        )
     if command == "stop_all":
         return stop_all()
     if command == "telemetry":

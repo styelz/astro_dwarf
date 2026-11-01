@@ -202,6 +202,8 @@ from .services import (
     observing_date,
     planned_tonight,
     scheduler_due_session,
+    schedule_dark_prompt,
+    SCHEDULE_DARK_TIMEOUT_S,
     pane_sort_key,
     planned_reorder_block,
     insert_reorder_block,
@@ -511,6 +513,7 @@ class TelescopeProcess(QObject):
         callback: Callable[[bool, Any], None],
         prompt_darks: bool = False,
         mosaic_continue: bool = False,
+        dark_timeout_s: float = 0,
     ) -> None:
         self.busy = True
         self.availabilityChanged.emit()
@@ -523,6 +526,7 @@ class TelescopeProcess(QObject):
         payload: dict[str, Any] = {
             "session": to_dict(session),
             "prompt_darks": bool(prompt_darks),
+            "dark_timeout_s": float(dark_timeout_s or 0),
             "mosaic_continue": bool(mosaic_continue),
         }
         fmt = firmware_stack_format(getattr(self.device.control_settings, "stack_format", ""))
@@ -2817,6 +2821,8 @@ class AppBackend(QObject):
         self._workers: dict[str, TelescopeProcess] = {}
         self._active_sessions: dict[str, str] = {}
         self._dark_prompt_device = ""
+        self._dark_prompt_timeout_s: dict[str, int] = {}
+        self._schedule_darks_skipped: set[str] = set()
         self._stop_requested: set[str] = set()
         self._stack_stop_quiet: set[str] = set()
         self._mosaic_stop_skipped: dict[str, int] = {}
@@ -3789,14 +3795,29 @@ class AppBackend(QObject):
 
     def _on_dark_prompt(self, device_id: str, message: dict[str, Any]) -> None:
         phase = str(message.get("phase") or "")
-        if phase == "closed":
+        if phase == "ask":
+            try:
+                self._dark_prompt_timeout_s[device_id] = max(0, int(message.get("timeout_s") or 0))
+            except (TypeError, ValueError):
+                self._dark_prompt_timeout_s[device_id] = 0
+        if phase in {"closed", "timeout"}:
             if self._dark_prompt_device == device_id:
                 self._dark_prompt_device = ""
+            if phase == "timeout":
+                self._skip_schedule_darks(device_id)
         else:
             self._dark_prompt_device = device_id
         payload = dict(message)
         payload["device_id"] = device_id
         self.darkPrompt.emit(payload)
+
+    def _skip_schedule_darks(self, device_id: str) -> None:
+        """Continue without darks for every later session while the scheduler stays armed."""
+        if not self._scheduler_enabled or not device_id or device_id in self._schedule_darks_skipped:
+            return
+        self._schedule_darks_skipped.add(device_id)
+        self.add_log("notice", "Darks skipped for the rest of this schedule", device_id)
+        self._toast("Darks skipped", "info", "The rest of this schedule continues without dark frames")
 
     @Slot(int, str)
     def answerDarkPrompt(self, token: int, choice: str) -> None:
@@ -3804,6 +3825,8 @@ class AppBackend(QObject):
         worker = self._workers.get(device_id) if device_id else None
         if worker is None:
             return
+        if str(choice or "").strip().lower() == "continue" and int(self._dark_prompt_timeout_s.get(device_id) or 0) > 0:
+            self._skip_schedule_darks(device_id)
         worker.send("dark_prompt_reply", {"token": int(token), "choice": str(choice or "")})
 
     def _initial_stop_detail(self, device_id: str) -> str:
@@ -8224,6 +8247,7 @@ class AppBackend(QObject):
             self._toast("Connect a telescope before starting the scheduler", "warning")
             return
         self._scheduler_enabled = enabled
+        self._schedule_darks_skipped.clear()
         self.schedulerEnabledChanged.emit()
         self.add_log("info", "Scheduler started" if enabled else "Scheduler stopped")
         if enabled:
@@ -8234,6 +8258,7 @@ class AppBackend(QObject):
         if not self._scheduler_enabled or self._any_device_connected() or self._pending_reconnect_ids:
             return
         self._scheduler_enabled = False
+        self._schedule_darks_skipped.clear()
         self.schedulerEnabledChanged.emit()
         self.add_log("warning", "Scheduler disarmed: no telescope is connected")
         self._toast("Scheduler disarmed", "warning", "Connect a telescope and re-arm it to resume the queue")
@@ -11126,7 +11151,7 @@ class AppBackend(QObject):
             f"Device mosaic {columns}×{rows} · {target.name} · {horizontal / 100:.1f}× {vertical / 100:.1f}×",
             device_id,
         )
-        self._start_session(worker, saved[0], prompt_darks=True)
+        self._start_session(worker, saved[0], prompt_darks=True, dark_timeout_s=SCHEDULE_DARK_TIMEOUT_S)
         return True
 
     def _start_live_mosaic_stack(self, device_id: str, camera: str) -> bool:
@@ -16277,7 +16302,10 @@ class AppBackend(QObject):
         if started is None:
             self._toast("This session is no longer on the calendar", "warning")
             return
-        self._start_session(worker, started, prompt_darks=True)
+        if self._scheduler_enabled:
+            self._start_scheduled_session(worker, started)
+        else:
+            self._start_session(worker, started, prompt_darks=True, dark_timeout_s=SCHEDULE_DARK_TIMEOUT_S)
 
     @Slot(str, str)
     def moveSessionDate(self, session_id: str, day: str) -> None:
@@ -17336,7 +17364,10 @@ class AppBackend(QObject):
         if nxt is None:
             return False
         self.add_log("notice", f"Mosaic continues · {nxt.name}", device_id)
-        self._start_session(worker, nxt)
+        if self._scheduler_enabled:
+            self._start_scheduled_session(worker, nxt)
+        else:
+            self._start_session(worker, nxt)
         return True
 
     def _scheduler_tick(self) -> None:
@@ -17404,7 +17435,7 @@ class AppBackend(QObject):
                 continue
             if early_follow:
                 self.add_log("notice", f"Next free · {session.name}", device.id)
-            self._start_session(worker, session)
+            self._start_scheduled_session(worker, session)
 
     def _recovered_session_for(self, device_id: str, telemetry: dict[str, Any]) -> Session | None:
         candidates = [
@@ -17457,7 +17488,10 @@ class AppBackend(QObject):
         if not session:
             return
         self._resume_attempted.add(device_id)
-        self._start_session(worker, session)
+        if self._scheduler_enabled:
+            self._start_scheduled_session(worker, session)
+        else:
+            self._start_session(worker, session)
 
     def _recovery_same_night(self, device_id: str) -> bool:
         """True when a parked run still belongs to the current observing night."""
@@ -17585,7 +17619,21 @@ class AppBackend(QObject):
             name = mosaic_group_title(name, group)
         self._emit_sky_lock(name or "Mosaic", coords)
 
-    def _start_session(self, worker: TelescopeProcess, session: Session, prompt_darks: bool = False) -> None:
+    def _start_scheduled_session(self, worker: TelescopeProcess, session: Session) -> None:
+        """Ask once for missing darks, then skip them for the rest of this armed run."""
+        prompt, timeout = schedule_dark_prompt(
+            part_of_schedule=True,
+            skipped=session.device_id in self._schedule_darks_skipped,
+        )
+        self._start_session(worker, session, prompt_darks=prompt, dark_timeout_s=timeout)
+
+    def _start_session(
+        self,
+        worker: TelescopeProcess,
+        session: Session,
+        prompt_darks: bool = False,
+        dark_timeout_s: float = 0,
+    ) -> None:
         leftover = self._live_mosaic.get(session.device_id)
         if leftover and leftover.get("phase") and not leftover.get("worker_running"):
             self._discard_live_mosaic(session.device_id, notify=False)
@@ -17601,6 +17649,7 @@ class AppBackend(QObject):
         continuing = custom_mosaic_follow_on(session, self.store.sessions.all())
         if continuing:
             prompt_darks = False
+            dark_timeout_s = 0
         session = self.store.transition(
             session.id,
             SessionStatus.RUNNING,
@@ -17676,6 +17725,7 @@ class AppBackend(QObject):
             lambda ok, result: self._session_finished(session.id, ok, result),
             prompt_darks=prompt_darks,
             mosaic_continue=False,
+            dark_timeout_s=dark_timeout_s,
         )
 
     def _note_firmware_mosaic_phase(self, session: Session, step: str) -> None:

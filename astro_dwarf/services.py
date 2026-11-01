@@ -5588,6 +5588,21 @@ def scheduler_due_session(
     return None
 
 
+SCHEDULE_DARK_TIMEOUT_S = 60
+
+
+def schedule_dark_prompt(*, part_of_schedule: bool, skipped: bool) -> tuple[bool, int]:
+    """Whether this session should ask for darks, and how long the modal waits.
+
+    Every ask counts down ``SCHEDULE_DARK_TIMEOUT_S`` seconds, then continues
+    without darks. An armed schedule that has already continued skips the modal
+    for the rest of that run. Run Now with the scheduler off still asks.
+    """
+    if part_of_schedule and skipped:
+        return False, 0
+    return True, SCHEDULE_DARK_TIMEOUT_S
+
+
 def mosaic_pane_workflow(workflow: Workflow, index: int) -> Workflow:
     """First pane keeps setup. Later panes only slew and stack.
 

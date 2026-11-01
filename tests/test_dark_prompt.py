@@ -103,6 +103,105 @@ def test_unprompted_run_continues_immediately() -> None:
     _assert(continued == ["Stack"], continued)
 
 
+def test_schedule_dark_prompt_asks_once_then_skips() -> None:
+    from astro_dwarf.services import SCHEDULE_DARK_TIMEOUT_S, schedule_dark_prompt
+
+    prompt, timeout = schedule_dark_prompt(part_of_schedule=True, skipped=False)
+    _assert(prompt is True and timeout == SCHEDULE_DARK_TIMEOUT_S, (prompt, timeout))
+    _assert(timeout == 60, timeout)
+    prompt, timeout = schedule_dark_prompt(part_of_schedule=True, skipped=True)
+    _assert(prompt is False and timeout == 0, (prompt, timeout))
+    prompt, timeout = schedule_dark_prompt(part_of_schedule=False, skipped=False)
+    _assert(prompt is True and timeout == 60, (prompt, timeout))
+    prompt, timeout = schedule_dark_prompt(part_of_schedule=False, skipped=True)
+    _assert(prompt is True and timeout == 60, "Run Now with the scheduler off still asks")
+
+
+def test_prompt_timeout_continues_and_skips_the_next_ask() -> None:
+    previous = _snapshot()
+    continued: list[str] = []
+    phases: list[str] = []
+    worker._stop.clear()
+    worker._begin_dark_prompt_run(True, 1.2)
+    worker._continue_shooting = lambda name: continued.append(name) or True
+    real_emit = worker.emit
+
+    def emit(payload: dict[str, object]) -> None:
+        if payload.get("event") == "dark_prompt":
+            phases.append(str(payload.get("phase") or ""))
+            if payload.get("phase") == "ask":
+                _assert(int(payload.get("timeout_s") or 0) == 1, payload)
+
+    worker.emit = emit
+    before = worker._dark_token
+    holder: dict[str, object] = {}
+
+    def run() -> None:
+        holder["outcome"] = worker._after_dark_warning(
+            "Stack", worker.CODE_ASTRO_DARK_NOT_FOUND, wide=False
+        )
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        thread.join(3)
+        _assert(not thread.is_alive(), "the countdown did not release the prompt")
+        _assert(holder.get("outcome") == "started", holder)
+        _assert(continued == ["Stack"], continued)
+        _assert(worker._dark_token != before, "the prompt never opened")
+        _assert(phases[:1] == ["ask"] and "timeout" in phases, phases)
+        again = worker._dark_token
+        outcome = worker._after_dark_warning(
+            "Stack pane 2", worker.CODE_ASTRO_DARK_NOT_FOUND, wide=False
+        )
+        _assert(outcome == "started", outcome)
+        _assert(worker._dark_token == again, "a timed-out run asked again")
+        _assert(continued == ["Stack", "Stack pane 2"], continued)
+    finally:
+        if thread.is_alive():
+            worker._stop.set()
+            worker.accept_dark_prompt_reply(worker._dark_token, "cancel")
+            thread.join(2)
+        worker.emit = real_emit
+        _restore(previous)
+
+
+def test_manual_alignment_ignores_the_schedule_countdown() -> None:
+    previous = _snapshot()
+    worker._stop.clear()
+    worker._session_active.clear()
+    worker._dark_run_choice = None
+    worker._begin_dark_prompt_run(True, 0.25)
+    worker._device = {"camera": "tele", "model": "Dwarf 3"}
+    worker._stack_exposure_name = "15"
+    worker._stack_gain = 60
+    worker._stack_bin_index = 0
+    saved_query = worker._query_dark_library
+    worker._query_dark_library = lambda _wide: []
+    holder: dict[str, object] = {}
+
+    def run() -> None:
+        worker._offer_darks_before_manual_alignment("Calibrate")
+        holder["done"] = True
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        time.sleep(0.45)
+        _assert(thread.is_alive(), "the schedule countdown closed a manual dark prompt")
+        _assert(worker.accept_dark_prompt_reply(worker._dark_token, "continue"), "continue was rejected")
+        thread.join(2)
+        _assert(holder.get("done") is True, holder)
+        _assert(worker._dark_prompt_timeout_s == 0.25, worker._dark_prompt_timeout_s)
+    finally:
+        if thread.is_alive():
+            worker._stop.set()
+            worker.accept_dark_prompt_reply(worker._dark_token, "cancel")
+            thread.join(2)
+        worker._query_dark_library = saved_query
+        _restore(previous)
+
+
 def test_prompt_waits_to_continue() -> None:
     previous = _snapshot()
     continued: list[str] = []
@@ -549,7 +648,10 @@ if __name__ == "__main__":
     test_model_steps_follow_each_manual()
     test_tele_gain_limits()
     test_unprompted_run_continues_immediately()
+    test_schedule_dark_prompt_asks_once_then_skips()
     test_prompt_waits_to_continue()
+    test_prompt_timeout_continues_and_skips_the_next_ask()
+    test_manual_alignment_ignores_the_schedule_countdown()
     test_prompt_cancel_does_not_continue()
     test_take_darks_builds_the_firmware_request()
     test_device_not_activated_does_not_discard_finished_darks()

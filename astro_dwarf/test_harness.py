@@ -1118,6 +1118,7 @@ class TestHarness:
         ("POST", "/sky/grid"): "_route_sky_grid",
         ("POST", "/sky/eval"): "_route_sky_eval",
         ("POST", "/confirm"): "_route_confirm",
+        ("POST", "/dark-prompt"): "_route_dark_prompt",
     }
 
     def handle(self, method: str, path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -1317,6 +1318,25 @@ class TestHarness:
         action = str(payload.get("action") or "accept")
         result = self.call_hook("confirmAction", action)
         return {"action": action, "result": result}
+
+    def _route_dark_prompt(self, query: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+        """Open or read the dark-frame dialog. Harness only; packaged builds never load this."""
+        phase = str(payload.get("phase") or "")
+        if phase != "read":
+            self.backend.darkPrompt.emit(dict(payload))
+        dialog = find_named(self.window, "darkFrameDialog")
+        if dialog is None:
+            return {"found": False}
+        countdown = find_named(dialog, "darkCountdown")
+        return {
+            "found": True,
+            "visible": bool(_property(dialog, "visible", False)),
+            "secondsLeft": int(_property(dialog, "secondsLeft", 0) or 0),
+            "timeoutSeconds": int(_property(dialog, "timeoutSeconds", 0) or 0),
+            "phase": str(_property(dialog, "phase", "") or ""),
+            "heading": str(_property(dialog, "headingText", "") or ""),
+            "countdown": "" if countdown is None else str(_property(countdown, "text", "") or ""),
+        }
 
     def _handler(self) -> type[BaseHTTPRequestHandler]:
         harness = self
