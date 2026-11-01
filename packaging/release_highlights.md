@@ -3,16 +3,9 @@
 If you find any bugs or have any suggestions for the application, please create an issue here:
 [https://github.com/styelz/astro_dwarf/issues/new/choose](https://github.com/styelz/astro_dwarf/issues/new/choose)
 
-- Mosaic stitch uses each pane's stack and the saved grid.
-- Deleting a mosaic removes its pane folders first.
-- Connect keeps trying for about 50 seconds while the telescope starts.
-- White balance has an Auto setting.
-- Built-in themes hide the colour preview.
-- Image previews can auto-stretch.
-- After a stack, live view can restart without stopping tracking.
-- Calibration frames stay out of the album.
-- Live view pauses when you leave that page.
-- On a narrow window, the calendar title shortens and the control pad scrolls instead of clipping.
-- Added RUN button to Up Next panel first item.
-- Default control page layout no longer clips the STOP SESSION button on the target panel.
-- History sessions on the calendar night view can be replayed or used to create a template.
+- A saved template or session with an extra field still opens.
+- A mosaic chain continues when an earlier night still has a planned session.
+- The next slew waits until the plate-solve search has cleared.
+- Stopping before a stack clears the stopping banner.
+- Use Next Free starts the next session as soon as the previous one finishes.
+- While the scheduler is armed, a missing-darks prompt counts down 60 seconds, then shooting continues without darks. Later prompts stay skipped until the scheduler is turned off. Run Now still asks.
