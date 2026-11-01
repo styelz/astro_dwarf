@@ -752,6 +752,19 @@ _STACK_RESULT_READY = (
 )
 
 
+def capture_stop_busy(telemetry: dict[str, Any] | None) -> bool:
+    """True when a session stop still has a stack to wind down.
+
+    A stop during GOTO, before stacking starts, has no capture packet coming.
+    That stop can leave the banner once the session itself has ended.
+    """
+    snap = telemetry or {}
+    return bool(
+        snap.get("capture_active")
+        or str(snap.get("capture_state") or "") in {"running", "stopping"}
+    )
+
+
 def stop_notice_state_busy(operation: str, telemetry: dict[str, Any] | None) -> bool:
     """True when firmware is still in the job this stop asked to end."""
     snap = telemetry or {}
@@ -3687,6 +3700,8 @@ class AppBackend(QObject):
             device_id == self._selected_device_id and self._preview_result
         )
         telemetry = self._device_telemetry.get(device_id) or {}
+        if operation in _CAPTURE_STOP_ACTIONS and not capture_stop_busy(telemetry):
+            self._stop_notice_idle.add(device_id)
         target = str(telemetry.get("capture_target") or telemetry.get("tracking_target") or "").strip()
         session_id = self._active_sessions.get(device_id)
         session = self.store.sessions.get(session_id) if session_id else None
@@ -3729,10 +3744,7 @@ class AppBackend(QObject):
         if "capture_state" not in data and "capture_active" not in data:
             return
         current = self._device_telemetry.get(device_id) or {}
-        busy = bool(
-            current.get("capture_active")
-            or str(current.get("capture_state") or "") in {"running", "stopping"}
-        )
+        busy = capture_stop_busy(current)
         if busy:
             self._stop_notice_idle.discard(device_id)
         else:

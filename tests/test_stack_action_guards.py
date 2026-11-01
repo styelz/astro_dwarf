@@ -26,6 +26,7 @@ from astro_dwarf.qt_backend import (
     preview_should_skip_go_live,
     session_finish_plan,
     stacking_blocks_action,
+    capture_stop_busy,
     stop_notice_state_busy,
     stop_notice_still_needed,
     stacking_preview_result_copy,
@@ -315,6 +316,28 @@ def test_stop_notice_stays_until_the_task_is_finished() -> None:
             session_running=False,
         ),
         "an idle telescope with no running session can show the completed card",
+    )
+    _assert(
+        not capture_stop_busy({"goto_state": "solving", "tracking_state": "running"}),
+        "a slew before stacking is not a capture the notice must wait on",
+    )
+    _assert(
+        not capture_stop_busy({"capture_state": "idle", "capture_active": False}),
+        "an idle capture lets the pre-stack stop finish",
+    )
+    _assert(capture_stop_busy({"capture_active": True}), "a running stack still holds the notice")
+    _assert(
+        capture_stop_busy({"capture_state": "stopping"}),
+        "an exposure that is still stopping holds the notice",
+    )
+    _assert(
+        not stop_notice_still_needed(
+            "stop_session",
+            pending="",
+            telescope_settled=True,
+            session_running=False,
+        ),
+        "a stop before stacking clears once the session has ended",
     )
     # Neighbor: GOTO and burst stops follow the same rule on their own state.
     _assert(
