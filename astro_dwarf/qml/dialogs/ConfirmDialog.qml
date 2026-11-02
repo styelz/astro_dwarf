@@ -35,6 +35,8 @@ Dialog {
             confirmDialog.viewerCloseRequested()
             backend.deleteMedia(confirmDialog.pendingIds)
         }
+        else if (confirmDialog.kind === "megastack")
+            backend.startMediaRestack(confirmDialog.operation, confirmDialog.pendingIds)
         else
             backend.deviceAction(backend.selectedDeviceId, confirmDialog.operation)
         confirmDialog.close()

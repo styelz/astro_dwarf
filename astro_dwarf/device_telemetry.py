@@ -774,6 +774,27 @@ def link_telemetry(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     return data
 
 
+def plausible_temperature(value: Any) -> bool:
+    """Degrees C. The telescope sends about -270 before the first real reading."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return -60.0 <= number <= 120.0
+
+
+def measured_temperature(message: Any) -> bool:
+    """True when a temperature packet carries a real reading."""
+    if message is None:
+        return False
+    try:
+        if int(getattr(message, "code", 0) or 0) != 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return plausible_temperature(getattr(message, "temperature", None))
+
+
 class TelemetryTap:
     """Collects device telemetry from raw packets, the SDK cache and state dumps."""
 
@@ -1754,11 +1775,15 @@ class TelemetryTap:
 
     def _decode_temperature(self, cmd: int, data: bytes) -> dict[str, Any]:
         message = self._parse("Temperature", data)
+        if message is None or not measured_temperature(message):
+            return {}
         return {"temperature_c": int(message.temperature)}
 
     def _decode_cmos_temperature(self, cmd: int, data: bytes) -> dict[str, Any]:
         message = self._parse("CmosTemperature", data)
-        if not message.HasField("temperature"):
+        if message is None or not message.HasField("temperature"):
+            return {}
+        if not plausible_temperature(message.temperature):
             return {}
         key = "cmos_wide_c" if int(message.camera_type) == 1 else "cmos_tele_c"
         return {key: int(message.temperature)}
@@ -2122,7 +2147,7 @@ class TelemetryTap:
                 changes["storage_free_gb"] = int(storage.available_size)
                 changes["storage_total_gb"] = int(storage.total_size)
                 changes["storage_valid"] = bool(storage.is_valid or storage.total_size)
-            if info.HasField("temperature"):
+            if info.HasField("temperature") and measured_temperature(info.temperature):
                 changes["temperature_c"] = int(info.temperature.temperature)
             if info.HasField("rgb_state"):
                 changes["lights_on"] = int(info.rgb_state.state) == 1
@@ -2158,7 +2183,11 @@ class TelemetryTap:
                 # Numeric size: tap-to-center scales clicks into the wide camera's pixel frame.
                 changes[f"{prefix}_width"] = int(camera.resolution_width)
                 changes[f"{prefix}_height"] = int(camera.resolution_height)
-            if camera.HasField("cmos_temperature") and camera.cmos_temperature.HasField("temperature"):
+            if (
+                camera.HasField("cmos_temperature")
+                and camera.cmos_temperature.HasField("temperature")
+                and plausible_temperature(camera.cmos_temperature.temperature)
+            ):
                 changes[f"cmos_{prefix}_c"] = int(camera.cmos_temperature.temperature)
             if camera.HasField("stream_type"):
                 value = int(camera.stream_type.stream_type)
@@ -2330,7 +2359,7 @@ def normalize_client_status(full: dict[str, Any], model_id: str = "3") -> dict[s
         put("storage_total_gb", int(full["totalSizeDwarf"]))
         put("storage_free_gb", int(full.get("availableSizeDwarf") or 0))
         put("storage_valid", True)
-    if full.get("TemperatureLevelDwarf") is not None:
+    if full.get("TemperatureLevelDwarf") is not None and plausible_temperature(full.get("TemperatureLevelDwarf")):
         put("temperature_c", int(full["TemperatureLevelDwarf"]))
     cmos = full.get("CmosTemperatureDwarf") or {}
     if isinstance(cmos, dict):
@@ -2338,6 +2367,8 @@ def normalize_client_status(full: dict[str, Any], model_id: str = "3") -> dict[s
             try:
                 camera = int(key)
             except (TypeError, ValueError):
+                continue
+            if not plausible_temperature(value):
                 continue
             put("cmos_wide_c" if camera == 1 else "cmos_tele_c", int(value))
     if full.get("FocusValueDwarf") is not None:

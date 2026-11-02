@@ -222,6 +222,20 @@ ApplicationWindow {
             : "Delete " + ids.length + " " + plural + "? This cannot be undone."
         confirmDialog.open()
     }
+    function confirmMegastack(paths) {
+        const list = Array.isArray(paths) ? paths : []
+        if (list.length < 2)
+            return
+        confirmDialog.kind = "megastack"
+        confirmDialog.operation = String(backend.selectedDeviceId || "")
+        confirmDialog.pendingIds = list
+        confirmDialog.headingText = "MEGASTACK"
+        confirmDialog.confirmLabel = "STACK " + list.length
+        confirmDialog.summary = "Stack " + list.length + " astronomy sessions on "
+            + ((backend.selectedDevice && backend.selectedDevice.name) || "this telescope")
+            + "? They need the same camera, binning, filter, and target. The telescope writes a new session under RESTACKED."
+        confirmDialog.open()
+    }
     function askResetSessions(ids) {
         resetHistoryDialog.openFor(ids)
     }

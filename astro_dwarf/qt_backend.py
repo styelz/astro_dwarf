@@ -64,6 +64,8 @@ from .domain import (
     album_is_astro_stack_product,
     album_is_astronomy_category_folder,
     album_is_stack_display_image,
+    restack_session_dir,
+    restack_session_dirs,
     album_item_preview_path,
     album_delete_summary,
     album_is_category_folder_path,
@@ -2892,6 +2894,12 @@ class AppBackend(QObject):
         self._media_request_id = 0
         self._media_status = ""
         self._media_locked = False
+        self._restack_phase = ""
+        self._restack_device_id = ""
+        self._restack_detail = ""
+        self._restack_token = 0
+        self._restack_started_at = 0.0
+        self._restack_saw_running = False
         self._media_download_queue: list[str] = []
         self._media_download_batch = 0
         self._media_download_ok = 0
@@ -8630,6 +8638,18 @@ class AppBackend(QObject):
     def mediaBusy(self) -> str:
         return self._album_busy
 
+    @Property(str, notify=mediaChanged)
+    def mediaRestackPhase(self) -> str:
+        if self._restack_device_id != self._selected_device_id:
+            return ""
+        return self._restack_phase
+
+    @Property(str, notify=mediaChanged)
+    def mediaRestackDetail(self) -> str:
+        if self._restack_device_id != self._selected_device_id:
+            return ""
+        return self._restack_detail
+
     @Property(bool, notify=mediaChanged)
     def mediaLocked(self) -> bool:
         return self._session_is_capturing(self._selected_device_id)
@@ -10490,6 +10510,8 @@ class AppBackend(QObject):
                 self.stopPreview()
                 self._clear_mosaic_preview(drop_cache=False)
             self._selected_device_id = device_id
+            if previous != device_id and self._restack_phase:
+                self.mediaChanged.emit()
             if previous != device_id and self._media_source != "local":
                 self._media_folder = ""
                 self._media_folder_parent = ""
@@ -13526,6 +13548,7 @@ class AppBackend(QObject):
             "sub_type": sub_type,
             "duration": duration,
             "is_dir": is_dir,
+            "restack_path": restack_session_dir(remote or name) if is_dir else "",
             **panorama_geometry(entry),
         }
 
@@ -14399,6 +14422,165 @@ class AppBackend(QObject):
                 "captured": record.actual_started_at,
             })
         return rows
+
+    def _restack_on_screen(self) -> bool:
+        return self._restack_device_id == self._selected_device_id
+
+    def _schedule_restack_poll(self, token: int) -> None:
+        QTimer.singleShot(5000, lambda token=token: self._poll_restack(token))
+
+    def _finish_restack(self, token: int, success: bool, detail: str) -> None:
+        if token != self._restack_token:
+            return
+        self._restack_token += 1
+        device_id = self._restack_device_id
+        self._restack_phase = ""
+        self._restack_detail = ""
+        self._restack_saw_running = False
+        self._set_media_busy("")
+        text = str(detail or ("Megastack finished" if success else "Megastack stopped"))
+        if self._selected_device_id == device_id:
+            self._set_media_status(text)
+        else:
+            self._emit_media()
+        self._toast("Megastack finished" if success else "Megastack stopped", "success" if success else "warning", text)
+        if success and device_id and self._selected_device_id == device_id and self._media_source != "local":
+            self.refreshMedia(device_id, True)
+
+    def _restack_begin_done(self, token: int, ok: bool, result: Any) -> None:
+        if token != self._restack_token:
+            return
+        self._set_media_busy("")
+        payload = result if isinstance(result, dict) else {}
+        if not ok or not payload.get("ok"):
+            message = str(payload.get("message") or result or "The telescope refused the restack")
+            self._restack_token += 1
+            self._restack_phase = ""
+            self._restack_detail = ""
+            self._set_media_status(message)
+            self._toast("Megastack did not start", "error", message)
+            self._emit_media()
+            return
+        self._restack_started_at = time.time()
+        self._restack_result_dir = str(payload.get("result_dir") or "")
+        self._restack_detail = str(payload.get("message") or "Stacking on the telescope")
+        if self._restack_phase != "stopping":
+            self._restack_phase = "running"
+            self._set_media_status(self._restack_detail)
+            self._toast("Megastack started", "success", self._restack_detail)
+        self._emit_media()
+        self._schedule_restack_poll(token)
+
+    def _restack_stop_done(self, token: int, ok: bool, result: Any) -> None:
+        if token != self._restack_token:
+            return
+        payload = result if isinstance(result, dict) else {}
+        if not ok or not payload.get("ok"):
+            message = str(payload.get("message") or result or "The telescope did not stop the restack")
+            if self._restack_phase == "stopping":
+                self._restack_phase = "running"
+            self._toast("Could not stop the restack", "error", message)
+            self._emit_media()
+            return
+        self._restack_detail = "Stopping the restack"
+        if self._restack_on_screen():
+            self._set_media_status(self._restack_detail)
+        self._schedule_restack_poll(token)
+
+    def _poll_restack(self, token: int) -> None:
+        if token != self._restack_token or self._restack_phase not in {"running", "stopping"}:
+            return
+        worker = self._workers.get(self._restack_device_id)
+        if worker is None or not worker.connected:
+            self._finish_restack(token, False, "The telescope disconnected during the restack")
+            return
+        worker.send(
+            "restack_status",
+            {},
+            lambda ok, result, token=token: self._restack_status_done(token, ok, result),
+        )
+
+    def _restack_status_done(self, token: int, ok: bool, result: Any) -> None:
+        if token != self._restack_token or self._restack_phase not in {"running", "stopping"}:
+            return
+        progress = result if ok and isinstance(result, dict) else {}
+        try:
+            updated = float(progress.get("updated") or 0)
+        except (TypeError, ValueError):
+            updated = 0.0
+        current = updated >= self._restack_started_at - 2
+        if current and progress.get("running"):
+            self._restack_saw_running = True
+            detail = str(progress.get("detail") or "Stacking on the telescope")
+            directory = str(progress.get("result_dir") or "")
+            if directory:
+                self._restack_result_dir = directory
+            if detail != self._restack_detail:
+                self._restack_detail = detail
+                if self._restack_on_screen():
+                    self._set_media_status(detail)
+                else:
+                    self._emit_media()
+            self._schedule_restack_poll(token)
+            return
+        if current and self._restack_saw_running and progress.get("ended"):
+            self._finish_restack(token, True, str(progress.get("detail") or "Megastack finished"))
+            return
+        self._schedule_restack_poll(token)
+
+    @Slot(str, "QVariantList")
+    def startMediaRestack(self, device_id: str, paths: list) -> None:
+        device_id = str(device_id or self._selected_device_id or "")
+        if self._restack_phase in {"check", "running", "stopping"}:
+            self._toast("A restack is already running", "warning")
+            return
+        if self._session_is_capturing(device_id):
+            self._toast("The telescope is capturing", "warning")
+            return
+        dirs = restack_session_dirs(list(paths or []))
+        if len(dirs) < 2:
+            self._toast("Select at least two astronomy sessions", "warning")
+            return
+        worker = self._workers.get(device_id)
+        if worker is None or not worker.connected:
+            self._toast("Connect the telescope first", "warning")
+            return
+        self._restack_token += 1
+        token = self._restack_token
+        self._restack_device_id = device_id
+        self._restack_phase = "check"
+        self._restack_saw_running = False
+        self._restack_result_dir = ""
+        self._restack_started_at = time.time()
+        self._restack_detail = "Checking whether these sessions can be stacked"
+        self._set_media_busy("restack")
+        self._set_media_status(self._restack_detail)
+        self._emit_media()
+        worker.send(
+            "restack_begin",
+            {"dirs": dirs},
+            lambda ok, result, token=token: self._restack_begin_done(token, ok, result),
+        )
+
+    @Slot()
+    def stopMediaRestack(self) -> None:
+        if self._restack_phase not in {"check", "running"}:
+            return
+        worker = self._workers.get(self._restack_device_id)
+        if worker is None or not worker.connected:
+            self._finish_restack(self._restack_token, False, "The telescope is not connected")
+            return
+        self._restack_phase = "stopping"
+        self._restack_detail = "Stopping the restack"
+        if self._restack_on_screen():
+            self._set_media_status(self._restack_detail)
+        self._emit_media()
+        token = self._restack_token
+        worker.send(
+            "restack_stop",
+            {},
+            lambda ok, result, token=token: self._restack_stop_done(token, ok, result),
+        )
 
     @Slot(str)
     def stitchMediaGroup(self, group_id: str) -> None:

@@ -31,6 +31,12 @@ Item {
     property var selectedIds: ({})
     property string selectionAnchorId: ""
     readonly property int selectedCount: Util.idSetCount(selectedIds)
+    readonly property bool restackActive: {
+        const phase = String(backend.mediaRestackPhase || "")
+        return phase === "check" || phase === "running" || phase === "stopping"
+    }
+    readonly property var restackSelection: mediaPage.restackPaths()
+    readonly property bool canRestack: mediaPage.onDevice && mediaPage.scopeOnline && !mediaPage.albumLocked && !mediaPage.busy && !mediaPage.restackActive && mediaPage.restackSelection.length >= 2 && mediaPage.restackSelection.length === mediaPage.selectedCount
     readonly property var downloadTargetIds: {
         if (mediaPage.selectedCount > 0)
             return Util.idSetKeys(mediaPage.selectedIds)
@@ -126,6 +132,27 @@ Item {
     }
     function downloadSelected() {
         mediaPage.downloadItems(mediaPage.downloadTargetIds)
+    }
+    function restackPaths() {
+        const ids = Util.idSetKeys(mediaPage.selectedIds)
+        const wanted = {}
+        for (let i = 0; i < ids.length; i++)
+            wanted[String(ids[i])] = true
+        const paths = []
+        const items = mediaPage.items
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i]
+            const id = String((item && item.id) || "")
+            if (!wanted[id])
+                continue
+            const path = String((item && item.restack_path) || "")
+            if (path)
+                paths.push(path)
+        }
+        return paths
+    }
+    function confirmRestack() {
+        root.confirmMegastack(mediaPage.restackPaths())
     }
     function downloadClickedItem(item) {
         const id = String((item && item.id) || "")
@@ -397,6 +424,29 @@ Item {
                     implicitHeight: Theme.px(28)
                     tooltip: "Stitches this mosaic's panes into one image and keeps it"
                     onClicked: backend.stitchMediaGroup(String(backend.mediaMosaicGroup || ""))
+                }
+                HudButton {
+                    id: mediaRestackButton
+                    objectName: "mediaRestackButton"
+                    readonly property string restackPhase: String(backend.mediaRestackPhase || "")
+                    text: restackPhase === "stopping" ? "STOPPING…"
+                        : (restackPhase === "running" ? "STOP STACK"
+                            : (restackPhase === "check" || backend.mediaBusy === "restack" ? "CHECKING…" : "MEGASTACK"))
+                    visible: mediaPage.canRestack || mediaPage.restackActive
+                    enabled: mediaPage.canRestack || (restackPhase === "running" && !mediaPage.busy)
+                    busy: restackPhase === "check" || restackPhase === "stopping" || backend.mediaBusy === "restack"
+                    busyText: restackPhase === "stopping" ? "STOPPING…" : "CHECKING…"
+                    implicitHeight: Theme.px(28)
+                    tooltip: restackPhase === "running" || restackPhase === "stopping"
+                        ? "Stops the restack running on the telescope"
+                        : "Stacks the selected astronomy sessions together on the telescope"
+                    accessibleDescription: tooltip
+                    onClicked: {
+                        if (restackPhase === "running")
+                            backend.stopMediaRestack()
+                        else if (mediaPage.canRestack)
+                            mediaPage.confirmRestack()
+                    }
                 }
                 SelectionBar {
                     id: mediaSelectionBar

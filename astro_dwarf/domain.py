@@ -549,6 +549,92 @@ def album_is_astro_session_folder(path: str = "", name: str = "") -> bool:
     return album_is_astro_media(directory, label)
 
 
+def restack_session_dir(path: str) -> str:
+    """One finished astronomy session, as the telescope's restack command wants it.
+
+    The path is the session folder with a trailing slash. The Astronomy
+    category and the RESTACKED container are not sessions.
+    """
+    directory = album_http_path(path).rstrip("/")
+    if not directory or album_is_media_file(directory) or not album_is_astro_session_folder(directory):
+        return ""
+    if PurePosixPath(directory).name.upper() == "RESTACKED":
+        return ""
+    return directory + "/"
+
+
+def restack_session_dirs(paths: list[Any]) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for raw in paths or []:
+        directory = restack_session_dir(str(raw or ""))
+        if not directory or directory in seen:
+            continue
+        seen.add(directory)
+        found.append(directory)
+    return found
+
+
+_RESTACK_REFUSALS = {
+    -11519: "These sessions use different cameras",
+    -11520: "These sessions use different binning",
+    -11521: "These sessions use different filters",
+    -11522: "These sessions are different targets",
+    -11523: "Matching dark frames are missing",
+    -11524: "The telescope could not restack these sessions",
+    -11525: "These sessions are not valid restack input",
+}
+
+
+def restack_dark_frame_text(frames: Any) -> str:
+    if not isinstance(frames, list):
+        return ""
+    bits: list[str] = []
+    for frame in frames:
+        if not isinstance(frame, dict):
+            continue
+        parts = [
+            str(frame.get("exp_name") or "").strip(),
+            str(frame.get("gain_name") or "").strip(),
+            str(frame.get("bin_name") or "").strip(),
+        ]
+        label = " ".join(part for part in parts if part)
+        temperature = frame.get("temperature")
+        if temperature is not None and str(temperature) != "":
+            label = f"{label} {temperature}°C".strip()
+        if label and label not in bits:
+            bits.append(label)
+    return ", ".join(bits)
+
+
+def restack_result_text(result: dict[str, Any] | None) -> str:
+    """Short reason for a megastack check or start reply."""
+    if not isinstance(result, dict):
+        return "The telescope did not answer the restack check"
+    error = str(result.get("error") or "").strip()
+    if error:
+        return error
+    if result.get("ok"):
+        directory = str(result.get("result_dir") or "").replace("\\", "/").rstrip("/")
+        name = directory.rsplit("/", 1)[-1] if directory else ""
+        if name:
+            return f"Restack started · {name}"
+        return "Restack started on the telescope"
+    try:
+        code = int(result.get("code"))
+    except (TypeError, ValueError):
+        code = None
+    text = _RESTACK_REFUSALS.get(code) if code is not None else None
+    if not text:
+        text = str(result.get("code_name") or "").replace("_", " ").strip()
+    if not text:
+        text = "The telescope refused the restack"
+    darks = restack_dark_frame_text(result.get("need_dark_frames"))
+    if darks and code == -11523:
+        return f"{text} ({darks})"
+    return text
+
+
 def album_is_astronomy_category_folder(path: str = "", name: str = "") -> bool:
     """True for the Astronomy album category, not a session inside it."""
     label = str(name or PurePosixPath(album_http_path(path).rstrip("/")).name).strip()

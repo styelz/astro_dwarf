@@ -105,6 +105,8 @@ from .domain import (
     firmware_stack_format,
     mosaic_stack_camera,
     resolved_frame_count,
+    restack_result_text,
+    restack_session_dirs,
 )
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -7636,6 +7638,133 @@ def stop_polar_position() -> bool:
     return ok
 
 
+def restack_begin(dirs: list[str]) -> dict[str, Any]:
+    """Ask the telescope to stack finished astronomy sessions into one new session."""
+    paths = restack_session_dirs(dirs)
+    if len(paths) < 2:
+        return {
+            "ok": False,
+            "phase": "check",
+            "message": "Select at least two astronomy sessions on the telescope",
+        }
+    if not _connected.is_set():
+        return {"ok": False, "phase": "check", "message": "Telescope is not connected"}
+    check_fn = getattr(_api, "perform_check_restackable", None) if _api is not None else None
+    start_fn = getattr(_api, "perform_start_restack", None) if _api is not None else None
+    if check_fn is None or start_fn is None:
+        return {"ok": False, "phase": "check", "message": "This telescope API cannot restack sessions"}
+    try:
+        check = _invoke_sdk("restack_check", check_fn, paths, label="Check megastack")
+    except Exception as exc:
+        return {"ok": False, "phase": "check", "message": str(exc) or "Restack check failed"}
+    if not isinstance(check, dict) or not check.get("ok"):
+        payload = check if isinstance(check, dict) else None
+        return {**(payload or {}), "ok": False, "phase": "check", "message": restack_result_text(payload)}
+    try:
+        started = _invoke_sdk("restack_start", start_fn, paths, label="Start megastack")
+    except Exception as exc:
+        return {"ok": False, "phase": "start", "message": str(exc) or "Restack did not start"}
+    if not isinstance(started, dict) or not started.get("ok"):
+        payload = started if isinstance(started, dict) else None
+        return {**(payload or {}), "ok": False, "phase": "start", "message": restack_result_text(payload)}
+    return {**started, "ok": True, "phase": "start", "message": restack_result_text(started)}
+
+
+def restack_stop() -> dict[str, Any]:
+    """Stop a megastack the telescope is running."""
+    if not _connected.is_set():
+        return {"ok": False, "phase": "stop", "message": "Telescope is not connected"}
+    stop_fn = getattr(_api, "perform_stop_restack", None) if _api is not None else None
+    if stop_fn is None:
+        return {"ok": False, "phase": "stop", "message": "This telescope API cannot stop a restack"}
+    try:
+        stopped = _invoke_sdk("restack_stop", stop_fn, label="Stop megastack")
+    except Exception as exc:
+        return {"ok": False, "phase": "stop", "message": str(exc) or "Restack stop failed"}
+    if not isinstance(stopped, dict) or not stopped.get("ok"):
+        payload = stopped if isinstance(stopped, dict) else None
+        text = restack_result_text(payload) if payload else "The telescope did not stop the restack"
+        return {**(payload or {}), "ok": False, "phase": "stop", "message": text}
+    return {**stopped, "ok": True, "phase": "stop", "message": "Stopping the restack"}
+
+
+def restack_progress() -> dict[str, Any]:
+    """Latest megastack task reported on this connection.
+
+    A running record stays in the client after the telescope goes idle. An
+    idle notice newer than that record means the restack has finished.
+    """
+    empty = {"running": False, "ended": False, "state": "", "result_dir": "", "updated": 0.0, "detail": ""}
+    try:
+        from dwarf_python_api.lib import websockets_utils
+        from dwarf_python_api.proto import notify_pb2, task_center_pb2
+    except Exception:
+        return empty
+    client = getattr(websockets_utils, "client_instance", None)
+    if client is None:
+        return empty
+    try:
+        task_id = int(task_center_pb2.TaskId.Value("TASK_ID_ASTRO_MULTI_STACK"))
+        idle_id = int(task_center_pb2.TaskId.Value("TASK_ID_IDLE"))
+    except Exception:
+        return empty
+    states = getattr(client, "task_states", None) or {}
+    if not isinstance(states, dict):
+        states = {}
+    entry = states.get(task_id)
+    if not isinstance(entry, dict):
+        entry = {}
+    state_name = ""
+    if entry.get("state") is not None:
+        try:
+            state_name = notify_pb2.OperationState.Name(int(entry["state"]))
+        except (TypeError, ValueError):
+            state_name = ""
+    try:
+        updated = float(entry.get("updated") or 0)
+    except (TypeError, ValueError):
+        updated = 0.0
+    idle = states.get(idle_id)
+    try:
+        idle_updated = float(idle.get("updated") or 0) if isinstance(idle, dict) else 0.0
+    except (TypeError, ValueError):
+        idle_updated = 0.0
+    try:
+        active = getattr(client, "active_task_id", None)
+        active_id = int(active) if active is not None else None
+    except (TypeError, ValueError):
+        active_id = None
+    result_dir = str(entry.get("result_dir") or "")
+    running = state_name in {"OPERATION_STATE_RUNNING", "OPERATION_STATE_STOPPING"} or active_id == task_id
+    ended = state_name in {"OPERATION_STATE_STOPPED", "OPERATION_STATE_IDLE"}
+    if (
+        active_id in {None, idle_id}
+        and state_name == "OPERATION_STATE_RUNNING"
+        and updated > 0
+        and idle_updated >= updated
+    ):
+        running = False
+        ended = True
+        updated = idle_updated
+    name = result_dir.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    if running and state_name == "OPERATION_STATE_STOPPING":
+        detail = "Stopping the restack"
+    elif running:
+        detail = f"Stacking on the telescope · {name}" if name else "Stacking on the telescope"
+    elif ended:
+        detail = f"Megastack finished · {name}" if name else "Megastack finished"
+    else:
+        detail = ""
+    return {
+        "running": running,
+        "ended": ended,
+        "state": state_name,
+        "result_dir": result_dir,
+        "updated": updated,
+        "detail": detail,
+    }
+
+
 def dispatch(message: dict[str, Any]) -> Any:
     command = message["command"]
     if command == "configure":
@@ -7720,6 +7849,12 @@ def dispatch(message: dict[str, Any]) -> Any:
             str(message.get("camera") or (args[1] if len(args) > 1 else "") or ""),
             since,
         )
+    if command == "restack_begin":
+        return restack_begin(list(message.get("dirs") or []))
+    if command == "restack_stop":
+        return restack_stop()
+    if command == "restack_status":
+        return restack_progress()
     if command == "polar_position":
         _offer_darks_before_manual_alignment("Stack")
         return polar_position()
