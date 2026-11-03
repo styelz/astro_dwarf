@@ -3,9 +3,7 @@
 If you find any bugs or have any suggestions for the application, please create an issue here:
 [https://github.com/styelz/astro_dwarf/issues/new/choose](https://github.com/styelz/astro_dwarf/issues/new/choose)
 
-- A saved template or session with an extra field still opens.
-- A mosaic chain continues when an earlier night still has a planned session.
-- The next slew waits until the plate-solve search has cleared.
-- Stopping before a stack clears the stopping banner.
-- Use Next Free starts the next session as soon as the previous one finishes.
-- While the scheduler is armed, a missing-darks prompt counts down 60 seconds, then shooting continues without darks. Later prompts stay skipped until the scheduler is turned off. Run Now still asks.
+- Media can stack selected astronomy sessions that share a camera, binning, filter, and target. The telescope saves the result as a new session under RESTACKED.
+- A running megastack shows how long it has been going, and refreshing the album keeps that status.
+- Cancelling a connect that has not reached the telescope finishes right away.
+- Temperature stays blank until the sensor reports a real reading.
