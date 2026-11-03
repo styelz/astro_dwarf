@@ -441,16 +441,20 @@ PARAM_ID_ASTRO_EXPOSURE = 0x0201000000000001
 PARAM_ID_ASTRO_GAIN = 0x0201000000000002
 PARAM_ID_PHOTO_WIDE_EXPOSURE = 0x0101100000000001
 PARAM_ID_PHOTO_WIDE_GAIN = 0x0101100000000002
+# DWARF II wide photo uses a different leading byte than DWARF 3 and Mini.
+PARAM_ID_PHOTO_WIDE_EXPOSURE_D2 = 0x0A01100000000001
+PARAM_ID_PHOTO_WIDE_GAIN_D2 = 0x0A01100000000002
 PARAM_ID_ASTRO_WIDE_EXPOSURE = 0x0201100000000001
 PARAM_ID_ASTRO_WIDE_GAIN = 0x0201100000000002
+PARAM_ID_ASTRO_IR_FILTER_TELE = 0x020100000000000D
 
 _PHOTO_EXPOSURE_PARAMS = {PARAM_ID_PHOTO_TELE_EXPOSURE}
 _ASTRO_EXPOSURE_PARAMS = {PARAM_ID_ASTRO_EXPOSURE}
 _PHOTO_GAIN_PARAMS = {PARAM_ID_PHOTO_TELE_GAIN}
 _ASTRO_GAIN_PARAMS = {PARAM_ID_ASTRO_GAIN}
-_PHOTO_WIDE_EXPOSURE_PARAMS = {PARAM_ID_PHOTO_WIDE_EXPOSURE}
+_PHOTO_WIDE_EXPOSURE_PARAMS = {PARAM_ID_PHOTO_WIDE_EXPOSURE, PARAM_ID_PHOTO_WIDE_EXPOSURE_D2}
 _ASTRO_WIDE_EXPOSURE_PARAMS = {PARAM_ID_ASTRO_WIDE_EXPOSURE}
-_PHOTO_WIDE_GAIN_PARAMS = {PARAM_ID_PHOTO_WIDE_GAIN}
+_PHOTO_WIDE_GAIN_PARAMS = {PARAM_ID_PHOTO_WIDE_GAIN, PARAM_ID_PHOTO_WIDE_GAIN_D2}
 _ASTRO_WIDE_GAIN_PARAMS = {PARAM_ID_ASTRO_WIDE_GAIN}
 
 
@@ -2058,9 +2062,11 @@ class TelemetryTap:
         key: str,
         *,
         mark_auto: bool = False,
+        wide: bool = False,
     ) -> dict[str, Any]:
         mode = _message_mode(message)
-        text = _reported_exposure(_exposure_name(value, self._model_id), mode, int(value))
+        name = _wide_exposure_name(value, self._model_id) if wide else _exposure_name(value, self._model_id)
+        text = _reported_exposure(name, mode, int(value))
         changes: dict[str, Any] = {}
         if text:
             changes[key] = text
@@ -2089,13 +2095,18 @@ class TelemetryTap:
         if param_id in _ASTRO_GAIN_PARAMS:
             return self._gain_param_changes(message, value, "astro_gain")
         if param_id in _PHOTO_WIDE_EXPOSURE_PARAMS:
-            return self._exposure_param_changes(message, value, "photo_wide_exposure_text")
+            return self._exposure_param_changes(message, value, "photo_wide_exposure_text", wide=True)
         if param_id in _ASTRO_WIDE_EXPOSURE_PARAMS:
-            return self._exposure_param_changes(message, value, "astro_wide_exposure_text")
+            return self._exposure_param_changes(message, value, "astro_wide_exposure_text", wide=True)
         if param_id in _PHOTO_WIDE_GAIN_PARAMS:
             return self._gain_param_changes(message, value, "photo_wide_gain")
         if param_id in _ASTRO_WIDE_GAIN_PARAMS:
             return self._gain_param_changes(message, value, "astro_wide_gain")
+        if param_id == PARAM_ID_ASTRO_IR_FILTER_TELE:
+            from .domain import ir_filter_name_from_index
+
+            name = ir_filter_name_from_index(value, mini=self._model_id == "5")
+            return {"ir_filter": name} if name else {}
         return {}
 
     # ---------------------------------------------------- full device state

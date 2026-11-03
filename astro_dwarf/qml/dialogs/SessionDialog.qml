@@ -200,9 +200,26 @@ Dialog {
         }
         return first
     }
+    function filterChoices() {
+        const device = Util.deviceById(backend.devices, sessionDialog.editingDeviceId || backend.selectedDeviceId) || backend.selectedDevice
+        const model = device ? String(device.model) : ""
+        if (model === "Dwarf Mini")
+            return ["Astro Filter", "Duo-Band Filter"]
+        if (model === "Dwarf II")
+            return ["VIS Filter", "Astro Filter"]
+        return ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
+    }
     function irIndex(value) {
-        const ir = value || "VIS Filter"
-        return Math.max(0, ["VIS Filter", "Astro Filter", "Duo-Band Filter", "VIS"].indexOf(ir) % 3)
+        const text = String(value || "")
+        let name = text
+        const key = text.toLowerCase().replace(" filter", "").replace("_", "").replace("-", "").replace(" ", "")
+        if (key === "vis" || key === "0" || key === "ircut")
+            name = "VIS Filter"
+        else if (key === "astro" || key === "1" || key === "irpass")
+            name = "Astro Filter"
+        else if (key === "duo" || key === "duoband" || key === "2")
+            name = "Duo-Band Filter"
+        return sessionDialog.filterChoices().indexOf(name)
     }
     // Stored 1/2 match the old combo; Dwarf labels those as 4K / 2K.
     function binningIndex(value) {
@@ -235,7 +252,7 @@ Dialog {
         }
         if (!dirty.ir_filter) {
             const ir = agreed(item => sessionDialog.irIndex(sessionDialog.cameraOf(item).ir_filter))
-            irFilter.currentIndex = ir === undefined ? -1 : ir
+            irFilter.currentIndex = ir === undefined || ir < 0 ? -1 : ir
         }
         if (!dirty.exposure) {
             const exp = agreed(item => sessionDialog.cameraOf(item).exposure_seconds)
@@ -458,8 +475,8 @@ Dialog {
         frames.text = data.camera.frame_count
         camera.currentIndex = (!camera.teleOnly && data.camera.camera === "wide") ? 1 : 0
         binning.currentIndex = sessionDialog.binningIndex(data.camera.binning)
-        const ir = data.camera.ir_filter || "VIS Filter"
-        irFilter.currentIndex = Math.max(0, ["VIS Filter", "Astro Filter", "Duo-Band Filter", "VIS"].indexOf(ir) % 3)
+        const ir = sessionDialog.irIndex(data.camera.ir_filter || "VIS Filter")
+        irFilter.currentIndex = ir < 0 ? -1 : ir
         sessionDialog.loadMosaicFields(data)
         sessionDialog.storedRotation = Number(data.mosaic.rotation_degrees) || 0
         waitBefore.text = data.workflow.wait_before_seconds
@@ -1074,7 +1091,15 @@ Dialog {
             HudCombo {
                 id: irFilter
                 visible: camera.currentIndex !== 1 && !sessionDialog.cameraForm
-                model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
+                model: sessionDialog.filterChoices()
+                tooltip: {
+                    const model = String((Util.deviceById(backend.devices, sessionDialog.editingDeviceId || backend.selectedDeviceId) || backend.selectedDevice || {}).model || "")
+                    if (model === "Dwarf Mini")
+                        return "Astro for broadband night, Duo-Band for Ha/OIII. The dark shutter is not a filter."
+                    if (model === "Dwarf II")
+                        return "VIS is IR-cut, Astro is IR-pass. This wheel has no Duo-Band."
+                    return "VIS for daytime, Astro for broadband night, Duo-Band for Ha/OIII."
+                }
                 emptyText: "Mixed"
                 Layout.fillWidth: true
                 onActivated: sessionDialog.markDirty("ir_filter")

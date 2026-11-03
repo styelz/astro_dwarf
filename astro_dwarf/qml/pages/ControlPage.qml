@@ -745,6 +745,10 @@ Item {
                 SplitView.fillHeight: true
                 SplitView.minimumHeight: Theme.px(120)
                 readonly property bool miniBody: String((backend.selectedDevice && backend.selectedDevice.model) || "") === "Dwarf Mini"
+                readonly property bool dwarfII: String((backend.selectedDevice && backend.selectedDevice.model) || "") === "Dwarf II"
+                readonly property var filterItems: miniBody
+                    ? ["Astro Filter", "Duo-Band Filter"]
+                    : (dwarfII ? ["VIS Filter", "Astro Filter"] : ["VIS Filter", "Astro Filter", "Duo-Band Filter"])
                 readonly property bool teleSelected: backend.selectedDevice.camera !== "wide"
                 readonly property string shootingMode: String(root.scopeTelemetry.shooting_mode_text || "—")
                 readonly property bool photoMode: shootingMode === "PHOTO"
@@ -991,18 +995,28 @@ Item {
                     Layout.fillWidth: true
                     enabled: root.commandEnabled("set_ir")
                     accessibleName: "IR filter"
-                    tooltip: "Telephoto IR filter.\nVIS for daytime, Astro for broadband night, Duo-Band for Ha/OIII."
-                    model: ["VIS Filter", "Astro Filter", "Duo-Band Filter"]
+                    tooltip: cameraPanel.miniBody
+                        ? "Telephoto filter.\nAstro for broadband night, Duo-Band for Ha/OIII.\nThe dark shutter is not a filter position."
+                        : (cameraPanel.dwarfII
+                            ? "Telephoto wheel.\nVIS is IR-cut for daytime, Astro is IR-pass for night.\nThis wheel has no Duo-Band."
+                            : "Telephoto IR filter.\nVIS for daytime, Astro for broadband night, Duo-Band for Ha/OIII.")
+                    model: cameraPanel.filterItems
                     property string appliedValue: ""
                     readonly property int liveIndex: {
                         const raw = String(root.scopeTelemetry.ir_filter || "").trim().toLowerCase().replace(" filter", "")
-                        if (raw === "vis" || raw === "0")
-                            return 0
-                        if (raw === "astro" || raw === "1")
-                            return 1
-                        if (raw === "duo" || raw === "duo-band" || raw === "duoband" || raw === "2")
-                            return 2
-                        return cameraPanel.comboIndex(model, root.scopeTelemetry.ir_filter)
+                        let name = ""
+                        if (raw === "vis" || raw === "0" || raw === "ircut")
+                            name = "VIS Filter"
+                        else if (raw === "astro" || raw === "1" || raw === "irpass")
+                            name = "Astro Filter"
+                        else if (raw === "duo" || raw === "duo-band" || raw === "duoband" || raw === "2")
+                            name = "Duo-Band Filter"
+                        else
+                            name = String(root.scopeTelemetry.ir_filter || "")
+                        for (let i = 0; i < model.length; i++)
+                            if (String(model[i]) === name)
+                                return i
+                        return -1
                     }
                     onLiveIndexChanged: if (liveIndex >= 0) {
                         currentIndex = liveIndex

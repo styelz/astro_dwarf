@@ -7,3 +7,4 @@ If you find any bugs or have any suggestions for the application, please create 
 - A running megastack shows how long it has been going, and refreshing the album keeps that status.
 - Cancelling a connect that has not reached the telescope finishes right away.
 - Temperature stays blank until the sensor reports a real reading.
+- DWARF II, DWARF 3, and DWARF Mini each use their own shutter limits and filter wheel. DWARF II stops at 15s on tele and 1s on wide and has no Duo-Band. DWARF 3 goes to 120s. Mini goes to 180s, and its dark shutter is not offered as a filter.

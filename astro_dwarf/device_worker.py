@@ -1456,6 +1456,11 @@ def sdk_call(operation: str, *args: Any) -> Any:
         if seconds is None:
             raise RuntimeError(f"{operation} needs a duration in seconds")
         args = (seconds,) + tuple(args[1:])
+    if operation in {"set_exposure", "set_photo_exposure"} and args:
+        model_id = str(args[1]) if len(args) > 1 and str(args[1]) in {"2", "3", "5"} else _MODEL_IDS.get(
+            str(_device.get("model") or ""), "2"
+        )
+        args = (clamp_exposure_name(args[0], model_id, _param_camera(args) == "wide"),) + tuple(args[1:])
     if operation in {
         "set_ir",
         "set_exposure",
@@ -1477,8 +1482,8 @@ def sdk_call(operation: str, *args: Any) -> Any:
     ):
         log(f"{operation} already matches; skipping", "debug")
         return True
-    if operation == "set_ir" and args:
-        _device["ir_filter"] = args[0]
+    if operation == "set_ir":
+        return _set_ir_filter(args)
     if operation == "set_count":
         # img_to_take plus both cameras' stackCount. A matching local cache
         # must not skip this; wide stays at 999 until it is written.
@@ -3346,11 +3351,49 @@ def _ir_index(name: Any) -> int:
 
     VIS is applied with ``set_ir``; the capture command itself matches the
     SDK/session-app default (``perform_takeAstroPhoto(ir_index=1)``).
+    DWARF II has no Duo-Band position, so that name stays on IR-pass.
     """
     text = str(name or "").strip().lower()
-    if text.startswith("duo") or text == "2":
+    if (text.startswith("duo") or text == "2") and str(_device.get("model") or "") != "Dwarf II":
         return 2
     return 1
+
+
+def _set_ir_filter(args: tuple[Any, ...] | list[Any]) -> Any:
+    """Set the tele filter with that model's wheel.
+
+    DSO uses the general-int parameter confirmed on all three. Photo stays
+    on the legacy IR-cut command. Mini slot 0 is the dark shutter and is
+    not a filter. DWARF II has IR-cut and IR-pass only.
+    """
+    from .domain import ir_filter_index
+
+    raw = args[0] if args else ""
+    index = ir_filter_index(raw)
+    if index is None:
+        raise RuntimeError(f"Unknown IR filter '{raw}'")
+    model = str(_device.get("model") or "")
+    if model == "Dwarf Mini" and index == 0:
+        log("Mini slot 0 is the dark shutter, not a selectable filter", "notice")
+        return True
+    if model == "Dwarf II" and index == 2:
+        raise RuntimeError("DWARF II has IR-cut and IR-pass only")
+    snap = _tap.snapshot() if _tap is not None else {}
+    dso = _shooting_int(snap.get("shooting_mode")) == 2
+    if _api is None:
+        raise RuntimeError("Telescope worker is not configured")
+    if dso:
+        function = getattr(_api, "perform_set_astro_ir_filter_v3", None)
+        sent: Any = int(index)
+    else:
+        function = getattr(_api, "perform_set_ir_filter_v3", None)
+        sent = raw
+    if function is None:
+        raise RuntimeError("IR filter command is not available")
+    result = _invoke_sdk("set_ir", function, sent)
+    if result is not False and isinstance(_device, dict):
+        _device["ir_filter"] = raw
+    return result
 
 
 def _capture_request(operation: str, args: list[Any], force_start: bool) -> Any:
@@ -3863,12 +3906,63 @@ def dark_gain_index(gain: Any, model_id: str, wide: bool) -> int | None:
     return None
 
 
+def _exposure_option_table(model_id: str, wide: bool) -> Any:
+    """SDK exposure table for one model and lens. None if the package is missing."""
+    try:
+        if wide:
+            from dwarf_python_api.lib import data_wide_utils as tables
+
+            if model_id == "5":
+                return tables.allowed_wide_exposuresMini
+            if model_id == "3":
+                return tables.allowed_wide_exposuresD3
+            return tables.allowed_wide_exposures
+        from dwarf_python_api.lib import data_utils as tables
+
+        if model_id == "5":
+            return tables.allowed_exposuresMini
+        if model_id == "3":
+            return tables.allowed_exposuresD3
+        return tables.allowed_exposures
+    except Exception:
+        return None
+
+
+def clamp_exposure_name(value: Any, model_id: str, wide: bool = False) -> str:
+    """Nearest shutter name that exists on this model and lens.
+
+    The shared name list runs to 180s. DWARF II tele stops at 15s, DWARF 3
+    tele at 120s, and DWARF II wide at 1s. A missing name makes the SDK
+    substitute 1/30s.
+    """
+    text = firmware_exposure_name(value)
+    table = _exposure_option_table(str(model_id or "2"), bool(wide))
+    names = [
+        str(option.get("name"))
+        for option in (getattr(table, "values", None) or [])
+        if option.get("name")
+    ]
+    if not names or text in names:
+        return text
+    seconds = exposure_seconds_from_text(text)
+    if not seconds:
+        return text
+
+    def distance(name: str) -> float:
+        other = exposure_seconds_from_text(name)
+        if not other:
+            return 1e9
+        return abs(float(other) - float(seconds))
+
+    return min(names, key=distance)
+
+
 def dark_exposure_index(name: str, model_id: str, wide: bool) -> int | None:
     """Exposure-table index for the live name. Unknown names stay unknown."""
     text = str(name or "").strip()
     if not text:
         return None
-    text = firmware_exposure_name(text)
+    text = clamp_exposure_name(text, model_id, wide)
     try:
         if wide:
             from dwarf_python_api.lib import data_wide_utils as tables
