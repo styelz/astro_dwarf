@@ -7941,12 +7941,20 @@ def dispatch(message: dict[str, Any]) -> Any:
     if command == "disconnect":
         # Firmware keeps this client as host until SET_MASTERLOCK(false).
         # The socket close alone leaves the telescope looking connected.
-        try:
-            _sdk_call_bounded("host_release", 8.0)
-        except Exception as exc:
-            log(f"Host release skipped: {exc}", "debug")
+        # host_release goes through connect_socket, which opens that socket
+        # when none is up and then waits for a reply. A connect that never
+        # reached the telescope has no lock to drop, so cancelling it must
+        # not start that attempt.
+        opened = _control_client_open()
+        if opened:
+            try:
+                _sdk_call_bounded("host_release", 8.0)
+            except Exception as exc:
+                log(f"Host release skipped: {exc}", "debug")
         _mark_disconnected()
-        return sdk_call("disconnect")
+        if opened or _sdk_socket()[0] is not None:
+            return sdk_call("disconnect")
+        return True
     if command in {"reboot", "power_down"}:
         _mark_disconnected()
         return sdk_call(command)
