@@ -35,6 +35,7 @@ Item {
         const phase = String(backend.mediaRestackPhase || "")
         return phase === "check" || phase === "running" || phase === "stopping"
     }
+    readonly property string restackLine: mediaPage.restackActive ? String(backend.mediaRestackDetail || "") : ""
     readonly property var restackSelection: mediaPage.restackPaths()
     readonly property bool canRestack: mediaPage.onDevice && mediaPage.scopeOnline && !mediaPage.albumLocked && !mediaPage.busy && !mediaPage.restackActive && mediaPage.restackSelection.length >= 2 && mediaPage.restackSelection.length === mediaPage.selectedCount
     readonly property var downloadTargetIds: {
@@ -383,8 +384,8 @@ Item {
 
             Text {
                 Layout.fillWidth: true
-                visible: mediaPage.items.length > 0 && backend.mediaStatus !== "" && !mediaPage.mediaError
-                text: backend.mediaStatus
+                visible: mediaPage.restackLine !== "" || (mediaPage.items.length > 0 && backend.mediaStatus !== "" && !mediaPage.mediaError)
+                text: mediaPage.restackLine !== "" ? mediaPage.restackLine : backend.mediaStatus
                 color: Theme.textSecondary
                 font.pixelSize: Theme.fontSm
                 elide: Text.ElideRight

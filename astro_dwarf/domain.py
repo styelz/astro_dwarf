@@ -607,6 +607,32 @@ def restack_dark_frame_text(frames: Any) -> str:
     return ", ".join(bits)
 
 
+def restack_running_text(detail: str, elapsed_s: float) -> str:
+    """Status while a megastack is running.
+
+    The telescope reports that the task is running and names the output
+    folder. It does not report a frame count or a percent. The clock is how
+    long this restack has been going, and it stays at the front so a long
+    folder name cannot hide it.
+    """
+    text = str(detail or "").strip() or "Stacking on the telescope"
+    try:
+        total = int(elapsed_s)
+    except (TypeError, ValueError):
+        total = 0
+    if total < 1:
+        return text
+    minutes, secs = divmod(max(0, total), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        clock = f"{hours}h {minutes:02d}m"
+    elif minutes:
+        clock = f"{minutes}m {secs:02d}s"
+    else:
+        clock = f"{secs}s"
+    return f"{clock} · {text}"
+
+
 def restack_result_text(result: dict[str, Any] | None) -> str:
     """Short reason for a megastack check or start reply."""
     if not isinstance(result, dict):

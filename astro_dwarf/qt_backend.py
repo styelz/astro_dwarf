@@ -64,6 +64,7 @@ from .domain import (
     album_is_astro_stack_product,
     album_is_astronomy_category_folder,
     album_is_stack_display_image,
+    restack_running_text,
     restack_session_dir,
     restack_session_dirs,
     album_item_preview_path,
@@ -2897,6 +2898,7 @@ class AppBackend(QObject):
         self._restack_phase = ""
         self._restack_device_id = ""
         self._restack_detail = ""
+        self._restack_base_detail = ""
         self._restack_token = 0
         self._restack_started_at = 0.0
         self._restack_saw_running = False
@@ -14429,6 +14431,35 @@ class AppBackend(QObject):
     def _schedule_restack_poll(self, token: int) -> None:
         QTimer.singleShot(5000, lambda token=token: self._poll_restack(token))
 
+    def _schedule_restack_clock(self, token: int) -> None:
+        QTimer.singleShot(1000, lambda token=token: self._tick_restack_clock(token))
+
+    def _restack_line(self, detail: str | None = None) -> str:
+        if detail is not None:
+            self._restack_base_detail = str(detail or "").strip() or "Stacking on the telescope"
+        base = self._restack_base_detail or "Stacking on the telescope"
+        if self._restack_phase == "stopping":
+            base = "Stopping the restack"
+        return restack_running_text(base, time.time() - self._restack_started_at)
+
+    def _publish_restack_line(self, detail: str | None = None) -> None:
+        shown = self._restack_line(detail)
+        if shown == self._restack_detail:
+            if self._restack_on_screen() and self._media_status != shown:
+                self._set_media_status(shown)
+            return
+        self._restack_detail = shown
+        if self._restack_on_screen():
+            self._set_media_status(shown)
+        else:
+            self._emit_media()
+
+    def _tick_restack_clock(self, token: int) -> None:
+        if token != self._restack_token or self._restack_phase not in {"running", "stopping"}:
+            return
+        self._publish_restack_line()
+        self._schedule_restack_clock(token)
+
     def _finish_restack(self, token: int, success: bool, detail: str) -> None:
         if token != self._restack_token:
             return
@@ -14436,6 +14467,7 @@ class AppBackend(QObject):
         device_id = self._restack_device_id
         self._restack_phase = ""
         self._restack_detail = ""
+        self._restack_base_detail = ""
         self._restack_saw_running = False
         self._set_media_busy("")
         text = str(detail or ("Megastack finished" if success else "Megastack stopped"))
@@ -14457,19 +14489,21 @@ class AppBackend(QObject):
             self._restack_token += 1
             self._restack_phase = ""
             self._restack_detail = ""
+            self._restack_base_detail = ""
             self._set_media_status(message)
             self._toast("Megastack did not start", "error", message)
             self._emit_media()
             return
         self._restack_started_at = time.time()
         self._restack_result_dir = str(payload.get("result_dir") or "")
-        self._restack_detail = str(payload.get("message") or "Stacking on the telescope")
         if self._restack_phase != "stopping":
             self._restack_phase = "running"
-            self._set_media_status(self._restack_detail)
+        self._publish_restack_line(str(payload.get("message") or "Stacking on the telescope"))
+        if self._restack_phase == "running":
             self._toast("Megastack started", "success", self._restack_detail)
         self._emit_media()
         self._schedule_restack_poll(token)
+        self._schedule_restack_clock(token)
 
     def _restack_stop_done(self, token: int, ok: bool, result: Any) -> None:
         if token != self._restack_token:
@@ -14482,9 +14516,7 @@ class AppBackend(QObject):
             self._toast("Could not stop the restack", "error", message)
             self._emit_media()
             return
-        self._restack_detail = "Stopping the restack"
-        if self._restack_on_screen():
-            self._set_media_status(self._restack_detail)
+        self._publish_restack_line()
         self._schedule_restack_poll(token)
 
     def _poll_restack(self, token: int) -> None:
@@ -14515,12 +14547,7 @@ class AppBackend(QObject):
             directory = str(progress.get("result_dir") or "")
             if directory:
                 self._restack_result_dir = directory
-            if detail != self._restack_detail:
-                self._restack_detail = detail
-                if self._restack_on_screen():
-                    self._set_media_status(detail)
-                else:
-                    self._emit_media()
+            self._publish_restack_line(detail)
             self._schedule_restack_poll(token)
             return
         if current and self._restack_saw_running and progress.get("ended"):
@@ -14571,9 +14598,7 @@ class AppBackend(QObject):
             self._finish_restack(self._restack_token, False, "The telescope is not connected")
             return
         self._restack_phase = "stopping"
-        self._restack_detail = "Stopping the restack"
-        if self._restack_on_screen():
-            self._set_media_status(self._restack_detail)
+        self._publish_restack_line()
         self._emit_media()
         token = self._restack_token
         worker.send(
