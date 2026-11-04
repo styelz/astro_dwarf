@@ -40,18 +40,6 @@ chmod +x AstroDwarf-*-x86_64.AppImage
 
 Set each telescope’s IP, model, and location in Settings. Start the scheduler from Control when you are ready to run the night.
 
-## Code signing policy
-
-This project uses the [SignPath Foundation](https://signpath.org/) for code signing.
-
-Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org/).
-
-Windows installers are the files submitted for that signature. The certificate is issued to SignPath Foundation, and the private key stays on SignPath’s hardware security module. Each release is built from this public repository and approved before it is signed.
-
-- Committer, reviewer, and approver: [styelz](https://github.com/styelz)
-
-This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
-
 [Privacy policy](privacy.md)
 
 Astro Dwarf is an unofficial third-party tool. It is not affiliated with, endorsed by, or supported by [DwarfLab](https://dwarflab.com/) or [Stellarium Labs](https://stellarium-labs.com/). Licensed under the [MIT License](LICENSE).

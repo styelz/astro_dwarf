@@ -45,7 +45,7 @@ A Telescopius import reads a CSV file you choose. It does not contact Telescopiu
 
 ## Maintainer access
 
-Telescope profiles, session plans, logs, and catalog lookups are not sent to the Astro Dwarf maintainers, to GitHub, or to SignPath. Catalog and chart requests go to the services named above, under those services’ own policies.
+Telescope profiles, session plans, logs, and catalog lookups are not sent to the Astro Dwarf maintainers or to GitHub. Catalog and chart requests go to the services named above, under those services’ own policies.
 
 `dwarf_python_api` is the local library that speaks to the telescope you configured. It does not add a separate cloud service.
 
