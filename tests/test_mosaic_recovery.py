@@ -16,7 +16,6 @@ from astro_dwarf.device_worker import (
     _goto_keep_waiting_for_solve,
     _goto_needs_camera_reopen,
     _goto_solve_stalled,
-    _goto_stalled_error,
     _goto_never_started_error,
     _goto_solve_timeout_error,
     _goto_started,
@@ -48,6 +47,7 @@ from astro_dwarf.services import (
     is_mosaic_pane_name,
     live_mosaic_keep_sheet,
     live_mosaic_resume_plan,
+    mosaic_command_frame_count,
     live_mosaic_scheduler_action,
     mosaic_group_title,
     mosaic_pane_footprints,
@@ -110,6 +110,13 @@ def test_mosaic_busy_and_idle_timeout() -> None:
     _assert(_mosaic_idle_timeout_s({}, 4) == _MOSAIC_PANE_GAP_S, "unknown pane after reconnect")
 
 
+def test_mosaic_command_frame_count_keeps_the_saved_plan() -> None:
+    _assert(mosaic_command_frame_count(10, 50) == 10, "saved pane count beats the profile default")
+    _assert(mosaic_command_frame_count(None, "10", 50) == 10, "hud stack count beats the profile default")
+    _assert(mosaic_command_frame_count(None, "", 0) is None, "missing count stays with the worker")
+    _assert(mosaic_command_frame_count(50) == 50, "an explicit profile count is still sent")
+
+
 def test_live_mosaic_resume_plan() -> None:
     _assert(live_mosaic_resume_plan("stacking", 2, 4, True) == (2, True), "join current pane")
     _assert(live_mosaic_resume_plan("stacking", 2, 4, False) == (2, False), "interrupted stack is retried")
@@ -158,23 +165,21 @@ def test_goto_reopens_camera_when_slew_never_starts() -> None:
     )
     _assert(not _goto_never_started_error(tracking_timeout), "tracking timeout is not no-start")
     _assert(not _goto_needs_camera_reopen(tracking_timeout), "tracking timeout is not a closed camera")
-    solve_timeout = RuntimeError("GOTO pane 3 timed out after 90 s while plate-solving")
+    solve_timeout = RuntimeError("GOTO pane 3 timed out after 600 s while plate-solving")
     _assert(_goto_solve_timeout_error(solve_timeout), "solve timeout token")
     _assert(not _goto_needs_camera_reopen(solve_timeout), "long plate-solve is not a closed camera")
-    stalled = RuntimeError("GOTO target plate-solve stalled after 90 s")
-    _assert(_goto_stalled_error(stalled), "first hang is retried")
-    _assert(not _goto_solve_timeout_error(stalled), "a retry is not the terminal timeout")
-    _assert(not _goto_needs_camera_reopen(stalled), "a stalled solve is not a closed camera")
-    _assert(not _goto_terminal_fail(stalled), "the first stall must be sent again")
+    _assert(_goto_terminal_fail(solve_timeout), "a solve that used the long cap does not start a stack")
 
 
 def test_goto_keeps_waiting_while_plate_solving() -> None:
     _assert(_GOTO_SOLVE_TIMEOUT_S >= 600.0, "a slew that is still moving can exceed 5 min")
-    _assert(_GOTO_SOLVE_STALL_S <= 90.0, "a hung plate-solve must not sit for minutes")
-    _assert(_goto_solve_stalled("solving", _GOTO_SOLVE_STALL_S), "solving at the stall is retried")
-    _assert(not _goto_solve_stalled("solving", _GOTO_SOLVE_STALL_S - 1), "a normal solve is still inside the window")
+    _assert(_GOTO_SOLVE_STALL_S <= 90.0, "the still-solving notice stays at 90s")
+    _assert(not _goto_solve_stalled("solving", _GOTO_SOLVE_STALL_S), "90s of solving is still this search")
+    _assert(not _goto_solve_stalled("solving", 301.0), "a hard field keeps the long cap")
+    _assert(_goto_solve_stalled("solving", _GOTO_SOLVE_TIMEOUT_S), "the long cap is the give-up")
     _assert(not _goto_solve_stalled("running", 120.0), "slewing is not a stalled solve")
-    _assert(not _goto_keep_waiting_for_solve("solving", 301.0, 300.0), "a stuck plate-solve is not a long slew")
+    _assert(_goto_keep_waiting_for_solve("solving", 301.0, 300.0), "solving past 5m stays on this search")
+    _assert(not _goto_keep_waiting_for_solve("solving", _GOTO_SOLVE_TIMEOUT_S, 300.0), "the long cap ends the wait")
     _assert(_goto_keep_waiting_for_solve("running", 301.0, 300.0), "still slewing past 5m")
     _assert(not _goto_keep_waiting_for_solve("idle", 301.0, 300.0), "idle uses tracking timeout")
     _assert(not _goto_keep_waiting_for_solve("solving", 200.0, 300.0), "before base timeout")
@@ -517,7 +522,7 @@ def test_stop_on_pane_2_keeps_sheet() -> None:
     _assert(live_mosaic_keep_sheet(True, False, 2, 2, {1: object(), 2: object()}), "success keeps sheet")
 
 
-def test_stalled_plate_solve_fails_fast_and_a_short_solve_still_completes() -> None:
+def test_plate_solve_waits_out_a_slow_search_and_a_short_solve_still_completes() -> None:
     import astro_dwarf.device_worker as worker
 
     class Hung:
@@ -565,24 +570,31 @@ def test_stalled_plate_solve_fails_fast_and_a_short_solve_still_completes() -> N
         worker._await_operation("GOTO target", "goto", 0.0)
         _assert(clock["now"] < _GOTO_SOLVE_STALL_S, "a solve that hands off to tracking must not hit the stall")
 
+        class Slow:
+            def snapshot(self) -> dict[str, str]:
+                if clock["now"] < 120.0:
+                    return {"goto_state": "solving", "tracking_state": "idle"}
+                return {"goto_state": "idle", "tracking_state": "running"}
+
+            def response_after(self, cmd: int, since: float) -> None:
+                return None
+
+        clock["now"] = 0.0
+        worker._tap = Slow()
+        worker._await_operation("GOTO target", "goto", 0.0)
+        _assert(clock["now"] >= 120.0, "a search still going at 90s must be left running")
+        _assert(clock["now"] < _GOTO_SOLVE_TIMEOUT_S, "that search must finish without the long-cap failure")
+
         clock["now"] = 0.0
         worker._tap = Hung()
         try:
             worker._await_operation("GOTO target", "goto", 0.0)
         except RuntimeError as exc:
-            _assert("plate-solve stalled" in str(exc), str(exc))
-            _assert(clock["now"] < 120.0, f"stall took {clock['now']}s")
-        else:
-            raise AssertionError("a hung plate-solve returned")
-
-        clock["now"] = 0.0
-        try:
-            worker._await_operation("GOTO target", "goto", 0.0, stall_is_terminal=True)
-        except RuntimeError as exc:
             _assert("while plate-solving" in str(exc), str(exc))
             _assert("plate-solve stalled" not in str(exc), str(exc))
+            _assert(clock["now"] >= _GOTO_SOLVE_TIMEOUT_S, f"gave up at {clock['now']}s")
         else:
-            raise AssertionError("the second hang returned")
+            raise AssertionError("a hung plate-solve returned")
 
         clock["now"] = 0.0
         worker._tap = Slewing()
@@ -675,6 +687,7 @@ def main() -> int:
     test_firmware_mosaic_detection()
     test_capture_wait_rejoins_a_dropped_link_and_a_live_link_still_finishes()
     test_mosaic_busy_and_idle_timeout()
+    test_mosaic_command_frame_count_keeps_the_saved_plan()
     test_live_mosaic_resume_plan()
     test_recovered_firmware_mosaic_restarts_unless_the_grid_finished()
     test_failed_live_mosaic_does_not_block_scheduler()
@@ -682,7 +695,7 @@ def main() -> int:
     test_engine_busy_error_matches_firmware_reply()
     test_mosaic_goto_fail_does_not_start_stack()
     test_goto_keeps_waiting_while_plate_solving()
-    test_stalled_plate_solve_fails_fast_and_a_short_solve_still_completes()
+    test_plate_solve_waits_out_a_slow_search_and_a_short_solve_still_completes()
     test_goto_started_ignores_leftover_stop()
     test_leftover_stop_skips_joystick_motors()
     test_goto_wait_ignores_leftover_tracking()

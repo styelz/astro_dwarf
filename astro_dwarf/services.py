@@ -4255,6 +4255,22 @@ def live_mosaic_resume_plan(
     return start, False
 
 
+def mosaic_command_frame_count(*values: Any) -> int | None:
+    """First usable stack length for a live mosaic command.
+
+    A resumed mosaic must send the count saved on the pane. The worker's
+    capture profile is a different number and is not a substitute.
+    """
+    for value in values:
+        try:
+            count = int(float(value))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= count <= 999:
+            return count
+    return None
+
+
 def live_mosaic_scheduler_action(
     phase: str,
     worker_running: bool,

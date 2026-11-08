@@ -145,6 +145,7 @@ from .services import (
     is_mosaic_pane_name,
     live_mosaic_owns_target,
     live_mosaic_resume_plan,
+    mosaic_command_frame_count,
     live_mosaic_scheduler_action,
     mosaic_group_title,
     mosaic_grid_size,
@@ -5146,6 +5147,7 @@ class AppBackend(QObject):
         live["worker_running"] = True
         live["phase"] = "stacking" if join_current else "goto"
         live["current_index"] = start_index
+        resume_count = None
         if 1 <= start_index <= len(list(live.get("members") or [])):
             members = list(live["members"])
             current = replace(members[start_index - 1], status=SessionStatus.RUNNING, current_step="Joining mosaic")
@@ -5153,8 +5155,14 @@ class AppBackend(QObject):
             live["members"] = members
             live["current"] = current
             live["label"] = current.name
+            resume_count = mosaic_command_frame_count(current.camera.frame_count)
             if self.store.sessions.get(current.id):
                 self._adopt_command_session(device_id, current, step="Joining mosaic")
+        device = self._device_by_id(device_id)
+        frame_count = mosaic_command_frame_count(
+            resume_count,
+            getattr(getattr(device, "control_settings", None), "stack_count", None),
+        )
         worker.busy = True
         worker.availabilityChanged.emit()
         self.mosaic_frames.set_layout(
@@ -5188,6 +5196,7 @@ class AppBackend(QObject):
                 "start_index": start_index,
                 "join_current": join_current,
                 "prompt_darks": False,
+                "frame_count": frame_count,
             },
             callback=done,
         )
@@ -11347,6 +11356,10 @@ class AppBackend(QObject):
                 "camera": mosaic_stack_camera(camera).value,
                 "prompt_darks": True,
                 "stack_format": firmware_stack_format(device.control_settings.stack_format) if device is not None else None,
+                "frame_count": mosaic_command_frame_count(
+                    device.control_settings.stack_count if device is not None else None,
+                    camera_settings.frame_count,
+                ),
             },
             callback=done,
         )

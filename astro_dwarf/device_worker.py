@@ -3077,12 +3077,13 @@ _V3_OPERATION_WAITS: dict[str, tuple[int, str | None, bool, float]] = {
     "goto_solar": (11003, "goto_state", False, 300.0),
 }
 # A slew that is still moving can run past the 5 min GOTO budget.
-# Plate-solving is different: a healthy solve leaves this state in well
-# under a minute. One that stays there has stopped producing a result, and
-# waiting out the 10 min cap freezes the mosaic. Stop it, and send the slew
-# again only after firmware has left the search. The second attempt fails
-# at the same stall instead of waiting.
+# Plate-solving uses the same 10 minute cap. A healthy solve is often done
+# inside a minute, and a hard field can stay in solving well past that.
+# Stopping at 90s left the search running so the official app could not
+# stop it, and the mosaic aborted because another slew must not be sent
+# while that search is up. Leave the search running.
 _GOTO_SOLVE_TIMEOUT_S = 600.0
+# Log once past this point. It does not stop the search or send another slew.
 _GOTO_SOLVE_STALL_S = 90.0
 # After a real stop, 11002 was still FUNCTION_BUSY 9s later. The retry
 # waits this long once the search has actually cleared.
@@ -3104,18 +3105,24 @@ def _goto_started(state: Any) -> bool:
 
 
 def _goto_solve_stalled(state: Any, elapsed_s: float) -> bool:
-    """True when plate-solving has sat with no result long enough to retry.
+    """True when plate-solving has used the long budget and still has no result.
 
-    ``running`` is still a slew and keeps the long budget. ``solving`` with
-    no stopped/failed/tracking handoff is the hang that used to sit for 10 min.
+    Solving past a minute is still this search. It is not stopped, and
+    another slew is not sent on top of it.
     """
-    return str(state or "") == "solving" and float(elapsed_s) >= _GOTO_SOLVE_STALL_S
+    return str(state or "") == "solving" and float(elapsed_s) >= _GOTO_SOLVE_TIMEOUT_S
 
 
 def _goto_keep_waiting_for_solve(state: Any, elapsed_s: float, timeout_s: float) -> bool:
-    """True when the slew is still moving past the normal GOTO budget."""
+    """True when this GOTO is still inside the long cap.
+
+    ``running`` is a slew. ``solving`` is the plate-solve for the slew
+    already sent. Both keep the 10 minute budget.
+    """
     if _goto_solve_stalled(state, elapsed_s):
         return False
+    if str(state or "") == "solving" and float(elapsed_s) > float(timeout_s):
+        return True
     return bool(_goto_started(state) and elapsed_s > timeout_s and elapsed_s < _GOTO_SOLVE_TIMEOUT_S)
 
 
@@ -3151,7 +3158,6 @@ def _await_operation(
     since: float,
     *,
     ignore_codes: set[int] | frozenset[int] | None = None,
-    stall_is_terminal: bool = False,
 ) -> None:
     """Block until a fire-and-forget V3 operation finishes, fails or times out.
 
@@ -3186,6 +3192,7 @@ def _await_operation(
     log(f"{name} started; waiting for the telescope to finish…")
     logged_tracking_wait = False
     logged_solve_extend = False
+    logged_long_solve = False
     last_heartbeat = 0.0
     while True:
         if _stop.is_set():
@@ -3224,12 +3231,17 @@ def _await_operation(
             logged_tracking_wait = True
         if seen_running and state in ("idle", "stopped") and not goto:
             return
-        if goto and _goto_solve_stalled(state, elapsed):
-            if stall_is_terminal:
-                raise RuntimeError(
-                    f"{name} timed out after {int(elapsed)} s while plate-solving"
-                )
-            raise RuntimeError(f"{name} plate-solve stalled after {int(elapsed)} s")
+        if (
+            goto
+            and str(state or "") == "solving"
+            and elapsed >= _GOTO_SOLVE_STALL_S
+            and not logged_long_solve
+        ):
+            log(
+                f"{name} still plate-solving after {int(elapsed)} s; leaving this search running",
+                "notice",
+            )
+            logged_long_solve = True
         if goto and seen_running and elapsed - last_heartbeat >= _CAPTURE_HEARTBEAT_S:
             label = "plate-solving" if state == "solving" else (str(state or "slewing"))
             log(f"Still slewing · {label} · {int(elapsed)}s")
@@ -4938,18 +4950,7 @@ def run_session(session: dict[str, Any], prompt_darks: bool = False, dark_timeou
                 raise InterruptedError("Session stopped")
             raise RuntimeError(f"{name} failed")
         if v3_model and operation in _V3_OPERATION_WAITS:
-            try:
-                _await_operation(name, operation, started)
-            except RuntimeError as exc:
-                if operation not in ("goto", "goto_solar") or not _goto_stalled_error(exc):
-                    raise
-                _retry_stalled_plate_solve(name)
-                started = time.monotonic()
-                if sdk_call(operation, *args) is False:
-                    if _stop.is_set():
-                        raise InterruptedError("Session stopped")
-                    raise RuntimeError(f"{name} failed")
-                _await_operation(name, operation, started, stall_is_terminal=True)
+            _await_operation(name, operation, started)
 
     try:
         completed = _run_session_steps(session, step)
@@ -4998,25 +4999,6 @@ def _exit_tracking_if_needed(reason: str) -> None:
         sdk_call("stop_goto")
     except Exception as exc:
         log(f"Stop tracking skipped: {exc}", "debug")
-
-
-def _goto_stalled_error(exc: BaseException) -> bool:
-    """True for the first hung plate-solve, which is stopped and sent again."""
-    return "plate-solve stalled" in str(exc).lower()
-
-
-def _retry_stalled_plate_solve(name: str) -> None:
-    """Stop a hung plate-solve. The caller resends GOTO only if this returns.
-
-    A synthetic idle after STOPPING is not a finished search. Sending 11002
-    then returns FUNCTION_BUSY and can leave the telescope searching so that
-    stop, including the official app's stop, does nothing.
-    """
-    log(
-        f"{name}: plate-solve produced no result; stopping it before another slew",
-        "warning",
-    )
-    _stop_stalled_plate_solve(name)
 
 
 def _stop_stalled_plate_solve(name: str) -> None:
@@ -7605,22 +7587,17 @@ def _goto_target(
         _stop_tracking_for_goto(f"Stopping tracking before {name}")
     deadline = time.monotonic() + _GOTO_BUSY_TIMEOUT_S
     camera_retried = False
-    solve_retried = False
     while True:
         started = time.monotonic()
         try:
             if sdk_call("goto", ra, dec, target_name, False) is False:
                 raise RuntimeError(f"{name} failed")
             if v3_model:
-                _await_operation(name, "goto", started, stall_is_terminal=solve_retried)
+                _await_operation(name, "goto", started)
             return
         except RuntimeError as exc:
             if _stop.is_set():
                 raise
-            if _goto_stalled_error(exc) and not solve_retried:
-                solve_retried = True
-                _retry_stalled_plate_solve(name)
-                continue
             if _goto_needs_camera_reopen(exc) and not camera_retried:
                 camera_retried = True
                 deadline = time.monotonic() + _GOTO_BUSY_TIMEOUT_S
@@ -7645,7 +7622,6 @@ def _goto_target(
                         "goto",
                         started,
                         ignore_codes=_CAPTURE_BUSY_CODES,
-                        stall_is_terminal=solve_retried,
                     )
                     return
                 if not released:
@@ -7674,6 +7650,7 @@ def _stack_mosaic(
     join_current: bool = False,
     prompt_darks: bool = False,
     stack_format: Any = None,
+    frame_count: Any = None,
 ) -> bool:
     """GOTO each planned pane and stack it. Stoppable like a session."""
     global _session_phase, _stop_phase
@@ -7683,7 +7660,11 @@ def _stack_mosaic(
         raise RuntimeError("Mosaic has no panes")
     if str(camera or "").strip().lower() == "wide":
         log("Mosaic stack stays on the tele camera", "notice")
-    operation, args = _prepare_manual_stack(mosaic_stack_camera(camera).value, stack_format=stack_format)
+    operation, args = _prepare_manual_stack(
+        mosaic_stack_camera(camera).value,
+        frame_count,
+        stack_format,
+    )
     _stop.clear()
     if prompt_darks:
         _offer_darks_before_alignment("Stack", wide=False)
@@ -8130,6 +8111,7 @@ def dispatch(message: dict[str, Any]) -> Any:
             join_current=bool(message.get("join_current")),
             prompt_darks=bool(message.get("prompt_darks")),
             stack_format=message.get("stack_format"),
+            frame_count=message.get("frame_count"),
         )
     if command == "read_camera":
         args = list(message.get("args") or [])
