@@ -88,6 +88,7 @@ from astro_dwarf.stream_preview import (
     mosaic_pane_display_source,
     mosaic_shared_pane_edges,
     preview_should_ingest_frame,
+    preview_window_is_live,
     save_mosaic_pane_cache,
     set_live_frames,
     set_mosaic_frames,
@@ -321,6 +322,42 @@ def test_hidden_page_is_not_a_live_preview_surface() -> None:
     _assert(preview_surface_live(True, True), "control page keeps the stream")
     _assert(not preview_surface_live(True, False), "another page drops preview copies")
     _assert(not preview_surface_live(False, True), "a hidden window still drops frames")
+
+
+def test_visible_window_keeps_stack_frames_when_another_app_is_focused() -> None:
+    from PySide6.QtGui import QGuiApplication, QWindow
+
+    app = QGuiApplication.instance() or QGuiApplication([])
+
+    class _Window:
+        def __init__(self, exposed: bool, visibility) -> None:
+            self._exposed = exposed
+            self._visibility = visibility
+
+        def isExposed(self) -> bool:
+            return self._exposed
+
+        def visibility(self):
+            return self._visibility
+
+    _assert(
+        preview_window_is_live(_Window(True, QWindow.Visibility.Windowed)),
+        "a visible window keeps stacking frames while a browser has focus",
+    )
+    _assert(
+        preview_window_is_live(_Window(True, QWindow.Visibility.Maximized)),
+        "a maximized window behind another app keeps frames",
+    )
+    _assert(
+        not preview_window_is_live(_Window(False, QWindow.Visibility.Minimized)),
+        "a minimized window still drops frames",
+    )
+    _assert(
+        not preview_window_is_live(_Window(True, QWindow.Visibility.Hidden)),
+        "a hidden window still drops frames",
+    )
+    _assert(preview_window_is_live(None), "no window object does not invent a drop")
+    del app
 
 
 def test_preview_keeps_panorama_tele_while_unfocused() -> None:
@@ -2152,6 +2189,7 @@ if __name__ == "__main__":
     test_mosaic_tiled_seam_is_shared_once()
     test_mosaic_gapped_cells_keep_solid_frames()
     test_composed_mosaic_dots_shared_edges()
+    test_visible_window_keeps_stack_frames_when_another_app_is_focused()
     test_preview_keeps_panorama_tele_while_unfocused()
     test_preview_preserves_dso_after_tracking()
     test_preview_skips_golive_after_tracking()

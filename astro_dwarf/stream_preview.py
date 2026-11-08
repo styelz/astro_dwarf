@@ -27,7 +27,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPen, QWindow
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QWindow
 from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
 
 try:
@@ -1784,14 +1784,11 @@ def preview_surface_live(window_live: bool, page_shown: bool) -> bool:
 
 
 def preview_window_is_live(window) -> bool:
-    """False when the window is hidden, minimized, or in the background."""
-    app = QGuiApplication.instance()
-    if app is not None:
-        try:
-            if app.applicationState() != Qt.ApplicationState.ApplicationActive:
-                return False
-        except RuntimeError:
-            return False
+    """False when the window is hidden or minimized.
+
+    Another application in front is still a live window. A stack keeps its
+    preview frames while a browser has focus.
+    """
     if window is None:
         return True
     try:
@@ -1813,9 +1810,10 @@ def preview_should_ingest_frame(
 ) -> bool:
     """Copy this JPEG into the live hub, even if the window will not repaint.
 
-    Hidden, minimized, and background frames stay dropped so the GUI thread
-    does not copy or enhance them. Tele frames during a panorama shoot are
-    the FOV stamps on the canvas, so those still have to land in the hub.
+    Hidden and minimized frames stay dropped so the GUI thread does not
+    copy or enhance them. A visible window still takes frames when another
+    app has focus. Tele frames during a panorama shoot are the FOV stamps
+    on the canvas, so those still have to land in the hub.
     """
     if first_frame or window_live:
         return True

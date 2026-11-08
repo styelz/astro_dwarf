@@ -60,7 +60,7 @@ Sky-frame, pane-number, and PA rules: `.cursor/rules/sky-mosaic-astronomy.mdc`.
 
 ## Live preview and targeting
 
-- Limit frame rate and coalesce frames before `QImage.copy()`, enhancement, hub updates, and repaint. Discard hidden, minimized, background, or superseded frames before expensive GUI-thread work.
+- Limit frame rate and coalesce frames before `QImage.copy()`, enhancement, hub updates, and repaint. Discard frames while the window is hidden or minimized, and discard superseded frames, before expensive GUI-thread work. A visible window keeps the stack feed when another app has focus.
 - Preserve the direct `LiveFrames`/`QQuickPaintedItem` preview path. Do not route high-rate frames through a Python `QQuickImageProvider`; render-thread GIL contention can freeze the window after focus or visibility changes.
 - Map pointer coordinates through the exact `PreserveAspectFit` rectangle used to paint the frame, excluding letterbox regions. Overlays and hit testing must use the same geometry.
 - For DWARF 3 wide-view centering, send normalized clicks directly as firmware Dual Lenses Locating coordinates in the `1920x1080` linkage space. Do not add the PictureMatching offset to the command. Use PictureMatching telemetry only for the tele-footprint overlay; accept its `1920x1080` or doubled `3840x2160` coordinate space.
