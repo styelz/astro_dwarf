@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from astro_dwarf.device_telemetry import _stacking_progress_changes
+from astro_dwarf.device_telemetry import TelemetryTap, _stacking_progress_changes
 from astro_dwarf.telemetry_view import format_telemetry
 
 
@@ -237,6 +237,71 @@ def test_hud_follows_stack_exposure_not_photo_table() -> None:
     _assert(view["gain_text"] == "60", view["gain_text"])
 
 
+def _progress(current: int, stacked: int, total: int = 100, update_type: int = 2) -> SimpleNamespace:
+    return SimpleNamespace(
+        total_count=total,
+        target_name="",
+        current_count=current,
+        stacked_count=stacked,
+        update_type=update_type,
+    )
+
+
+def test_new_stack_after_disconnect_starts_at_zero() -> None:
+    """The replayed last frame of the previous stack is not this run."""
+    tap = TelemetryTap(lambda _event: None)
+    tap.update({"capture_current": 5, "capture_stacked": 5, "capture_total": 5}, force=True)
+    tap.reset()
+    tap.reset_capture_progress(total=100)
+    tap.release_capture_progress()
+    stale = tap._fresh_stacking_progress(_progress(5, 0, update_type=0))
+    _assert(stale == {}, "previous current_count is not this stack")
+    snap = tap.snapshot()
+    _assert(int(snap.get("capture_current") or 0) == 0, "counter stays at 0 while waiting")
+    _assert(int(snap.get("capture_stacked") or 0) == 0, "stacked stays at 0 while waiting")
+    tap.poll_client_status({
+        "fullStatus": {"AstroCapture": True, "takePhotoCount": 5, "takePhotoStacked": 0},
+    })
+    snap = tap.snapshot()
+    _assert(int(snap.get("capture_current") or 0) == 0, "SDK cache must not restore the old count")
+    fresh = tap._fresh_stacking_progress(_progress(0, 0))
+    _assert(fresh.get("capture_current") == 0, "new stack starts at 0")
+    _assert(fresh.get("capture_progress_seen") is True, "0/0 is this run")
+    nxt = tap._fresh_stacking_progress(_progress(1, 0))
+    _assert(nxt.get("capture_current") == 1, "frames after the reset still count")
+    later = tap._fresh_stacking_progress(_progress(5, 4))
+    _assert(later.get("capture_current") == 5, "this run may reach the old count later")
+
+
+def test_fresh_process_still_waits_for_zero() -> None:
+    """A new app has no saved peak, and the replayed 5 is still not this stack."""
+    tap = TelemetryTap(lambda _event: None)
+    tap.reset_capture_progress(total=100)
+    tap.release_capture_progress()
+    _assert(tap._fresh_stacking_progress(_progress(5, 0, update_type=0)) == {}, "unknown previous count is not a start")
+    fresh = tap._fresh_stacking_progress(_progress(0, 0))
+    _assert(fresh.get("capture_current") == 0, "fresh process starts at 0")
+
+
+def test_same_link_new_stack_drops_leftover_peak() -> None:
+    tap = TelemetryTap(lambda _event: None)
+    tap.update({"capture_current": 5, "capture_stacked": 5}, force=True)
+    tap.reset_capture_progress(total=100)
+    tap.release_capture_progress()
+    _assert(tap._fresh_stacking_progress(_progress(5, 5)) == {}, "same-link leftover 5 is dropped")
+    fresh = tap._fresh_stacking_progress(_progress(0, 0))
+    _assert(fresh.get("capture_current") == 0, "same-link stack still starts at 0")
+
+
+def test_rejoin_keeps_the_live_stack_count() -> None:
+    tap = TelemetryTap(lambda _event: None)
+    tap.update({"capture_current": 5, "capture_stacked": 4}, force=True)
+    tap.reset()
+    live = tap._fresh_stacking_progress(_progress(5, 4, total=50))
+    _assert(live.get("capture_current") == 5, "joining a live stack keeps its count")
+    _assert(live.get("capture_stacked") == 4, "joining keeps the stacked count")
+
+
 def test_mosaic_progress_uses_fov_id() -> None:
     message = SimpleNamespace(
         total_count=50,
@@ -272,6 +337,10 @@ def main() -> int:
     test_progress_packet_marks_zero_zero_seen()
     test_progress_packet_publishes_stack_exposure_and_gain()
     test_hud_follows_stack_exposure_not_photo_table()
+    test_new_stack_after_disconnect_starts_at_zero()
+    test_fresh_process_still_waits_for_zero()
+    test_same_link_new_stack_drops_leftover_peak()
+    test_rejoin_keeps_the_live_stack_count()
     test_mosaic_progress_uses_fov_id()
     print("exposure running tests ok")
     return 0

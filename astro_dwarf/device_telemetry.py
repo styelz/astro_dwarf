@@ -830,6 +830,10 @@ class TelemetryTap:
         self._hold_stale_capture = False
         self._accept_sdk_capture_counts = True
         self._stale_capture_peak = 0
+        # Survives disconnect. The next stack uses it to ignore a replayed
+        # current_count from the run that just ended.
+        self._remembered_capture_peak = 0
+        self._await_capture_reset = False
         self._battery_source = ""
         # CMD_NOTIFY_CHARGE is the live plug-in event. A later state dump
         # must not replace it with a stale idle reading.
@@ -937,6 +941,14 @@ class TelemetryTap:
 
     def reset(self) -> None:
         with self._lock:
+            # Disconnect clears the live counts. Keep the last frame count so
+            # the next stack can ignore a replay of that same number.
+            peak = max(
+                self._stale_capture_peak,
+                self._remembered_capture_peak,
+                self._capture_count_peak(),
+                self._capture_count_peak(self._pending),
+            )
             self._state.clear()
             self._pending.clear()
             self._status_signature.clear()
@@ -945,6 +957,9 @@ class TelemetryTap:
             self._hold_stale_capture = False
             self._accept_sdk_capture_counts = True
             self._stale_capture_peak = 0
+            self._await_capture_reset = False
+            if peak > 0:
+                self._remembered_capture_peak = peak
             self._battery_source = ""
             self._charge_notify = False
             self._publish_host_mode = False
@@ -996,11 +1011,23 @@ class TelemetryTap:
         return peak
 
     def reset_capture_progress(self, total: int | None = None, target: str = "") -> None:
-        """Zero leftover stacking counts so a new session does not show the last run."""
+        """Zero leftover stacking counts so a new session does not show the last run.
+
+        The counter stays at 0 until firmware sends a reset (0, or a count
+        below the previous run). A replayed ``current_count`` from the stack
+        that just finished is not this run's first frame.
+        """
         with self._lock:
-            peak = max(self._stale_capture_peak, self._capture_count_peak(), self._capture_count_peak(self._pending))
+            peak = max(
+                self._stale_capture_peak,
+                self._remembered_capture_peak,
+                self._capture_count_peak(),
+                self._capture_count_peak(self._pending),
+            )
             self._stale_capture_peak = peak
+            self._remembered_capture_peak = peak
             self._hold_stale_capture = True
+            self._await_capture_reset = True
             self._accept_sdk_capture_counts = False
         changes: dict[str, Any] = {
             "capture_current": 0,
@@ -1027,10 +1054,25 @@ class TelemetryTap:
         with self._lock:
             self._hold_stale_capture = False
 
+    def _count_starts_this_capture(self, new_count: int, stale_peak: int, awaiting: bool) -> bool:
+        """True when this count belongs to the capture that was just started.
+
+        A new stack starts at 0. Until that packet, a count still sitting on
+        the previous run (the 5 left after disconnect) is not this stack.
+        A count below the old peak is a new run that skipped the 0 packet.
+        Joining a stack that is already going does not set ``awaiting``.
+        """
+        if new_count <= 0:
+            return True
+        if awaiting:
+            return stale_peak > 0 and new_count < stale_peak
+        return not (stale_peak > 1 and new_count >= stale_peak)
+
     def _fresh_stacking_progress(self, message: Any, mosaic: bool = False, wide: bool = False) -> dict[str, Any]:
         with self._lock:
             hold = self._hold_stale_capture
             stale_peak = self._stale_capture_peak
+            awaiting = self._await_capture_reset
         if hold:
             return {}
         changes = _stacking_progress_changes(
@@ -1040,11 +1082,12 @@ class TelemetryTap:
             wide=wide,
         )
         new_count = self._capture_count_peak(changes)
-        if stale_peak > 1 and new_count >= stale_peak:
-            # Leftover packets from the previous stack; wait for a fresh 0/0.
+        if not self._count_starts_this_capture(new_count, stale_peak, awaiting):
             return {}
         with self._lock:
             self._stale_capture_peak = 0
+            self._remembered_capture_peak = 0
+            self._await_capture_reset = False
             self._accept_sdk_capture_counts = True
         return changes
 
