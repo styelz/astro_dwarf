@@ -644,8 +644,125 @@ def test_wide_dark_state_notify() -> None:
     _assert(changes.get("dark_state") == "running", changes)
 
 
+def test_dark_library_rows_delete_and_choices() -> None:
+    from dwarf_python_api.proto import base_pb2
+
+    from astro_dwarf.device_telemetry import CMD_ASTRO_DEL_DARK_FRAME_LIST, TelemetryTap
+
+    frame = {
+        "exp_index": 12,
+        "gain_index": 18,
+        "bin_index": 0,
+        "exp_name": "30s",
+        "gain_name": "60",
+        "bin_name": "4k",
+        "temperature": 12,
+    }
+    item = worker.dark_library_media_item("tele", frame)
+    _assert(item["id"] == "tele:12:18:0:12", item)
+    _assert(item["kind"] == "dark" and item["camera"] == "tele", item)
+    _assert("30s" in item["target"] and "60" in item["target"], item)
+    _assert("TELE" in item["subtitle"] and "4K" in item["subtitle"] and "12°C" in item["subtitle"], item)
+    missing_temp = worker.dark_library_media_item("wide", {**frame, "temperature": None})
+    _assert(missing_temp["id"].endswith(":na"), missing_temp["id"])
+    _assert(missing_temp["temperature"] is None, missing_temp)
+
+    groups = worker.split_dark_delete_groups([item, missing_temp])
+    _assert(len(groups["tele"]) == 1 and len(groups["wide"]) == 1, groups)
+    message = worker.build_dark_delete_message(groups["tele"])
+    row = message.dark_list[0]
+    _assert(row.exp_index == 12 and row.gain_index == 18 and row.bin_index == 0 and row.temp_value == 12, row)
+    blank = worker.build_dark_delete_message(groups["wide"])
+    _assert(blank.dark_list[0].temp_value == 0, blank.dark_list[0].temp_value)
+
+    tele = worker.dark_capture_choices("3", False)
+    gain_60 = next(entry for entry in tele["gains"] if entry["name"] == "60")
+    _assert(gain_60["index"] == 18, gain_60)
+    gain_names = [entry["name"] for entry in tele["gains"]]
+    _assert("60" in gain_names and "0" not in gain_names and "10" not in gain_names, gain_names)
+    _assert(all(worker.dark_gain_allowed(name, wide=False) for name in gain_names), gain_names)
+    _assert(any(entry["name"] == "30" for entry in tele["exposures"]), "30s exposure")
+    _assert([entry["index"] for entry in tele["bins"]] == [0, 1], tele["bins"])
+    wide = worker.dark_capture_choices("3", True)
+    wide_names = [entry["name"] for entry in wide["gains"]]
+    _assert("0" in wide_names or "2" in wide_names or "10" in wide_names, wide_names)
+    _assert(wide["bins"] == [], wide["bins"])
+
+    saved = worker._query_dark_library
+
+    def query(wide_lens: bool) -> list[dict[str, object]] | None:
+        if wide_lens:
+            return [{
+                "exp_index": 1, "gain_index": 2, "bin_index": 0,
+                "exp_name": "15s", "gain_name": "60", "bin_name": "4k", "temperature": 10,
+            }]
+        return [
+            {
+                "exp_index": 4, "gain_index": 5, "bin_index": 1,
+                "exp_name": "60s", "gain_name": "80", "bin_name": "2k", "temperature": 9,
+            },
+            {
+                "exp_index": 3, "gain_index": 4, "bin_index": 0,
+                "exp_name": "30s", "gain_name": "60", "bin_name": "4k", "temperature": 11,
+            },
+        ]
+
+    worker._query_dark_library = query
+    try:
+        listed = worker.dark_library_list(True)
+    finally:
+        worker._query_dark_library = saved
+    names = [entry["exp_name"] for entry in listed["frames"]]
+    _assert(names == ["30s", "60s", "15s"], names)
+    _assert([entry["camera"] for entry in listed["frames"]] == ["tele", "tele", "wide"], listed["frames"])
+    worker._query_dark_library = lambda _wide: None
+    try:
+        missing = worker.dark_library_list(True)
+    finally:
+        worker._query_dark_library = saved
+    _assert(missing["ok"] is False and missing["frames"] == [], missing)
+
+    events: list[dict[str, object]] = []
+    tap = TelemetryTap(lambda payload: events.append(payload), flush_interval=0)
+    tap._base = base_pb2
+    reply = base_pb2.ComResponse()
+    reply.code = 0
+    before = time.monotonic()
+    tap.on_packet(CMD_ASTRO_DEL_DARK_FRAME_LIST, 1, reply.SerializeToString())
+    _assert(tap.response_after(CMD_ASTRO_DEL_DARK_FRAME_LIST, before) == 0, "delete reply")
+    _assert(events == [], "a delete reply is not a telemetry change")
+
+
+def test_library_capture_settings_use_the_table_index() -> None:
+    previous = _snapshot()
+    worker._device = {"model": "Dwarf 3"}
+    worker._tap = _DarkTap()
+    try:
+        settings = worker.dark_library_capture_settings("tele", "30s", 60, 0)
+        _assert(settings["gain_index"] == 18, settings)
+        _assert(settings["exp_index"] is not None, settings)
+        _assert(settings["bin_index"] == 0, settings)
+        _assert(settings["library"] is True, settings)
+        _assert(settings["gain_ok"] and settings["exposure_ok"], settings)
+        _assert("this stack" not in str(settings["steps"]), settings["steps"])
+        _assert("ND filter" in str(settings["steps"]), settings["steps"])
+        blocked = worker.dark_library_capture_settings("tele", "30s", 10, 0)
+        _assert(not blocked["gain_ok"], blocked)
+        _assert("40" in str(blocked["block_reason"]), blocked["block_reason"])
+        wide = worker.dark_library_capture_settings("wide", "15s", 10, 0)
+        _assert(wide["gain_ok"] and wide["bin_index"] == 1, wide)
+        worker._device = {"model": "Dwarf Mini"}
+        mini = worker.dark_library_capture_settings("wide", "15s", 60, 0)
+        _assert(not mini["gain_ok"] and "wide" in str(mini["block_reason"]).lower(), mini)
+        _assert("this stack" in worker.dark_frame_steps("Dwarf 3"), "stack copy stays")
+    finally:
+        _restore(previous)
+
+
 if __name__ == "__main__":
     test_model_steps_follow_each_manual()
+    test_dark_library_rows_delete_and_choices()
+    test_library_capture_settings_use_the_table_index()
     test_tele_gain_limits()
     test_unprompted_run_continues_immediately()
     test_schedule_dark_prompt_asks_once_then_skips()

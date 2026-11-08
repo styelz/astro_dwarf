@@ -7,6 +7,7 @@ import QtMultimedia
 import QtCore
 import ".."
 import "../components"
+import "../dialogs"
 
 Item {
     id: mediaPage
@@ -17,10 +18,11 @@ Item {
     readonly property bool hasIp: !!(backend.selectedDevice && backend.selectedDevice.ip_address)
     readonly property bool scopeOnline: !!(backend.selectedDevice && backend.selectedDevice.connected)
     readonly property bool onDevice: backend.mediaSource !== "local"
+    readonly property bool darksSource: backend.mediaSource === "darks"
     readonly property bool deviceRootActive: backend.mediaSource === "folders" && backend.mediaFolderParent === ""
     readonly property bool inNestedFolder: backend.mediaSource === "folders" && backend.mediaFolderParent !== ""
     readonly property bool inMosaicGroup: String(backend.mediaMosaicGroup || "") !== ""
-    readonly property bool showMediaTools: mediaPage.inNestedFolder || (!mediaPage.albumLocked && mediaPage.items.length > 0)
+    readonly property bool showMediaTools: mediaPage.darksSource || mediaPage.inNestedFolder || (!mediaPage.albumLocked && mediaPage.items.length > 0)
     readonly property bool albumLocked: backend.mediaLocked && mediaPage.onDevice
     readonly property bool mediaError: {
         const s = String(backend.mediaStatus || "").toLowerCase()
@@ -44,7 +46,7 @@ Item {
         const id = String((backend.selectedMedia && backend.selectedMedia.id) || "")
         return id ? [id] : []
     }
-    readonly property bool canDownload: mediaPage.onDevice && !mediaPage.albumLocked && !mediaPage.busy && mediaPage.scopeOnline && mediaPage.downloadTargetIds.length > 0
+    readonly property bool canDownload: mediaPage.onDevice && !mediaPage.darksSource && !mediaPage.albumLocked && !mediaPage.busy && mediaPage.scopeOnline && mediaPage.downloadTargetIds.length > 0
     readonly property string emptyText: {
         if (mediaPage.albumLocked)
             return backend.mediaStatus || "The telescope album isn't available while it's capturing. Wait until imaging finishes, or switch to Local."
@@ -62,6 +64,8 @@ Item {
             return "No photos, videos, or bursts found on this telescope. Capture, then refresh."
         if (backend.mediaSource === "astro")
             return "No astro sessions found on this telescope. Finished DSO and manual stacks show up here."
+        if (backend.mediaSource === "darks")
+            return "No dark frames stored on this telescope. Take a set for the exposure, gain, and resolution you shoot with."
         return backend.mediaFolderParent
             ? "This folder is empty."
             : "No album folders found on this telescope. Video, burst, and other session folders show up here."
@@ -108,6 +112,8 @@ Item {
     }
     function openSelected() {
         if (!backend.selectedMedia || !backend.selectedMedia.id)
+            return
+        if (Util.mediaKind(backend.selectedMedia) === "dark")
             return
         if (Util.mediaKind(backend.selectedMedia) === "mosaic") {
             mediaPage.clearSelection()
@@ -179,7 +185,8 @@ Item {
         const chosen = Array.isArray(ids) ? ids : Util.idSetKeys(ids)
         if (!chosen.length)
             return
-        root.confirmBulkDelete("deleteMedia", chosen, backend.mediaSource === "folders" ? "item" : "file")
+        const noun = mediaPage.darksSource ? "dark" : (backend.mediaSource === "folders" ? "item" : "file")
+        root.confirmBulkDelete("deleteMedia", chosen, noun)
     }
     function clearSelection() {
         mediaPage.selectedIds = ({})
@@ -221,7 +228,7 @@ Item {
             mediaPage.loadedKey = backend.selectedDeviceId + ":folders:"
             return
         }
-        if (lower === "local" || lower === "astro" || lower === "stills") {
+        if (lower === "local" || lower === "astro" || lower === "stills" || lower === "darks") {
             backend.setMediaSource(lower)
             mediaPage.loadedKey = backend.selectedDeviceId + ":" + lower + ":"
             return
@@ -316,7 +323,9 @@ Item {
                 ? "Unavailable while the telescope is capturing"
                 : (backend.mediaSource === "local"
                     ? (mediaPage.items.length + " downloaded file" + (mediaPage.items.length === 1 ? "" : "s") + "  ·  local album")
-                    : (mediaPage.items.length + " on " + (backend.selectedDevice.name || "telescope") + (mediaPage.hasIp ? "  ·  " + backend.selectedDevice.ip_address : "")))
+                    : (mediaPage.darksSource
+                        ? (mediaPage.items.length + " dark set" + (mediaPage.items.length === 1 ? "" : "s") + "  ·  " + (backend.selectedDevice.name || "telescope"))
+                        : (mediaPage.items.length + " on " + (backend.selectedDevice.name || "telescope") + (mediaPage.hasIp ? "  ·  " + backend.selectedDevice.ip_address : ""))))
             HudButton {
                 objectName: "mediaDeviceButton"
                 text: "DEVICE"
@@ -342,6 +351,16 @@ Item {
                     foregroundColor: folderActive ? Theme.accent : Theme.textSecondary
                     onClicked: mediaPage.showFolder(modelData.path)
                 }
+            }
+            HudButton {
+                objectName: "mediaDarksButton"
+                text: "DARKS"
+                accessibleDescription: mediaPage.darksSource ? "Dark library, selected" : "Dark library"
+                tooltip: "Shows stored dark frames and lets you take or delete a set"
+                enabled: !mediaPage.albumLocked && !mediaPage.busy
+                buttonColor: mediaPage.darksSource ? Theme.fillActive : Theme.inputBg
+                foregroundColor: mediaPage.darksSource ? Theme.accent : Theme.textSecondary
+                onClicked: mediaPage.showSource("darks")
             }
             HudButton {
                 text: "LOCAL"
@@ -380,7 +399,8 @@ Item {
                     : (mediaPage.inMosaicGroup ? ("ON DEVICE  ·  " + (backend.mediaMosaicTitle || "MOSAIC"))
                     : (backend.mediaSource === "astro" ? "ON DEVICE  ·  ASTRO SESSIONS"
                         : (backend.mediaSource === "stills" ? "ON DEVICE  ·  CAMERA"
-                            : ("ON DEVICE  ·  " + (backend.mediaFolder ? String(backend.mediaFolder).replace(/\\/g, "/").split("/").filter(Boolean).slice(-1)[0] || "FOLDERS" : "FOLDERS"))))))
+                            : (mediaPage.darksSource ? "ON DEVICE  ·  DARKS"
+                            : ("ON DEVICE  ·  " + (backend.mediaFolder ? String(backend.mediaFolder).replace(/\\/g, "/").split("/").filter(Boolean).slice(-1)[0] || "FOLDERS" : "FOLDERS")))))))
 
             Text {
                 Layout.fillWidth: true
@@ -449,11 +469,24 @@ Item {
                             mediaPage.confirmRestack()
                     }
                 }
+                HudButton {
+                    id: mediaTakeDarksButton
+                    objectName: "mediaTakeDarks"
+                    text: backend.mediaBusy === "dark" ? "TAKING…" : "TAKE DARKS"
+                    visible: mediaPage.darksSource
+                    enabled: mediaPage.darksSource && mediaPage.scopeOnline && !mediaPage.albumLocked && !mediaPage.busy
+                    busy: backend.mediaBusy === "dark"
+                    busyText: "TAKING…"
+                    implicitHeight: Theme.px(28)
+                    tooltip: "Shoots 10 dark frames for the exposure, gain, and resolution you pick"
+                    accessibleDescription: tooltip
+                    onClicked: darkLibraryDialog.open()
+                }
                 SelectionBar {
                     id: mediaSelectionBar
                     selectedCount: mediaPage.selectedCount
                     totalCount: mediaPage.items.length
-                    noun: backend.mediaSource === "folders" ? "item" : "file"
+                    noun: mediaPage.darksSource ? "dark" : (backend.mediaSource === "folders" ? "item" : "file")
                     allowEdit: false
                     deleteEnabled: !mediaPage.busy && !mediaPage.albumLocked
                     active: !mediaPage.albumLocked && mediaPage.items.length > 0
@@ -1457,5 +1490,9 @@ Item {
         onDeleteRequested: item => mediaPage.deleteClickedItem(item)
         onSelectAllRequested: mediaPage.selectedIds = Util.idSetAll(mediaPage.items, true)
         onUnselectAllRequested: mediaPage.clearSelection()
+    }
+
+    DarkLibraryDialog {
+        id: darkLibraryDialog
     }
 }

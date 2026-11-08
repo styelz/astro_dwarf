@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from .device_telemetry import (
+    CMD_ASTRO_DEL_DARK_FRAME_LIST,
+    CMD_ASTRO_DEL_WIDE_DARK_FRAME_LIST,
     CMD_ASTRO_GET_DARK_FRAME_LIST,
     CMD_ASTRO_GET_WIDE_DARK_FRAME_LIST,
     CODE_STEP_MOTOR_NEED_RESET,
@@ -4073,6 +4075,24 @@ def _exposure_option_table(model_id: str, wide: bool) -> Any:
         return None
 
 
+def _gain_option_table(model_id: str, wide: bool) -> Any:
+    """SDK gain table for one model and lens. None if the package is missing."""
+    try:
+        if wide:
+            from dwarf_python_api.lib import data_wide_utils as tables
+
+            if model_id in ("3", "5"):
+                return tables.allowed_wide_gainsD3
+            return tables.allowed_wide_gains
+        from dwarf_python_api.lib import data_utils as tables
+
+        if model_id in ("3", "5"):
+            return tables.allowed_gainsD3
+        return tables.allowed_gains
+    except Exception:
+        return None
+
+
 def clamp_exposure_name(value: Any, model_id: str, wide: bool = False) -> str:
     """Nearest shutter name that exists on this model and lens.
 
@@ -4160,6 +4180,28 @@ def dark_frame_steps(model: str) -> str:
     )
 
 
+def dark_library_steps(model: str) -> str:
+    """Cover steps for a dark set saved from the media library, not a stack."""
+    if model == "Dwarf Mini":
+        return (
+            "Leave filters off and leave the scope where it is. "
+            "The Mini retracts the barrel and uses its built-in dark shutter. "
+            "These 10 frames are stored for this exposure, gain, and resolution."
+        )
+    if model == "Dwarf 3":
+        return (
+            "Fit the ND filter and fully retract the lens cylinder. "
+            "These 10 frames are stored for this exposure, gain, and resolution. "
+            "Keep the sensor within 8°C of the temperature you will shoot at. "
+            "Retracting the cylinder clears alignment, so do this before calibration and GOTO."
+        )
+    return (
+        "Close the lens cover. These 10 frames are stored for this exposure, gain, and resolution, "
+        "near the sensor temperature now. Moving the lens to take darks clears the previous "
+        "calibration, so calibrate again before the next GOTO."
+    )
+
+
 def dark_warning_summary(code: int) -> str:
     if int(code) == CODE_ASTRO_DARK_TEMP_MISMATCH:
         return "Stored darks were taken at a different sensor temperature."
@@ -4194,6 +4236,127 @@ def build_dark_capture_message(exp_index: int, gain: int, bin_index: int, cap_si
     message.gain_index = int(gain)
     message.bin_index = int(bin_index)
     message.cap_size = int(cap_size)
+    return message
+
+
+def _dark_table_rows(table: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for option in getattr(table, "values", []) or []:
+        name = str(option.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            index = int(option["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append({"name": name, "index": index})
+    return rows
+
+
+def dark_capture_choices(model_id: str, wide: bool) -> dict[str, list[dict[str, Any]]]:
+    """Exposure, gain, and resolution rows the dark library can shoot on one lens.
+
+    Tele gain stays inside 40–150. Wide darks keep the whole gain table, and
+    the wide resolution is fixed by firmware so this list has no bin choice.
+    """
+    gains = _dark_table_rows(_gain_option_table(str(model_id or "2"), bool(wide)))
+    if not wide:
+        gains = [row for row in gains if dark_gain_allowed(row["name"], wide=False)]
+    bins: list[dict[str, Any]] = []
+    if not wide:
+        bins = [{"name": "4K", "index": 0}, {"name": "2K", "index": 1}]
+    return {
+        "exposures": _dark_table_rows(_exposure_option_table(str(model_id or "2"), bool(wide))),
+        "gains": gains,
+        "bins": bins,
+    }
+
+
+def dark_library_media_item(camera: str, frame: dict[str, Any]) -> dict[str, Any]:
+    """One stored dark set, shaped like a media tile."""
+    lens = "wide" if str(camera) == "wide" else "tele"
+    try:
+        exp_index = int(frame.get("exp_index") or 0)
+    except (TypeError, ValueError):
+        exp_index = 0
+    try:
+        gain_index = int(frame.get("gain_index") or 0)
+    except (TypeError, ValueError):
+        gain_index = 0
+    try:
+        bin_index = int(frame.get("bin_index") or 0)
+    except (TypeError, ValueError):
+        bin_index = 0
+    temperature = frame.get("temperature")
+    temp = temperature if isinstance(temperature, int) else _optional_int(temperature)
+    exp_name = str(frame.get("exp_name") or "").strip() or "—"
+    gain_name = str(frame.get("gain_name") or "").strip() or str(gain_index)
+    bin_label = dark_resolution_label(bin_index)
+    raw_bin = str(frame.get("bin_name") or "").replace(" ", "").upper()
+    if raw_bin in {"4K", "2K"}:
+        bin_label = raw_bin
+    temp_label = "—" if temp is None else f"{temp}°C"
+    title = f"{exp_name}  ·  GAIN {gain_name}"
+    subtitle = f"{'WIDE' if lens == 'wide' else 'TELE'}  ·  {bin_label}  ·  {temp_label}"
+    temp_key = "na" if temp is None else str(temp)
+    return {
+        "id": f"{lens}:{exp_index}:{gain_index}:{bin_index}:{temp_key}",
+        "kind": "dark",
+        "source": "darks",
+        "camera": lens,
+        "target": title,
+        "file_name": title,
+        "subtitle": subtitle,
+        "exp_index": exp_index,
+        "gain_index": gain_index,
+        "bin_index": bin_index,
+        "exp_name": exp_name,
+        "gain_name": gain_name,
+        "bin_name": bin_label,
+        "temperature": temp,
+        "is_dir": False,
+    }
+
+
+def _dark_library_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+    seconds = exposure_seconds_from_text(str(item.get("exp_name") or "")) or 0
+    gain = _optional_int(item.get("gain_name"))
+    if gain is None:
+        gain = _optional_int(item.get("gain_index")) or 0
+    temp = item.get("temperature")
+    return (
+        1 if item.get("camera") == "wide" else 0,
+        float(seconds),
+        int(gain),
+        int(item.get("bin_index") or 0),
+        0 if temp is None else int(temp),
+    )
+
+
+def split_dark_delete_groups(frames: list[dict[str, Any]] | None) -> dict[str, list[dict[str, Any]]]:
+    """Tele and wide deletes are different firmware commands."""
+    groups: dict[str, list[dict[str, Any]]] = {"tele": [], "wide": []}
+    for frame in frames or []:
+        if not isinstance(frame, dict):
+            continue
+        lens = "wide" if str(frame.get("camera") or "") == "wide" else "tele"
+        groups[lens].append(frame)
+    return groups
+
+
+def build_dark_delete_message(frames: list[dict[str, Any]]) -> Any:
+    """ReqDelDarkFrameList for one lens. Temperature 0 means the row had none."""
+    from dwarf_python_api.proto import astro_pb2
+
+    message = astro_pb2.ReqDelDarkFrameList()
+    for frame in frames:
+        item = message.dark_list.add()
+        item.exp_index = int(frame.get("exp_index") or 0)
+        item.gain_index = int(frame.get("gain_index") or 0)
+        item.bin_index = int(frame.get("bin_index") or 0)
+        temp = frame.get("temperature")
+        number = temp if isinstance(temp, int) else _optional_int(temp)
+        item.temp_value = 0 if number is None else int(number)
     return message
 
 
@@ -4316,7 +4479,8 @@ def _emit_dark_prompt(
         "kind": "mismatch" if int(code) == CODE_ASTRO_DARK_TEMP_MISMATCH else "missing",
         "heading": "DARK TEMPERATURE" if int(code) == CODE_ASTRO_DARK_TEMP_MISMATCH else "DARK FRAMES",
         "summary": dark_warning_summary(code),
-        "steps": dark_frame_steps(str(settings.get("model") or "")),
+        "steps": str(settings.get("steps") or dark_frame_steps(str(settings.get("model") or ""))),
+        "library": bool(settings.get("library")),
         "camera": "WIDE" if settings.get("wide") else "TELE",
         "exposure": str(settings.get("exposure") or "—"),
         "gain": "—" if gain is None else str(gain),
@@ -4527,6 +4691,132 @@ def _query_dark_library(wide: bool) -> list[dict[str, Any]] | None:
         time.sleep(0.1)
     log("Dark-frame library did not answer; the stack will check again at capture", "debug")
     return None
+
+
+def dark_library_list(include_wide: bool = True) -> dict[str, Any]:
+    """Tele darks, plus wide when this model has that camera."""
+    tele = _query_dark_library(False)
+    wide: list[dict[str, Any]] | None = _query_dark_library(True) if include_wide else []
+    if tele is None and (not include_wide or wide is None):
+        return {"ok": False, "error": "The telescope did not return its dark library", "frames": []}
+    notes: list[str] = []
+    if tele is None:
+        notes.append("Tele dark library did not answer")
+        tele = []
+    if include_wide and wide is None:
+        notes.append("Wide dark library did not answer")
+        wide = []
+    items = [dark_library_media_item("tele", row) for row in tele or []]
+    items.extend(dark_library_media_item("wide", row) for row in wide or [])
+    items.sort(key=_dark_library_sort_key)
+    return {"ok": True, "frames": items, "status": " · ".join(notes)}
+
+
+def _delete_dark_group(wide: bool, frames: list[dict[str, Any]]) -> str:
+    """Send one lens delete and wait for its reply code. Empty string means it landed."""
+    if _tap is None or not frames:
+        return "Dark frames could not be deleted"
+    command = CMD_ASTRO_DEL_WIDE_DARK_FRAME_LIST if wide else CMD_ASTRO_DEL_DARK_FRAME_LIST
+    try:
+        message = build_dark_delete_message(frames)
+    except Exception as exc:
+        return f"Could not build the dark delete: {exc}"
+    since = time.monotonic()
+    if not send_without_response(message, command, _MODULE_ASTRO):
+        return "Dark frames could not be deleted"
+    deadline = time.monotonic() + _DARK_LIBRARY_WAIT_S
+    while time.monotonic() < deadline:
+        if _stop.is_set() and _session_active.is_set():
+            raise InterruptedError("Session stopped")
+        code = _tap.response_after(command, since)
+        if code == 0:
+            return ""
+        if code is not None:
+            return f"Dark frames were not deleted ({_error_name(code)})"
+        time.sleep(0.1)
+    return "The telescope did not confirm the dark delete"
+
+
+def dark_library_delete(frames: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Delete the selected tele and wide sets. Each lens is its own command."""
+    groups = split_dark_delete_groups(frames)
+    if not groups["tele"] and not groups["wide"]:
+        return {"ok": False, "error": "Nothing to delete", "deleted": 0}
+    errors: list[str] = []
+    deleted = 0
+    for wide, rows in ((False, groups["tele"]), (True, groups["wide"])):
+        if not rows:
+            continue
+        error = _delete_dark_group(wide, rows)
+        if error:
+            errors.append(error)
+        else:
+            deleted += len(rows)
+    if errors and deleted == 0:
+        return {"ok": False, "error": errors[0], "deleted": 0}
+    return {"ok": not errors, "error": " · ".join(errors), "deleted": deleted}
+
+
+def dark_library_capture_settings(camera: str, exposure: str, gain: Any, bin_index: int) -> dict[str, Any]:
+    """Settings for a library shoot. Wide binning is fixed; Mini has no wide camera."""
+    wide = str(camera or "") == "wide"
+    model = str(_device.get("model") or "") or "Dwarf II"
+    model_id = _MODEL_IDS.get(model, "2")
+    gain_value = _optional_int(gain)
+    exp_index = dark_exposure_index(str(exposure or ""), model_id, wide)
+    gain_index = dark_gain_index(gain_value, model_id, wide)
+    bin_value = 1 if wide else (1 if int(bin_index) == 1 else 0)
+    exposure_ok = exp_index is not None
+    gain_ok = dark_gain_allowed(gain_value, wide=wide) and gain_index is not None
+    snap = _tap.snapshot() if _tap is not None else {}
+    temp = snap.get("cmos_wide_c") if wide else snap.get("cmos_tele_c")
+    if temp in (None, "", "—"):
+        temp = snap.get("temperature_c")
+    if model == "Dwarf Mini" and wide:
+        reason = "DWARF Mini has no wide camera."
+        gain_ok = False
+    elif not wide and gain_value is not None and not dark_gain_allowed(gain_value, wide=False):
+        reason = "Tele darks need gain from 40 to 150."
+    else:
+        reason = dark_block_reason(wide=wide, gain=gain_value, exposure_ok=exposure_ok)
+    return {
+        "wide": wide,
+        "model": model,
+        "exposure": str(exposure or ""),
+        "gain": gain_value,
+        "gain_index": gain_index,
+        "exp_index": exp_index,
+        "bin_index": bin_value,
+        "temperature": _format_sensor_temp(temp),
+        "exposure_ok": exposure_ok,
+        "gain_ok": gain_ok,
+        "block_reason": reason,
+        "library": True,
+        "steps": dark_library_steps(model),
+    }
+
+
+def dark_library_capture(camera: str, exposure: str, gain: Any, bin_index: int) -> dict[str, Any]:
+    """Shoot one 10-frame set and store it in the dark library."""
+    if _session_active.is_set():
+        return {"ok": False, "error": "A session is running. Stop it before taking darks."}
+    snap = _tap.snapshot() if _tap is not None else {}
+    if _capture_running(snap) or str(snap.get("dark_state") or "") == "running":
+        return {"ok": False, "error": "The telescope is capturing. Wait until it finishes."}
+    settings = dark_library_capture_settings(camera, exposure, gain, bin_index)
+    if not settings.get("gain_ok") or not settings.get("exposure_ok"):
+        return {"ok": False, "error": str(settings.get("block_reason") or "Darks cannot be taken for these settings")}
+    token = _next_dark_token()
+    _emit_dark_prompt("capturing", token, CODE_ASTRO_DARK_NOT_FOUND, settings)
+    try:
+        result = _take_dark_frames("Dark library", bool(settings.get("wide")), settings, token)
+    finally:
+        _close_dark_prompt(token)
+    if result == "":
+        return {"ok": True, "error": ""}
+    if result in {"cancel", "stopped"}:
+        return {"ok": False, "cancelled": True, "error": ""}
+    return {"ok": False, "error": str(result)}
 
 
 def _offer_darks_before_alignment(name: str, *, wide: bool) -> None:
@@ -8033,6 +8323,27 @@ def dispatch(message: dict[str, Any]) -> Any:
         if not isinstance(items, list):
             items = []
         return album_delete(items)
+    if command == "dark_library_list":
+        include_wide = message.get("include_wide")
+        if include_wide is None:
+            include_wide = str(_device.get("model") or "") != "Dwarf Mini"
+        return dark_library_list(bool(include_wide))
+    if command == "dark_library_delete":
+        frames = message.get("frames") or []
+        if not isinstance(frames, list):
+            frames = []
+        return dark_library_delete(frames)
+    if command == "dark_library_capture":
+        try:
+            bin_index = int(message.get("bin_index") or 0)
+        except (TypeError, ValueError):
+            bin_index = 0
+        return dark_library_capture(
+            str(message.get("camera") or "tele"),
+            str(message.get("exposure") or ""),
+            message.get("gain"),
+            bin_index,
+        )
     if command == "album_folder_download":
         args = list(message.get("args") or [])
         return album_folder_download(

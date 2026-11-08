@@ -17,6 +17,7 @@ HudMenu {
     readonly property string localPath: String((itemData && itemData.local_path) || "")
     readonly property int selectedCount: Util.idSetCount(selectedMap)
     readonly property bool onDevice: backend.mediaSource !== "local"
+    readonly property bool darkItem: mediaContextMenu.itemKind === "dark"
     readonly property bool albumLocked: !!backend.mediaLocked && mediaContextMenu.onDevice
     readonly property bool mediaBusy: backend.mediaBusy !== ""
     readonly property bool scopeOnline: !!(backend.selectedDevice && backend.selectedDevice.connected)
@@ -29,7 +30,8 @@ HudMenu {
     HudMenuItem {
         text: "Open"
         glyph: "\uE8A7"
-        enabled: mediaContextMenu.itemId !== ""
+        visible: !mediaContextMenu.darkItem
+        enabled: mediaContextMenu.itemId !== "" && !mediaContextMenu.darkItem
         onTriggered: mediaContextMenu.openRequested(mediaContextMenu.itemData)
     }
     HudMenuItem {
@@ -43,12 +45,14 @@ HudMenu {
     HudMenuItem {
         text: "Download"
         glyph: "\uE896"
-        enabled: mediaContextMenu.onDevice && !mediaContextMenu.albumLocked && !mediaContextMenu.mediaBusy && mediaContextMenu.scopeOnline && mediaContextMenu.itemId !== "" && mediaContextMenu.itemKind !== "mosaic" && mediaContextMenu.itemKind !== "stitch"
+        visible: !mediaContextMenu.darkItem
+        enabled: !mediaContextMenu.darkItem && mediaContextMenu.onDevice && !mediaContextMenu.albumLocked && !mediaContextMenu.mediaBusy && mediaContextMenu.scopeOnline && mediaContextMenu.itemId !== "" && mediaContextMenu.itemKind !== "mosaic" && mediaContextMenu.itemKind !== "stitch"
         onTriggered: mediaContextMenu.downloadRequested(mediaContextMenu.itemData)
     }
     HudMenuItem {
         text: mediaContextMenu.localPath ? "Reveal file" : "Open album folder"
         glyph: "\uE838"
+        visible: !mediaContextMenu.darkItem
         onTriggered: {
             if (mediaContextMenu.localPath)
                 backend.revealMediaFile(mediaContextMenu.localPath)
@@ -66,6 +70,7 @@ HudMenu {
     HudMenuItem {
         text: "Copy local path"
         glyph: "\uE8C8"
+        visible: !mediaContextMenu.darkItem
         enabled: mediaContextMenu.localPath !== ""
         onTriggered: backend.copyText(mediaContextMenu.localPath)
     }

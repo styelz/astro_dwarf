@@ -8,3 +8,4 @@ PlaceOnNightDialog 1.0 PlaceOnNightDialog.qml
 ResetHistoryDialog 1.0 ResetHistoryDialog.qml
 ColorPickDialog 1.0 ColorPickDialog.qml
 SkyRaDecDialog 1.0 SkyRaDecDialog.qml
+DarkLibraryDialog 1.0 DarkLibraryDialog.qml

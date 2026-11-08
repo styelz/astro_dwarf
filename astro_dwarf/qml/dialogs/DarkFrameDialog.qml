@@ -26,6 +26,7 @@ Dialog {
     property string blockReason: ""
     property string errorText: ""
     property string deviceId: ""
+    property bool library: false
     property bool suppressReply: false
     property int timeoutSeconds: 0
     property int secondsLeft: 0
@@ -74,6 +75,7 @@ Dialog {
         darkFrameDialog.blockReason = String(data.block_reason || "")
         darkFrameDialog.errorText = String(data.error || "")
         darkFrameDialog.deviceId = String(data.device_id || "")
+        darkFrameDialog.library = data.library === true
         darkFrameDialog.timeoutSeconds = Number(data.timeout_s || 0)
         if (darkFrameDialog.phase === "ask")
             darkFrameDialog.secondsLeft = darkFrameDialog.timeoutSeconds
@@ -195,6 +197,7 @@ Dialog {
             HudButton {
                 objectName: "darkTake"
                 text: "TAKE DARKS"
+                visible: !darkFrameDialog.library
                 enabled: darkFrameDialog.canTake
                 buttonColor: Theme.fillWarning
                 foregroundColor: Theme.warning
@@ -205,6 +208,7 @@ Dialog {
             HudButton {
                 objectName: "darkContinue"
                 text: "CONTINUE"
+                visible: !darkFrameDialog.library
                 enabled: !darkFrameDialog.capturing
                 Accessible.name: "Continue without darks"
                 tooltip: "Stack without matching dark frames"
@@ -213,9 +217,9 @@ Dialog {
             HudButton {
                 id: cancelBtn
                 objectName: "darkCancel"
-                text: "CANCEL"
-                Accessible.name: "Cancel stack"
-                tooltip: "Do not start this stack"
+                text: darkFrameDialog.library && darkFrameDialog.capturing ? "STOP" : "CANCEL"
+                Accessible.name: darkFrameDialog.library ? "Stop dark capture" : "Cancel stack"
+                tooltip: darkFrameDialog.library ? "Stop this dark capture" : "Do not start this stack"
                 onClicked: darkFrameDialog.reply("cancel")
             }
         }

@@ -13824,7 +13824,7 @@ class AppBackend(QObject):
     @Slot(str)
     def setMediaSource(self, source: str) -> None:
         choice = str(source or "folders").strip().lower()
-        if choice not in {"astro", "stills", "folders", "local"}:
+        if choice not in {"astro", "stills", "folders", "local", "darks"}:
             choice = "folders"
         if self._media_source == choice:
             if choice == "folders" and self._media_folder_parent:
@@ -13840,6 +13840,61 @@ class AppBackend(QObject):
         self._media_status = ""
         self._emit_media(items=True)
         self.refreshMedia(self._selected_device_id, True)
+
+    @Slot(result="QVariantMap")
+    def darkLibraryChoices(self) -> dict[str, Any]:
+        """Exposure and gain rows for the dark-library shoot dialog."""
+        from .device_worker import dark_capture_choices, dark_library_steps
+
+        device = self._device_by_id(self._selected_device_id)
+        model = device.model if device is not None else DeviceModel.DWARF_3
+        model_id = {DeviceModel.DWARF_II: "2", DeviceModel.DWARF_3: "3", DeviceModel.DWARF_MINI: "5"}.get(model, "3")
+        wide_ok = model != DeviceModel.DWARF_MINI
+        return {
+            "model": str(model),
+            "wide": wide_ok,
+            "steps": dark_library_steps(str(model)),
+            "tele": dark_capture_choices(model_id, False),
+            "wide_choices": dark_capture_choices(model_id, True) if wide_ok else {"exposures": [], "gains": [], "bins": []},
+        }
+
+    @Slot(str, str, str, int)
+    def captureDarkFrames(self, camera: str, exposure: str, gain: str, bin_index: int) -> None:
+        device_id = self._selected_device_id
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            self._toast("Connect the telescope before taking darks", "warning")
+            return
+        if self._session_is_capturing(device_id):
+            self._toast("Wait until the telescope finishes capturing", "warning")
+            return
+        if self._album_busy:
+            self._toast("Wait for the current media action to finish", "warning")
+            return
+        lens = "wide" if str(camera or "") == "wide" else "tele"
+        self._set_media_busy("dark")
+
+        def done(ok: bool, result: Any) -> None:
+            self._set_media_busy("")
+            payload = result if isinstance(result, dict) else {}
+            if not ok:
+                self._toast(str(result or "Dark frames were not saved"), "warning")
+            elif payload.get("ok"):
+                self._toast("Dark frames saved", "success", f"{exposure} · gain {gain}")
+            elif not payload.get("cancelled"):
+                self._toast(str(payload.get("error") or "Dark frames were not saved"), "warning")
+            if (
+                self._media_source == "darks"
+                and self._selected_device_id == device_id
+                and not self._session_is_capturing(device_id)
+            ):
+                self.refreshMedia(device_id, True)
+
+        worker.send(
+            "dark_library_capture",
+            {"camera": lens, "exposure": str(exposure or ""), "gain": str(gain or ""), "bin_index": int(bin_index)},
+            done,
+        )
 
     @Slot(str)
     def selectMedia(self, item_id: str) -> None:
@@ -14011,18 +14066,38 @@ class AppBackend(QObject):
             self._media_locked = True
             self._clear_media(_MEDIA_LOCKED_STATUS)
             if not quiet:
-                self._toast("Can't browse the album while the telescope is capturing", "warning")
+                self._toast(
+                    "Can't read darks while the telescope is capturing"
+                    if self._media_source == "darks"
+                    else "Can't browse the album while the telescope is capturing",
+                    "warning",
+                )
             return
         if not self._media_can_list(device_id):
-            self._clear_media(self._media_offline_status(device_id))
+            status = self._media_offline_status(device_id)
+            if self._media_source == "darks":
+                status = (
+                    "Set the telescope IP in Settings, then refresh to see its dark library."
+                    if status.startswith("Set the telescope IP")
+                    else "Connect this telescope to see its dark library."
+                )
+            self._clear_media(status)
             if not quiet:
-                self._toast("Connect the telescope before listing media", "warning")
+                self._toast(
+                    "Connect the telescope before listing darks"
+                    if self._media_source == "darks"
+                    else "Connect the telescope before listing media",
+                    "warning",
+                )
             return
         if self._media_source == "stills":
             self.listAlbum(device_id, quiet)
             return
         if self._media_source == "folders":
             self.listAlbumFolders(device_id, quiet)
+            return
+        if self._media_source == "darks":
+            self.listDarkLibrary(device_id, quiet)
             return
         self.listAstroSessions(device_id, quiet)
 
@@ -14092,6 +14167,54 @@ class AppBackend(QObject):
                 self._toast("Astro session list failed", "error", str(result))
 
         worker.send("astro_sessions_list", {}, done)
+
+    @Slot(str)
+    @Slot(str, bool)
+    def listDarkLibrary(self, device_id: str, quiet: bool = False) -> None:
+        worker = self._workers.get(device_id)
+        device = next((item for item in self._devices if item.id == device_id), None)
+        if not worker or not worker.connected or not device or not str(device.ip_address or "").strip():
+            offline = self._media_offline_status(device_id)
+            self._clear_media(
+                "Set the telescope IP in Settings, then refresh to see its dark library."
+                if offline.startswith("Set the telescope IP")
+                else "Connect this telescope to see its dark library."
+            )
+            if not quiet:
+                self._toast("Connect the telescope before listing darks", "warning")
+            return
+        if self._session_is_capturing(device_id):
+            self._media_locked = True
+            self._clear_media(_MEDIA_LOCKED_STATUS)
+            if not quiet:
+                self._toast("Can't read darks while the telescope is capturing", "warning")
+            return
+        request_id = self._begin_media_request(device_id, "darks")
+        self._set_media_busy("list")
+        include_wide = device.model != DeviceModel.DWARF_MINI
+
+        def done(ok: bool, result: Any) -> None:
+            if not self._media_request_current(request_id, device_id, "darks"):
+                return
+            self._set_media_busy("")
+            payload = result if isinstance(result, dict) else {}
+            if ok and payload.get("ok"):
+                items = [item for item in (payload.get("frames") or []) if isinstance(item, dict)]
+                self._replace_media_items(items, self._media_selected_id)
+                note = str(payload.get("status") or "")
+                if note:
+                    self._set_media_status(note)
+                elif not quiet and items:
+                    noun = "dark set" if len(items) == 1 else "dark sets"
+                    self._toast(f"{len(items)} {noun} on the telescope", "success")
+                return
+            self._replace_media_items([])
+            message = str(payload.get("error") or result or "Could not read the dark library.")
+            self._set_media_status(message)
+            if not quiet:
+                self._toast("Dark library did not answer", "error", message)
+
+        worker.send("dark_library_list", {"include_wide": include_wide}, done)
 
     @Slot(str)
     @Slot(str, bool)
@@ -15309,6 +15432,9 @@ class AppBackend(QObject):
     @Slot("QVariantList")
     def deleteMedia(self, item_ids: list) -> None:
         raw = self._normalize_ids(item_ids)
+        if self._media_source == "darks":
+            self._delete_dark_library(raw)
+            return
         if self._media_source == "local":
             ids = self._device_media_action_ids(raw, "delete")
         else:
@@ -15380,6 +15506,52 @@ class AppBackend(QObject):
                     if isinstance(member, dict) and str(member.get("id") or "") == wanted:
                         return member
         return None
+
+    def _delete_dark_library(self, item_ids: list[str]) -> None:
+        device_id = self._media_device_id or self._selected_device_id
+        if self._session_is_capturing(device_id):
+            self._media_locked = True
+            self._toast("Can't delete darks while the telescope is capturing", "warning")
+            return
+        if self._album_busy:
+            self._toast("Wait for the current media action to finish", "warning")
+            return
+        worker = self._workers.get(device_id)
+        if not worker or not worker.connected:
+            self._toast("Connect the telescope before deleting darks", "warning")
+            return
+        wanted = {str(item_id) for item_id in item_ids if str(item_id)}
+        frames = [
+            item for item in self._media_items
+            if str(item.get("id") or "") in wanted and str(item.get("kind") or "") == "dark"
+        ]
+        if not frames:
+            self._toast("Those darks can't be deleted", "warning")
+            return
+        keep_id = self._media_selected_id if self._media_selected_id not in wanted else ""
+        self._replace_media_items(
+            [item for item in self._media_items if str(item.get("id") or "") not in wanted],
+            keep_id,
+        )
+        request_id = self._media_request_id
+        self._set_media_busy("delete")
+
+        def done(ok: bool, result: Any) -> None:
+            if not self._media_request_current(request_id, device_id, "darks"):
+                return
+            self._set_media_busy("")
+            payload = result if isinstance(result, dict) else {}
+            if ok and payload.get("ok"):
+                count = int(payload.get("deleted") or len(frames))
+                noun = "dark set" if count == 1 else "dark sets"
+                self._toast(f"Deleted {count} {noun}", "success")
+            else:
+                message = str(payload.get("error") or result or "Dark frames were not deleted")
+                self._toast("Dark delete failed", "error", message)
+            if self._media_source == "darks" and self._selected_device_id == device_id:
+                self.refreshMedia(device_id, True)
+
+        worker.send("dark_library_delete", {"frames": frames}, done)
 
     def _delete_device_media(self, item_ids: list[str]) -> None:
         device_id = self._media_device_id or self._selected_device_id

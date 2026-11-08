@@ -576,6 +576,7 @@ QtObject {
         case "stitch": return "STITCH"
         case "astro": return "STACK"
         case "photo": return "PHOTO"
+        case "dark": return "DARK"
         default:
             return item && item.source === "stills" ? "PHOTO" : ""
         }
