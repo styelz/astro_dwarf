@@ -890,6 +890,59 @@ def test_stored_darks_retry_the_start_without_a_prompt() -> None:
     _assert(needs == [], needs)
 
 
+def test_stored_darks_sdk_continue_cleared_on_retry() -> None:
+    """_clear_sdk_continue is called by _refuse_stored_darks so the retry does not re-trigger the dark check.
+
+    This is the live bug: the SDK sets needsContinueShooting=True and never clears it on its own.
+    Without the _clear_sdk_continue call in _refuse_stored_darks, _sdk_needs_continue() returns True
+    on the second attempt too, the stored-dark path fires again, and the session fails with
+    'capture check refused them' even though the dark library is a real match.
+    """
+    previous = _snapshot()
+    saved = (
+        worker._query_dark_library,
+        worker._sdk_needs_continue,
+        worker._clear_sdk_continue,
+        worker._mark_capture_started,
+        worker.sdk_call,
+        worker._api,
+    )
+    sends: list[str] = []
+    calls: list[str] = []
+    cleared = [False]
+    worker._stop.clear()
+    worker._begin_dark_prompt_run(True, 60)
+    worker._device = {"model": "Dwarf 3", "camera": "tele"}
+    worker._tap = None
+    worker._api = object()
+    worker._stack_exposure_name = "30"
+    worker._stack_gain = 60
+    worker._stack_bin_index = 0
+    worker._query_dark_library = lambda _wide: _gain60_library()
+    worker._send_request = lambda _operation, _message, _command, _module, label: sends.append(str(label)) or 0
+    # Simulate a stuck needsContinueShooting flag: True until _clear_sdk_continue fires.
+    worker._sdk_needs_continue = lambda: not cleared[0]
+    worker._clear_sdk_continue = lambda: cleared.__setitem__(0, True)
+    worker._mark_capture_started = lambda: None
+    worker.sdk_call = lambda operation, *_args: calls.append(operation) or True
+    try:
+        worker._start_capture("Stack", "astro", [1])
+    finally:
+        (
+            worker._query_dark_library,
+            worker._sdk_needs_continue,
+            worker._clear_sdk_continue,
+            worker._mark_capture_started,
+            worker.sdk_call,
+            worker._api,
+        ) = saved
+        worker._force_camera_write = False
+        _restore(previous)
+    _assert(cleared == [True], f"_clear_sdk_continue was not called: {cleared}")
+    _assert(sends == ["Stack", "Stack"], sends)
+    _assert(calls == ["set_exposure", "set_gain", "set_binning"], calls)
+
+
 def test_second_refusal_does_not_ask_to_create_stored_darks() -> None:
     previous = _snapshot()
     saved = (
@@ -953,6 +1006,7 @@ if __name__ == "__main__":
     test_stored_darks_are_not_asked_for_again()
     test_empty_library_still_asks_to_create_darks()
     test_stored_darks_retry_the_start_without_a_prompt()
+    test_stored_darks_sdk_continue_cleared_on_retry()
     test_second_refusal_does_not_ask_to_create_stored_darks()
     test_manual_alignment_ignores_the_schedule_countdown()
     test_prompt_cancel_does_not_continue()

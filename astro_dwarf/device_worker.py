@@ -5178,6 +5178,7 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
             )
         dark_reasserted = True
         _reassert_stack_camera(wide_camera)
+        _clear_sdk_continue()
         return "retry"
 
     _reset_session_capture()
