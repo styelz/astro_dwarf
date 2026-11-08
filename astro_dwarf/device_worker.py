@@ -1463,24 +1463,28 @@ def sdk_call(operation: str, *args: Any) -> Any:
             str(_device.get("model") or ""), "2"
         )
         args = (clamp_exposure_name(args[0], model_id, _param_camera(args) == "wide"),) + tuple(args[1:])
-    if operation in {
-        "set_ir",
-        "set_exposure",
-        "set_gain",
-        "set_photo_exposure",
-        "set_photo_gain",
-        "set_auto_calibration",
-        "set_stack_format",
-        "set_auto_params",
-        "set_burst_count",
-        "set_burst_interval",
-        "set_timelapse_interval",
-        "set_timelapse_duration",
-    } and camera_param_unchanged(
-        operation,
-        args,
-        _tap.snapshot() if _tap is not None else {},
-        _device if isinstance(_device, dict) else {},
+    if (
+        not _force_camera_write
+        and operation in {
+            "set_ir",
+            "set_exposure",
+            "set_gain",
+            "set_photo_exposure",
+            "set_photo_gain",
+            "set_auto_calibration",
+            "set_stack_format",
+            "set_auto_params",
+            "set_burst_count",
+            "set_burst_interval",
+            "set_timelapse_interval",
+            "set_timelapse_duration",
+        }
+        and camera_param_unchanged(
+            operation,
+            args,
+            _tap.snapshot() if _tap is not None else {},
+            _device if isinstance(_device, dict) else {},
+        )
     ):
         log(f"{operation} already matches; skipping", "debug")
         return True
@@ -3399,6 +3403,8 @@ _DARK_PROMPT_LIMIT_S = 60.0
 _stack_exposure_name = ""
 _stack_gain: int | None = None
 _stack_bin_index = 0
+# The dark check reads the live shutter. A cache hit must not skip the rewrite.
+_force_camera_write = False
 
 
 def _ir_index(name: Any) -> int:
@@ -5016,13 +5022,69 @@ def _take_dark_frames(name: str, wide: bool, settings: dict[str, Any], token: in
         time.sleep(0.25)
 
 
+def _matching_stored_dark(wide: bool) -> dict[str, Any] | None:
+    """The library row for this shutter, or None when the telescope has no match.
+
+    Track and calibrate already trust this list. Stack start used to ignore it
+    and open the create-darks dialog on the capture reply alone.
+    """
+    settings = _dark_capture_settings(wide)
+    if not settings.get("gain_ok") or not settings.get("exposure_ok"):
+        return None
+    frames = _query_dark_library(wide)
+    if not frames or dark_library_status(frames, settings) != "match":
+        return None
+    listed = ", ".join(
+        f"exp {frame.get('exp_index')} gain {frame.get('gain_name') or frame.get('gain_index')} "
+        f"bin {frame.get('bin_index')} {frame.get('temperature')}C"
+        for frame in frames
+    )
+    log(f"Stored dark library: {listed}", "debug")
+    return settings
+
+
+def _reassert_stack_camera(wide: bool) -> None:
+    """Write the stack shutter again so the capture check cannot keep a stale preset."""
+    global _force_camera_write
+    settings = _dark_capture_settings(wide)
+    camera = "wide" if wide else "tele"
+    model_id = _MODEL_IDS.get(str(_device.get("model") or ""), "2")
+    exposure = str(settings.get("exposure") or "")
+    gain = settings.get("gain")
+    bin_index = int(settings.get("bin_index") or 0)
+    log(
+        f"Rewriting {camera} exposure {exposure}, gain {gain}, bin {bin_index} before the dark check",
+        "notice",
+    )
+    _force_camera_write = True
+    try:
+        if exposure:
+            sdk_call("set_exposure", exposure, model_id, camera)
+        if gain is not None:
+            sdk_call("set_gain", int(gain), camera)
+        sdk_call("set_binning", bin_index)
+    finally:
+        _force_camera_write = False
+
+
 def _handle_missing_darks(name: str, code: int, *, wide: bool) -> str:
-    """Return 'continue' or 'retry'. Cancel and stop raise."""
+    """Return 'continue', 'retry', or 'stored'. Cancel and stop raise."""
     global _dark_run_choice
     detail = _CAPTURE_DARK_WARNINGS.get(code, _CAPTURE_DARK_WARNINGS[CODE_ASTRO_DARK_NOT_FOUND])
-    log(f"{name}: {detail} ({_error_name(code)})", "warning")
     if _dark_run_choice == "continue" or not _prompt_darks:
+        log(f"{name}: {detail} ({_error_name(code)})", "warning")
         return "continue"
+    stored = _matching_stored_dark(wide)
+    if stored is not None:
+        log(
+            f"{name}: matching dark frames are already on the telescope "
+            f"({stored.get('exposure')}s, gain {stored.get('gain')}, "
+            f"{dark_resolution_label(int(stored.get('bin_index') or 0))}, {stored.get('temperature')}); "
+            f"not asking to create them ({_error_name(code)})",
+            "notice",
+        )
+        return "stored"
+    log(f"{name}: {detail} ({_error_name(code)})", "warning")
     if _dark_run_choice == "cancel":
         raise RuntimeError(f"{name} cancelled: matching dark frames were not taken")
     error = ""
@@ -5072,8 +5134,10 @@ def _handle_missing_darks(name: str, code: int, *, wide: bool) -> str:
 
 
 def _after_dark_warning(name: str, code: int, *, wide: bool) -> str:
-    """'started' after continue-shooting, 'retry' after darks, or 'force'."""
+    """'started' after continue-shooting, 'retry' after darks, 'stored', or 'force'."""
     action = _handle_missing_darks(name, code, wide=wide)
+    if action == "stored":
+        return "stored"
     if action == "retry":
         _clear_sdk_continue()
         return "retry"
@@ -5091,8 +5155,9 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
     - Engine busy (GOTO/calibration still winding down): wait and retry.
     - Tele camera closed after GO LIVE or a finished stack: open it and retry.
     - Missing or mismatched darks: ask when a person started the stack, then
-      take darks or continue shooting. A schedule run asks once and times out
-      into continue-shooting; later sessions in that run do not ask.
+      take darks or continue shooting. A set the library already has is not
+      asked for again. A schedule run asks once and times out into
+      continue-shooting; later sessions in that run do not ask.
     - Anything else: fail with the decoded error name and code.
     """
     command = _CAPTURE_STARTS[operation]
@@ -5100,6 +5165,21 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
     deadline = time.monotonic() + _CAPTURE_BUSY_TIMEOUT_S
     force_start = False
     camera_retried = False
+    dark_reasserted = False
+
+    def _refuse_stored_darks(outcome: str, wide_camera: bool) -> str:
+        nonlocal dark_reasserted
+        if outcome != "stored":
+            return outcome
+        if dark_reasserted:
+            raise RuntimeError(
+                f"{name} failed: matching dark frames are already on the telescope, "
+                "but the capture check refused them"
+            )
+        dark_reasserted = True
+        _reassert_stack_camera(wide_camera)
+        return "retry"
+
     _reset_session_capture()
     while True:
         since = time.monotonic()
@@ -5124,7 +5204,7 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
         if result is True or code == 0:
             if _sdk_needs_continue() and not force_start:
                 warning = _tapped_dark_code(command, since) or CODE_ASTRO_DARK_NOT_FOUND
-                outcome = _after_dark_warning(name, warning, wide=wide)
+                outcome = _refuse_stored_darks(_after_dark_warning(name, warning, wide=wide), wide)
                 if outcome == "started":
                     return
                 if outcome == "retry":
@@ -5142,7 +5222,7 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
                 if _capture_running(_tap.snapshot()):
                     if _sdk_needs_continue() and not force_start:
                         warning = _tapped_dark_code(command, since) or CODE_ASTRO_DARK_NOT_FOUND
-                        outcome = _after_dark_warning(name, warning, wide=wide)
+                        outcome = _refuse_stored_darks(_after_dark_warning(name, warning, wide=wide), wide)
                         if outcome == "started":
                             return
                         if outcome == "retry":
@@ -5170,7 +5250,7 @@ def _start_capture(name: str, operation: str, args: list[Any]) -> None:
                 raise InterruptedError("Session stopped")
             continue
         if code in _CAPTURE_DARK_WARNINGS and not force_start:
-            outcome = _after_dark_warning(name, code, wide=wide)
+            outcome = _refuse_stored_darks(_after_dark_warning(name, code, wide=wide), wide)
             if outcome == "started":
                 return
             if outcome == "retry":

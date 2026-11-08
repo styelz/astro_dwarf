@@ -759,6 +759,188 @@ def test_library_capture_settings_use_the_table_index() -> None:
         _restore(previous)
 
 
+def _gain60_library() -> list[dict[str, object]]:
+    return [{
+        "exp_index": worker.dark_exposure_index("30", "3", False),
+        "gain_index": 18,
+        "gain_name": "60",
+        "bin_index": 0,
+        "temperature": 12,
+    }]
+
+
+def test_stored_darks_are_not_asked_for_again() -> None:
+    previous = _snapshot()
+    phases: list[object] = []
+    real_emit = worker.emit
+    real_query = worker._query_dark_library
+    worker._stop.clear()
+    worker._begin_dark_prompt_run(True, 60)
+    worker._device = {"model": "Dwarf 3", "camera": "tele"}
+    worker._tap = _DarkTap()
+    worker._stack_exposure_name = "30"
+    worker._stack_gain = 60
+    worker._stack_bin_index = 0
+    worker._query_dark_library = lambda _wide: _gain60_library()
+
+    def emit(payload: dict[str, object]) -> None:
+        if payload.get("event") == "dark_prompt":
+            phases.append(payload.get("phase"))
+
+    worker.emit = emit
+    try:
+        outcome = worker._after_dark_warning("Stack", worker.CODE_ASTRO_DARK_NOT_FOUND, wide=False)
+    finally:
+        worker.emit = real_emit
+        worker._query_dark_library = real_query
+        worker._force_camera_write = False
+        _restore(previous)
+    _assert(outcome == "stored", outcome)
+    _assert(phases == [], phases)
+
+
+def test_empty_library_still_asks_to_create_darks() -> None:
+    previous = _snapshot()
+    phases: list[object] = []
+    continued: list[str] = []
+    real_emit = worker.emit
+    real_query = worker._query_dark_library
+    worker._stop.clear()
+    worker._begin_dark_prompt_run(True, 0.4)
+    worker._device = {"model": "Dwarf 3", "camera": "tele"}
+    worker._tap = None
+    worker._stack_exposure_name = "30"
+    worker._stack_gain = 60
+    worker._stack_bin_index = 0
+    worker._query_dark_library = lambda _wide: []
+    worker._continue_shooting = lambda name: continued.append(name) or True
+
+    def emit(payload: dict[str, object]) -> None:
+        if payload.get("event") == "dark_prompt":
+            phases.append(payload.get("phase"))
+
+    worker.emit = emit
+    holder: dict[str, object] = {}
+
+    def run() -> None:
+        holder["outcome"] = worker._after_dark_warning(
+            "Stack", worker.CODE_ASTRO_DARK_NOT_FOUND, wide=False
+        )
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        thread.join(3)
+        _assert(not thread.is_alive(), "empty library did not open the prompt")
+        _assert(holder.get("outcome") == "started", holder)
+        _assert(phases[:1] == ["ask"], phases)
+        _assert(continued == ["Stack"], continued)
+    finally:
+        if thread.is_alive():
+            worker._stop.set()
+            worker.accept_dark_prompt_reply(worker._dark_token, "cancel")
+            thread.join(2)
+        worker.emit = real_emit
+        worker._query_dark_library = real_query
+        _restore(previous)
+
+
+def test_stored_darks_retry_the_start_without_a_prompt() -> None:
+    previous = _snapshot()
+    saved = (
+        worker._query_dark_library,
+        worker._sdk_needs_continue,
+        worker._clear_sdk_continue,
+        worker._mark_capture_started,
+        worker.sdk_call,
+        worker._api,
+    )
+    sends: list[str] = []
+    calls: list[str] = []
+    needs = [True, False]
+    worker._stop.clear()
+    worker._begin_dark_prompt_run(True, 60)
+    worker._device = {"model": "Dwarf 3", "camera": "tele"}
+    worker._tap = None
+    worker._api = object()
+    worker._stack_exposure_name = "30"
+    worker._stack_gain = 60
+    worker._stack_bin_index = 0
+    worker._query_dark_library = lambda _wide: _gain60_library()
+    worker._send_request = lambda _operation, _message, _command, _module, label: sends.append(str(label)) or 0
+    worker._sdk_needs_continue = lambda: needs.pop(0)
+    worker._clear_sdk_continue = lambda: None
+    worker._mark_capture_started = lambda: None
+    worker.sdk_call = lambda operation, *_args: calls.append(operation) or True
+    try:
+        worker._start_capture("Stack", "astro", [1])
+    finally:
+        (
+            worker._query_dark_library,
+            worker._sdk_needs_continue,
+            worker._clear_sdk_continue,
+            worker._mark_capture_started,
+            worker.sdk_call,
+            worker._api,
+        ) = saved
+        worker._force_camera_write = False
+        _restore(previous)
+    _assert(sends == ["Stack", "Stack"], sends)
+    _assert(calls == ["set_exposure", "set_gain", "set_binning"], calls)
+    _assert(needs == [], needs)
+
+
+def test_second_refusal_does_not_ask_to_create_stored_darks() -> None:
+    previous = _snapshot()
+    saved = (
+        worker._query_dark_library,
+        worker._sdk_needs_continue,
+        worker._clear_sdk_continue,
+        worker._mark_capture_started,
+        worker.sdk_call,
+        worker._api,
+    )
+    phases: list[object] = []
+    real_emit = worker.emit
+    sends: list[str] = []
+    worker._stop.clear()
+    worker._begin_dark_prompt_run(True, 60)
+    worker._device = {"model": "Dwarf 3", "camera": "tele"}
+    worker._tap = None
+    worker._api = object()
+    worker._stack_exposure_name = "30"
+    worker._stack_gain = 60
+    worker._stack_bin_index = 0
+    worker._query_dark_library = lambda _wide: _gain60_library()
+    worker._send_request = lambda _operation, _message, _command, _module, label: sends.append(str(label)) or 0
+    worker._sdk_needs_continue = lambda: True
+    worker._clear_sdk_continue = lambda: None
+    worker._mark_capture_started = lambda: None
+    worker.sdk_call = lambda _operation, *_args: True
+    worker.emit = lambda payload: phases.append(payload.get("phase")) if isinstance(payload, dict) and payload.get("event") == "dark_prompt" else None
+    refused = ""
+    try:
+        try:
+            worker._start_capture("Stack", "astro", [1])
+        except RuntimeError as exc:
+            refused = str(exc)
+    finally:
+        worker.emit = real_emit
+        (
+            worker._query_dark_library,
+            worker._sdk_needs_continue,
+            worker._clear_sdk_continue,
+            worker._mark_capture_started,
+            worker.sdk_call,
+            worker._api,
+        ) = saved
+        worker._force_camera_write = False
+        _restore(previous)
+    _assert("already on the telescope" in refused, refused)
+    _assert(sends == ["Stack", "Stack"], sends)
+    _assert(phases == [], phases)
+
+
 if __name__ == "__main__":
     test_model_steps_follow_each_manual()
     test_dark_library_rows_delete_and_choices()
@@ -768,6 +950,10 @@ if __name__ == "__main__":
     test_schedule_dark_prompt_asks_once_then_skips()
     test_prompt_waits_to_continue()
     test_prompt_timeout_continues_and_skips_the_next_ask()
+    test_stored_darks_are_not_asked_for_again()
+    test_empty_library_still_asks_to_create_darks()
+    test_stored_darks_retry_the_start_without_a_prompt()
+    test_second_refusal_does_not_ask_to_create_stored_darks()
     test_manual_alignment_ignores_the_schedule_countdown()
     test_prompt_cancel_does_not_continue()
     test_take_darks_builds_the_firmware_request()
