@@ -2745,6 +2745,39 @@ def _control_client_open() -> bool:
     return bool(getattr(client, "start_client", False))
 
 
+def _websocket_is_open(websocket: Any) -> bool:
+    """True when the SDK client still has an open control socket."""
+    if not websocket:
+        return False
+    try:
+        import websockets
+
+        open_state = getattr(websockets.protocol, "OPEN", None)
+        if open_state is None:
+            open_state = websockets.protocol.State.OPEN
+        return websocket.state == open_state
+    except Exception:
+        return bool(getattr(websocket, "open", False))
+
+
+def _control_socket_live() -> bool:
+    """True when the telescope can still deliver capture progress.
+
+    ``start_client`` stays true for a moment after the ping loop has already
+    closed the socket. A capture wait that only checks the last notification
+    then sits on that frame count.
+    """
+    client, loop = _sdk_socket()
+    if client is None or loop is None:
+        return False
+    if not getattr(client, "start_client", False):
+        return False
+    stop_task = getattr(client, "stop_task", None)
+    if stop_task is not None and stop_task.is_set():
+        return False
+    return _websocket_is_open(getattr(client, "websocket", None))
+
+
 def _safe_disconnect() -> None:
     _mark_disconnected()
     # No client was opened, so there is nothing for the SDK to close.
@@ -3322,6 +3355,14 @@ _CONTINUE_SHOOTING_TIMEOUT_S = 30.0
 _CAPTURE_CONTINUE_AFTER_S = 10.0
 _CAPTURE_START_TIMEOUT_S = 45.0
 _CAPTURE_HEARTBEAT_S = 60.0
+# The control socket can close while the last stacked count is still in the
+# tap. A one-packet blip is not a drop. After this grace, read device state
+# instead of logging that frozen count as "still capturing". If that read
+# leaves the old count in place, ask again once this long has passed with
+# no new frame. A healthy 15s exposure stays under it.
+_CAPTURE_LINK_GRACE_S = 3.0
+_CAPTURE_LINK_RETRY_S = 15.0
+_CAPTURE_REJOIN_QUIET_S = 90.0
 # Firmware mosaic slews between panes with capture idle. Wait long enough
 # for the next pane to start, but finish quickly once the last pane ends.
 _MOSAIC_PANE_GAP_S = 90.0
@@ -3426,6 +3467,23 @@ def _capture_request(operation: str, args: list[Any], force_start: bool) -> Any:
 
 def _capture_running(snapshot: dict[str, Any]) -> bool:
     return bool(snapshot.get("capture_active")) or snapshot.get("capture_state") == "running"
+
+
+def capture_wait_should_rejoin(*, socket_live: bool, seen: bool, down_for_s: float) -> bool:
+    """True when a stack wait must stop trusting the last frame count.
+
+    A live socket keeps the normal idle and heartbeat path, including a
+    scheduled session on this same wait. Once the stack has been seen and
+    the socket has been down past the grace, the frozen count is not the
+    shutter. Rejoin and read the telescope before starting the next pane.
+    """
+    if socket_live or not seen:
+        return False
+    try:
+        down = float(down_for_s)
+    except (TypeError, ValueError):
+        down = 0.0
+    return down >= _CAPTURE_LINK_GRACE_S
 
 
 def _snapshot_exposure_s(snapshot: dict[str, Any]) -> float:
@@ -3665,6 +3723,25 @@ def _capture_wait_label(name: str, snapshot: dict[str, Any]) -> str:
     return name
 
 
+def _reopen_control_link() -> bool:
+    """Read device state, which opens the control socket when it has closed.
+
+    ``connect_socket`` calls ``init_socket`` once ``start_client`` is false.
+    That is the read that came back six seconds after the pane-4 drop, but
+    only once this wait had already been stopped. Firmware often keeps
+    stacking through the drop. The fresh state says whether to keep waiting
+    or move to the next pane.
+    """
+    try:
+        _sdk_call_bounded("device_state", 45.0)
+    except InterruptedError:
+        raise
+    except Exception as exc:
+        log(f"Could not rejoin the telescope: {exc}", "warning")
+        return False
+    return _control_socket_live()
+
+
 def _wait_for_capture_end(
     on_progress: Any = None,
     name: str = "Waiting for capture",
@@ -3680,6 +3757,10 @@ def _wait_for_capture_end(
 
     Firmware mosaics go idle between panes. Keep watching through those gaps
     until the last pane finishes or no next pane starts.
+
+    A dropped control socket leaves the last stacked count in place. This
+    wait is the command thread, so a queued device-state read never runs
+    until the wait returns. Rejoin from here and follow the fresh state.
     """
     seen = False
     continued = False
@@ -3687,12 +3768,45 @@ def _wait_for_capture_end(
     started = time.monotonic()
     last_label = ""
     last_heartbeat = started
+    link_down_since: float | None = None
+    last_rejoin_at = 0.0
+    logged_rejoin = False
+    last_rejoin_log = 0.0
+    link_was_rejoined = False
+    rejoin_frames = -1
+    rejoin_progress_at = 0.0
     log(f"{name}; watching the telescope for stacking progress…")
     while True:
         if _stop.is_set():
             raise InterruptedError("Session stopped")
         snapshot = _tap.snapshot() if _tap is not None else {}
-        elapsed = time.monotonic() - started
+        now = time.monotonic()
+        elapsed = now - started
+        socket_live = _control_socket_live()
+        if socket_live:
+            if logged_rejoin:
+                log(f"{name}: telescope link is back", "notice")
+                logged_rejoin = False
+                link_was_rejoined = True
+                rejoin_frames = -1
+                rejoin_progress_at = now
+            link_down_since = None
+        elif link_down_since is None:
+            link_down_since = now
+        down_for = 0.0 if link_down_since is None else now - link_down_since
+        if capture_wait_should_rejoin(socket_live=socket_live, seen=seen, down_for_s=down_for):
+            if not logged_rejoin:
+                log(f"{name}: telescope link dropped; reconnecting to keep this capture", "warning")
+                logged_rejoin = True
+                last_rejoin_log = now
+            elif now - last_rejoin_log >= _CAPTURE_HEARTBEAT_S:
+                last_rejoin_log = now
+                log(f"{name}: telescope link still down · {_format_duration(down_for)}", "warning")
+            if last_rejoin_at <= 0 or now - last_rejoin_at >= _CAPTURE_LINK_RETRY_S:
+                last_rejoin_at = now
+                _reopen_control_link()
+            time.sleep(0.5)
+            continue
         frames_now, _total_now = _capture_counts(snapshot)
         try:
             taken_now = max(0, int(snapshot.get("capture_current") or 0))
@@ -3720,6 +3834,25 @@ def _wait_for_capture_end(
                 log(f"Capture running · {detail}")
             seen = True
             quiet_since = None
+            if link_was_rejoined and socket_live:
+                frames_live, _total_live = _capture_counts(snapshot)
+                if rejoin_frames < 0:
+                    rejoin_frames = frames_live
+                    rejoin_progress_at = now
+                elif frames_live != rejoin_frames:
+                    link_was_rejoined = False
+                elif (
+                    rejoin_progress_at
+                    and now - rejoin_progress_at >= _CAPTURE_REJOIN_QUIET_S
+                    and now - last_rejoin_at >= _CAPTURE_LINK_RETRY_S
+                ):
+                    last_rejoin_at = now
+                    rejoin_progress_at = now
+                    log(
+                        f"{name}: no new frames for {_format_duration(_CAPTURE_REJOIN_QUIET_S)}; checking the telescope",
+                        "notice",
+                    )
+                    _reopen_control_link()
         elif mosaic and snapshot.get("mosaic_active"):
             if not seen:
                 seen = True
@@ -3770,7 +3903,7 @@ def _wait_for_capture_end(
             if label != last_label:
                 on_progress(label)
                 last_label = label
-        if seen and time.monotonic() - last_heartbeat >= _CAPTURE_HEARTBEAT_S:
+        if seen and socket_live and now - last_heartbeat >= _CAPTURE_HEARTBEAT_S:
             last_heartbeat = time.monotonic()
             frames, total = _capture_counts(snapshot)
             count = f"{frames}/{total}" if total else f"{frames} frames"

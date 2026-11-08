@@ -25,6 +25,8 @@ from astro_dwarf.device_worker import (
     _firmware_mosaic_grid_finished,
     _mosaic_busy,
     _mosaic_idle_timeout_s,
+    _control_socket_live,
+    capture_wait_should_rejoin,
     _session_needs_infinity_after_autofocus,
     _stop_targets,
     CODE_ASTRO_GOTO_FAILED,
@@ -33,6 +35,8 @@ from astro_dwarf.device_worker import (
     CODE_FOCUS_EXP_TOO_LONG,
     mosaic_pane_goto_fail_message,
     _CAPTURE_BUSY_RETRY_S,
+    _CAPTURE_LINK_GRACE_S,
+    _CAPTURE_REJOIN_QUIET_S,
     _GOTO_BUSY_TIMEOUT_S,
     _GOTO_SOLVE_STALL_S,
     _GOTO_SOLVE_TIMEOUT_S,
@@ -66,6 +70,34 @@ def test_firmware_mosaic_detection() -> None:
         "imported plan is per-pane stacks",
     )
     _assert(not _firmware_mosaic({}), "missing mosaic")
+
+
+def test_capture_wait_rejoins_a_dropped_link_and_a_live_link_still_finishes() -> None:
+    """Pane stacks and scheduled sessions share this wait.
+
+    A live socket keeps the old idle/heartbeat path. After the stack has
+    been seen, a socket that stays down is a rejoin, not a finished pane
+    and not another minute of the frozen 4/10 count.
+    """
+    _assert(not _control_socket_live(), "no control socket is open in this test")
+    _assert(_CAPTURE_LINK_GRACE_S >= 3.0, "a one-packet blip must not reconnect")
+    _assert(_CAPTURE_REJOIN_QUIET_S >= 90.0, "a 15s exposure must not look frozen")
+    live = dict(socket_live=True, seen=True, down_for_s=30.0)
+    _assert(not capture_wait_should_rejoin(**live), "a live link keeps waiting on real progress")
+    _assert(
+        not capture_wait_should_rejoin(socket_live=True, seen=False, down_for_s=0.0),
+        "a session that has not started still uses the start timeout",
+    )
+    _assert(
+        not capture_wait_should_rejoin(socket_live=False, seen=True, down_for_s=_CAPTURE_LINK_GRACE_S - 0.5),
+        "inside the grace the last count is still this stack",
+    )
+    dropped = dict(socket_live=False, seen=True, down_for_s=_CAPTURE_LINK_GRACE_S)
+    _assert(capture_wait_should_rejoin(**dropped), "a dead link after the grace must rejoin")
+    _assert(
+        not capture_wait_should_rejoin(socket_live=False, seen=False, down_for_s=30.0),
+        "before the first frame the start timeout still owns the wait",
+    )
 
 
 def test_mosaic_busy_and_idle_timeout() -> None:
@@ -641,6 +673,7 @@ def test_failed_mosaic_does_not_keep_live_hud() -> None:
 
 def main() -> int:
     test_firmware_mosaic_detection()
+    test_capture_wait_rejoins_a_dropped_link_and_a_live_link_still_finishes()
     test_mosaic_busy_and_idle_timeout()
     test_live_mosaic_resume_plan()
     test_recovered_firmware_mosaic_restarts_unless_the_grid_finished()
