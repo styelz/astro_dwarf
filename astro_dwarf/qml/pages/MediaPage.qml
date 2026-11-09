@@ -663,7 +663,11 @@ Item {
                                 }
                                 Text {
                                     Layout.fillWidth: true
-                                    text: tile.modelData.subtitle || tile.modelData.date || (tile.modelData.downloaded ? "SAVED LOCALLY" : (backend.mediaSource === "local" ? "" : "ON DEVICE"))
+                                    text: {
+                                        const sub = tile.modelData.subtitle || tile.modelData.date || (tile.modelData.downloaded ? "SAVED LOCALLY" : (backend.mediaSource === "local" ? "" : "ON DEVICE"))
+                                        const sz = Util.formatFileSize(tile.modelData.file_size || 0)
+                                        return sz ? (sub ? sub + "  ·  " + sz : sz) : sub
+                                    }
                                     color: Theme.textSecondary
                                     font.pixelSize: Theme.fontXs
                                     elide: Text.ElideRight
@@ -726,6 +730,9 @@ Item {
         property real autoMid: -1
         property bool autoRequested: false
         property bool autoFailed: false
+        property real viewerZoom: 1.0
+        property real viewerPanX: 0.0
+        property real viewerPanY: 0.0
         readonly property bool isVideo: Util.isVideoMedia(mediaPage.selected)
         readonly property bool isPanorama: Util.mediaKind(mediaPage.selected) === "panorama"
         readonly property bool panoramaForSelection: lightbox.isPanorama && backend.panoramaSession === lightbox.selectedKey
@@ -960,15 +967,74 @@ Item {
                 return
             backend.stitchSelectedPanorama("preview")
         }
+        // Keep the painted picture inside the frame. The viewer item is larger
+        // than the photo (aspect fit plus the margin), so clamping that item
+        // lets the photo slide until the empty margin fills the frame.
+        function clampViewerAxis(pan, view, origin, size, zoom) {
+            if (zoom <= 1 || view <= 0 || size <= 0)
+                return 0
+            const scaled = size * zoom
+            if (scaled <= view)
+                return -((origin + size / 2 - view / 2) * zoom)
+            const minPan = view / 2 - (origin + size - view / 2) * zoom
+            const maxPan = -view / 2 - (origin - view / 2) * zoom
+            return Math.max(minPan, Math.min(maxPan, pan))
+        }
+        function fittedViewerImage() {
+            if (panoramaImage.visible && panoramaImage.paintedWidth > 0)
+                return panoramaImage
+            if (stretchImage.visible && stretchImage.paintedWidth > 0)
+                return stretchImage
+            if (cleanImage.visible && cleanImage.paintedWidth > 0)
+                return cleanImage
+            if (rawImage.visible && rawImage.paintedWidth > 0)
+                return rawImage
+            return null
+        }
+        function clampPan(x, y) {
+            if (viewerZoom <= 1.0) {
+                viewerPanX = 0
+                viewerPanY = 0
+                return
+            }
+            const panX = x === undefined ? viewerPanX : x
+            const panY = y === undefined ? viewerPanY : y
+            const host = imageViewport.parent
+            const viewW = host ? host.width : 0
+            const viewH = host ? host.height : 0
+            if (viewW <= 0 || viewH <= 0)
+                return
+            const img = fittedViewerImage()
+            if (!img) {
+                const maxX = viewW * (viewerZoom - 1) / 2
+                const maxY = viewH * (viewerZoom - 1) / 2
+                viewerPanX = Math.max(-maxX, Math.min(maxX, panX))
+                viewerPanY = Math.max(-maxY, Math.min(maxY, panY))
+                return
+            }
+            const originX = img.x + (img.width - img.paintedWidth) / 2
+            const originY = img.y + (img.height - img.paintedHeight) / 2
+            viewerPanX = clampViewerAxis(panX, viewW, originX, img.paintedWidth, viewerZoom)
+            viewerPanY = clampViewerAxis(panY, viewH, originY, img.paintedHeight, viewerZoom)
+        }
+        function resetViewerZoom() {
+            viewerZoom = 1.0
+            viewerPanX = 0.0
+            viewerPanY = 0.0
+        }
         onSelectedKeyChanged: {
             heldCleanUrl = ""
             imageFailed = false
             lightbox.resetStretch()
+            lightbox.resetViewerZoom()
             clipPlayer.stop()
             lightbox.ensurePanorama()
             lightbox.beginAutoStretch()
         }
-        onClosed: clipPlayer.stop()
+        onClosed: {
+            clipPlayer.stop()
+            lightbox.resetViewerZoom()
+        }
         onOpened: {
             lightbox.syncEnhanceFromTheme()
             lightboxBody.forceActiveFocus()
@@ -1001,388 +1067,506 @@ Item {
                 event.accepted = true
                 lightbox.togglePlay()
             }
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                color: Theme.windowBase
-                Image {
-                    id: panoramaImage
-                    objectName: "panoramaImage"
-                    anchors.fill: parent
-                    anchors.margins: Theme.s2
-                    fillMode: Image.PreserveAspectFit
-                    asynchronous: true
-                    cache: false
-                    visible: lightbox.isPanorama && source !== "" && status === Image.Ready
-                    source: lightbox.panoramaUrl
-                }
-                Image {
-                    id: rawImage
-                    objectName: "rawImage"
-                    anchors.fill: parent
-                    anchors.margins: Theme.s2
-                    fillMode: Image.PreserveAspectFit
-                    asynchronous: true
-                    cache: false
-                    visible: !lightbox.isVideo && !lightbox.canStretch && !lightbox.enhanceOn && !panoramaImage.visible && source !== "" && status === Image.Ready
-                    source: lightbox.enhanceOn || lightbox.isVideo || lightbox.canStretch ? "" : lightbox.rawUrl
-                    onStatusChanged: {
-                        if (status === Image.Error && source !== "" && !lightbox.isVideo)
-                            lightbox.imageFailed = true
-                    }
-                }
-                Image {
-                    id: cleanImage
-                    objectName: "cleanImage"
-                    anchors.fill: parent
-                    anchors.margins: Theme.s2
-                    fillMode: Image.PreserveAspectFit
-                    asynchronous: true
-                    cache: false
-                    visible: !lightbox.isVideo && !lightbox.canStretch && lightbox.enhanceOn && source !== "" && status === Image.Ready
-                    source: lightbox.cleanUrl !== "" ? lightbox.cleanUrl : lightbox.heldCleanUrl
-                }
-                Image {
-                    id: stretchImage
-                    objectName: "stretchImage"
-                    anchors.fill: parent
-                    anchors.margins: Theme.s2
-                    fillMode: Image.PreserveAspectFit
-                    asynchronous: true
-                    cache: false
-                    visible: lightbox.canStretch && source !== "" && status === Image.Ready
-                    source: lightbox.stretchUrl
-                }
-                MediaPlayer {
-                    id: clipPlayer
-                    source: lightbox.isVideo ? lightbox.rawUrl : ""
-                    videoOutput: videoOut
-                    audioOutput: clipAudio
-                    onSourceChanged: {
-                        if (lightbox.visible && lightbox.isVideo && source !== "")
-                            clipPlayer.play()
-                    }
-                    onMediaStatusChanged: {
-                        if (!lightbox.visible || !lightbox.isVideo)
-                            return
-                        if (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia)
-                            clipPlayer.play()
-                    }
-                }
-                AudioOutput {
-                    id: clipAudio
-                    muted: lightbox.videoMuted
-                }
-                VideoOutput {
-                    id: videoOut
-                    objectName: "mediaVideo"
-                    anchors.fill: parent
-                    anchors.margins: Theme.s2
-                    fillMode: VideoOutput.PreserveAspectFit
-                    visible: lightbox.isVideo && clipPlayer.source !== ""
-                }
-                Image {
-                    id: videoPoster
-                    anchors.fill: parent
-                    anchors.margins: Theme.s2
-                    fillMode: Image.PreserveAspectFit
-                    asynchronous: true
-                    cache: false
-                    visible: lightbox.isVideo && source !== "" && status === Image.Ready && clipPlayer.playbackState === MediaPlayer.StoppedState
-                    source: lightbox.isVideo ? lightbox.posterUrl : ""
-                }
                 Rectangle {
-                    anchors.left: parent.left
-                    anchors.top: parent.top
-                    anchors.margins: Theme.s4
-                    visible: rawImage.visible || cleanImage.visible || stretchImage.visible || videoOut.visible || panoramaImage.visible
-                    color: Theme.surface
-                    border.color: Theme.outline
-                    radius: Theme.radius
-                    width: modeLabel.implicitWidth + Theme.s3
-                    height: modeLabel.implicitHeight + Theme.s2
-                    Text {
-                        id: modeLabel
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    color: Theme.windowBase
+                    clip: true
+                    // A scaled child paints outside clip unless the clip is its own layer.
+                    layer.enabled: true
+
+                    // Zoomable image container — only the media pixels scale/pan
+                    Item {
+                        id: imageViewport
+                        x: lightbox.viewerPanX
+                        y: lightbox.viewerPanY
+                        width: parent.width
+                        height: parent.height
+                        scale: lightbox.viewerZoom
+                        transformOrigin: Item.Center
+                        readonly property real fittedWidth: {
+                            const img = lightbox.fittedViewerImage()
+                            return img ? img.paintedWidth : 0
+                        }
+                        readonly property real fittedHeight: {
+                            const img = lightbox.fittedViewerImage()
+                            return img ? img.paintedHeight : 0
+                        }
+                        onFittedWidthChanged: lightbox.clampPan()
+                        onFittedHeightChanged: lightbox.clampPan()
+                        onWidthChanged: lightbox.clampPan()
+                        onHeightChanged: lightbox.clampPan()
+
+                        Image {
+                            id: panoramaImage
+                            objectName: "panoramaImage"
+                            anchors.fill: parent
+                            anchors.margins: Theme.s2
+                            fillMode: Image.PreserveAspectFit
+                            asynchronous: true
+                            cache: false
+                            visible: lightbox.isPanorama && source !== "" && status === Image.Ready
+                            source: lightbox.panoramaUrl
+                        }
+                        Image {
+                            id: rawImage
+                            objectName: "rawImage"
+                            anchors.fill: parent
+                            anchors.margins: Theme.s2
+                            fillMode: Image.PreserveAspectFit
+                            asynchronous: true
+                            cache: false
+                            visible: !lightbox.isVideo && !lightbox.canStretch && !lightbox.enhanceOn && !panoramaImage.visible && source !== "" && status === Image.Ready
+                            source: lightbox.enhanceOn || lightbox.isVideo || lightbox.canStretch ? "" : lightbox.rawUrl
+                            onStatusChanged: {
+                                if (status === Image.Error && source !== "" && !lightbox.isVideo)
+                                    lightbox.imageFailed = true
+                            }
+                        }
+                        Image {
+                            id: cleanImage
+                            objectName: "cleanImage"
+                            anchors.fill: parent
+                            anchors.margins: Theme.s2
+                            fillMode: Image.PreserveAspectFit
+                            asynchronous: true
+                            cache: false
+                            visible: !lightbox.isVideo && !lightbox.canStretch && lightbox.enhanceOn && source !== "" && status === Image.Ready
+                            source: lightbox.cleanUrl !== "" ? lightbox.cleanUrl : lightbox.heldCleanUrl
+                        }
+                        Image {
+                            id: stretchImage
+                            objectName: "stretchImage"
+                            anchors.fill: parent
+                            anchors.margins: Theme.s2
+                            fillMode: Image.PreserveAspectFit
+                            asynchronous: true
+                            cache: false
+                            visible: lightbox.canStretch && source !== "" && status === Image.Ready
+                            source: lightbox.stretchUrl
+                        }
+                        MediaPlayer {
+                            id: clipPlayer
+                            source: lightbox.isVideo ? lightbox.rawUrl : ""
+                            videoOutput: videoOut
+                            audioOutput: clipAudio
+                            onSourceChanged: {
+                                if (lightbox.visible && lightbox.isVideo && source !== "")
+                                    clipPlayer.play()
+                            }
+                            onMediaStatusChanged: {
+                                if (!lightbox.visible || !lightbox.isVideo)
+                                    return
+                                if (mediaStatus === MediaPlayer.LoadedMedia || mediaStatus === MediaPlayer.BufferedMedia)
+                                    clipPlayer.play()
+                            }
+                        }
+                        AudioOutput {
+                            id: clipAudio
+                            muted: lightbox.videoMuted
+                        }
+                        VideoOutput {
+                            id: videoOut
+                            objectName: "mediaVideo"
+                            anchors.fill: parent
+                            anchors.margins: Theme.s2
+                            fillMode: VideoOutput.PreserveAspectFit
+                            visible: lightbox.isVideo && clipPlayer.source !== ""
+                        }
+                        Image {
+                            id: videoPoster
+                            anchors.fill: parent
+                            anchors.margins: Theme.s2
+                            fillMode: Image.PreserveAspectFit
+                            asynchronous: true
+                            cache: false
+                            visible: lightbox.isVideo && source !== "" && status === Image.Ready && clipPlayer.playbackState === MediaPlayer.StoppedState
+                            source: lightbox.isVideo ? lightbox.posterUrl : ""
+                        }
+                    }
+
+                    // Overlays — fixed to the viewer, not scaled
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.margins: Theme.s4
+                        visible: rawImage.visible || cleanImage.visible || stretchImage.visible || videoOut.visible || panoramaImage.visible
+                        color: Theme.surface
+                        border.color: Theme.outline
+                        radius: Theme.radius
+                        width: modeLabel.implicitWidth + Theme.s3
+                        height: modeLabel.implicitHeight + Theme.s2
+                        Text {
+                            id: modeLabel
+                            anchors.centerIn: parent
+                            text: lightbox.viewerBadge()
+                            color: (lightbox.enhanceOn && !lightbox.isVideo) || lightbox.canStretch ? Theme.accent : Theme.textSecondary
+                            font.pixelSize: Theme.fontSm
+                            font.letterSpacing: Theme.tracking2
+                            font.bold: true
+                        }
+                    }
+                    Rectangle {
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: Theme.s4
+                        visible: lightbox.viewerZoom > 1.01 && (rawImage.visible || cleanImage.visible || stretchImage.visible || panoramaImage.visible)
+                        color: Theme.surface
+                        border.color: Theme.outline
+                        radius: Theme.radius
+                        width: zoomLabel.implicitWidth + Theme.s3
+                        height: zoomLabel.implicitHeight + Theme.s2
+                        Text {
+                            id: zoomLabel
+                            anchors.centerIn: parent
+                            text: lightbox.viewerZoom.toFixed(1) + "×"
+                            color: Theme.accent
+                            font.pixelSize: Theme.fontSm
+                            font.letterSpacing: Theme.tracking2
+                            font.bold: true
+                        }
+                    }
+                    Column {
                         anchors.centerIn: parent
-                        text: lightbox.viewerBadge()
-                        color: (lightbox.enhanceOn && !lightbox.isVideo) || lightbox.canStretch ? Theme.accent : Theme.textSecondary
+                        spacing: Theme.s2
+                        width: Math.min(parent.width - Theme.s5 * 2, 220)
+                        visible: lightbox.panoramaWorking || lightbox.viewerFailed || lightbox.viewerLoading || (!lightbox.isVideo && !rawImage.visible && !cleanImage.visible && !stretchImage.visible && !panoramaImage.visible)
+                        HudMeter {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            width: parent.width
+                            visible: (lightbox.viewerLoading || lightbox.panoramaWorking) && !lightbox.viewerFailed
+                            running: visible
+                            progress: lightbox.panoramaWorking ? lightbox.panoramaProgress : lightbox.viewerProgress
+                            text: lightbox.panoramaWorking ? (backend.panoramaDetail || "STITCHING") : lightbox.viewerLoadText
+                        }
+                        Text {
+                            width: parent.width
+                            visible: !lightbox.panoramaWorking && (!lightbox.viewerLoading || lightbox.viewerFailed)
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.Wrap
+                            text: lightbox.isVideo ? (clipPlayer.errorString || "NO PREVIEW")
+                                  : (lightbox.panoramaFailed ? (backend.panoramaDetail || "COULD NOT STITCH")
+                                     : (lightbox.stretchFailed ? "COULD NOT STRETCH"
+                                     : (lightbox.enhanceFailed ? "COULD NOT ENHANCE" : "NO PREVIEW")))
+                            color: lightbox.viewerFailed ? Theme.warning : Theme.muted
+                            font.pixelSize: Theme.fontMd
+                            font.letterSpacing: Theme.tracking2
+                        }
+                    }
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: Theme.s4
+                        visible: lightbox.enhanceOn && lightbox.cleanUrl === "" && cleanImage.visible
+                        text: lightbox.enhanceFailed ? "COULD NOT ENHANCE" : "SMOOTHING…"
+                        color: lightbox.enhanceFailed ? Theme.warning : Theme.accent
                         font.pixelSize: Theme.fontSm
                         font.letterSpacing: Theme.tracking2
-                        font.bold: true
                     }
-                }
-                Column {
-                    anchors.centerIn: parent
-                    spacing: Theme.s2
-                    width: Math.min(parent.width - Theme.s5 * 2, 220)
-                    visible: lightbox.panoramaWorking || lightbox.viewerFailed || lightbox.viewerLoading || (!lightbox.isVideo && !rawImage.visible && !cleanImage.visible && !stretchImage.visible && !panoramaImage.visible)
-                    HudMeter {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        width: parent.width
-                        visible: (lightbox.viewerLoading || lightbox.panoramaWorking) && !lightbox.viewerFailed
-                        running: visible
-                        progress: lightbox.panoramaWorking ? lightbox.panoramaProgress : lightbox.viewerProgress
-                        text: lightbox.panoramaWorking ? (backend.panoramaDetail || "STITCHING") : lightbox.viewerLoadText
+                    HudButton {
+                        objectName: "lightboxPrevButton"
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: Theme.s3
+                        visible: lightbox.hasPrev
+                        text: "‹"
+                        iconButton: true
+                        tooltip: "Previous file"
+                        accessibleDescription: "Show the previous file"
+                        implicitWidth: Theme.controlHeight
+                        onClicked: lightbox.step(-1)
                     }
-                    Text {
-                        width: parent.width
-                        visible: !lightbox.panoramaWorking && (!lightbox.viewerLoading || lightbox.viewerFailed)
-                        horizontalAlignment: Text.AlignHCenter
-                        wrapMode: Text.Wrap
-                        text: lightbox.isVideo ? (clipPlayer.errorString || "NO PREVIEW")
-                              : (lightbox.panoramaFailed ? (backend.panoramaDetail || "COULD NOT STITCH")
-                                 : (lightbox.stretchFailed ? "COULD NOT STRETCH"
-                                 : (lightbox.enhanceFailed ? "COULD NOT ENHANCE" : "NO PREVIEW")))
-                        color: lightbox.viewerFailed ? Theme.warning : Theme.muted
-                        font.pixelSize: Theme.fontMd
-                        font.letterSpacing: Theme.tracking2
+                    HudButton {
+                        objectName: "lightboxNextButton"
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.rightMargin: Theme.s3
+                        visible: lightbox.hasNext
+                        text: "›"
+                        iconButton: true
+                        tooltip: "Next file"
+                        accessibleDescription: "Show the next file"
+                        implicitWidth: Theme.controlHeight
+                        onClicked: lightbox.step(1)
                     }
-                }
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    anchors.bottom: parent.bottom
-                    anchors.bottomMargin: Theme.s4
-                    visible: lightbox.enhanceOn && lightbox.cleanUrl === "" && cleanImage.visible
-                    text: lightbox.enhanceFailed ? "COULD NOT ENHANCE" : "SMOOTHING…"
-                    color: lightbox.enhanceFailed ? Theme.warning : Theme.accent
-                    font.pixelSize: Theme.fontSm
-                    font.letterSpacing: Theme.tracking2
-                }
-                HudButton {
-                    objectName: "lightboxPrevButton"
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.leftMargin: Theme.s3
-                    visible: lightbox.hasPrev
-                    text: "‹"
-                    iconButton: true
-                    tooltip: "Previous file"
-                    accessibleDescription: "Show the previous file"
-                    implicitWidth: Theme.controlHeight
-                    onClicked: lightbox.step(-1)
-                }
-                HudButton {
-                    objectName: "lightboxNextButton"
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.rightMargin: Theme.s3
-                    visible: lightbox.hasNext
-                    text: "›"
-                    iconButton: true
-                    tooltip: "Next file"
-                    accessibleDescription: "Show the next file"
-                    implicitWidth: Theme.controlHeight
-                    onClicked: lightbox.step(1)
-                }
-                Rectangle {
-                    objectName: "mediaVideoControls"
-                    visible: lightbox.isVideo
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    anchors.margins: Theme.s3
-                    height: Theme.controlHeight + Theme.s2
-                    color: Theme.panelFill
-                    border.color: Theme.outline
-                    radius: Theme.radius
-                    RowLayout {
+                    Rectangle {
+                        objectName: "mediaVideoControls"
+                        visible: lightbox.isVideo
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: Theme.s3
+                        height: Theme.controlHeight + Theme.s2
+                        color: Theme.panelFill
+                        border.color: Theme.outline
+                        radius: Theme.radius
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: Theme.s2
+                            anchors.rightMargin: Theme.s2
+                            spacing: Theme.s2
+                            HudButton {
+                                objectName: "lightboxPlayButton"
+                                text: clipPlayer.playbackState === MediaPlayer.PlayingState ? "PAUSE" : "PLAY"
+                                tooltip: clipPlayer.playbackState === MediaPlayer.PlayingState ? "Pause video" : "Play video"
+                                onClicked: lightbox.togglePlay()
+                            }
+                            HudSlider {
+                                id: videoSeek
+                                objectName: "lightboxSeekSlider"
+                                Layout.fillWidth: true
+                                from: 0
+                                to: Math.max(1, clipPlayer.duration)
+                                stepSize: 1
+                                live: true
+                                enabled: clipPlayer.seekable && clipPlayer.duration > 0
+                                accessibleName: "Video position"
+                                tooltip: "Scrub the video"
+                                valueText: Util.mediaClock(videoSeek.pressed ? videoSeek.value : clipPlayer.position)
+                                onMoved: clipPlayer.position = value
+                                Binding {
+                                    target: videoSeek
+                                    property: "value"
+                                    value: clipPlayer.position
+                                    when: !videoSeek.pressed
+                                }
+                            }
+                            Text {
+                                text: Util.mediaClock(clipPlayer.duration)
+                                color: Theme.textSecondary
+                                font.family: Theme.fontMono
+                                font.pixelSize: Theme.fontSm
+                            }
+                            HudButton {
+                                objectName: "lightboxMuteButton"
+                                text: lightbox.videoMuted ? "UNMUTE" : "MUTE"
+                                tooltip: lightbox.videoMuted ? "Unmute video" : "Mute video"
+                                onClicked: lightbox.videoMuted = !lightbox.videoMuted
+                            }
+                        }
+                    }
+                    Rectangle {
+                        objectName: "mediaPanoramaControls"
+                        visible: lightbox.isPanorama
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: Theme.s3
+                        height: Theme.controlHeight + Theme.s2
+                        color: Theme.panelFill
+                        border.color: Theme.outline
+                        radius: Theme.radius
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: Theme.s2
+                            anchors.rightMargin: Theme.s2
+                            spacing: Theme.s2
+                            HudButton {
+                                objectName: "panoramaPreviewButton"
+                                text: "PREVIEW"
+                                tooltip: "Stitch the small tiles into a quick panorama"
+                                enabled: !(lightbox.panoramaForSelection && backend.panoramaQuality === "preview" && (backend.panoramaStatus === "working" || backend.panoramaStatus === "done"))
+                                busy: lightbox.panoramaWorking && backend.panoramaQuality === "preview"
+                                onClicked: backend.stitchSelectedPanorama("preview")
+                            }
+                            HudButton {
+                                objectName: "panoramaSharpButton"
+                                text: "SHARP"
+                                tooltip: "Stitch the full-size tiles into a sharper panorama"
+                                enabled: !(lightbox.panoramaForSelection && backend.panoramaQuality === "sharp" && (backend.panoramaStatus === "working" || backend.panoramaStatus === "done"))
+                                busy: lightbox.panoramaWorking && backend.panoramaQuality === "sharp"
+                                onClicked: backend.stitchSelectedPanorama("sharp")
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: lightbox.panoramaForSelection ? (backend.panoramaDetail || "") : ""
+                                color: lightbox.panoramaFailed ? Theme.warning : Theme.textSecondary
+                                font.pixelSize: Theme.fontSm
+                                elide: Text.ElideRight
+                            }
+                        }
+                    }
+                    Rectangle {
+                        objectName: "mediaFitsControls"
+                        visible: lightbox.canStretch
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: Theme.s3
+                        height: Theme.controlHeight + Theme.s2
+                        color: Theme.panelFill
+                        border.color: Theme.outline
+                        radius: Theme.radius
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: Theme.s2
+                            anchors.rightMargin: Theme.s2
+                            spacing: Theme.s2
+                            Text {
+                                text: "BLACK"
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontXs
+                                font.bold: true
+                                font.letterSpacing: Theme.tracking1
+                            }
+                            HudSlider {
+                                id: fitsBlack
+                                objectName: "lightboxFitsBlack"
+                                Layout.fillWidth: true
+                                from: 0
+                                to: 12
+                                stepSize: 0.1
+                                live: true
+                                accessibleName: "FITS black point"
+                                tooltip: "Shadow clip percentile. Higher hides more sky."
+                                valueText: fitsBlack.value.toFixed(1)
+                                onMoved: lightbox.applyStretchSoon()
+                                Binding {
+                                    target: fitsBlack
+                                    property: "value"
+                                    value: lightbox.stretchBlack
+                                    when: !fitsBlack.pressed
+                                }
+                                onValueChanged: if (pressed) lightbox.stretchBlack = value
+                            }
+                            Text {
+                                text: "WHITE"
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontXs
+                                font.bold: true
+                                font.letterSpacing: Theme.tracking1
+                            }
+                            HudSlider {
+                                id: fitsWhite
+                                objectName: "lightboxFitsWhite"
+                                Layout.fillWidth: true
+                                from: 90
+                                to: 100
+                                stepSize: 0.1
+                                live: true
+                                accessibleName: "FITS white point"
+                                tooltip: "Highlight clip percentile. Lower lifts faint structure."
+                                valueText: fitsWhite.value.toFixed(1)
+                                onMoved: lightbox.applyStretchSoon()
+                                Binding {
+                                    target: fitsWhite
+                                    property: "value"
+                                    value: lightbox.stretchWhite
+                                    when: !fitsWhite.pressed
+                                }
+                                onValueChanged: if (pressed) lightbox.stretchWhite = value
+                            }
+                            Text {
+                                text: "LIFT"
+                                color: Theme.textSecondary
+                                font.pixelSize: Theme.fontXs
+                                font.bold: true
+                                font.letterSpacing: Theme.tracking1
+                            }
+                            HudSlider {
+                                id: fitsMid
+                                objectName: "lightboxFitsLift"
+                                Layout.fillWidth: true
+                                from: 0.15
+                                to: 0.65
+                                stepSize: 0.01
+                                live: true
+                                accessibleName: "FITS midtone lift"
+                                tooltip: "Midtone stretch. Lower brightens faint detail."
+                                valueText: Math.round(fitsMid.value * 100)
+                                onMoved: lightbox.applyStretchSoon()
+                                Binding {
+                                    target: fitsMid
+                                    property: "value"
+                                    value: lightbox.stretchMid
+                                    when: !fitsMid.pressed
+                                }
+                                onValueChanged: if (pressed) lightbox.stretchMid = value
+                            }
+                            HudButton {
+                                objectName: "lightboxFitsAuto"
+                                text: "AUTO"
+                                tooltip: "Recompute optimal stretch from the image histogram"
+                                onClicked: lightbox.revertToAuto()
+                            }
+                        }
+                    }
+
+                    // Zoom: scroll wheel zooms to cursor; drag pans when zoomed; double-click resets
+                    WheelHandler {
+                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                        enabled: !lightbox.isVideo
+                        onWheel: function(event) {
+                            const delta = event.angleDelta.y !== 0 ? event.angleDelta.y : event.angleDelta.x
+                            const factor = delta > 0 ? 1.15 : (1.0 / 1.15)
+                            const newZoom = Math.max(1.0, Math.min(8.0, lightbox.viewerZoom * factor))
+                            if (Math.abs(newZoom - lightbox.viewerZoom) < 0.001)
+                                return
+                            // Zoom around the cursor position
+                            const cx = event.x - imageViewport.width / 2
+                            const cy = event.y - imageViewport.height / 2
+                            const zScale = newZoom / lightbox.viewerZoom
+                            const nextX = cx + (lightbox.viewerPanX - cx) * zScale
+                            const nextY = cy + (lightbox.viewerPanY - cy) * zScale
+                            lightbox.viewerZoom = newZoom
+                            lightbox.clampPan(nextX, nextY)
+                        }
+                    }
+                    DragHandler {
+                        // Default target is the parent rectangle. Leaving it set
+                        // drags that rectangle out of the lightbox and across the page.
+                        target: null
+                        acceptedButtons: Qt.LeftButton
+                        enabled: lightbox.viewerZoom > 1.0 && !lightbox.isVideo
+                        cursorShape: enabled ? Qt.OpenHandCursor : Qt.ArrowCursor
+                        property real startPanX: 0
+                        property real startPanY: 0
+                        onActiveChanged: {
+                            if (active) {
+                                startPanX = lightbox.viewerPanX
+                                startPanY = lightbox.viewerPanY
+                            }
+                        }
+                        onTranslationChanged: {
+                            if (active) {
+                                lightbox.clampPan(startPanX + translation.x, startPanY + translation.y)
+                            }
+                        }
+                    }
+                    PinchArea {
                         anchors.fill: parent
-                        anchors.leftMargin: Theme.s2
-                        anchors.rightMargin: Theme.s2
-                        spacing: Theme.s2
-                        HudButton {
-                            objectName: "lightboxPlayButton"
-                            text: clipPlayer.playbackState === MediaPlayer.PlayingState ? "PAUSE" : "PLAY"
-                            tooltip: clipPlayer.playbackState === MediaPlayer.PlayingState ? "Pause video" : "Play video"
-                            onClicked: lightbox.togglePlay()
+                        enabled: !lightbox.isVideo
+                        property real startZoom: 1.0
+                        property real startPanX: 0
+                        property real startPanY: 0
+                        onPinchStarted: function(pinch) {
+                            startZoom = lightbox.viewerZoom
+                            startPanX = lightbox.viewerPanX
+                            startPanY = lightbox.viewerPanY
                         }
-                        HudSlider {
-                            id: videoSeek
-                            objectName: "lightboxSeekSlider"
-                            Layout.fillWidth: true
-                            from: 0
-                            to: Math.max(1, clipPlayer.duration)
-                            stepSize: 1
-                            live: true
-                            enabled: clipPlayer.seekable && clipPlayer.duration > 0
-                            accessibleName: "Video position"
-                            tooltip: "Scrub the video"
-                            valueText: Util.mediaClock(videoSeek.pressed ? videoSeek.value : clipPlayer.position)
-                            onMoved: clipPlayer.position = value
-                            Binding {
-                                target: videoSeek
-                                property: "value"
-                                value: clipPlayer.position
-                                when: !videoSeek.pressed
-                            }
+                        onPinchUpdated: function(pinch) {
+                            const newZoom = Math.max(1.0, Math.min(8.0, startZoom * pinch.scale))
+                            const cx = pinch.center.x - imageViewport.width / 2
+                            const cy = pinch.center.y - imageViewport.height / 2
+                            const zScale = newZoom / startZoom
+                            const nextX = cx + (startPanX - cx) * zScale
+                            const nextY = cy + (startPanY - cy) * zScale
+                            lightbox.viewerZoom = newZoom
+                            lightbox.clampPan(nextX, nextY)
                         }
-                        Text {
-                            text: Util.mediaClock(clipPlayer.duration)
-                            color: Theme.textSecondary
-                            font.family: Theme.fontMono
-                            font.pixelSize: Theme.fontSm
-                        }
-                        HudButton {
-                            objectName: "lightboxMuteButton"
-                            text: lightbox.videoMuted ? "UNMUTE" : "MUTE"
-                            tooltip: lightbox.videoMuted ? "Unmute video" : "Mute video"
-                            onClicked: lightbox.videoMuted = !lightbox.videoMuted
+                    }
+                    TapHandler {
+                        acceptedButtons: Qt.LeftButton
+                        enabled: !lightbox.isVideo
+                        onDoubleTapped: lightbox.resetViewerZoom()
+                    }
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        onTapped: function (eventPoint) {
+                            mediaPage.openMediaMenu(mediaPage.selected, mapToItem(mediaPage, eventPoint.position.x, eventPoint.position.y))
                         }
                     }
                 }
-                Rectangle {
-                    objectName: "mediaPanoramaControls"
-                    visible: lightbox.isPanorama
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    anchors.margins: Theme.s3
-                    height: Theme.controlHeight + Theme.s2
-                    color: Theme.panelFill
-                    border.color: Theme.outline
-                    radius: Theme.radius
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: Theme.s2
-                        anchors.rightMargin: Theme.s2
-                        spacing: Theme.s2
-                        HudButton {
-                            objectName: "panoramaPreviewButton"
-                            text: "PREVIEW"
-                            tooltip: "Stitch the small tiles into a quick panorama"
-                            enabled: !(lightbox.panoramaForSelection && backend.panoramaQuality === "preview" && (backend.panoramaStatus === "working" || backend.panoramaStatus === "done"))
-                            busy: lightbox.panoramaWorking && backend.panoramaQuality === "preview"
-                            onClicked: backend.stitchSelectedPanorama("preview")
-                        }
-                        HudButton {
-                            objectName: "panoramaSharpButton"
-                            text: "SHARP"
-                            tooltip: "Stitch the full-size tiles into a sharper panorama"
-                            enabled: !(lightbox.panoramaForSelection && backend.panoramaQuality === "sharp" && (backend.panoramaStatus === "working" || backend.panoramaStatus === "done"))
-                            busy: lightbox.panoramaWorking && backend.panoramaQuality === "sharp"
-                            onClicked: backend.stitchSelectedPanorama("sharp")
-                        }
-                        Text {
-                            Layout.fillWidth: true
-                            text: lightbox.panoramaForSelection ? (backend.panoramaDetail || "") : ""
-                            color: lightbox.panoramaFailed ? Theme.warning : Theme.textSecondary
-                            font.pixelSize: Theme.fontSm
-                            elide: Text.ElideRight
-                        }
-                    }
-                }
-                Rectangle {
-                    objectName: "mediaFitsControls"
-                    visible: lightbox.canStretch
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    anchors.margins: Theme.s3
-                    height: Theme.controlHeight + Theme.s2
-                    color: Theme.panelFill
-                    border.color: Theme.outline
-                    radius: Theme.radius
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: Theme.s2
-                        anchors.rightMargin: Theme.s2
-                        spacing: Theme.s2
-                        Text {
-                            text: "BLACK"
-                            color: Theme.textSecondary
-                            font.pixelSize: Theme.fontXs
-                            font.bold: true
-                            font.letterSpacing: Theme.tracking1
-                        }
-                        HudSlider {
-                            id: fitsBlack
-                            objectName: "lightboxFitsBlack"
-                            Layout.fillWidth: true
-                            from: 0
-                            to: 12
-                            stepSize: 0.1
-                            live: true
-                            accessibleName: "FITS black point"
-                            tooltip: "Shadow clip percentile. Higher hides more sky."
-                            valueText: fitsBlack.value.toFixed(1)
-                            onMoved: lightbox.applyStretchSoon()
-                            Binding {
-                                target: fitsBlack
-                                property: "value"
-                                value: lightbox.stretchBlack
-                                when: !fitsBlack.pressed
-                            }
-                            onValueChanged: if (pressed) lightbox.stretchBlack = value
-                        }
-                        Text {
-                            text: "WHITE"
-                            color: Theme.textSecondary
-                            font.pixelSize: Theme.fontXs
-                            font.bold: true
-                            font.letterSpacing: Theme.tracking1
-                        }
-                        HudSlider {
-                            id: fitsWhite
-                            objectName: "lightboxFitsWhite"
-                            Layout.fillWidth: true
-                            from: 90
-                            to: 100
-                            stepSize: 0.1
-                            live: true
-                            accessibleName: "FITS white point"
-                            tooltip: "Highlight clip percentile. Lower lifts faint structure."
-                            valueText: fitsWhite.value.toFixed(1)
-                            onMoved: lightbox.applyStretchSoon()
-                            Binding {
-                                target: fitsWhite
-                                property: "value"
-                                value: lightbox.stretchWhite
-                                when: !fitsWhite.pressed
-                            }
-                            onValueChanged: if (pressed) lightbox.stretchWhite = value
-                        }
-                        Text {
-                            text: "LIFT"
-                            color: Theme.textSecondary
-                            font.pixelSize: Theme.fontXs
-                            font.bold: true
-                            font.letterSpacing: Theme.tracking1
-                        }
-                        HudSlider {
-                            id: fitsMid
-                            objectName: "lightboxFitsLift"
-                            Layout.fillWidth: true
-                            from: 0.15
-                            to: 0.65
-                            stepSize: 0.01
-                            live: true
-                            accessibleName: "FITS midtone lift"
-                            tooltip: "Midtone stretch. Lower brightens faint detail."
-                            valueText: Math.round(fitsMid.value * 100)
-                            onMoved: lightbox.applyStretchSoon()
-                            Binding {
-                                target: fitsMid
-                                property: "value"
-                                value: lightbox.stretchMid
-                                when: !fitsMid.pressed
-                            }
-                            onValueChanged: if (pressed) lightbox.stretchMid = value
-                        }
-                        HudButton {
-                            objectName: "lightboxFitsAuto"
-                            text: "AUTO"
-                            tooltip: "Recompute optimal stretch from the image histogram"
-                            onClicked: lightbox.revertToAuto()
-                        }
-                    }
-                }
-                TapHandler {
-                    acceptedButtons: Qt.RightButton
-                    onTapped: function (eventPoint) {
-                        mediaPage.openMediaMenu(mediaPage.selected, mapToItem(mediaPage, eventPoint.position.x, eventPoint.position.y))
-                    }
-                }
-            }
             Rectangle {
                 Layout.fillWidth: true
                 implicitHeight: lightboxMeta.implicitHeight + Theme.s5
@@ -1467,6 +1651,9 @@ Item {
                                 bits.push(Util.durationLabel(mediaPage.selected.duration))
                             if (mediaPage.selected.kind && mediaPage.selected.kind !== "photo" && mediaPage.selected.kind !== "astro")
                                 bits.push(Util.mediaKindLabel(mediaPage.selected))
+                            const sz = Util.formatFileSize(mediaPage.selected.file_size || 0)
+                            if (sz)
+                                bits.push(sz)
                             return bits.join("  ·  ") || (backend.mediaSource === "local" ? String(mediaPage.selected.file_name || "") : "On-device session")
                         }
                         color: Theme.textSecondary

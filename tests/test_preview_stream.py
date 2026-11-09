@@ -1654,6 +1654,52 @@ def test_completion_view_waits_until_the_pane_stills_settle() -> None:
     )
 
 
+def test_auto_stitch_pending_overlay_conditions() -> None:
+    # The mosaicAutoStitchPending flag logic mirrors the backend condition:
+    # pending when stills still downloading and no stitch has started.
+    def auto_stitch_pending(*, completion_ready: bool, stitch_status: str, stitch_deferred: bool) -> bool:
+        return (
+            not completion_ready
+            and stitch_status not in {"working", "done", "failed"}
+            and not stitch_deferred
+        )
+
+    _assert(
+        auto_stitch_pending(completion_ready=False, stitch_status="", stitch_deferred=False),
+        "pending flag set while pane stills are still downloading",
+    )
+    _assert(
+        not auto_stitch_pending(completion_ready=True, stitch_status="", stitch_deferred=False),
+        "pending clears once all stills are ready (stitch starts automatically)",
+    )
+    _assert(
+        not auto_stitch_pending(completion_ready=False, stitch_status="working", stitch_deferred=True),
+        "pending clears when user clicked STITCH and it was deferred (button shows STITCHING)",
+    )
+    _assert(
+        not auto_stitch_pending(completion_ready=False, stitch_status="working", stitch_deferred=False),
+        "pending clears while the stitch job is actively running",
+    )
+    _assert(
+        not auto_stitch_pending(completion_ready=False, stitch_status="done", stitch_deferred=False),
+        "pending clears when a stitch result is already on screen",
+    )
+    _assert(
+        not auto_stitch_pending(completion_ready=False, stitch_status="failed", stitch_deferred=False),
+        "pending clears when the previous stitch failed (retry is user-driven)",
+    )
+    # Confirm that auto stitch is still blocked (returns "skip") while stills download,
+    # matching the backend path that sets this flag.
+    _assert(
+        stitch_request(status="", source="", requested="auto", completion_ready=False) == "skip",
+        "auto stitch returns skip while stills are not ready (the pending period)",
+    )
+    _assert(
+        stitch_request(status="", source="", requested="auto", completion_ready=True) == "run",
+        "auto stitch runs once stills are ready (pending flag must be cleared first)",
+    )
+
+
 def test_mosaic_result_keeps_contact_sheet_until_dismissed() -> None:
     _assert(
         mosaic_result_holds_sheet(preview_result=True, active=True, columns=2, rows=2),

@@ -3096,6 +3096,7 @@ class AppBackend(QObject):
         self._stitch_path = ""
         self._stitch_source = ""
         self._stitch_deferred = False
+        self._mosaic_auto_stitch_pending: bool = False
         self._stitch_meta: dict[str, Any] = {}
         self._panorama_pool = QThreadPool(self)
         self._panorama_pool.setMaxThreadCount(1)
@@ -6944,6 +6945,9 @@ class AppBackend(QObject):
         self._stack_result_mosaic_pane = 0
         self._stack_result_group = ""
         self._mosaic_result_held = False
+        if self._mosaic_auto_stitch_pending:
+            self._mosaic_auto_stitch_pending = False
+            self.stitchChanged.emit()
         self._dismiss_hud_stitch()
         if had:
             self.mosaicPreviewChanged.emit()
@@ -7258,6 +7262,11 @@ class AppBackend(QObject):
     def stitchDetail(self) -> str:
         return self._stitch_detail
 
+    @Property(bool, notify=stitchChanged)
+    def mosaicAutoStitchPending(self) -> bool:
+        """True while a completed custom mosaic is waiting for pane stills before auto-stitching."""
+        return self._mosaic_auto_stitch_pending
+
     @Property(str, notify=stitchChanged)
     def stitchWarning(self) -> str:
         return self._stitch_warning
@@ -7506,10 +7515,12 @@ class AppBackend(QObject):
             return
         if decision == "defer":
             self._stitch_deferred = True
+            self._mosaic_auto_stitch_pending = False
             self._set_stitch("working", "Waiting for pane stills", source="held")
             return
         continuing = bool(self._stitch_deferred and self._stitch_status == "working")
         self._stitch_deferred = False
+        self._mosaic_auto_stitch_pending = False
         self._stitch_open_sheet("held", continue_deferred=continuing)
 
     def _completion_view_ready(self) -> bool:
@@ -7561,14 +7572,25 @@ class AppBackend(QObject):
             return
         if not custom_mosaic_completed(found, self.store.sessions.all()):
             return
+        completion_ready = self._completion_view_ready()
         if stitch_request(
             status=self._stitch_status,
             source=self._stitch_source,
             requested="auto",
-            completion_ready=self._completion_view_ready(),
+            completion_ready=completion_ready,
             deferred=self._stitch_deferred,
         ) != "run":
+            # Mark pending only while waiting for stills (not while already stitching/done/deferred).
+            waiting = (
+                not completion_ready
+                and self._stitch_status not in {"working", "done", "failed"}
+                and not self._stitch_deferred
+            )
+            if waiting != self._mosaic_auto_stitch_pending:
+                self._mosaic_auto_stitch_pending = waiting
+                self.stitchChanged.emit()
             return
+        self._mosaic_auto_stitch_pending = False
         self._stitch_open_sheet("auto", quiet=True)
 
     def _stitch_open_sheet(self, source: str, quiet: bool = False, *, continue_deferred: bool = False) -> None:
@@ -7782,6 +7804,7 @@ class AppBackend(QObject):
     @Slot()
     def dismissStitch(self) -> None:
         self._stitch_deferred = False
+        self._mosaic_auto_stitch_pending = False
         if self._stitch_status == "done" and self._stitch_path:
             self._persist_finished_stitch(self._stitch_path)
         self._stitch_token += 1
@@ -13513,6 +13536,10 @@ class AppBackend(QObject):
         if local is None and kind == "panorama":
             local = local_files.get(panorama_album_tiff_name(remote or thumb or name))
         local_url = self._media_file_url(str(local)) if local else ""
+        try:
+            file_size = int(local.stat().st_size) if local else 0
+        except OSError:
+            file_size = 0
         preview_resolved = entry.get("previewResolved") is True
         if preview_resolved:
             thumb = str(entry.get("thumbnailPath") or "").strip()
@@ -13580,6 +13607,7 @@ class AppBackend(QObject):
             "duration": duration,
             "is_dir": is_dir,
             "restack_path": restack_session_dir(remote or name) if is_dir else "",
+            "file_size": file_size,
             **panorama_geometry(entry),
         }
 
@@ -13633,16 +13661,21 @@ class AppBackend(QObject):
             "sub_type": 0,
             "duration": 0,
             "is_dir": False,
+            "file_size": 0,
         }
 
     def _normalize_local_item(self, path: Path) -> dict[str, Any]:
         url = self._media_file_url(str(path))
         kind = album_media_kind(str(path), path.name)
         is_video = kind == "video" or album_is_video_name(str(path), path.name)
+        file_size = 0
+        mtime = 0
         try:
-            mtime = int(path.stat().st_mtime)
+            st = path.stat()
+            mtime = int(st.st_mtime)
+            file_size = int(st.st_size)
         except OSError:
-            mtime = 0
+            pass
         return {
             "id": str(path),
             "source": "local",
@@ -13666,6 +13699,7 @@ class AppBackend(QObject):
             "sub_type": 0,
             "duration": 0,
             "is_dir": False,
+            "file_size": file_size,
         }
 
     def _select_media_id(self, item_id: str) -> None:

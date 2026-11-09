@@ -2697,6 +2697,48 @@ Item {
                         }
                     }
                     Item {
+                        id: mosaicAutoStitchOverlay
+                        z: 5
+                        parent: previewHost.previewChromeParent
+                        anchors.fill: parent
+                        visible: backend.mosaicAutoStitchPending && previewHost.mosaicActive && !previewHost.panoramaCanvas
+                        Rectangle {
+                            anchors.fill: parent
+                            color: Theme.scrim
+                            opacity: 0.42
+                        }
+                        Column {
+                            anchors.centerIn: parent
+                            spacing: Theme.px(10)
+                            width: Math.min(parent.width - Theme.px(48), 520)
+                            Text {
+                                id: stitchPendingHeading
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                text: "PREPARING STITCH"
+                                color: Theme.accent
+                                font.pixelSize: Theme.fontLg
+                                font.letterSpacing: 2
+                                font.bold: true
+                                SequentialAnimation on opacity {
+                                    running: mosaicAutoStitchOverlay.visible
+                                    loops: Animation.Infinite
+                                    NumberAnimation { from: 1; to: 0.45; duration: 700; easing.type: Easing.InOutSine }
+                                    NumberAnimation { from: 0.45; to: 1; duration: 700; easing.type: Easing.InOutSine }
+                                    onRunningChanged: if (!running) stitchPendingHeading.opacity = 1
+                                }
+                            }
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: parent.width
+                                wrapMode: Text.Wrap
+                                horizontalAlignment: Text.AlignHCenter
+                                text: "Downloading pane stills — the mosaic will be stitched automatically"
+                                color: Theme.textPrimary
+                                font.pixelSize: Theme.fontBase
+                            }
+                        }
+                    }
+                    Item {
                         id: stopOverlay
                         z: 6
                         parent: previewHost.previewChromeParent
@@ -2993,9 +3035,10 @@ Item {
                                      : (stitchReadyCount >= 2
                                         ? "Align the finished panes into one image"
                                         : "Needs a still in at least two panes")
-                            enabled: backend.stitchStatus === "done"
-                                     || backend.stitchStatus === "failed"
-                                     || (backend.stitchStatus !== "working" && stitchReadyCount >= 2)
+                            enabled: !backend.mosaicAutoStitchPending
+                                     && (backend.stitchStatus === "done"
+                                         || backend.stitchStatus === "failed"
+                                         || (backend.stitchStatus !== "working" && stitchReadyCount >= 2))
                             busy: backend.stitchStatus === "working"
                             buttonColor: Theme.fillActive
                             foregroundColor: Theme.accent

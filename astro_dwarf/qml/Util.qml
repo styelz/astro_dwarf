@@ -560,6 +560,14 @@ QtObject {
             return hours + ":" + String(minutes).padStart(2, "0") + ":" + String(secs).padStart(2, "0")
         return minutes + ":" + String(secs).padStart(2, "0")
     }
+    function formatFileSize(bytes) {
+        const b = Number(bytes || 0)
+        if (b <= 0) return ""
+        if (b < 1024) return b + " B"
+        if (b < 1048576) return (b / 1024).toFixed(1) + " KB"
+        if (b < 1073741824) return (b / 1048576).toFixed(1) + " MB"
+        return (b / 1073741824).toFixed(2) + " GB"
+    }
     function mediaKindLabel(item) {
         if (Util.isFitsMedia(item))
             return "FITS"
