@@ -11867,6 +11867,22 @@ class AppBackend(QObject):
             self._toast("Wait until the stop finishes", "warning")
             return
         device = self._device_by_id(device_id)
+        # Upgrade a bare TRACK command to sky_track (sidereal GOTO) when a
+        # sky-map target is locked.  Object tracking (cmd 14800) places a CV
+        # box on the live frame and does not compensate for Earth's rotation,
+        # so stars drift out of frame within seconds.  sky_track does a
+        # plate-solve GOTO and starts sidereal motor compensation.
+        if operation == "track":
+            sky = self._sky_target
+            if sky is not None and sky.ra_hours is not None and sky.dec_degrees is not None:
+                operation = "sky_track"
+            else:
+                self._toast(
+                    "Object tracking only",
+                    "warning",
+                    "Won't compensate for Earth's rotation. "
+                    "Lock a sky target in the sky map, then press TRACK for sidereal tracking.",
+                )
         if operation == "sky_track" and (not device or not device.location_configured):
             message = "Set an observing location in Settings before starting tracking"
             self.add_log("warning", message, device_id)

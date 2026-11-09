@@ -3372,6 +3372,8 @@ Item {
                             const primeBlock = Util.capturePrimeBlock(pad.effectiveOperation, root.scopeTelemetry)
                             if (primeBlock)
                                 return primeBlock
+                            if (pad.trackingPad && String(backend.mediaRestackPhase || "") !== "")
+                                return "A megastack is running. Tracking is unavailable until it finishes."
                             if (pad.trackingPad && root.scopeStacking)
                                 return "Tracking stays on while stacking. Press STACK to end the capture."
                             if (root.scopeStacking)
@@ -3677,6 +3679,10 @@ Item {
                         }
                         tooltip: trackingPad && root.scopeStacking
                                  ? "Tracking stays on while stacking.\nPress STACK to end the capture."
+                                 : trackingPad && !activeForState
+                                 ? (backend.skyTarget && backend.skyTarget.name
+                                    ? "Sidereal tracking – will slew to " + backend.skyTarget.name + " and track against Earth's rotation.\nCalibrate first if the mount is not already aligned."
+                                    : "Object tracking only – won't compensate for Earth's rotation on stars.\nLock a target in the sky map first, then press TRACK for sidereal tracking.")
                                  : modelData.start === "stack" && stackTracking && cameraPanel.stackSettingsText()
                                  ? cameraPanel.stackSettingsText()
                                  : ""

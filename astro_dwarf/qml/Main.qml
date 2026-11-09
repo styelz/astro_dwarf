@@ -367,6 +367,9 @@ ApplicationWindow {
         }
         if (op === "calibrate" && !!root.scopeTelemetry.tracking_active)
             return false
+        // Block starting tracking while a megastack is running on this device.
+        if (op === "track" && String(backend.mediaRestackPhase || "") !== "")
+            return false
         if (Util.capturePrimeBlock(op, root.scopeTelemetry) !== "")
             return false
         const panoramaBusy = activity === "panorama" || activity === "panorama_frame"
