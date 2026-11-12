@@ -63,18 +63,92 @@
       transform: none !important;
     }
   </style>
-  <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8"></script>
 </head>
 <body>
   <div id="aladin-lite-div"></div>
   <script>
     window.__astroDwarfAtlas = window.__astroDwarfAtlas || {};
-    // P/DSS2/color resolves to an IRSA mirror that does not send
-    // Access-Control-Allow-Origin for this page's localhost origin.
-    // The CDS HiPS does, so the survey tiles can load inside the app.
-    var DSS_COLOR = "https://alasky.cds.unistra.fr/DSS/DSSColor";
+    // The published api/v3/latest/aladin.js path is a 404 while CDS keeps
+    // that tree offline. The previewer at /AladinLite/ serves this build,
+    // which still installs window.A. The other two are tried if it fails.
+    var ALADIN_SCRIPTS = [
+      "https://aladin.cds.unistra.fr/AladinLite/aladin_3.9.0-beta-idia-1.js",
+      "https://aladin.cds.unistra.fr/aladin_3.9.0-beta.js",
+      "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js"
+    ];
+    // Strasbourg DSS tiles are offline. ESA mirrors that survey and sends
+    // Access-Control-Allow-Origin for this page. The survey id P/DSS2/color
+    // still resolves to an IRSA mirror that does not.
+    var DSS_COLOR = "https://skies.esac.esa.int/DSSColor";
+    // Name search and the Simbad pointer still call Strasbourg. The working
+    // previewer sends those to the IDIA mirrors instead.
+    var nativeFetch = window.fetch.bind(window);
+    var cdsSesameUrl = "https://cds.unistra.fr/cgi-bin/nph-sesame/";
+    var idiaSesameUrl = "https://vizier.idia.ac.za/viz-bin/nph-sesame/";
+    var simbadPointerTapUrl = "https://simbad.idia.ac.za/simbad/sim-tap/sync";
+    var simbadFlatPath = "/cgi/simbad-flat/simbad-quick.py";
+    function parseSimbadFlatCoordinate(ident) {
+      var parts = String(ident || "").trim().split(/\s+/);
+      if (parts.length !== 6)
+        return null;
+      var nums = parts.map(Number);
+      if (!nums.every(function(value) { return Number.isFinite(value); }))
+        return null;
+      var ra = 15 * (nums[0] + nums[1] / 60 + nums[2] / 3600);
+      var sign = parts[3].charAt(0) === "-" ? -1 : 1;
+      var dec = sign * (Math.abs(nums[3]) + nums[4] / 60 + nums[5] / 3600);
+      if (!Number.isFinite(ra) || !Number.isFinite(dec))
+        return null;
+      return {ra: ra, dec: dec};
+    }
+    function fetchSimbadFlatThroughIdia(url, input, init) {
+      var coord = parseSimbadFlatCoordinate(url.searchParams.get("Ident") || "");
+      var radius = Number(url.searchParams.get("SR"));
+      if (!coord || !Number.isFinite(radius) || radius <= 0)
+        return Promise.reject(new TypeError("Invalid legacy SIMBAD pointer request"));
+      var query = [
+        "SELECT TOP 1 main_id, ra, dec, otype, nbref",
+        "FROM basic",
+        "WHERE 1=CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', " + coord.ra + ", " + coord.dec + ", " + radius + "))",
+        "ORDER BY nbref DESC"
+      ].join(" ");
+      var params = new URLSearchParams({
+        request: "doQuery",
+        lang: "adql",
+        format: "json",
+        query: query
+      });
+      var signal = input instanceof Request ? input.signal : (init && init.signal);
+      return nativeFetch(simbadPointerTapUrl + "?" + params.toString(), {signal: signal}).then(function(response) {
+        if (!response.ok)
+          throw new TypeError("SIMBAD TAP IDIA returned HTTP " + response.status);
+        return response.json();
+      }).then(function(payload) {
+        var row = payload && Array.isArray(payload.data) ? payload.data[0] : null;
+        var body = row ? (row[1] + " " + row[2] + "/" + row[0] + "(," + (row[3] == null ? "" : row[3]) + ")") : "";
+        return new Response(body, {
+          status: 200,
+          headers: {"Content-Type": "text/plain; charset=utf-8"}
+        });
+      });
+    }
+    window.fetch = function(input, init) {
+      var raw = input instanceof Request ? input.url : (input instanceof URL ? input.href : input);
+      var url;
+      try {
+        url = new URL(raw, window.location.href);
+      } catch (err) {
+        return nativeFetch(input, init);
+      }
+      if (url.pathname.endsWith(simbadFlatPath))
+        return fetchSimbadFlatThroughIdia(url, input, init);
+      if (url.href.indexOf(cdsSesameUrl) === 0)
+        return nativeFetch(url.href.replace(cdsSesameUrl, idiaSesameUrl), init);
+      return nativeFetch(input, init);
+    };
     var aladinStarted = false;
     var chartStatusEl = null;
+    var nextAladinScript = 0;
     function chartStatus(text) {
       if (!chartStatusEl) {
         chartStatusEl = document.createElement("div");
@@ -89,18 +163,27 @@
         chartStatusEl.parentNode.removeChild(chartStatusEl);
       chartStatusEl = null;
     }
+    function injectAladinScript() {
+      var src = ALADIN_SCRIPTS[nextAladinScript % ALADIN_SCRIPTS.length];
+      var follow = nextAladinScript < ALADIN_SCRIPTS.length - 1;
+      nextAladinScript += 1;
+      var retry = document.createElement("script");
+      retry.src = src;
+      retry.charset = "utf-8";
+      retry.onload = function() { startAladin(0); };
+      retry.onerror = function() {
+        if (follow)
+          injectAladinScript();
+      };
+      document.head.appendChild(retry);
+    }
     function startAladin(attempt) {
       if (aladinStarted)
         return;
       if (!window.A || !window.A.init) {
         chartStatus(attempt > 40 ? "Sky chart did not load. Retrying\u2026" : "Sky chart is loading");
-        if (attempt === 1 || attempt === 8 || (attempt > 0 && attempt % 20 === 0)) {
-          var retry = document.createElement("script");
-          retry.src = "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js";
-          retry.charset = "utf-8";
-          retry.onload = function() { startAladin(attempt); };
-          document.head.appendChild(retry);
-        }
+        if (attempt === 0 || attempt === 8 || (attempt > 0 && attempt % 20 === 0))
+          injectAladinScript();
         setTimeout(function() { startAladin(attempt + 1); }, attempt > 40 ? 2000 : 250);
         return;
       }
