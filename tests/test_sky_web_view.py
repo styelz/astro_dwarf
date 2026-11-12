@@ -196,6 +196,25 @@ def test_stellarium_app_link_opens_on_the_host() -> None:
     view = (ROOT / "astro_dwarf" / "qml" / "pages" / "SkyWebView.qml").read_text(encoding="utf-8")
     _assert("hostLinkRequested" in view, "Windows title channel opens the host browser")
     _assert("pollHostLink" in view, "a missed title still opens the host browser")
+    simbad = "https://simbad.idia.ac.za/simbad/sim-id?Ident=IC%202944"
+    _assert(
+        _host_link(simbad, "_blank", origin="http://127.0.0.1:9") == simbad,
+        "Simbad link leaves the atlas",
+    )
+    _assert(
+        _host_link("http://127.0.0.1:9/index.html", origin="http://127.0.0.1:9") == "",
+        "the atlas page stays in the view",
+    )
+    _assert(external_link_url(simbad) == simbad, "simbad url")
+    atlas = sky_atlas_boot_script()
+    _assert("installHostLinks();" in atlas, "atlas installs the host link bridge")
+    _assert("astroDwarfHostLink" in atlas, "atlas uses the same link rule")
+    atlas_view = (ROOT / "astro_dwarf" / "qml" / "pages" / "SkyAtlasView.qml").read_text(encoding="utf-8")
+    _assert("hostLinkRequested" in atlas_view, "atlas title channel opens the host browser")
+    _assert("pollHostLink" in atlas_view, "a missed atlas title still opens the host browser")
+    atlas_engine = (ROOT / "astro_dwarf" / "qml" / "pages" / "SkyAtlasEngineItem.qml").read_text(encoding="utf-8")
+    _assert("backend.openExternalUrl" in atlas_engine, "Linux atlas windows open on the host")
+    _assert("popupSink" not in atlas_engine, "Linux must not hide the Simbad page")
 
 
 if __name__ == "__main__":

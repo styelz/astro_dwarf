@@ -142,10 +142,10 @@ def _host_number(value: str) -> float:
 
 
 # Stellarium Web shows "This site uses cookies... I Agree" and the atlas is WebGL.
-# The App pill and other target=_blank links ask the embedded view for a new
-# window. Windows WebView2 and Linux WebEngine drop that window, and the
-# WebView2 link menu cannot open, copy, or save. This page script hands the
-# address to the host instead.
+# The App pill, Aladin's "View in SIMBAD" link, and other target=_blank links
+# ask the embedded view for a new window. Windows WebView2 and Linux WebEngine
+# drop that window, and the WebView2 link menu cannot open, copy, or save.
+# This page script hands the address to the host instead.
 SKY_WEB_HOST_LINK_JS = r"""
 function astroDwarfHostLink(href, target, origin, modified) {
   var url = String(href || "").replace(/^\s+|\s+$/g, "");
@@ -166,7 +166,7 @@ function astroDwarfHostLink(href, target, origin, modified) {
 }
 """
 
-SKY_WEB_BOOT_JS = "(function() {\n" + SKY_WEB_HOST_LINK_JS + r"""
+SKY_WEB_HOST_LINKS_JS = r"""
   function installHostLinks() {
     if (window.__astroDwarfHostLinks)
       return;
@@ -252,7 +252,9 @@ SKY_WEB_BOOT_JS = "(function() {\n" + SKY_WEB_HOST_LINK_JS + r"""
       };
     }
   }
-  function labelOf(node) {
+"""
+
+SKY_WEB_BOOT_JS = "(function() {\n" + SKY_WEB_HOST_LINK_JS + SKY_WEB_HOST_LINKS_JS + r"""  function labelOf(node) {
     return String(node.innerText || node.textContent || node.value || "")
       .replace(/\s+/g, " ").trim();
   }

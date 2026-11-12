@@ -164,7 +164,20 @@ def sky_atlas_ready_script() -> str:
 
 
 def sky_atlas_boot_script() -> str:
-    return ATLAS_BOOT_JS
+    # services imports this module. The link bridge is read when the script
+    # is built, after both modules have finished loading.
+    from .services import SKY_WEB_HOST_LINK_JS, SKY_WEB_HOST_LINKS_JS
+
+    needle = "(function(){\n  try {\n    document.documentElement.style.userSelect = \"none\";"
+    insert = (
+        "(function(){\n"
+        + SKY_WEB_HOST_LINK_JS
+        + SKY_WEB_HOST_LINKS_JS
+        + "\n  try {\n    installHostLinks();\n    document.documentElement.style.userSelect = \"none\";"
+    )
+    if needle not in ATLAS_BOOT_JS:
+        raise RuntimeError("atlas boot no longer has the host-link insertion point")
+    return ATLAS_BOOT_JS.replace(needle, insert, 1)
 
 
 def sky_atlas_harvest_script() -> str:

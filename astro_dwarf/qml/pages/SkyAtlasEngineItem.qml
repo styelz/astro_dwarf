@@ -43,7 +43,8 @@ Item {
                 root.loadState("failed")
         }
         onNewWindowRequested: function(request) {
-            request.openIn(popupSink)
+            const url = request && request.requestedUrl ? String(request.requestedUrl) : ""
+            backend.openExternalUrl(url)
         }
         // The page's contextmenu listener hands the click to the HUD menu.
         // Accepting here stops Chromium's own menu from taking the gesture.
@@ -68,14 +69,6 @@ Item {
             if (root.abortCount === 8)
                 root.loadState("failed")
         }
-    }
-
-    WebEngineView {
-        id: popupSink
-        visible: false
-        width: 1
-        height: 1
-        profile: atlasProfile
     }
 
     WebEngineProfile {
