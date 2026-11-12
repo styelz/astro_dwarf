@@ -1172,7 +1172,7 @@ Item {
                     title: "BURST"
                     columns: 1
                     FieldHint {
-                        visible: cameraPanel.dsoMode
+                        visible: cameraPanel.dsoMode && root.commandEnabled("photo_mode")
                         text: "Switch to photo mode for burst and timelapse."
                         Layout.minimumWidth: 0
                         Layout.fillWidth: true
@@ -1467,12 +1467,8 @@ Item {
                             return backend.videoUrl || "Telescope connected — start the stream"
                         return "Connect a telescope to start the stream"
                     }
-                    // Selected lens. Keep this binding: assigning it from SWAP
-                    // drops the link, and later TELE/WIDE clicks change the
-                    // camera without moving the picture.
-                    readonly property bool cameraWide: String((backend.selectedDevice && backend.selectedDevice.camera) || "tele") === "wide"
+                    // Main picture. False keeps tele large. TELE/WIDE does not write this.
                     property bool viewsSwapped: false
-                    onCameraWideChanged: viewsSwapped = false
                     property bool pipEnabled: true
                     property bool pipRestoreAfterPano: false
                     // The framing canvas already shows the scanned wide image full-frame,
@@ -1497,7 +1493,7 @@ Item {
                     onPanoramaShootingChanged: {
                         if (panoramaShooting) {
                             panoramaKeep = true
-                            viewsSwapped = cameraWide
+                            viewsSwapped = false
                         } else if (!panoramaFrame) {
                             panoramaKeep = false
                             if (pipRestoreAfterPano) {
@@ -1512,7 +1508,7 @@ Item {
                         && !root.scopeTelemetry.capture_active
                         && root.scopePending !== "stack"
                         && !controlPage.mosaicRunning
-                    readonly property bool displayWide: backend.previewStacking ? false : (pipAvailable ? (viewsSwapped !== cameraWide) : backend.previewWidePlaying)
+                    readonly property bool displayWide: backend.previewStacking ? false : (pipAvailable ? viewsSwapped : backend.previewWidePlaying)
                     readonly property string mosaicLiveCamera: {
                         if (backend.previewStacking || backend.previewTelePlaying)
                             return "tele"
@@ -1618,23 +1614,19 @@ Item {
                     function applyDeviceCamera(camera) {
                         const choice = camera === "wide" ? "wide" : "tele"
                         previewCamera = choice
-                        viewsSwapped = false
                     }
                     function showLens(camera) {
                         const choice = camera === "wide" ? "wide" : "tele"
                         const selected = String((backend.selectedDevice && backend.selectedDevice.camera) || "tele")
                         if (selected !== choice)
                             backend.setLiveCamera(backend.selectedDeviceId, choice)
-                        viewsSwapped = false
-                        if (feedFullscreen)
-                            feedFullscreenCamera = choice
                     }
                     function swapViews() {
                         if (!pipAvailable)
                             return
                         if (feedFullscreen) {
                             feedFullscreenCamera = feedFullscreenCamera === "wide" ? "tele" : "wide"
-                            viewsSwapped = (feedFullscreenCamera === "wide") !== cameraWide
+                            viewsSwapped = feedFullscreenCamera === "wide"
                             return
                         }
                         viewsSwapped = !viewsSwapped
@@ -1944,6 +1936,7 @@ Item {
                             const camera = String((backend.selectedDevice && backend.selectedDevice.camera) || "tele")
                             if (deviceId !== previewHost.previewDeviceId) {
                                 previewHost.previewDeviceId = deviceId
+                                previewHost.viewsSwapped = false
                                 previewHost.applyDeviceCamera(camera)
                                 previewHost.stopPreview()
                                 return
