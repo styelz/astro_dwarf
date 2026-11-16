@@ -149,6 +149,7 @@
     var aladinStarted = false;
     var chartStatusEl = null;
     var nextAladinScript = 0;
+    var scriptPending = false;
     function chartStatus(text) {
       if (!chartStatusEl) {
         chartStatusEl = document.createElement("div");
@@ -164,17 +165,37 @@
       chartStatusEl = null;
     }
     function injectAladinScript() {
-      var src = ALADIN_SCRIPTS[nextAladinScript % ALADIN_SCRIPTS.length];
-      var follow = nextAladinScript < ALADIN_SCRIPTS.length - 1;
+      // One build at a time, and only move on when that request fails.
+      // aladin.js is about 1.8 MB. A cold download takes longer than a short
+      // timer, and abandoning it to start the next URL drops the copy that
+      // would have started the chart. The file is cached after that, so the
+      // next launch looked fine.
+      if (scriptPending || aladinStarted)
+        return;
+      if (nextAladinScript >= ALADIN_SCRIPTS.length)
+        nextAladinScript = 0;
+      var src = ALADIN_SCRIPTS[nextAladinScript];
       nextAladinScript += 1;
       var retry = document.createElement("script");
+      var settled = false;
+      function settle(ok) {
+        if (settled)
+          return;
+        settled = true;
+        scriptPending = false;
+        if (ok)
+          startAladin(0);
+        else if (nextAladinScript >= ALADIN_SCRIPTS.length) {
+          nextAladinScript = 0;
+          setTimeout(injectAladinScript, 2000);
+        } else
+          injectAladinScript();
+      }
+      scriptPending = true;
       retry.src = src;
       retry.charset = "utf-8";
-      retry.onload = function() { startAladin(0); };
-      retry.onerror = function() {
-        if (follow)
-          injectAladinScript();
-      };
+      retry.onload = function() { settle(true); };
+      retry.onerror = function() { settle(false); };
       document.head.appendChild(retry);
     }
     function startAladin(attempt) {
@@ -182,7 +203,7 @@
         return;
       if (!window.A || !window.A.init) {
         chartStatus(attempt > 40 ? "Sky chart did not load. Retrying\u2026" : "Sky chart is loading");
-        if (attempt === 0 || attempt === 8 || (attempt > 0 && attempt % 20 === 0))
+        if (!scriptPending)
           injectAladinScript();
         setTimeout(function() { startAladin(attempt + 1); }, attempt > 40 ? 2000 : 250);
         return;
@@ -216,6 +237,8 @@
         } catch (err) {}
       }).catch(function() {
         aladinStarted = false;
+        // This promise already failed. Calling it again never starts the chart.
+        try { delete window.A; } catch (err) { window.A = undefined; }
         chartStatus("Sky chart did not load. Retrying\u2026");
         setTimeout(function() { startAladin(attempt + 1); }, 2000);
       });

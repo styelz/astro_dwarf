@@ -170,6 +170,8 @@ def test_atlas_target_tooltip_stays_above_location_box() -> None:
     _assert("vizier.idia.ac.za/viz-bin/nph-sesame" in html, "name search mirror")
     _assert('survey: "P/DSS2/color"' not in html, "irsa mirror")
     _assert("if (!window.A || !window.A.init)" in html, "wait for aladin.js")
+    _assert("scriptPending" in html, "one aladin.js download at a time")
+    _assert("attempt === 8" not in html, "cold start must not fetch a second build")
     page = (ROOT / "astro_dwarf" / "qml" / "pages" / "SkyPage.qml").read_text(encoding="utf-8")
     _assert("atlasMapLoader" in page and "webMapLoader" in page, "both maps stay built")
     _assert("atlasHeld" in page and "webHeld" in page, "provider switch does not destroy webengine")
@@ -179,6 +181,88 @@ def test_atlas_target_tooltip_stays_above_location_box() -> None:
     _assert("@Property(str, constant=True)\n    def skyAtlasUrl" in backend, "atlas url is not a settings notify")
     _assert("astro-dwarf-atlas-tooltip" in boot and "aladin-simbadPointer-control" in boot, "boot tooltip")
     _assert("transform:none" in boot.replace(" ", ""), "boot pins tooltip right")
+
+
+def test_cold_aladin_download_does_not_start_a_second_build() -> None:
+    html = (ROOT / "astro_dwarf" / "qml" / "sky_atlas" / "index.html").read_text(encoding="utf-8")
+    start = html.index("var aladinStarted")
+    end = html.rindex("startAladin(0);")
+    body = html[start:end]
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtQml import QJSEngine
+
+    QCoreApplication.instance() or QCoreApplication([])
+    engine = QJSEngine()
+    script = r"""
+var scripts = [];
+var timers = [];
+var window = {};
+function setTimeout(fn, ms) {
+  var id = timers.length;
+  timers.push({fn: fn, ms: ms, dead: false});
+  return id;
+}
+function clearTimeout(id) {
+  if (timers[id]) timers[id].dead = true;
+}
+var document = {
+  head: { appendChild: function(node) { scripts.push(node); } },
+  body: { appendChild: function() {} },
+  getElementById: function() { return null; },
+  createElement: function() { return {style: {}, charset: "", src: "", textContent: ""}; }
+};
+var DSS_COLOR = "https://example.test/dss";
+var ALADIN_SCRIPTS = [
+  "https://example.test/first.js",
+  "https://example.test/second.js",
+  "https://example.test/third.js"
+];
+""" + body + r"""
+startAladin(0);
+function flushQuick() {
+  var batch = timers.slice();
+  for (var i = 0; i < batch.length; i++) {
+    var t = batch[i];
+    if (!t || t.dead || t.ms >= 1000)
+      continue;
+    t.dead = true;
+    t.fn();
+  }
+}
+for (var n = 0; n < 40; n++)
+  flushQuick();
+var whilePending = scripts.length;
+var first = scripts[0].src;
+scripts[0].onerror();
+var afterError = scripts.length;
+var second = scripts[1].src;
+window.A = {
+  init: { then: function(ok) { ok(); return {catch: function() { return this; }}; } },
+  aladin: function() { return {setProjection: function() {}, setCooGrid: function() {}}; }
+};
+scripts[1].onload();
+for (var n2 = 0; n2 < 5; n2++)
+  flushQuick();
+JSON.stringify({
+  whilePending: whilePending,
+  first: first,
+  afterError: afterError,
+  second: second,
+  afterReady: scripts.length,
+  started: aladinStarted,
+  hasChart: !!window.aladin
+});
+"""
+    result = engine.evaluate(script)
+    _assert(not result.isError(), result.toString())
+    import json
+    data = json.loads(result.toString())
+    _assert(data["whilePending"] == 1, data)
+    _assert(data["first"] == "https://example.test/first.js", data)
+    _assert(data["afterError"] == 2, data)
+    _assert(data["second"] == "https://example.test/second.js", data)
+    _assert(data["afterReady"] == 2, data)
+    _assert(data["started"] is True and data["hasChart"] is True, data)
 
 
 def test_map_left_click_dismisses_context_menu() -> None:
@@ -212,5 +296,6 @@ if __name__ == "__main__":
     test_atlas_set_fov_from_view()
     test_atlas_view_and_lock_helpers()
     test_atlas_target_tooltip_stays_above_location_box()
+    test_cold_aladin_download_does_not_start_a_second_build()
     test_map_left_click_dismisses_context_menu()
     print("ok")
