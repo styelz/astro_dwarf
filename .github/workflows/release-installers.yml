@@ -134,18 +134,34 @@ jobs:
           if-no-files-found: error
 
   macos:
-    name: macOS Apple Silicon
+    name: macOS ${{ matrix.label }}
     needs: version
     if: needs.version.outputs.release == 'true'
-    runs-on: macos-15
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            label: Apple Silicon
+            arch: arm64
+            python_arch: arm64
+          # Last Intel image GitHub publishes. PySide6 is a universal2 wheel;
+          # this runner thins the frozen app to x86_64.
+          - runner: macos-15-intel
+            label: Intel
+            arch: x86_64
+            python_arch: x64
     env:
       VERSION: ${{ needs.version.outputs.version }}
       ASTRO_DWARF_VERSION: ${{ needs.version.outputs.version }}
+      MAC_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          architecture: ${{ matrix.python_arch }}
       - uses: AnimMouse/setup-ffmpeg@v1.2.5
 
       - name: Apply release version
@@ -179,6 +195,11 @@ jobs:
           if [[ ! -x "$APP" ]]; then
             APP="dist/AstroDwarf/AstroDwarf"
           fi
+          ARCHS="$(lipo -archs "$APP")"
+          if [[ "$ARCHS" != "$MAC_ARCH" ]]; then
+            echo "Expected a ${MAC_ARCH} executable, lipo reports: ${ARCHS}" >&2
+            exit 1
+          fi
           ASTRO_DWARF_TEST_EXIT_MS=3000 "$APP"
 
       - name: Build disk image and command-line package
@@ -191,7 +212,7 @@ jobs:
             -volname "Astro Dwarf" \
             -srcfolder dmg-root \
             -ov -format UDZO \
-            "release/AstroDwarf-${VERSION}-macos-arm64.dmg"
+            "release/AstroDwarf-${VERSION}-macos-${MAC_ARCH}.dmg"
           cp -R dist/AstroDwarf.app pkgroot/Applications/
           install -m 0755 packaging/macos/astro-dwarf pkgroot/usr/local/bin/astro-dwarf
           ln -s astro-dwarf pkgroot/usr/local/bin/AstroDwarf
@@ -200,24 +221,49 @@ jobs:
             --identifier com.astrodwarf.app \
             --version "${VERSION}" \
             --install-location / \
-            "release/AstroDwarf-${VERSION}-macos-arm64.pkg"
+            "release/AstroDwarf-${VERSION}-macos-${MAC_ARCH}.pkg"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-installer
+          name: macos-installer-${{ matrix.arch }}
           path: |
             release/*.dmg
             release/*.pkg
           if-no-files-found: error
 
   linux:
-    name: Linux x64
+    name: Linux ${{ matrix.label }}
     needs: version
     if: needs.version.outputs.release == 'true'
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 keeps the x64 AppImage on glibc 2.35.
+          - runner: ubuntu-22.04
+            label: x64
+            app_arch: x86_64
+            nfpm_arch: amd64
+            nfpm_asset: x86_64
+            deb_arch: amd64
+            pkg_arch: x86_64
+          # PySide6's aarch64 wheel needs glibc 2.39, so ARM cannot use 22.04.
+          - runner: ubuntu-24.04-arm
+            label: ARM64
+            app_arch: aarch64
+            nfpm_arch: arm64
+            nfpm_asset: arm64
+            deb_arch: arm64
+            pkg_arch: aarch64
     env:
       VERSION: ${{ needs.version.outputs.version }}
       ASTRO_DWARF_VERSION: ${{ needs.version.outputs.version }}
+      APP_ARCH: ${{ matrix.app_arch }}
+      NFPM_ARCH: ${{ matrix.nfpm_arch }}
+      NFPM_ASSET: ${{ matrix.nfpm_asset }}
+      DEB_ARCH: ${{ matrix.deb_arch }}
+      PKG_ARCH: ${{ matrix.pkg_arch }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -231,14 +277,29 @@ jobs:
       - name: Install system and build dependencies
         shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y \
-            libasound2 libdbus-1-3 libdrm2 libegl1 libfontconfig1 libgbm1 \
-            libgl1 libglib2.0-0 libnss3 libpulse0 libx11-xcb1 libxcb-cursor0 \
-            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
-            libxcb-render-util0 libxcb-shape0 libxcb-shm0 libxcb-sync1 \
-            libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 libxcb1 \
-            libxkbcommon-x11-0 libxkbcommon0 xvfb zstd
+          # Ubuntu 24.04 renamed several libraries with a t64 suffix.
+          packages=(
+            libasound2 libdbus-1-3 libdrm2 libegl1 libfontconfig1 libgbm1
+            libgl1 libglib2.0-0 libnss3 libpulse0 libx11-xcb1 libxcb-cursor0
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0
+            libxcb-render-util0 libxcb-shape0 libxcb-shm0 libxcb-sync1
+            libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 libxcb1
+            libxkbcommon-x11-0 libxkbcommon0 xvfb zstd file
+          )
+          install=()
+          for pkg in "${packages[@]}"; do
+            if apt-cache show "$pkg" >/dev/null 2>&1; then
+              install+=("$pkg")
+            elif apt-cache show "${pkg}t64" >/dev/null 2>&1; then
+              install+=("${pkg}t64")
+            else
+              echo "No apt package for ${pkg}" >&2
+              exit 1
+            fi
+          done
+          sudo apt-get install -y "${install[@]}"
           python -m pip install -e ".[device,build]"
 
       - name: Verify telescope SDK imports
@@ -262,6 +323,11 @@ jobs:
           QT_DEBUG_PLUGINS: "1"
         run: |
           set -euo pipefail
+          case "$APP_ARCH" in
+            x86_64) file dist/AstroDwarf/AstroDwarf | grep -q 'x86-64' ;;
+            aarch64) file dist/AstroDwarf/AstroDwarf | grep -q 'aarch64' ;;
+            *) echo "Unexpected APP_ARCH ${APP_ARCH}" >&2; exit 1 ;;
+          esac
           timeout 30s env ASTRO_DWARF_TEST_EXIT_MS=3000 dist/AstroDwarf/AstroDwarf
 
       - name: Build AppImage
@@ -277,14 +343,14 @@ jobs:
           cp packaging/icons/hicolor/256x256/apps/astro-dwarf.png AppDir/.DirIcon
           chmod +x AppDir/AppRun AppDir/usr/bin/AstroDwarf AppDir/usr/bin/AstroDwarfWorker
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 -o appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${APP_ARCH}.AppImage"
           chmod +x appimagetool
           # Omit "linux" from the filename: every AppImage is for Linux.
           # -u embeds GitHub release update info and writes the .zsync beside the image.
-          ARCH=x86_64 ./appimagetool --appimage-extract-and-run \
-            -u "gh-releases-zsync|styelz|astro_dwarf|latest|AstroDwarf-*-x86_64.AppImage.zsync" \
+          ARCH="${APP_ARCH}" ./appimagetool --appimage-extract-and-run \
+            -u "gh-releases-zsync|styelz|astro_dwarf|latest|AstroDwarf-*-${APP_ARCH}.AppImage.zsync" \
             AppDir \
-            "release/AstroDwarf-${VERSION}-x86_64.AppImage"
+            "release/AstroDwarf-${VERSION}-${APP_ARCH}.AppImage"
 
       - name: Build Debian, RPM, and Arch packages
         shell: bash
@@ -292,38 +358,57 @@ jobs:
           sed -i 's/\r$//' packaging/linux/astro-dwarf packaging/linux/AppRun packaging/linux/postinstall.sh
           chmod +x packaging/linux/astro-dwarf packaging/linux/postinstall.sh
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
-            https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz \
+            "https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_${NFPM_ASSET}.tar.gz" \
             | tar -xz -C "$RUNNER_TEMP" nfpm
           "$RUNNER_TEMP/nfpm" package \
             --config packaging/linux/nfpm.yaml \
             --packager deb \
-            --target "release/AstroDwarf-${VERSION}-linux-amd64.deb"
+            --target "release/AstroDwarf-${VERSION}-linux-${DEB_ARCH}.deb"
           "$RUNNER_TEMP/nfpm" package \
             --config packaging/linux/nfpm.yaml \
             --packager rpm \
-            --target "release/AstroDwarf-${VERSION}-linux-x86_64.rpm"
+            --target "release/AstroDwarf-${VERSION}-linux-${PKG_ARCH}.rpm"
           "$RUNNER_TEMP/nfpm" package \
             --config packaging/linux/nfpm.yaml \
             --packager archlinux \
-            --target "release/AstroDwarf-${VERSION}-linux-x86_64.pkg.tar.zst"
-          dpkg-deb -c "release/AstroDwarf-${VERSION}-linux-amd64.deb" | grep -E '/usr/bin/(astro-dwarf|AstroDwarf)$'
-          dpkg-deb -c "release/AstroDwarf-${VERSION}-linux-amd64.deb" \
+            --target "release/AstroDwarf-${VERSION}-linux-${PKG_ARCH}.pkg.tar.zst"
+          test "$(dpkg-deb -f "release/AstroDwarf-${VERSION}-linux-${DEB_ARCH}.deb" Architecture)" = "$DEB_ARCH"
+          dpkg-deb -c "release/AstroDwarf-${VERSION}-linux-${DEB_ARCH}.deb" | grep -E '/usr/bin/(astro-dwarf|AstroDwarf)$'
+          dpkg-deb -c "release/AstroDwarf-${VERSION}-linux-${DEB_ARCH}.deb" \
             | grep -E 'usr/share/icons/hicolor/256x256/apps/astro-dwarf.png$'
-          dpkg-deb -c "release/AstroDwarf-${VERSION}-linux-amd64.deb" \
+          dpkg-deb -c "release/AstroDwarf-${VERSION}-linux-${DEB_ARCH}.deb" \
             | grep -E 'usr/share/pixmaps/astro-dwarf.png$'
           tar --use-compress-program=zstd -tf \
-            "release/AstroDwarf-${VERSION}-linux-x86_64.pkg.tar.zst" \
+            "release/AstroDwarf-${VERSION}-linux-${PKG_ARCH}.pkg.tar.zst" \
             | grep -E '(^|/)usr/bin/(astro-dwarf|AstroDwarf)$'
+
+      - name: Build Flatpak
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i 's/\r$//' packaging/linux/build-flatpak.sh packaging/linux/flatpak-run.sh
+          chmod +x packaging/linux/build-flatpak.sh packaging/linux/flatpak-run.sh
+          # Ubuntu 22.04's Flatpak is too old for the current runtime. The
+          # container is 24.04 on both runners; the app binary stays the one
+          # built above, so the x64 build keeps its older glibc.
+          docker run --rm --privileged \
+            -e VERSION \
+            -e PKG_ARCH \
+            -v "$PWD:/src" \
+            -w /src \
+            ubuntu:24.04 \
+            bash packaging/linux/build-flatpak.sh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-installers
+          name: linux-installers-${{ matrix.app_arch }}
           path: |
             release/*.AppImage
             release/*.AppImage.zsync
             release/*.deb
             release/*.rpm
             release/*.pkg.tar.zst
+            release/*.flatpak
           if-no-files-found: error
 
   release:

@@ -1,0 +1,34 @@
+# Single-file bundle of the PyInstaller build. The release job stages
+# packaging/linux/flatpak-stage before flatpak-builder runs.
+app-id: com.astrodwarf.app
+runtime: org.freedesktop.Platform
+runtime-version: "26.08"
+sdk: org.freedesktop.Sdk
+command: astro-dwarf
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=dri
+  - --filesystem=home
+  # Telescope discovery can use BlueZ. IP setup does not need it.
+  - --socket=system-bus
+  - --system-talk-name=org.bluez
+modules:
+  - name: astro-dwarf
+    buildsystem: simple
+    build-commands:
+      - install -d /app/lib/astro-dwarf /app/bin
+      - cp -a payload/. /app/lib/astro-dwarf/
+      - install -m 0755 flatpak-run.sh /app/bin/astro-dwarf
+      - install -Dm644 astro-dwarf.flatpak.desktop /app/share/applications/com.astrodwarf.app.desktop
+      - |
+        for size in 32 48 64 128 256 512; do
+          install -Dm644 "icons/${size}x${size}/apps/astro-dwarf.png" \
+            "/app/share/icons/hicolor/${size}x${size}/apps/com.astrodwarf.app.png"
+        done
+    sources:
+      - type: dir
+        path: flatpak-stage

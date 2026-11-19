@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 build/
 dist/
+packaging/linux/flatpak-stage/
 .cursor/*
 !.cursor/rules/
 .cursor/rules/*
@@ -13,6 +14,7 @@ dist/
 .cursor/commands/*
 !.cursor/commands/version-bump.md
 tests/*
+!tests/test_release_installers.py
 MEMORIES.md
 
 # Runtime telescope data and SDK worker files

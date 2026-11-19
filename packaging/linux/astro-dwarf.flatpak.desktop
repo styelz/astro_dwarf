@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Astro Dwarf
+Comment=Schedule and control Dwarf II, Dwarf 3, and Dwarf Mini telescopes
+Exec=astro-dwarf
+Icon=com.astrodwarf.app
+Categories=Science;Astronomy;
+Terminal=false
+StartupWMClass=astro-dwarf
+StartupNotify=true

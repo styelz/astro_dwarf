@@ -53,8 +53,9 @@
       <h2>Install</h2>
       <ul class="notes">
         <li><strong>Windows:</strong> run <code>AstroDwarf-Setup-&lt;version&gt;-win64.exe</code>. No admin password is required. If SmartScreen warns, choose More info → Run anyway. For a copy that does not need installing, unzip the portable zip and run <code>AstroDwarf.exe</code>.</li>
-        <li><strong>Mac (Apple Silicon):</strong> open the <code>.dmg</code>, drag the app to Applications, then right-click it and choose Open the first time.</li>
-        <li><strong>Linux:</strong> use the <code>.AppImage</code>, or the package for your system (<code>.deb</code>, <code>.rpm</code>, or <code>.pkg.tar.zst</code>).</li>
+        <li><strong>Mac (Apple Silicon):</strong> open the <code>macos-arm64.dmg</code>, drag the app to Applications, then right-click it and choose Open the first time.</li>
+        <li><strong>Mac (Intel):</strong> open the <code>macos-x86_64.dmg</code> and follow the same steps. Intel Macs need macOS 14 or newer.</li>
+        <li><strong>Linux:</strong> use the <code>.AppImage</code> (<code>x86_64</code> or <code>aarch64</code>), or the package for your system (<code>.deb</code>, <code>.rpm</code>, <code>.pkg.tar.zst</code>, or <code>.flatpak</code>). ARM builds need Ubuntu 24.04, Debian 13, Raspberry Pi OS Trixie, or another current distro. Install a Flatpak with <code>flatpak install --user ./AstroDwarf-*-linux-x86_64.flatpak</code> (or the <code>aarch64</code> file). Flatpak downloads the Freedesktop runtime from Flathub the first time.</li>
       </ul>
       <p class="dim">Set each telescope’s IP, model, and location in Settings. Start the scheduler from Control when you are ready to run the night.</p>
     </section>

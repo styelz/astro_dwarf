@@ -1,5 +1,8 @@
 name: astro-dwarf
-arch: amd64
+# amd64 or arm64. nFPM maps that to the deb, rpm, and Arch architecture names.
+# The release workflow sets NFPM_ARCH. A local package build needs it too:
+#   NFPM_ARCH=amd64 nfpm package --config packaging/linux/nfpm.yaml --packager deb
+arch: "${NFPM_ARCH}"
 platform: linux
 version: "${VERSION}"
 section: science
