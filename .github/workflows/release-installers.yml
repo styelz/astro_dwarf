@@ -288,11 +288,19 @@ jobs:
             libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 libxcb1
             libxkbcommon-x11-0 libxkbcommon0 xvfb zstd file
           )
+          # apt-cache show succeeds for a virtual name such as libasound2 on
+          # Ubuntu 24.04, and apt-get then refuses it. Candidate: (none)
+          # means that name cannot be installed.
+          installable() {
+            local candidate
+            candidate=$(apt-cache policy "$1" | awk '/Candidate:/ {print $2; exit}')
+            [ -n "$candidate" ] && [ "$candidate" != "(none)" ]
+          }
           install=()
           for pkg in "${packages[@]}"; do
-            if apt-cache show "$pkg" >/dev/null 2>&1; then
+            if installable "$pkg"; then
               install+=("$pkg")
-            elif apt-cache show "${pkg}t64" >/dev/null 2>&1; then
+            elif installable "${pkg}t64"; then
               install+=("${pkg}t64")
             else
               echo "No apt package for ${pkg}" >&2

@@ -98,6 +98,8 @@ def test_intel_mac_arm_linux_and_flatpak_names() -> None:
         _assert(needle in WORKFLOW, needle)
     _assert("release/*.flatpak" in WORKFLOW, "flatpak upload")
     _assert("packaging/linux/build-flatpak.sh" in WORKFLOW, "flatpak script")
+    _assert("Candidate:" in WORKFLOW, "installable package check")
+    _assert('apt-cache show "$pkg"' not in WORKFLOW, "virtual package was treated as installable")
 
 
 def test_flatpak_bundle_uses_the_frozen_tree() -> None:
